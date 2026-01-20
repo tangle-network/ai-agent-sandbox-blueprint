@@ -29,7 +29,6 @@ pub struct SidecarRuntimeConfig {
     pub timeout: Duration,
     pub docker_host: Option<String>,
     pub pull_image: bool,
-    pub mock_sidecar_url: Option<String>,
 }
 
 impl SidecarRuntimeConfig {
@@ -54,7 +53,6 @@ impl SidecarRuntimeConfig {
             .ok()
             .and_then(|value| value.parse::<bool>().ok())
             .unwrap_or(true);
-        let mock_sidecar_url = env::var("SIDECAR_MOCK_URL").ok();
 
         SidecarRuntimeConfig {
             image,
@@ -64,7 +62,6 @@ impl SidecarRuntimeConfig {
             timeout: Duration::from_secs(timeout),
             docker_host,
             pull_image,
-            mock_sidecar_url,
         }
     }
 }
@@ -144,30 +141,6 @@ pub fn require_sidecar_auth(sidecar_url: &str, token: &str) -> Result<SandboxRec
 
 pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRecord, String> {
     let config = SidecarRuntimeConfig::load();
-    if let Some(mock_url) = config.mock_sidecar_url.clone() {
-        let sandbox_id = next_sandbox_id();
-        let token = token_from_request(request.sidecar_token.as_str());
-        let record = SandboxRecord {
-            id: sandbox_id.clone(),
-            container_id: "mock".to_string(),
-            sidecar_url: mock_url,
-            sidecar_port: config.container_port,
-            ssh_port: if request.ssh_enabled {
-                Some(config.ssh_port)
-            } else {
-                None
-            },
-            token,
-            created_at: crate::workflows::now_ts(),
-        };
-
-        sandboxes()?
-            .lock()
-            .map_err(|_| "Sandbox store poisoned".to_string())?
-            .insert(sandbox_id.clone(), record.clone());
-
-        return Ok(record);
-    }
     let builder = docker_builder().await?;
     if config.pull_image {
         builder
@@ -289,9 +262,6 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
 }
 
 pub async fn stop_sidecar(record: &SandboxRecord) -> Result<(), String> {
-    if record.container_id == "mock" {
-        return Ok(());
-    }
     let builder = docker_builder().await?;
     let mut container = Container::from_id(builder.client(), &record.container_id)
         .await
@@ -304,9 +274,6 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<(), String> {
 }
 
 pub async fn resume_sidecar(record: &SandboxRecord) -> Result<(), String> {
-    if record.container_id == "mock" {
-        return Ok(());
-    }
     let builder = docker_builder().await?;
     let mut container = Container::from_id(builder.client(), &record.container_id)
         .await
@@ -319,9 +286,6 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<(), String> {
 }
 
 pub async fn delete_sidecar(record: &SandboxRecord) -> Result<(), String> {
-    if record.container_id == "mock" {
-        return Ok(());
-    }
     let builder = docker_builder().await?;
     let container = Container::from_id(builder.client(), &record.container_id)
         .await

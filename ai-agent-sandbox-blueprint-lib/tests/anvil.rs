@@ -13,8 +13,6 @@ use std::sync::Once;
 use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
-use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const ANVIL_TEST_TIMEOUT: Duration = Duration::from_secs(600);
 const JOB_RESULT_TIMEOUT: Duration = Duration::from_secs(180);
@@ -33,39 +31,13 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
     setup_log();
     let guard = HARNESS_LOCK.lock().await;
     let result = timeout(ANVIL_TEST_TIMEOUT, async {
+        if std::env::var("SIDECAR_E2E").ok().as_deref() != Some("1") {
+            return Ok(());
+        }
+
         let Some(harness) = spawn_harness().await? else {
             return Ok(());
         };
-
-        let mock_server = MockServer::start().await;
-        unsafe {
-            std::env::set_var("SIDECAR_MOCK_URL", mock_server.uri());
-        }
-
-        Mock::given(method("POST"))
-            .and(path("/exec"))
-            .and(header("authorization", "Bearer sandbox-token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "exitCode": 0,
-                "stdout": "ok",
-                "stderr": ""
-            })))
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/agents/run"))
-            .and(header("authorization", "Bearer sandbox-token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "success": true,
-                "response": "done",
-                "traceId": "trace-123",
-                "durationMs": 42,
-                "usage": {"inputTokens": 10, "outputTokens": 5},
-                "sessionId": "session-abc"
-            })))
-            .mount(&mock_server)
-            .await;
 
         let create_payload = SandboxCreateRequest {
             name: "agent-sandbox".to_string(),
@@ -140,7 +112,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         let prompt_receipt =
             ai_agent_sandbox_blueprint_lib::SandboxPromptResponse::abi_decode(&prompt_output)?;
         assert!(prompt_receipt.success);
-        assert_eq!(prompt_receipt.response, "done");
+        assert!(!prompt_receipt.response.is_empty());
 
         let task_payload = SandboxTaskRequest {
             sidecar_url: sidecar_url.clone(),
@@ -162,8 +134,8 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         let task_receipt =
             ai_agent_sandbox_blueprint_lib::SandboxTaskResponse::abi_decode(&task_output)?;
         assert!(task_receipt.success);
-        assert_eq!(task_receipt.result, "done");
-        assert_eq!(task_receipt.session_id, "session-abc");
+        assert!(!task_receipt.result.is_empty());
+        assert!(!task_receipt.session_id.is_empty());
 
         let batch_payload = BatchExecRequest {
             sidecar_urls: vec![sidecar_url.clone(), sidecar_url.clone()],
