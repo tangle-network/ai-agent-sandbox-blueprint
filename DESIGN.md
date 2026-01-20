@@ -44,6 +44,26 @@ The blueprint smart contract performs the same coordination functions as the cen
 | Scheduling | Internal scheduler | CronJob producer in operator runtime |
 | State management | Redis/DB | On-chain routing + operator local state |
 
+### Operator Selection and Fan-Out
+
+Operator selection is validated on-chain and driven by a deterministic selection helper.
+Clients should call `previewOperatorSelection(count, seed)` before requesting a service and
+pass both the operator list and the encoded selection request in `requestInputs`.
+
+Selection request encoding:
+
+```solidity
+struct SelectionRequest {
+    uint32 operatorCount;
+    bytes32 seed;
+    bool enforceDeterministic;
+}
+```
+
+If `enforceDeterministic` is true, the contract verifies the operator list matches the
+deterministic selection over eligible operators for this blueprint. Fan-out is achieved by
+creating services with N operators; batch jobs require results from all operators.
+
 ## Job Surface
 
 ### Complete Job IDs
@@ -141,12 +161,13 @@ struct SandboxCreateResponse {
 // ═══════════════════════════════════════════════════════════════════
 
 struct TaskRequest {
-    string sandbox_id;
+    string sidecar_endpoint;        // Direct HTTP endpoint
     string prompt;                  // What to do
     string session_id;              // Optional: continue session
     uint64 max_turns;               // Max agent turns (0 = unlimited)
     uint64 timeout_ms;              // Overall timeout
     string context_json;            // Additional context
+    string model;                   // Optional model override
 }
 
 struct TaskResponse {
@@ -179,8 +200,8 @@ struct BatchCreateResponse {
 }
 
 struct BatchTaskRequest {
-    string batch_id;                // Or explicit sandbox_ids
-    string[] sandbox_ids;
+    string batch_id;                // Optional batch_id for tracking
+    string[] sidecar_endpoints;     // Explicit sidecar endpoints
     string prompt;                  // Same task for all
     bool parallel;                  // Run in parallel or sequential
     string aggregation;             // "all" | "first_success" | "majority"
@@ -199,15 +220,23 @@ struct BatchTaskResponse {
 
 struct WorkflowCreateRequest {
     string name;
-    string workflow_json;           // Workflow definition (DAG of tasks)
+    string workflow_json;           // Workflow definition (JSON task spec for now)
     string trigger_type;            // "manual" | "cron" | "webhook" | "event"
     string trigger_config;          // Cron expression or webhook config
     string sandbox_config_json;     // SandboxCreateRequest as JSON
 }
 
 struct WorkflowCreateResponse {
-    string workflow_id;
+    uint64 workflow_id;
     string status;                  // "active" | "paused"
+}
+
+// workflow_id is the JobCall ID emitted by the protocol for the create request.
+// workflow_json should include sidecar_url + prompt fields if you expect the
+// blueprint to execute the task directly.
+
+struct WorkflowControlRequest {
+    uint64 workflow_id;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -215,7 +244,7 @@ struct WorkflowCreateResponse {
 // ═══════════════════════════════════════════════════════════════════
 
 struct SandboxSnapshotRequest {
-    string sandbox_id;
+    string sidecar_endpoint;
     string destination;             // Customer-provided storage URI
     bool include_workspace;         // Include /workspace directory
     bool include_state;             // Include sidecar state
@@ -238,7 +267,7 @@ struct SandboxSnapshotResponse {
    - blueprintId: AI_SANDBOX_BLUEPRINT
    - operators: [operator_A]  (or empty for auto-selection)
    - ttl: 3600 blocks (~6 hours)
-   - paymentAmount: calculated via pricing-engine
+   - paymentAmount: calculated via protocol pricing
 
 3. Operator receives onRequest() hook
    → Provisions sidecar container
@@ -345,16 +374,20 @@ SSH credentials returned in `SandboxCreateResponse`:
 
 Customer's public key is injected at provision time from `SandboxCreateRequest.ssh_public_key`.
 
-## Workflow/Cron Support
+## Workflow/Cron Support (On-Chain Registry)
 
-The blueprint SDK's `CronJob` producer enables scheduled execution:
+Workflow definitions are persisted on-chain by the blueprint contract when
+`JOB_WORKFLOW_CREATE` results are submitted. Operators rebuild the schedule
+on startup by reading the contract registry, so active workflows survive restarts.
+
+The blueprint SDK's `CronJob` producer enables scheduled execution on the operator:
 
 ```rust
 use blueprint_producers_extra::cron::CronJob;
 
 async fn main() {
     let router = Router::new()
-        .route(JOB_WORKFLOW_TICK, workflow_tick.layer(TangleEvmLayer));
+        .route(JOB_WORKFLOW_TICK, workflow_tick);
 
     // Check for due workflows every minute
     let workflow_cron = CronJob::new(JOB_WORKFLOW_TICK, "0 * * * * *").await?;
@@ -363,29 +396,29 @@ async fn main() {
 }
 
 #[debug_job]
-async fn workflow_tick(ctx: Context) -> Result<(), String> {
+async fn workflow_tick() -> Result<JsonResponse, String> {
     let due_workflows = get_due_workflows().await;
     for workflow in due_workflows {
         execute_workflow(&workflow).await?;
     }
-    Ok(())
+    Ok(JsonResponse { json: "{}".into() })
 }
 ```
+
+Operators can override the tick schedule with `WORKFLOW_CRON_SCHEDULE`.
 
 ## Implementation Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Sandbox lifecycle jobs | ✅ Partial | Need snapshot job |
-| Exec/prompt jobs | ✅ Exists | Need task (multi-turn) |
-| Batch jobs | ❌ Missing | Requires operator-side batching |
-| Workflow jobs | ❌ Missing | Needs storage/scheduler design |
-| SSH provision | ❌ Missing | Needs gateway design |
+| Sandbox lifecycle jobs | ✅ Complete | Includes snapshot upload |
+| Exec/prompt/task jobs | ✅ Complete | Task is multi-turn agent run |
+| Batch jobs | ✅ Complete | In-memory aggregation + collect |
+| Workflow jobs | ✅ On-chain | Registry + cron tick runner |
+| SSH provision | ✅ Complete | Authorized key management via /exec |
 
 ## Next Steps
 
-1. Implement `JOB_TASK` for multi-turn agent execution
-2. Implement batch jobs (`JOB_BATCH_CREATE`, `JOB_BATCH_TASK`)
-3. Design and implement SSH gateway for operators
-4. Implement `JOB_SANDBOX_SNAPSHOT` with S3/IPFS support
-5. Wire workflow/cron support into blueprint
+1. Add durable workflow storage (sled/sqlite) if operators need persistence beyond chain registry
+2. Extend workflow_json schema for multi-step DAGs and parallel steps
+3. Add IPFS snapshot support if operators need decentralized storage

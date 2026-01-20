@@ -11,8 +11,11 @@ sandbox SDK endpoints into on-chain callable jobs.
 
 ## Features
 
-- Sandbox lifecycle: create, stop, resume, delete
+- Sandbox lifecycle: create, stop, resume, delete, snapshot
 - Sidecar execution: `/exec` and `/agents/run` with auth passthrough
+- Batch execution: create, exec, task, collect
+- Workflows: create, trigger, cancel (persisted on-chain, replayed on restart)
+- SSH access: provision/revoke via sidecar exec
 
 ## Prerequisites
 
@@ -29,16 +32,44 @@ Set these to point at your running agent-dev-container services:
 - `SANDBOX_API_KEY` (required for sandbox jobs unless callers pass `auth_token`)
 - `SIDECAR_TOKEN` (optional default for sidecar jobs)
 - `REQUEST_TIMEOUT_SECS` (default: `30`)
+- `WORKFLOW_CRON_SCHEDULE` (default: `0 * * * * *`)
 
 ## Job Map
 
 Sandbox jobs (write-only):
 - `JOB_SANDBOX_CREATE` (0)
+- `JOB_SANDBOX_STOP` (1)
+- `JOB_SANDBOX_RESUME` (2)
 - `JOB_SANDBOX_DELETE` (3)
-- `JOB_SANDBOX_STOP` (4)
-- `JOB_SANDBOX_RESUME` (5)
-- `JOB_SANDBOX_EXEC` (6)
-- `JOB_SANDBOX_PROMPT` (7)
+- `JOB_SANDBOX_SNAPSHOT` (4)
+
+Execution jobs:
+- `JOB_EXEC` (10)
+- `JOB_PROMPT` (11)
+- `JOB_TASK` (12)
+
+Batch jobs:
+- `JOB_BATCH_CREATE` (20)
+- `JOB_BATCH_TASK` (21)
+- `JOB_BATCH_EXEC` (22)
+- `JOB_BATCH_COLLECT` (23)
+
+Workflow jobs:
+- `JOB_WORKFLOW_CREATE` (30)
+- `JOB_WORKFLOW_TRIGGER` (31)
+- `JOB_WORKFLOW_CANCEL` (32)
+Internal workflow scheduler:
+- `JOB_WORKFLOW_TICK` (33)
+
+SSH jobs:
+- `JOB_SSH_PROVISION` (40)
+- `JOB_SSH_REVOKE` (41)
+
+## Operator Selection
+
+Use `previewOperatorSelection(count, seed)` on the blueprint contract to select eligible operators
+deterministically, then pass the operator list and `SelectionRequest` (ABI-encoded) in `requestInputs`
+when calling `requestService`.
 
 ## Development
 
