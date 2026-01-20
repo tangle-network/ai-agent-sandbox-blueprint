@@ -2,35 +2,34 @@
 
 ## Overview
 
-This blueprint exposes the Agent Dev Container sandbox API surface as Tangle EVM jobs. Operators
-run the agent-dev-container stack, and on-chain callers trigger sandbox lifecycle and sidecar
-execution through this blueprint.
-
-The template was created with `cargo tangle blueprint create --tangle`, then extended to map the
-sandbox SDK endpoints into on-chain callable jobs.
+This blueprint exposes the sidecar container API surface as Tangle EVM jobs. Operators provide
+compute by running sidecar containers locally (via Docktopus/Docker). Callers trigger write-only
+jobs on-chain and receive results off-chain through the blueprint runtime.
 
 ## Features
 
 - Sandbox lifecycle: create, stop, resume, delete, snapshot
-- Sidecar execution: `/exec` and `/agents/run` with auth passthrough
+- Sidecar execution: `/exec` and `/agents/run`
 - Batch execution: create, exec, task, collect
-- Workflows: create, trigger, cancel (persisted on-chain, replayed on restart)
+- Workflows: create, trigger, cancel (on-chain registry + cron tick)
 - SSH access: provision/revoke via sidecar exec
 
 ## Prerequisites
 
 - Rust 1.88+ (see `rust-toolchain.toml`)
+- Docker (operator runtime)
 - Foundry (for contracts)
 - `cargo-tangle` from the `v2` branch
-- Access to `agent-dev-container` (branch `feat/billing-gateway`)
+- Access to the sidecar image (`SIDECAR_IMAGE`)
 
 ## Environment
 
-Set these to point at your running agent-dev-container services:
-
-- `SANDBOX_API_BASE_URL` (default: `https://agents.tangle.network`)
-- `SANDBOX_API_KEY` (required for sandbox jobs unless callers pass `auth_token`)
-- `SIDECAR_TOKEN` (optional default for sidecar jobs)
+- `SIDECAR_IMAGE` (default: `ghcr.io/tangle-network/sidecar:latest`)
+- `SIDECAR_PUBLIC_HOST` (default: `127.0.0.1`)
+- `SIDECAR_HTTP_PORT` (default: `8080`)
+- `SIDECAR_SSH_PORT` (default: `22`)
+- `SIDECAR_PULL_IMAGE` (default: `true`)
+- `DOCKER_HOST` (optional docker socket override)
 - `REQUEST_TIMEOUT_SECS` (default: `30`)
 - `WORKFLOW_CRON_SCHEDULE` (default: `0 * * * * *`)
 
@@ -68,8 +67,8 @@ SSH jobs:
 ## Operator Selection
 
 Use `previewOperatorSelection(count, seed)` on the blueprint contract to select eligible operators
-deterministically, then pass the operator list and `SelectionRequest` (ABI-encoded) in `requestInputs`
-when calling `requestService`.
+and pass the operator list plus encoded `SelectionRequest` in `requestInputs` when calling
+`requestService`.
 
 ## Development
 
@@ -84,20 +83,3 @@ Run tests:
 ```sh
 cargo test --workspace --all-features
 ```
-
-Deploy the blueprint to a devnet:
-
-```sh
-cargo tangle blueprint deploy tangle --network devnet
-```
-
-## License
-
-Licensed under either of
-
-* Apache License, Version 2.0
-  ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-* MIT license
-  ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.

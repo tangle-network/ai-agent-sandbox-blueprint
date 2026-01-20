@@ -39,25 +39,12 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
 
         let mock_server = MockServer::start().await;
         unsafe {
-            std::env::set_var("SANDBOX_API_BASE_URL", mock_server.uri());
-            std::env::set_var("SANDBOX_API_KEY", "sandbox-key");
-            std::env::set_var("SIDECAR_TOKEN", "sidecar-token");
+            std::env::set_var("SIDECAR_MOCK_URL", mock_server.uri());
         }
 
         Mock::given(method("POST"))
-            .and(path("/sandboxes"))
-            .and(header("authorization", "Bearer sandbox-key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "sandbox_id": "sandbox-123",
-                "sidecar_url": mock_server.uri(),
-                "status": "running"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
             .and(path("/exec"))
-            .and(header("authorization", "Bearer sidecar-token"))
+            .and(header("authorization", "Bearer sandbox-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "exitCode": 0,
                 "stdout": "ok",
@@ -68,7 +55,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
 
         Mock::given(method("POST"))
             .and(path("/agents/run"))
-            .and(header("authorization", "Bearer sidecar-token"))
+            .and(header("authorization", "Bearer sandbox-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "success": true,
                 "response": "done",
@@ -95,7 +82,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_gb: 20,
-            auth_token: "sandbox-key".to_string(),
+            sidecar_token: "sandbox-token".to_string(),
         }
         .abi_encode();
 
@@ -106,15 +93,21 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             .wait_for_job_result_with_deadline(create_submission, JOB_RESULT_TIMEOUT)
             .await?;
         let create_receipt = JsonResponse::abi_decode(&create_output)?;
-        assert!(create_receipt.json.contains("sandbox-123"));
+        let create_json: serde_json::Value = serde_json::from_str(&create_receipt.json)
+            .context("sandbox create response must be json")?;
+        let sidecar_url = create_json
+            .get("sidecarUrl")
+            .and_then(|value| value.as_str())
+            .context("missing sidecarUrl")?
+            .to_string();
 
         let exec_payload = SandboxExecRequest {
-            sidecar_url: mock_server.uri(),
+            sidecar_url: sidecar_url.clone(),
             command: "echo ok".to_string(),
             cwd: "".to_string(),
             env_json: "".to_string(),
             timeout_ms: 1000,
-            sidecar_token: "".to_string(),
+            sidecar_token: "sandbox-token".to_string(),
         }
         .abi_encode();
         let exec_submission = harness
@@ -129,13 +122,13 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         assert_eq!(exec_receipt.stdout, "ok");
 
         let prompt_payload = SandboxPromptRequest {
-            sidecar_url: mock_server.uri(),
+            sidecar_url: sidecar_url.clone(),
             message: "hello".to_string(),
             session_id: "".to_string(),
             model: "".to_string(),
             context_json: "".to_string(),
             timeout_ms: 0,
-            sidecar_token: "".to_string(),
+            sidecar_token: "sandbox-token".to_string(),
         }
         .abi_encode();
         let prompt_submission = harness
@@ -150,14 +143,14 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         assert_eq!(prompt_receipt.response, "done");
 
         let task_payload = SandboxTaskRequest {
-            sidecar_url: mock_server.uri(),
+            sidecar_url: sidecar_url.clone(),
             prompt: "do work".to_string(),
             session_id: "session-override".to_string(),
             max_turns: 2,
             model: "".to_string(),
             context_json: "".to_string(),
             timeout_ms: 0,
-            sidecar_token: "".to_string(),
+            sidecar_token: "sandbox-token".to_string(),
         }
         .abi_encode();
         let task_submission = harness
@@ -173,13 +166,13 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         assert_eq!(task_receipt.session_id, "session-abc");
 
         let batch_payload = BatchExecRequest {
-            sidecar_urls: vec![mock_server.uri(), mock_server.uri()],
+            sidecar_urls: vec![sidecar_url.clone(), sidecar_url.clone()],
+            sidecar_tokens: vec!["sandbox-token".to_string(), "sandbox-token".to_string()],
             command: "ls".to_string(),
             cwd: "".to_string(),
             env_json: "".to_string(),
             timeout_ms: 0,
             parallel: false,
-            sidecar_token: "".to_string(),
         }
         .abi_encode();
         let batch_submission = harness
@@ -200,8 +193,8 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         let workflow_payload = WorkflowCreateRequest {
             name: "daily".to_string(),
             workflow_json: format!(
-                "{{\"sidecar_url\":\"{}\",\"prompt\":\"run\"}}",
-                mock_server.uri()
+                "{{\"sidecar_url\":\"{}\",\"prompt\":\"run\",\"sidecar_token\":\"sandbox-token\"}}",
+                sidecar_url
             ),
             trigger_type: "cron".to_string(),
             trigger_config: "0 * * * * *".to_string(),
@@ -248,7 +241,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             .wait_for_job_result_with_deadline(cancel_submission, JOB_RESULT_TIMEOUT)
             .await?;
         let cancel_receipt = JsonResponse::abi_decode(&cancel_output)?;
-        assert!(cancel_receipt.json.contains("cancelled"));
+        assert!(cancel_receipt.json.contains("canceled"));
 
         harness.shutdown().await;
         Ok(())
