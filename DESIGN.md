@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document defines the architecture for the AI Agent Sandbox Blueprint, a decentralized control plane for AI agent execution infrastructure. The blueprint enables third-party operators to provide compute resources (sandboxes, sidecars) on the Tangle network, with x402 payment support and smart contract-based orchestration.
+This document defines the architecture for the AI Agent Sandbox Blueprint, a decentralized control plane for AI agent execution infrastructure. The blueprint enables third-party operators to provide compute resources (sandboxes, sidecars) on the Tangle network, with protocol-native payments and smart contract-based orchestration.
 
 ## Architecture Model
 
@@ -39,10 +39,10 @@ The blueprint smart contract performs the same coordination functions as the cen
 | Function | Centralized (Orchestrator) | Decentralized (Blueprint) |
 |----------|---------------------------|---------------------------|
 | Operator selection | Internal load balancer | Smart contract routes to registered operators |
-| Payment | Stripe/credit system | x402 on-chain payments |
+| Payment | Stripe/credit system | Protocol-native payments |
 | Batch coordination | Orchestrator fans out | Contract coordinates across operators |
 | Scheduling | Internal scheduler | CronJob producer in operator runtime |
-| State management | Redis/DB | On-chain + operator local state |
+| State management | Redis/DB | On-chain routing + operator local state |
 
 ## Job Surface
 
@@ -53,8 +53,8 @@ The blueprint smart contract performs the same coordination functions as the cen
 // SANDBOX LIFECYCLE (state-changing)
 // ═══════════════════════════════════════════════════════════════════════
 
-pub const JOB_SANDBOX_CREATE: u8 = 0;      // Provision sidecar → endpoint, ssh_info
-pub const JOB_SANDBOX_STOP: u8 = 1;        // Pause (keeps state, stops billing)
+pub const JOB_SANDBOX_CREATE: u8 = 0;      // Provision sidecar + optional SSH access
+pub const JOB_SANDBOX_STOP: u8 = 1;        // Pause (keeps state)
 pub const JOB_SANDBOX_RESUME: u8 = 2;      // Resume from pause
 pub const JOB_SANDBOX_DELETE: u8 = 3;      // Terminate + cleanup
 pub const JOB_SANDBOX_SNAPSHOT: u8 = 4;    // Write state to customer storage
@@ -93,6 +93,10 @@ pub const JOB_SSH_REVOKE: u8 = 41;         // Revoke SSH access
 ```
 
 ### Request/Response Types
+
+Job responses are delivered off-chain to the caller via the blueprint runtime.
+No job outputs are stored on-chain. On-chain state is limited to service lifecycle
+and operator assignment handled by the protocol.
 
 ```solidity
 // ═══════════════════════════════════════════════════════════════════
@@ -224,45 +228,6 @@ struct SandboxSnapshotResponse {
 }
 ```
 
-## Pricing Model
-
-### Integration with Pricing Engine
-
-The blueprint uses the existing pricing engine from `blueprint/crates/pricing-engine/`:
-
-```rust
-// Resource-based pricing (from pricing-engine)
-ResourceUnit::CPU           // Per core
-ResourceUnit::MemoryMB      // Per MB
-ResourceUnit::StorageMB     // Per MB
-ResourceUnit::NetworkEgressMB
-ResourceUnit::GPU
-
-// Time-based adjustment
-price = base_cost * ttl_blocks * block_time * security_factor
-```
-
-### Pricing Configuration
-
-Operators define pricing in `pricing.toml`:
-
-```toml
-[default]
-resources = [
-    { kind = "CPU", count = 1, price_per_unit_rate = 0.0001 },
-    { kind = "MemoryMB", count = 1, price_per_unit_rate = 0.00001 },
-    { kind = "StorageMB", count = 1, price_per_unit_rate = 0.000001 },
-    { kind = "GPU", count = 1, price_per_unit_rate = 0.001 },
-]
-
-# Blueprint-specific overrides
-[42]  # AI Sandbox Blueprint ID
-resources = [
-    { kind = "CPU", count = 1, price_per_unit_rate = 0.00015 },
-    # ... custom pricing for this blueprint
-]
-```
-
 ## Customer Journey
 
 ```
@@ -277,7 +242,7 @@ resources = [
 
 3. Operator receives onRequest() hook
    → Provisions sidecar container
-   → Returns endpoint + SSH credentials
+   → Returns endpoint + SSH credentials off-chain to the caller
 
 4. Customer uses sandbox:
    - HTTP API: prompt, exec, task
@@ -330,7 +295,7 @@ Operators do NOT need the full orchestrator stack:
 - No multi-tenant session management (blueprint handles routing)
 - No complex autoscaling (operator scales their own fleet)
 - No storage snapshots (customer's responsibility)
-- No credit/billing system (x402 handles payment)
+- No credit/billing system (payments handled by protocol)
 
 ### Sidecar Standalone Mode
 
@@ -407,44 +372,15 @@ async fn workflow_tick(ctx: Context) -> Result<(), String> {
 }
 ```
 
-## x402 Payment Flow
-
-```
-Customer                          Operator
-   │                                 │
-   │─────── POST /sandboxes ────────▶│
-   │                                 │
-   │◀─────── 402 Payment Required ───│
-   │         {                       │
-   │           "x402": {             │
-   │             "price": "0.001",   │
-   │             "asset": "USDC",    │
-   │             "recipient": "0x..",│
-   │             "validUntil": 123.. │
-   │           }                     │
-   │         }                       │
-   │                                 │
-   │─── (pay on-chain) ─────────────▶│ (verify payment)
-   │                                 │
-   │─────── POST /sandboxes ────────▶│
-   │         X-Payment-Proof: 0x..   │
-   │                                 │
-   │◀─────── 201 Created ────────────│
-```
-
-The billing gateway can implement `X402PaymentService` as an alternative to `StripePaymentService`, using the existing `PaymentService` interface from `sdk-service`.
-
 ## Implementation Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Sandbox lifecycle jobs | ✅ Partial | Need snapshot job |
 | Exec/prompt jobs | ✅ Exists | Need task (multi-turn) |
-| Batch jobs | ❌ Missing | Core differentiator |
-| Workflow jobs | ❌ Missing | Needs storage design |
+| Batch jobs | ❌ Missing | Requires operator-side batching |
+| Workflow jobs | ❌ Missing | Needs storage/scheduler design |
 | SSH provision | ❌ Missing | Needs gateway design |
-| x402 integration | ✅ Stubbed | Needs full implementation |
-| Pricing engine integration | ✅ Available | In blueprint SDK |
 
 ## Next Steps
 
@@ -453,4 +389,3 @@ The billing gateway can implement `X402PaymentService` as an alternative to `Str
 3. Design and implement SSH gateway for operators
 4. Implement `JOB_SANDBOX_SNAPSHOT` with S3/IPFS support
 5. Wire workflow/cron support into blueprint
-6. Full x402 payment verification in job handlers

@@ -1,25 +1,48 @@
 //! AI Agent Sandbox Blueprint
 
+use blueprint_sdk::alloy::primitives::Address;
 use blueprint_sdk::alloy::sol;
 use blueprint_sdk::macros::debug_job;
 use blueprint_sdk::tangle_evm::TangleEvmLayer;
 use blueprint_sdk::tangle_evm::extract::{Caller, TangleEvmArg, TangleEvmResult};
 use blueprint_sdk::Job;
 use blueprint_sdk::Router;
+use once_cell::sync::OnceCell;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Method, StatusCode, Url};
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 use std::env;
-use once_cell::sync::OnceCell;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Job IDs for sandbox operations (write-only).
 pub const JOB_SANDBOX_CREATE: u8 = 0;
+pub const JOB_SANDBOX_STOP: u8 = 1;
+pub const JOB_SANDBOX_RESUME: u8 = 2;
 pub const JOB_SANDBOX_DELETE: u8 = 3;
-pub const JOB_SANDBOX_STOP: u8 = 4;
-pub const JOB_SANDBOX_RESUME: u8 = 5;
-pub const JOB_SANDBOX_EXEC: u8 = 6;
-pub const JOB_SANDBOX_PROMPT: u8 = 7;
+pub const JOB_SANDBOX_SNAPSHOT: u8 = 4;
+
+/// Job IDs for execution operations (write-only).
+pub const JOB_EXEC: u8 = 10;
+pub const JOB_PROMPT: u8 = 11;
+pub const JOB_TASK: u8 = 12;
+
+/// Job IDs for batch operations (write-only).
+pub const JOB_BATCH_CREATE: u8 = 20;
+pub const JOB_BATCH_TASK: u8 = 21;
+pub const JOB_BATCH_EXEC: u8 = 22;
+pub const JOB_BATCH_COLLECT: u8 = 23;
+
+/// Job IDs for workflow operations (write-only).
+pub const JOB_WORKFLOW_CREATE: u8 = 30;
+pub const JOB_WORKFLOW_TRIGGER: u8 = 31;
+pub const JOB_WORKFLOW_CANCEL: u8 = 32;
+
+/// Job IDs for SSH access operations (write-only).
+pub const JOB_SSH_PROVISION: u8 = 40;
+pub const JOB_SSH_REVOKE: u8 = 41;
 
 const DEFAULT_SANDBOX_BASE_URL: &str = "https://agents.tangle.network";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
