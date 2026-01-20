@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = [
+    "ai-agent-sandbox-blueprint-lib",
+    "ai-agent-sandbox-blueprint-bin",
+]
+
+[workspace.package]
+authors = ["Drew Stone"]
+edition = "2024"
+description = "AI Agent Sandbox Blueprint"
+license = "MIT OR Apache-2.0"
