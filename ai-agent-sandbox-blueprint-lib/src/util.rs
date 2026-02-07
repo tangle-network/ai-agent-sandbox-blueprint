@@ -1,32 +1,38 @@
 use once_cell::sync::OnceCell;
 use reqwest::Client;
 use serde_json::{Map, Value};
-use std::time::Duration;
+
+use crate::error::{Result, SandboxError};
 
 static HTTP_CLIENT: OnceCell<Client> = OnceCell::new();
 
-pub fn http_client(timeout: Duration) -> Result<&'static Client, String> {
+/// Get the shared HTTP client. The timeout is set from `SidecarRuntimeConfig`
+/// on first initialization and reused for all subsequent calls.
+pub fn http_client() -> Result<&'static Client> {
     HTTP_CLIENT
         .get_or_try_init(|| {
+            let config = crate::runtime::SidecarRuntimeConfig::load();
             Client::builder()
-                .timeout(timeout)
+                .timeout(config.timeout)
                 .build()
-                .map_err(|err| format!("Failed to build HTTP client: {err}"))
+                .map_err(|err| SandboxError::Http(format!("Failed to build HTTP client: {err}")))
         })
-        .map_err(|err| err.to_string())
+        .map_err(|err| SandboxError::Http(err.to_string()))
 }
 
-pub fn parse_json_object(value: &str, field_name: &str) -> Result<Option<Value>, String> {
+pub fn parse_json_object(value: &str, field_name: &str) -> Result<Option<Value>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
 
     let parsed: Value = serde_json::from_str(trimmed)
-        .map_err(|err| format!("{field_name} is not valid JSON: {err}"))?;
+        .map_err(|err| SandboxError::Validation(format!("{field_name} is not valid JSON: {err}")))?;
 
     if !parsed.is_object() {
-        return Err(format!("{field_name} must be a JSON object"));
+        return Err(SandboxError::Validation(format!(
+            "{field_name} must be a JSON object"
+        )));
     }
 
     Ok(Some(parsed))
@@ -36,14 +42,18 @@ pub fn merge_metadata(
     mut metadata: Option<Value>,
     image: &str,
     stack: &str,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<Value>> {
     if image.is_empty() && stack.is_empty() {
         return Ok(metadata);
     }
 
     let mut object = match metadata.take() {
         Some(Value::Object(map)) => map,
-        Some(_) => return Err("metadata_json must be a JSON object".to_string()),
+        Some(_) => {
+            return Err(SandboxError::Validation(
+                "metadata_json must be a JSON object".into(),
+            ));
+        }
         None => Map::new(),
     };
 
@@ -58,14 +68,14 @@ pub fn merge_metadata(
     Ok(Some(Value::Object(object)))
 }
 
-pub fn normalize_username(username: &str) -> Result<String, String> {
+pub fn normalize_username(username: &str) -> Result<String> {
     let trimmed = username.trim();
     let name = if trimmed.is_empty() { "root" } else { trimmed };
     if !name
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
     {
-        return Err("Invalid SSH username".to_string());
+        return Err(SandboxError::Validation("Invalid SSH username".into()));
     }
     Ok(name.to_string())
 }
@@ -79,7 +89,7 @@ pub fn build_snapshot_command(
     destination: &str,
     include_workspace: bool,
     include_state: bool,
-) -> Result<String, String> {
+) -> Result<String> {
     let mut paths = Vec::new();
     if include_workspace {
         paths.push("/workspace");
@@ -88,7 +98,9 @@ pub fn build_snapshot_command(
         paths.push("/var/lib/sidecar");
     }
     if paths.is_empty() {
-        return Err("Snapshot must include workspace or state".to_string());
+        return Err(SandboxError::Validation(
+            "Snapshot must include workspace or state".into(),
+        ));
     }
 
     let dest = shell_escape(destination);

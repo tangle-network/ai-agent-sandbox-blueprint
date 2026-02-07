@@ -9,13 +9,53 @@ use crate::SandboxTaskResponse;
 use crate::auth::require_sidecar_token;
 use crate::http::sidecar_post_json;
 use crate::runtime::require_sidecar_auth;
-use crate::tangle_evm::extract::{Caller, TangleEvmArg, TangleEvmResult};
+use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 use crate::workflows::run_task_request;
+
+/// Extract exec response fields, handling both flat and nested `data` shapes.
+fn extract_exec_fields(parsed: &Value) -> (u32, String, String) {
+    let exit_code = parsed
+        .get("exitCode")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            parsed
+                .get("data")
+                .and_then(|d| d.get("exitCode"))
+                .and_then(Value::as_u64)
+        })
+        .unwrap_or(0) as u32;
+
+    let stdout = parsed
+        .get("stdout")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            parsed
+                .get("data")
+                .and_then(|d| d.get("stdout"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default()
+        .to_string();
+
+    let stderr = parsed
+        .get("stderr")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            parsed
+                .get("data")
+                .and_then(|d| d.get("stderr"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default()
+        .to_string();
+
+    (exit_code, stdout, stderr)
+}
 
 pub async fn sandbox_exec(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<SandboxExecRequest>,
-) -> Result<TangleEvmResult<SandboxExecResponse>, String> {
+    TangleArg(request): TangleArg<SandboxExecRequest>,
+) -> Result<TangleResult<SandboxExecResponse>, String> {
     let token = require_sidecar_token(&request.sidecar_token)?;
     require_sidecar_auth(&request.sidecar_url, &token)?;
 
@@ -37,55 +77,22 @@ pub async fn sandbox_exec(
         }
     }
 
-    let parsed = sidecar_post_json(
-        &request.sidecar_url,
-        "/exec",
-        &token,
-        Value::Object(payload),
-        crate::runtime::SidecarRuntimeConfig::load().timeout,
-    )
-    .await?;
+    let parsed =
+        sidecar_post_json(&request.sidecar_url, "/exec", &token, Value::Object(payload)).await?;
 
-    Ok(TangleEvmResult(SandboxExecResponse {
-        exit_code: parsed
-            .get("exitCode")
-            .and_then(Value::as_u64)
-            .or_else(|| {
-                parsed
-                    .get("data")
-                    .and_then(|data| data.get("exitCode"))
-                    .and_then(Value::as_u64)
-            })
-            .unwrap_or(0) as u32,
-        stdout: parsed
-            .get("stdout")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                parsed
-                    .get("data")
-                    .and_then(|data| data.get("stdout"))
-                    .and_then(Value::as_str)
-            })
-            .unwrap_or_default()
-            .to_string(),
-        stderr: parsed
-            .get("stderr")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                parsed
-                    .get("data")
-                    .and_then(|data| data.get("stderr"))
-                    .and_then(Value::as_str)
-            })
-            .unwrap_or_default()
-            .to_string(),
+    let (exit_code, stdout, stderr) = extract_exec_fields(&parsed);
+
+    Ok(TangleResult(SandboxExecResponse {
+        exit_code,
+        stdout,
+        stderr,
     }))
 }
 
 pub async fn sandbox_prompt(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<SandboxPromptRequest>,
-) -> Result<TangleEvmResult<SandboxPromptResponse>, String> {
+    TangleArg(request): TangleArg<SandboxPromptRequest>,
+) -> Result<TangleResult<SandboxPromptResponse>, String> {
     let token = require_sidecar_token(&request.sidecar_token)?;
     require_sidecar_auth(&request.sidecar_url, &token)?;
 
@@ -126,13 +133,12 @@ pub async fn sandbox_prompt(
         "/agents/run",
         &token,
         Value::Object(payload),
-        crate::runtime::SidecarRuntimeConfig::load().timeout,
     )
     .await?;
 
     let (success, response, error, trace_id) = crate::extract_agent_fields(&parsed);
 
-    Ok(TangleEvmResult(SandboxPromptResponse {
+    Ok(TangleResult(SandboxPromptResponse {
         success,
         response,
         error,
@@ -143,12 +149,12 @@ pub async fn sandbox_prompt(
             .unwrap_or(0),
         input_tokens: parsed
             .get("usage")
-            .and_then(|usage| usage.get("inputTokens"))
+            .and_then(|u| u.get("inputTokens"))
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32,
         output_tokens: parsed
             .get("usage")
-            .and_then(|usage| usage.get("outputTokens"))
+            .and_then(|u| u.get("outputTokens"))
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32,
     }))
@@ -156,18 +162,14 @@ pub async fn sandbox_prompt(
 
 pub async fn sandbox_task(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<SandboxTaskRequest>,
-) -> Result<TangleEvmResult<SandboxTaskResponse>, String> {
+    TangleArg(request): TangleArg<SandboxTaskRequest>,
+) -> Result<TangleResult<SandboxTaskResponse>, String> {
     let token = require_sidecar_token(&request.sidecar_token)?;
     require_sidecar_auth(&request.sidecar_url, &token)?;
 
     let mut request = request;
     request.sidecar_token = token;
 
-    let response = run_task_request(
-        &request,
-        crate::runtime::SidecarRuntimeConfig::load().timeout,
-    )
-    .await?;
-    Ok(TangleEvmResult(response))
+    let response = run_task_request(&request).await?;
+    Ok(TangleResult(response))
 }

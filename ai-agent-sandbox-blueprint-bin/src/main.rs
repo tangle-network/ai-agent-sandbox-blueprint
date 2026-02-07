@@ -2,11 +2,11 @@
 
 use ai_agent_sandbox_blueprint_lib::{JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, router};
 use blueprint_producers_extra::cron::CronJob;
-use blueprint_sdk::contexts::tangle_evm::TangleEvmClientContext;
+use blueprint_sdk::contexts::tangle::TangleClientContext;
 use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
-use blueprint_sdk::runner::tangle_evm::config::TangleEvmConfig;
-use blueprint_sdk::tangle_evm::{TangleEvmConsumer, TangleEvmProducer};
+use blueprint_sdk::runner::tangle::config::TangleConfig;
+use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 use blueprint_sdk::{error, info};
 
 #[tokio::main]
@@ -16,16 +16,16 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     // Load configuration from environment variables
     let env = BlueprintEnvironment::load()?;
 
-    // Connect to the Tangle EVM network
+    // Connect to the Tangle network
     let tangle_client = env
-        .tangle_evm_client()
+        .tangle_client()
         .await
         .map_err(|e| blueprint_sdk::Error::Other(e.to_string()))?;
 
     // Get service ID from protocol settings
     let service_id = env
         .protocol_settings
-        .tangle_evm()
+        .tangle()
         .map_err(|e| blueprint_sdk::Error::Other(e.to_string()))?
         .service_id
         .ok_or_else(|| blueprint_sdk::Error::Other("SERVICE_ID missing".into()))?;
@@ -37,9 +37,9 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     }
 
     // Create producer (listens for JobSubmitted events) and consumer (submits results)
-    let tangle_producer = TangleEvmProducer::new(tangle_client.clone(), service_id);
-    let tangle_consumer = TangleEvmConsumer::new(tangle_client);
-    let tangle_config = TangleEvmConfig::default();
+    let tangle_producer = TangleProducer::new(tangle_client.clone(), service_id);
+    let tangle_consumer = TangleConsumer::new(tangle_client);
+    let tangle_config = TangleConfig::default();
     let cron_schedule =
         std::env::var("WORKFLOW_CRON_SCHEDULE").unwrap_or_else(|_| "0 * * * * *".to_string());
     let workflow_cron = CronJob::new(JOB_WORKFLOW_TICK, cron_schedule.as_str())

@@ -1,6 +1,8 @@
 use rand::RngCore;
 use rand::rngs::OsRng;
 
+use crate::error::{Result, SandboxError};
+
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
@@ -15,9 +17,9 @@ pub fn token_from_request(override_token: &str) -> String {
     }
 }
 
-pub fn require_sidecar_token(token: &str) -> Result<String, String> {
+pub fn require_sidecar_token(token: &str) -> Result<String> {
     if token.trim().is_empty() {
-        return Err("sidecar_token is required".to_string());
+        return Err(SandboxError::Auth("sidecar_token is required".into()));
     }
     Ok(token.trim().to_string())
 }

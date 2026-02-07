@@ -10,17 +10,17 @@ use crate::runtime::{
     create_sidecar, delete_sidecar, get_sandbox_by_id, require_sidecar_auth, resume_sidecar,
     sandboxes, stop_sidecar,
 };
-use crate::tangle_evm::extract::{Caller, TangleEvmArg, TangleEvmResult};
+use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 use crate::util::build_snapshot_command;
 
 pub async fn sandbox_create(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<SandboxCreateRequest>,
-) -> Result<TangleEvmResult<JsonResponse>, String> {
+    TangleArg(request): TangleArg<SandboxCreateRequest>,
+) -> Result<TangleResult<JsonResponse>, String> {
     let record = create_sidecar(&request).await?;
 
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
-        let _ = crate::jobs::ssh::provision_key(
+        crate::jobs::ssh::provision_key(
             &record.sidecar_url,
             "root",
             &request.ssh_public_key,
@@ -36,37 +36,38 @@ pub async fn sandbox_create(
         "sshPort": record.ssh_port,
     });
 
-    Ok(TangleEvmResult(JsonResponse {
+    Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
 }
 
 pub async fn sandbox_delete(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<SandboxIdRequest>,
-) -> Result<TangleEvmResult<JsonResponse>, String> {
+    TangleArg(request): TangleArg<SandboxIdRequest>,
+) -> Result<TangleResult<JsonResponse>, String> {
     let record = get_sandbox_by_id(&request.sandbox_id)?;
     delete_sidecar(&record).await?;
 
-    sandboxes()?
-        .lock()
-        .map_err(|_| "Sandbox store poisoned".to_string())?
-        .remove(&request.sandbox_id);
+    let sandbox_id = request.sandbox_id.to_string();
+    sandboxes()
+        .map_err(|e| e.to_string())?
+        .remove(&sandbox_id)
+        .map_err(|e| e.to_string())?;
 
     let response = json!({
         "sandboxId": request.sandbox_id,
         "deleted": true,
     });
 
-    Ok(TangleEvmResult(JsonResponse {
+    Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
 }
 
 pub async fn sandbox_stop(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<SandboxIdRequest>,
-) -> Result<TangleEvmResult<JsonResponse>, String> {
+    TangleArg(request): TangleArg<SandboxIdRequest>,
+) -> Result<TangleResult<JsonResponse>, String> {
     let record = get_sandbox_by_id(&request.sandbox_id)?;
     stop_sidecar(&record).await?;
 
@@ -75,15 +76,15 @@ pub async fn sandbox_stop(
         "stopped": true,
     });
 
-    Ok(TangleEvmResult(JsonResponse {
+    Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
 }
 
 pub async fn sandbox_resume(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<SandboxIdRequest>,
-) -> Result<TangleEvmResult<JsonResponse>, String> {
+    TangleArg(request): TangleArg<SandboxIdRequest>,
+) -> Result<TangleResult<JsonResponse>, String> {
     let record = get_sandbox_by_id(&request.sandbox_id)?;
     resume_sidecar(&record).await?;
 
@@ -92,15 +93,15 @@ pub async fn sandbox_resume(
         "resumed": true,
     });
 
-    Ok(TangleEvmResult(JsonResponse {
+    Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
 }
 
 pub async fn sandbox_snapshot(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<SandboxSnapshotRequest>,
-) -> Result<TangleEvmResult<JsonResponse>, String> {
+    TangleArg(request): TangleArg<SandboxSnapshotRequest>,
+) -> Result<TangleResult<JsonResponse>, String> {
     if request.destination.trim().is_empty() {
         return Err("Snapshot destination is required".to_string());
     }
@@ -118,16 +119,9 @@ pub async fn sandbox_snapshot(
         "command": format!("sh -c {}", crate::util::shell_escape(&command)),
     });
 
-    let response = sidecar_post_json(
-        &request.sidecar_url,
-        "/exec",
-        &token,
-        payload,
-        crate::runtime::SidecarRuntimeConfig::load().timeout,
-    )
-    .await?;
+    let response = sidecar_post_json(&request.sidecar_url, "/exec", &token, payload).await?;
 
-    Ok(TangleEvmResult(JsonResponse {
+    Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
 }
