@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use crate::JsonResponse;
+use crate::SandboxCreateOutput;
 use crate::SandboxCreateRequest;
 use crate::SandboxIdRequest;
 use crate::SandboxSnapshotRequest;
@@ -16,8 +17,10 @@ use crate::util::build_snapshot_command;
 pub async fn sandbox_create(
     Caller(_caller): Caller,
     TangleArg(request): TangleArg<SandboxCreateRequest>,
-) -> Result<TangleResult<JsonResponse>, String> {
+) -> Result<TangleResult<SandboxCreateOutput>, String> {
     let record = create_sidecar(&request).await?;
+
+    crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
 
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
         crate::jobs::ssh::provision_key(
@@ -36,7 +39,8 @@ pub async fn sandbox_create(
         "sshPort": record.ssh_port,
     });
 
-    Ok(TangleResult(JsonResponse {
+    Ok(TangleResult(SandboxCreateOutput {
+        sandboxId: record.id.clone(),
         json: response.to_string(),
     }))
 }
@@ -47,6 +51,10 @@ pub async fn sandbox_delete(
 ) -> Result<TangleResult<JsonResponse>, String> {
     let record = get_sandbox_by_id(&request.sandbox_id)?;
     delete_sidecar(&record).await?;
+
+    // Resource values aren't stored in SandboxRecord, so decrement with 0 for resources.
+    // The counter still tracks active_sandboxes accurately.
+    crate::metrics::metrics().record_sandbox_deleted(0, 0);
 
     let sandbox_id = request.sandbox_id.to_string();
     sandboxes()

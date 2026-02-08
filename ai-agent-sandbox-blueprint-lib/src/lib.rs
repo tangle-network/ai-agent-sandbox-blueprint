@@ -4,6 +4,7 @@ pub mod auth;
 pub mod error;
 pub mod http;
 pub mod jobs;
+pub mod metrics;
 pub mod runtime;
 pub mod store;
 pub mod util;
@@ -63,6 +64,13 @@ pub const MAX_BATCH_COUNT: u32 = 50;
 sol! {
     /// Generic JSON response payload.
     struct JsonResponse {
+        string json;
+    }
+
+    /// Sandbox create output with extractable sandboxId for on-chain routing.
+    /// The contract decodes the first field to store sandboxId → operator mapping.
+    struct SandboxCreateOutput {
+        string sandboxId;
         string json;
     }
 

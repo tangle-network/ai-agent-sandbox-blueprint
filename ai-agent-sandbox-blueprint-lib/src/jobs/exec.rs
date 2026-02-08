@@ -128,35 +128,52 @@ pub async fn sandbox_prompt(
         payload.insert("timeout".to_string(), json!(request.timeout_ms));
     }
 
+    let m = crate::metrics::metrics();
+    m.session_start();
+
     let parsed = sidecar_post_json(
         &request.sidecar_url,
         "/agents/run",
         &token,
         Value::Object(payload),
     )
-    .await?;
+    .await;
+
+    m.session_end();
+
+    let parsed = parsed?;
 
     let (success, response, error, trace_id) = crate::extract_agent_fields(&parsed);
+
+    let duration_ms = parsed
+        .get("durationMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let input_tokens = parsed
+        .get("usage")
+        .and_then(|u| u.get("inputTokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+    let output_tokens = parsed
+        .get("usage")
+        .and_then(|u| u.get("outputTokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    if success {
+        m.record_job(duration_ms, input_tokens, output_tokens);
+    } else {
+        m.record_failure();
+    }
 
     Ok(TangleResult(SandboxPromptResponse {
         success,
         response,
         error,
         trace_id,
-        duration_ms: parsed
-            .get("durationMs")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        input_tokens: parsed
-            .get("usage")
-            .and_then(|u| u.get("inputTokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-        output_tokens: parsed
-            .get("usage")
-            .and_then(|u| u.get("outputTokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
+        duration_ms,
+        input_tokens,
+        output_tokens,
     }))
 }
 

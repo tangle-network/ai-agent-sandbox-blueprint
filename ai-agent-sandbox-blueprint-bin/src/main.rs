@@ -9,9 +9,86 @@ use blueprint_sdk::runner::tangle::config::TangleConfig;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 use blueprint_sdk::{error, info};
 
+#[cfg(feature = "qos")]
+use blueprint_qos::metrics::MetricsConfig;
+#[cfg(feature = "qos")]
+use blueprint_qos::QoSServiceBuilder;
+#[cfg(feature = "qos")]
+use blueprint_qos::heartbeat::HeartbeatConsumer;
+
+/// No-op heartbeat consumer for metrics-only QoS mode.
+#[cfg(feature = "qos")]
+#[derive(Clone)]
+struct NoopHeartbeatConsumer;
+
+#[cfg(feature = "qos")]
+impl HeartbeatConsumer for NoopHeartbeatConsumer {
+    fn send_heartbeat(
+        &self,
+        _status: &blueprint_qos::heartbeat::HeartbeatStatus,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = blueprint_qos::error::Result<()>> + Send + 'static>>
+    {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
+
+    // Optionally start QoS background service (metrics collection + on-chain reporting)
+    #[cfg(feature = "qos")]
+    {
+        let qos_enabled = std::env::var("QOS_ENABLED")
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if qos_enabled {
+            let metrics_interval = std::env::var("QOS_METRICS_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(60);
+
+            let dry_run = std::env::var("QOS_DRY_RUN")
+                .map(|v| v.eq_ignore_ascii_case("true"))
+                .unwrap_or(true);
+
+            match QoSServiceBuilder::<NoopHeartbeatConsumer>::new()
+                .with_metrics_config(MetricsConfig::default())
+                .with_dry_run(dry_run)
+                .build()
+                .await
+            {
+                Ok(qos_service) => {
+                    info!("QoS service initialized (metrics_interval={metrics_interval}s, dry_run={dry_run})");
+
+                    // Spawn a background task that periodically pushes sandbox metrics
+                    // from the lib's atomic counters to the QoS on-chain provider.
+                    if let Some(provider) = qos_service.provider() {
+                        let interval_secs = metrics_interval;
+                        tokio::spawn(async move {
+                            use blueprint_qos::metrics::types::MetricsProvider;
+
+                            let mut interval = tokio::time::interval(
+                                std::time::Duration::from_secs(interval_secs),
+                            );
+                            loop {
+                                interval.tick().await;
+                                let snapshot =
+                                    ai_agent_sandbox_blueprint_lib::metrics::metrics().snapshot();
+                                for (key, value) in snapshot {
+                                    provider.add_on_chain_metric(key, value).await;
+                                }
+                            }
+                        });
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to initialize QoS service: {e} — continuing without QoS");
+                }
+            }
+        }
+    }
 
     // Load configuration from environment variables
     let env = BlueprintEnvironment::load()?;
@@ -39,7 +116,22 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     // Create producer (listens for JobSubmitted events) and consumer (submits results)
     let tangle_producer = TangleProducer::new(tangle_client.clone(), service_id);
     let tangle_consumer = TangleConsumer::new(tangle_client);
-    let tangle_config = TangleConfig::default();
+
+    // Encode operator max capacity as registration inputs for the blueprint contract.
+    // The contract's onRegister decodes abi.encode(uint32 capacity) from these inputs.
+    let tangle_config = {
+        let mut config = TangleConfig::default();
+        if let Ok(cap_str) = std::env::var("OPERATOR_MAX_CAPACITY") {
+            if let Ok(capacity) = cap_str.parse::<u32>() {
+                info!("Registering with OPERATOR_MAX_CAPACITY={capacity}");
+                // ABI-encode a single uint32 (padded to 32 bytes)
+                let mut inputs = vec![0u8; 32];
+                inputs[28..32].copy_from_slice(&capacity.to_be_bytes());
+                config = config.with_registration_inputs(inputs);
+            }
+        }
+        config
+    };
     let cron_schedule =
         std::env::var("WORKFLOW_CRON_SCHEDULE").unwrap_or_else(|_| "0 * * * * *".to_string());
     let workflow_cron = CronJob::new(JOB_WORKFLOW_TICK, cron_schedule.as_str())
