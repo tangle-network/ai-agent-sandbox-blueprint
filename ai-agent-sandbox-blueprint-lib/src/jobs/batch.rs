@@ -37,6 +37,10 @@ pub async fn batch_create(
     let mut sandboxes_out = Vec::with_capacity(request.count as usize);
     for _ in 0..request.count {
         let record = create_sidecar(&request.template_request).await?;
+        crate::metrics::metrics().record_sandbox_created(
+            request.template_request.cpu_cores,
+            request.template_request.memory_mb,
+        );
         sandboxes_out.push(json!({
             "sandboxId": record.id,
             "sidecarUrl": record.sidecar_url,

@@ -81,6 +81,10 @@ pub struct SandboxRecord {
     pub ssh_port: Option<u16>,
     pub token: String,
     pub created_at: u64,
+    #[serde(default)]
+    pub cpu_cores: u64,
+    #[serde(default)]
+    pub memory_mb: u64,
 }
 
 use crate::store::PersistentStore;
@@ -279,6 +283,8 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
         ssh_port,
         token,
         created_at: crate::workflows::now_ts(),
+        cpu_cores: request.cpu_cores,
+        memory_mb: request.memory_mb,
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;

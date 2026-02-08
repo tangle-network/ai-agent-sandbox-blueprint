@@ -82,16 +82,15 @@ impl OnChainMetrics {
 
     /// Record sandbox deletion, releasing its resources.
     pub fn record_sandbox_deleted(&self, cpu_cores: u64, memory_mb: u64) {
-        self.active_sandboxes
-            .fetch_sub(1.min(self.active_sandboxes.load(Ordering::Relaxed)), Ordering::Relaxed);
-        self.allocated_cpu_cores.fetch_sub(
-            cpu_cores.min(self.allocated_cpu_cores.load(Ordering::Relaxed)),
-            Ordering::Relaxed,
-        );
-        self.allocated_memory_mb.fetch_sub(
-            memory_mb.min(self.allocated_memory_mb.load(Ordering::Relaxed)),
-            Ordering::Relaxed,
-        );
+        let _ = self.active_sandboxes.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_sub(1))
+        });
+        let _ = self.allocated_cpu_cores.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_sub(cpu_cores))
+        });
+        let _ = self.allocated_memory_mb.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_sub(memory_mb))
+        });
     }
 
     /// Increment active sessions (call at job start).
@@ -101,10 +100,9 @@ impl OnChainMetrics {
 
     /// Decrement active sessions (call at job end).
     pub fn session_end(&self) {
-        let current = self.active_sessions.load(Ordering::Relaxed);
-        if current > 0 {
-            self.active_sessions.fetch_sub(1, Ordering::Relaxed);
-        }
+        let _ = self.active_sessions.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_sub(1))
+        });
     }
 
     /// Snapshot all metrics as key-value pairs for on-chain reporting.

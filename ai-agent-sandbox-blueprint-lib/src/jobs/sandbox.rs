@@ -52,9 +52,7 @@ pub async fn sandbox_delete(
     let record = get_sandbox_by_id(&request.sandbox_id)?;
     delete_sidecar(&record).await?;
 
-    // Resource values aren't stored in SandboxRecord, so decrement with 0 for resources.
-    // The counter still tracks active_sandboxes accurately.
-    crate::metrics::metrics().record_sandbox_deleted(0, 0);
+    crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
 
     let sandbox_id = request.sandbox_id.to_string();
     sandboxes()
