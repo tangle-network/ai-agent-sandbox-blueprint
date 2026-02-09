@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 blueprint-sdk = { path = "../../blueprint-sdk/crates/sdk", default-features = false, features = ["std", "tracing", "macros", "tangle", "local-store"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-cron = "0.12"
+cron = "0.15"
 docktopus = { path = "../../docktopus", features = ["deploy"] }
 hex = "0.4"
 once_cell = "1"
