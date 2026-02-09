@@ -24,6 +24,7 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 anyhow = "1"
 blueprint-anvil-testing-utils = { path = "../../blueprint-sdk/crates/testing-utils/anvil" }
+futures = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = "0.3"
 wiremock = "0.6"

@@ -95,6 +95,7 @@ dependencies = [
  "chrono",
  "cron",
  "docktopus",
+ "futures",
  "hex",
  "once_cell",
  "rand 0.8.5",
