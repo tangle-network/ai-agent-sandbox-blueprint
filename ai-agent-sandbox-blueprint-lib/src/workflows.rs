@@ -198,7 +198,7 @@ pub async fn run_task_request(
     }
 
     let m = crate::metrics::metrics();
-    m.session_start();
+    let _session = m.session_guard();
 
     let parsed = sidecar_post_json(
         &request.sidecar_url,
@@ -206,11 +206,7 @@ pub async fn run_task_request(
         &request.sidecar_token,
         Value::Object(payload),
     )
-    .await;
-
-    m.session_end();
-
-    let parsed = parsed?;
+    .await?;
 
     let (success, result, error, trace_id) = crate::extract_agent_fields(&parsed);
     let session_id = parsed
@@ -344,9 +340,7 @@ pub async fn bootstrap_workflows_from_chain(
         entries.insert(workflow_key(workflow_id), entry);
     }
 
-    workflows()?
-        .replace(entries)
-        .map_err(|e| e.to_string())?;
+    workflows()?.replace(entries).map_err(|e| e.to_string())?;
     Ok(())
 }
 

@@ -79,6 +79,7 @@ version = "0.1.0"
 dependencies = [
  "ai-agent-sandbox-blueprint-lib",
  "blueprint-producers-extra",
+ "blueprint-qos",
  "blueprint-sdk",
  "tokio",
  "tracing-subscriber 0.3.22",
@@ -2598,7 +2599,6 @@ dependencies = [
  "alloy-transport",
  "async-trait",
  "axum",
- "bincode",
  "blueprint-core",
  "blueprint-crypto",
  "blueprint-keystore",

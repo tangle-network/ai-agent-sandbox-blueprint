@@ -77,8 +77,13 @@ pub async fn sandbox_exec(
         }
     }
 
-    let parsed =
-        sidecar_post_json(&request.sidecar_url, "/exec", &token, Value::Object(payload)).await?;
+    let parsed = sidecar_post_json(
+        &request.sidecar_url,
+        "/exec",
+        &token,
+        Value::Object(payload),
+    )
+    .await?;
 
     let (exit_code, stdout, stderr) = extract_exec_fields(&parsed);
 
@@ -129,7 +134,7 @@ pub async fn sandbox_prompt(
     }
 
     let m = crate::metrics::metrics();
-    m.session_start();
+    let _session = m.session_guard();
 
     let parsed = sidecar_post_json(
         &request.sidecar_url,
@@ -137,11 +142,7 @@ pub async fn sandbox_prompt(
         &token,
         Value::Object(payload),
     )
-    .await;
-
-    m.session_end();
-
-    let parsed = parsed?;
+    .await?;
 
     let (success, response, error, trace_id) = crate::extract_agent_fields(&parsed);
 

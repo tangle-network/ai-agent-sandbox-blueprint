@@ -82,27 +82,39 @@ impl OnChainMetrics {
 
     /// Record sandbox deletion, releasing its resources.
     pub fn record_sandbox_deleted(&self, cpu_cores: u64, memory_mb: u64) {
-        let _ = self.active_sandboxes.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_sub(1))
-        });
-        let _ = self.allocated_cpu_cores.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_sub(cpu_cores))
-        });
-        let _ = self.allocated_memory_mb.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_sub(memory_mb))
-        });
+        let _ = self
+            .active_sandboxes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            });
+        let _ = self
+            .allocated_cpu_cores
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(cpu_cores))
+            });
+        let _ = self
+            .allocated_memory_mb
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(memory_mb))
+            });
     }
 
-    /// Increment active sessions (call at job start).
-    pub fn session_start(&self) {
+    /// Start a session and return a guard that decrements on drop.
+    ///
+    /// Guarantees `session_end` is called even on early returns, panics, or
+    /// task cancellation — fixing the session counter leak audit finding.
+    pub fn session_guard(&'static self) -> SessionGuard {
         self.active_sessions.fetch_add(1, Ordering::Relaxed);
+        SessionGuard(self)
     }
 
-    /// Decrement active sessions (call at job end).
-    pub fn session_end(&self) {
-        let _ = self.active_sessions.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_sub(1))
-        });
+    /// Decrement active sessions.
+    fn session_end(&self) {
+        let _ = self
+            .active_sessions
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            });
     }
 
     /// Snapshot all metrics as key-value pairs for on-chain reporting.
@@ -150,6 +162,17 @@ impl OnChainMetrics {
                 self.failed_jobs.load(Ordering::Relaxed),
             ),
         ]
+    }
+}
+
+/// RAII guard that decrements `active_sessions` when dropped.
+///
+/// Prevents session counter leaks on early returns, panics, or task cancellation.
+pub struct SessionGuard(&'static OnChainMetrics);
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.0.session_end();
     }
 }
 

@@ -300,7 +300,8 @@ async fn run_batch_exec_parallel(
 
         set.spawn(async move {
             let _permit = sem.acquire().await;
-            run_single_exec_owned(&url, &tok, &cmd, &cwd, &env_json, timeout_ms).await
+            run_single_exec_owned(&url, &tok, &cmd, &cwd, &env_json, timeout_ms)
+                .await
                 .map(|v| (idx, v))
                 .unwrap_or_else(|_| (idx, json!({"sidecarUrl": url, "error": "exec failed"})))
         });
@@ -326,9 +327,7 @@ async fn run_single_exec(sidecar_url: &str, token: &str, request: &BatchExecRequ
         payload.insert("timeout".to_string(), json!(request.timeout_ms));
     }
     if !request.env_json.trim().is_empty() {
-        if let Ok(Some(env_map)) =
-            crate::util::parse_json_object(&request.env_json, "env_json")
-        {
+        if let Ok(Some(env_map)) = crate::util::parse_json_object(&request.env_json, "env_json") {
             payload.insert("env".to_string(), env_map);
         }
     }
