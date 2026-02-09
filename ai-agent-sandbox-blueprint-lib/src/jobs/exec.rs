@@ -12,40 +12,26 @@ use crate::runtime::require_sidecar_auth;
 use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 use crate::workflows::run_task_request;
 
-/// Extract exec response fields, handling both flat and nested `data` shapes.
+/// Extract exec response fields from the sidecar `/terminals/commands` response.
+///
+/// Response shape: `{ success, result: { exitCode, stdout, stderr, duration } }`
 pub fn extract_exec_fields(parsed: &Value) -> (u32, String, String) {
-    let exit_code = parsed
-        .get("exitCode")
+    let result = parsed.get("result");
+
+    let exit_code = result
+        .and_then(|r| r.get("exitCode"))
         .and_then(Value::as_u64)
-        .or_else(|| {
-            parsed
-                .get("data")
-                .and_then(|d| d.get("exitCode"))
-                .and_then(Value::as_u64)
-        })
         .unwrap_or(0) as u32;
 
-    let stdout = parsed
-        .get("stdout")
+    let stdout = result
+        .and_then(|r| r.get("stdout"))
         .and_then(Value::as_str)
-        .or_else(|| {
-            parsed
-                .get("data")
-                .and_then(|d| d.get("stdout"))
-                .and_then(Value::as_str)
-        })
         .unwrap_or_default()
         .to_string();
 
-    let stderr = parsed
-        .get("stderr")
+    let stderr = result
+        .and_then(|r| r.get("stderr"))
         .and_then(Value::as_str)
-        .or_else(|| {
-            parsed
-                .get("data")
-                .and_then(|d| d.get("stderr"))
-                .and_then(Value::as_str)
-        })
         .unwrap_or_default()
         .to_string();
 
@@ -75,7 +61,7 @@ pub async fn run_exec_request(request: &SandboxExecRequest) -> Result<SandboxExe
 
     let parsed = sidecar_post_json(
         &request.sidecar_url,
-        "/exec",
+        "/terminals/commands",
         &request.sidecar_token,
         Value::Object(payload),
     )

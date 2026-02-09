@@ -70,7 +70,7 @@ pub async fn revoke_key(
     let command = build_ssh_revoke_command(&username, public_key);
 
     let payload = json!({ "command": format!("sh -c {}", shell_escape(&command)) });
-    sidecar_post_json(sidecar_url, "/exec", token, payload)
+    sidecar_post_json(sidecar_url, "/terminals/commands", token, payload)
         .await
         .map_err(|e| e.to_string())
 }
@@ -105,7 +105,7 @@ pub async fn provision_key(
     let command = build_ssh_command(&username, public_key);
 
     let payload = json!({ "command": format!("sh -c {}", shell_escape(&command)) });
-    sidecar_post_json(sidecar_url, "/exec", token, payload)
+    sidecar_post_json(sidecar_url, "/terminals/commands", token, payload)
         .await
         .map_err(|e| e.to_string())
 }

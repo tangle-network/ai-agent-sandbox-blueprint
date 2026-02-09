@@ -5,6 +5,10 @@
 //! `run_task_request`, `run_exec_request`, `run_prompt_request`, `provision_key`,
 //! `revoke_key`) and test those. The Tangle wrapper is a 3-line adapter — if the
 //! core logic works, the handler works.
+//!
+//! All mocks use the actual sidecar response shapes:
+//!   - `/terminals/commands` returns `{ success, result: { exitCode, stdout, stderr, duration } }`
+//!   - `/agents/run` returns `{ success, response, traceId, durationMs, usage, sessionId }`
 
 use ai_agent_sandbox_blueprint_lib::http::sidecar_post_json;
 use ai_agent_sandbox_blueprint_lib::jobs::exec::{extract_exec_fields, run_exec_request, run_prompt_request};
@@ -82,6 +86,19 @@ fn mock_agent_ok(label: &str) -> ResponseTemplate {
     }))
 }
 
+/// Mock for /terminals/commands returning the sidecar shape.
+fn mock_exec_ok(stdout: &str, exit_code: u32) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "success": true,
+        "result": {
+            "exitCode": exit_code,
+            "stdout": stdout,
+            "stderr": "",
+            "duration": 50
+        }
+    }))
+}
+
 fn task_req(url: &str, token: &str, prompt: &str) -> SandboxTaskRequest {
     SandboxTaskRequest {
         sidecar_url: url.to_string(),
@@ -155,14 +172,14 @@ mod exec_job {
     use super::*;
 
     #[tokio::test]
-    async fn flat_response() {
+    async fn sidecar_response_shape() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "hello", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "result": {"exitCode": 0, "stdout": "hello", "stderr": "", "duration": 30}
+            })))
             .mount(&srv)
             .await;
 
@@ -180,44 +197,16 @@ mod exec_job {
         assert!(resp.stderr.is_empty());
     }
 
-    #[tokio::test]
-    async fn nested_data_response() {
-        let srv = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": {"exitCode": 1, "stdout": "out", "stderr": "err"}
-            })))
-            .mount(&srv)
-            .await;
-
-        let req = SandboxExecRequest {
-            sidecar_url: srv.uri(),
-            command: "fail".into(),
-            cwd: String::new(),
-            env_json: String::new(),
-            timeout_ms: 0,
-            sidecar_token: "t".into(),
-        };
-        let resp = run_exec_request(&req).await.unwrap();
-        assert_eq!(resp.exit_code, 1);
-        assert_eq!(resp.stdout, "out");
-        assert_eq!(resp.stderr, "err");
-    }
-
     #[test]
-    fn extract_exec_fields_flat_and_nested() {
-        let flat = json!({"exitCode": 42, "stdout": "ok", "stderr": "warn"});
-        let (code, out, err) = extract_exec_fields(&flat);
+    fn extract_exec_fields_from_result() {
+        let response = json!({
+            "success": true,
+            "result": {"exitCode": 42, "stdout": "ok", "stderr": "warn", "duration": 100}
+        });
+        let (code, out, err) = extract_exec_fields(&response);
         assert_eq!(code, 42);
         assert_eq!(out, "ok");
         assert_eq!(err, "warn");
-
-        let nested = json!({"data": {"exitCode": 7, "stdout": "n-out", "stderr": "n-err"}});
-        let (code, out, err) = extract_exec_fields(&nested);
-        assert_eq!(code, 7);
-        assert_eq!(out, "n-out");
-        assert_eq!(err, "n-err");
 
         // Missing fields default to 0/empty
         let empty = json!({});
@@ -231,11 +220,8 @@ mod exec_job {
     async fn payload_includes_cwd_env_timeout() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(mock_exec_ok("", 0))
             .expect(1)
             .mount(&srv)
             .await;
@@ -249,18 +235,14 @@ mod exec_job {
             sidecar_token: "t".into(),
         };
         run_exec_request(&req).await.unwrap();
-        // wiremock .expect(1) verifies the request was received
     }
 
     #[tokio::test]
     async fn empty_optional_fields_omitted() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(mock_exec_ok("", 0))
             .expect(1)
             .mount(&srv)
             .await;
@@ -268,9 +250,9 @@ mod exec_job {
         let req = SandboxExecRequest {
             sidecar_url: srv.uri(),
             command: "pwd".into(),
-            cwd: String::new(),       // should be omitted
-            env_json: String::new(),   // should be omitted
-            timeout_ms: 0,            // should be omitted
+            cwd: String::new(),
+            env_json: String::new(),
+            timeout_ms: 0,
             sidecar_token: "t".into(),
         };
         run_exec_request(&req).await.unwrap();
@@ -347,38 +329,6 @@ mod prompt_job {
         assert!(!resp.success);
         assert_eq!(resp.error, "rate limited");
         assert!(m.failed_jobs.load(Ordering::Relaxed) > before);
-    }
-
-    #[tokio::test]
-    async fn nested_data_shape() {
-        let srv = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/agents/run"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "success": true,
-                "data": {
-                    "finalText": "nested response",
-                    "metadata": {"traceId": "nested-trace"}
-                },
-                "durationMs": 100,
-                "usage": {"inputTokens": 5, "outputTokens": 3},
-                "sessionId": "s"
-            })))
-            .mount(&srv)
-            .await;
-
-        let req = SandboxPromptRequest {
-            sidecar_url: srv.uri(),
-            message: "test".into(),
-            session_id: String::new(),
-            model: String::new(),
-            context_json: String::new(),
-            timeout_ms: 0,
-            sidecar_token: "t".into(),
-        };
-        let resp = run_prompt_request(&req).await.unwrap();
-        assert_eq!(resp.response, "nested response");
-        assert_eq!(resp.trace_id, "nested-trace");
     }
 }
 
@@ -469,22 +419,27 @@ mod snapshot_job {
         let id = insert_sandbox(&srv.uri(), "snap-tok");
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "uploaded", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "result": {
+                    "exitCode": 0,
+                    "stdout": "uploaded",
+                    "stderr": "",
+                    "duration": 500
+                }
+            })))
             .expect(1)
             .mount(&srv)
             .await;
 
-        // Replicate what sandbox_snapshot does
         let cmd = build_snapshot_command("s3://bucket/snap.tar.gz", true, false).unwrap();
         let payload = json!({"command": format!("sh -c {}", util::shell_escape(&cmd))});
-        let resp = sidecar_post_json(&srv.uri(), "/exec", "snap-tok", payload)
+        let resp = sidecar_post_json(&srv.uri(), "/terminals/commands", "snap-tok", payload)
             .await
             .unwrap();
-        assert_eq!(resp["stdout"], "uploaded");
+        let (_, stdout, _) = extract_exec_fields(&resp);
+        assert_eq!(stdout, "uploaded");
         rm(&id);
     }
 }
@@ -572,11 +527,8 @@ mod ssh_jobs {
     async fn provision_key_sends_command() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(mock_exec_ok("", 0))
             .expect(1)
             .mount(&srv)
             .await;
@@ -590,11 +542,8 @@ mod ssh_jobs {
     async fn revoke_key_sends_command() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(mock_exec_ok("", 0))
             .expect(1)
             .mount(&srv)
             .await;
@@ -607,7 +556,6 @@ mod ssh_jobs {
     #[tokio::test]
     async fn invalid_username_rejected() {
         let srv = MockServer::start().await;
-        // Should not even reach the sidecar
         let r = provision_key(&srv.uri(), "user;rm -rf /", "key", "t").await;
         assert!(r.is_err());
         let r = revoke_key(&srv.uri(), "user$(evil)", "key", "t").await;
@@ -716,11 +664,9 @@ mod workflow_jobs {
             .insert(key.clone(), wf(90005, "http://unused", "t"))
             .unwrap();
 
-        // Verify it's active
         let w = workflows().unwrap().get(&key).unwrap().unwrap();
         assert!(w.active);
 
-        // Cancel it
         workflows()
             .unwrap()
             .update(&key, |e| {
@@ -758,28 +704,13 @@ mod response_parsing {
     use super::*;
 
     #[test]
-    fn flat_shape() {
+    fn success_shape() {
         let v = json!({"success": true, "response": "hello", "error": "none", "traceId": "t1"});
         let (success, response, error, trace_id) = extract_agent_fields(&v);
         assert!(success);
         assert_eq!(response, "hello");
         assert_eq!(error, "none");
         assert_eq!(trace_id, "t1");
-    }
-
-    #[test]
-    fn nested_data_shape() {
-        let v = json!({
-            "success": true,
-            "data": {
-                "finalText": "nested hello",
-                "metadata": {"traceId": "nested-t"}
-            }
-        });
-        let (success, response, _error, trace_id) = extract_agent_fields(&v);
-        assert!(success);
-        assert_eq!(response, "nested hello");
-        assert_eq!(trace_id, "nested-t");
     }
 
     #[test]
@@ -970,7 +901,7 @@ mod errors {
     #[tokio::test]
     async fn connection_refused() {
         init();
-        let r = sidecar_post_json("http://127.0.0.1:1", "/exec", "t", json!({})).await;
+        let r = sidecar_post_json("http://127.0.0.1:1", "/terminals/commands", "t", json!({})).await;
         assert!(r.is_err());
     }
 
@@ -978,11 +909,11 @@ mod errors {
     async fn http_500() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&srv)
             .await;
-        let r = sidecar_post_json(&srv.uri(), "/exec", "t", json!({})).await;
+        let r = sidecar_post_json(&srv.uri(), "/terminals/commands", "t", json!({})).await;
         assert!(r.unwrap_err().to_string().contains("500"));
     }
 
@@ -990,11 +921,11 @@ mod errors {
     async fn invalid_json_response() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
             .mount(&srv)
             .await;
-        let r = sidecar_post_json(&srv.uri(), "/exec", "t", json!({})).await;
+        let r = sidecar_post_json(&srv.uri(), "/terminals/commands", "t", json!({})).await;
         assert!(r.unwrap_err().to_string().contains("Invalid sidecar response JSON"));
     }
 
@@ -1024,7 +955,7 @@ mod errors {
     async fn exec_sidecar_502() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(502).set_body_string("Bad Gateway"))
             .mount(&srv)
             .await;
@@ -1133,7 +1064,6 @@ mod docker {
         let stored = get_sandbox_by_id(&record.id).unwrap();
         assert_eq!(stored.container_id, record.container_id);
 
-        // Verify metrics
         let m = metrics::metrics();
         assert!(m.active_sandboxes.load(Ordering::Relaxed) >= 1);
 

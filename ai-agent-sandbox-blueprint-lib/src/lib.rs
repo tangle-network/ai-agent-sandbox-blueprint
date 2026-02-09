@@ -266,6 +266,9 @@ pub fn next_batch_id() -> String {
     format!("batch-{}", uuid::Uuid::new_v4())
 }
 
+/// Extract agent response fields from the sidecar `/agents/run` response.
+///
+/// Response shape: `{ success, response, error, traceId, durationMs, usage, sessionId }`
 pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
     let success = parsed
         .get("success")
@@ -274,12 +277,6 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
     let response = parsed
         .get("response")
         .and_then(Value::as_str)
-        .or_else(|| {
-            parsed
-                .get("data")
-                .and_then(|data| data.get("finalText"))
-                .and_then(Value::as_str)
-        })
         .unwrap_or_default()
         .to_string();
     let error = parsed
@@ -294,13 +291,6 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
     let trace_id = parsed
         .get("traceId")
         .and_then(Value::as_str)
-        .or_else(|| {
-            parsed
-                .get("data")
-                .and_then(|data| data.get("metadata"))
-                .and_then(|meta| meta.get("traceId"))
-                .and_then(Value::as_str)
-        })
         .unwrap_or_default()
         .to_string();
 

@@ -1,10 +1,10 @@
-//! Comprehensive integration tests for sidecar HTTP interactions, auth,
-//! response parsing, batch operations, workflow scheduling, SSH commands,
-//! metrics tracking, and utility functions.
+//! Integration tests for sidecar HTTP interactions, auth, response parsing,
+//! batch operations, workflow scheduling, SSH commands, metrics tracking,
+//! and utility functions.
 //!
-//! Uses `wiremock` to simulate the sidecar HTTP API, validating that the
-//! blueprint correctly constructs requests, handles responses (including
-//! both flat and nested shapes), and propagates errors.
+//! Uses `wiremock` to simulate the sidecar HTTP API. All mocks use the
+//! actual sidecar response shapes: `/terminals/commands` for exec,
+//! `/agents/run` for agent interactions.
 
 use ai_agent_sandbox_blueprint_lib::http::{auth_headers, build_url, sidecar_post_json};
 use ai_agent_sandbox_blueprint_lib::metrics::{OnChainMetrics, metrics};
@@ -29,19 +29,19 @@ mod http_tests {
 
     #[test]
     fn build_url_basic() {
-        let url = build_url("http://localhost:8080", "/exec").unwrap();
-        assert_eq!(url.as_str(), "http://localhost:8080/exec");
+        let url = build_url("http://localhost:8080", "/terminals/commands").unwrap();
+        assert_eq!(url.as_str(), "http://localhost:8080/terminals/commands");
     }
 
     #[test]
     fn build_url_with_trailing_slash() {
-        let url = build_url("http://localhost:8080/", "/exec").unwrap();
-        assert_eq!(url.as_str(), "http://localhost:8080/exec");
+        let url = build_url("http://localhost:8080/", "/terminals/commands").unwrap();
+        assert_eq!(url.as_str(), "http://localhost:8080/terminals/commands");
     }
 
     #[test]
     fn build_url_invalid_base_fails() {
-        let result = build_url("not a url", "/exec");
+        let result = build_url("not a url", "/terminals/commands");
         assert!(result.is_err());
     }
 
@@ -63,25 +63,30 @@ mod http_tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .and(header("authorization", "Bearer test-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "exitCode": 0,
-                "stdout": "hello world",
-                "stderr": ""
+                "success": true,
+                "result": {
+                    "exitCode": 0,
+                    "stdout": "hello world",
+                    "stderr": "",
+                    "duration": 50
+                }
             })))
             .mount(&server)
             .await;
 
-        let result = sidecar_post_json(&server.uri(), "/exec", "test-token", json!({
+        let result = sidecar_post_json(&server.uri(), "/terminals/commands", "test-token", json!({
             "command": "echo hello world"
         }))
         .await
         .unwrap();
 
-        assert_eq!(result["exitCode"], 0);
-        assert_eq!(result["stdout"], "hello world");
-        assert_eq!(result["stderr"], "");
+        assert_eq!(result["success"], true);
+        assert_eq!(result["result"]["exitCode"], 0);
+        assert_eq!(result["result"]["stdout"], "hello world");
+        assert_eq!(result["result"]["stderr"], "");
     }
 
     #[tokio::test]
@@ -130,7 +135,7 @@ mod http_tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(
                 ResponseTemplate::new(500).set_body_string("Internal Server Error"),
             )
@@ -139,7 +144,7 @@ mod http_tests {
 
         let result = sidecar_post_json(
             &server.uri(),
-            "/exec",
+            "/terminals/commands",
             "test-token",
             json!({"command": "fail"}),
         )
@@ -155,14 +160,14 @@ mod http_tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
             .mount(&server)
             .await;
 
         let result = sidecar_post_json(
             &server.uri(),
-            "/exec",
+            "/terminals/commands",
             "test-token",
             json!({"command": "echo hi"}),
         )
@@ -180,7 +185,7 @@ mod http_tests {
     async fn sidecar_post_json_connection_refused() {
         let result = sidecar_post_json(
             "http://127.0.0.1:1",
-            "/exec",
+            "/terminals/commands",
             "test-token",
             json!({"command": "echo hi"}),
         )
@@ -196,7 +201,7 @@ mod response_parsing_tests {
     use super::*;
 
     #[test]
-    fn extract_agent_fields_flat_success() {
+    fn extract_agent_fields_success() {
         let parsed = json!({
             "success": true,
             "response": "Task done",
@@ -208,22 +213,6 @@ mod response_parsing_tests {
         assert_eq!(response, "Task done");
         assert_eq!(trace_id, "trace-1");
         assert_eq!(error, "");
-    }
-
-    #[test]
-    fn extract_agent_fields_nested_data_fallback() {
-        let parsed = json!({
-            "data": {
-                "finalText": "Nested result",
-                "metadata": {
-                    "traceId": "trace-nested"
-                }
-            }
-        });
-        let (success, response, _error, trace_id) = extract_agent_fields(&parsed);
-        assert!(!success);
-        assert_eq!(response, "Nested result");
-        assert_eq!(trace_id, "trace-nested");
     }
 
     #[test]
@@ -260,30 +249,6 @@ mod response_parsing_tests {
         assert_eq!(error, "");
         assert_eq!(trace_id, "");
     }
-
-    #[test]
-    fn extract_agent_fields_with_tool_calls() {
-        let parsed = json!({
-            "success": true,
-            "response": "I'll help you with that",
-            "traceId": "trace-tools",
-            "data": {
-                "finalText": "Done with tool calls",
-                "toolCalls": [
-                    {"name": "read_file", "args": {"path": "/src/main.rs"}},
-                    {"name": "write_file", "args": {"path": "/src/lib.rs", "content": "// new"}}
-                ],
-                "metadata": {
-                    "traceId": "trace-tools",
-                    "totalSteps": 3
-                }
-            }
-        });
-        let (success, response, _error, trace_id) = extract_agent_fields(&parsed);
-        assert!(success);
-        assert_eq!(response, "I'll help you with that");
-        assert_eq!(trace_id, "trace-tools");
-    }
 }
 
 // ─── Agent Interaction Tests (with wiremock) ─────────────────────────────────
@@ -296,11 +261,15 @@ mod agent_interaction_tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "exitCode": 0,
-                "stdout": "/workspace\nNODE_ENV=production",
-                "stderr": ""
+                "success": true,
+                "result": {
+                    "exitCode": 0,
+                    "stdout": "/workspace\nNODE_ENV=production",
+                    "stderr": "",
+                    "duration": 30
+                }
             })))
             .expect(1)
             .mount(&server)
@@ -308,7 +277,7 @@ mod agent_interaction_tests {
 
         let result = sidecar_post_json(
             &server.uri(),
-            "/exec",
+            "/terminals/commands",
             "test-token",
             json!({
                 "command": "pwd && env",
@@ -320,47 +289,8 @@ mod agent_interaction_tests {
         .await
         .unwrap();
 
-        assert_eq!(result["exitCode"], 0);
-        assert!(result["stdout"].as_str().unwrap().contains("/workspace"));
-    }
-
-    #[tokio::test]
-    async fn exec_command_nested_data_response() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": {
-                    "exitCode": 1,
-                    "stdout": "",
-                    "stderr": "command not found"
-                }
-            })))
-            .mount(&server)
-            .await;
-
-        let result = sidecar_post_json(
-            &server.uri(),
-            "/exec",
-            "test-token",
-            json!({"command": "nonexistent-cmd"}),
-        )
-        .await
-        .unwrap();
-
-        // The raw response includes nested data - caller must handle both shapes
-        let exit_code = result
-            .get("exitCode")
-            .and_then(Value::as_u64)
-            .or_else(|| {
-                result
-                    .get("data")
-                    .and_then(|d| d.get("exitCode"))
-                    .and_then(Value::as_u64)
-            })
-            .unwrap_or(0);
-        assert_eq!(exit_code, 1);
+        assert_eq!(result["result"]["exitCode"], 0);
+        assert!(result["result"]["stdout"].as_str().unwrap().contains("/workspace"));
     }
 
     #[tokio::test]
@@ -435,10 +365,9 @@ mod agent_interaction_tests {
     }
 
     #[tokio::test]
-    async fn agent_streaming_multi_step_response() {
+    async fn agent_multi_step_response() {
         let server = MockServer::start().await;
 
-        // Simulate a response that represents a completed multi-step agent run
         Mock::given(method("POST"))
             .and(path("/agents/run"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -447,19 +376,7 @@ mod agent_interaction_tests {
                 "traceId": "trace-multi-step",
                 "durationMs": 15000,
                 "usage": {"inputTokens": 2000, "outputTokens": 800},
-                "sessionId": "session-build",
-                "data": {
-                    "finalText": "All tasks completed",
-                    "steps": [
-                        {"type": "tool_call", "name": "read_file", "result": "file contents..."},
-                        {"type": "tool_call", "name": "write_file", "result": "written"},
-                        {"type": "tool_call", "name": "exec", "result": "tests pass"}
-                    ],
-                    "metadata": {
-                        "traceId": "trace-multi-step",
-                        "totalSteps": 3
-                    }
-                }
+                "sessionId": "session-build"
             })))
             .mount(&server)
             .await;
@@ -481,12 +398,6 @@ mod agent_interaction_tests {
         assert!(result["durationMs"].as_u64().unwrap() >= 15000);
         assert_eq!(result["usage"]["inputTokens"], 2000);
         assert_eq!(result["usage"]["outputTokens"], 800);
-
-        // Verify tool call data is present
-        let steps = result["data"]["steps"].as_array().unwrap();
-        assert_eq!(steps.len(), 3);
-        assert_eq!(steps[0]["name"], "read_file");
-        assert_eq!(steps[2]["name"], "exec");
     }
 }
 
@@ -736,14 +647,10 @@ mod util_tests {
     #[test]
     fn build_snapshot_command_escapes_destination() {
         let cmd = build_snapshot_command("https://evil.com/'; rm -rf /; '", true, false).unwrap();
-        // The destination should be shell-escaped: single quotes in the input
-        // are replaced with '"'"' so the shell treats them as literal characters
-        // rather than allowing command injection.
         assert!(
             cmd.contains("'\"'\"'"),
             "Single quotes should be escaped with quote-break pattern"
         );
-        // The destination arg to curl must be a single shell-quoted token
         assert!(cmd.contains("curl -fsSL -X PUT --upload-file \"$tmp\" '"));
     }
 }
@@ -868,7 +775,7 @@ mod metrics_tests {
         m.record_sandbox_deleted(4, 8192);
 
         assert_eq!(m.active_sandboxes.load(Ordering::Relaxed), 1);
-        assert_eq!(m.peak_sandboxes.load(Ordering::Relaxed), 2); // Peak stays at 2
+        assert_eq!(m.peak_sandboxes.load(Ordering::Relaxed), 2);
         assert_eq!(m.allocated_cpu_cores.load(Ordering::Relaxed), 2);
         assert_eq!(m.allocated_memory_mb.load(Ordering::Relaxed), 4096);
     }
@@ -895,7 +802,6 @@ mod metrics_tests {
                 initial + 1
             );
         }
-        // After guard is dropped, session count should decrement
         assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial);
     }
 
@@ -1025,10 +931,6 @@ mod error_tests {
 mod sidecar_workflow_tests {
     use super::*;
 
-    /// Simulate a full "build project" workflow:
-    /// 1. Run agent to scaffold
-    /// 2. Execute shell command to verify
-    /// 3. Continue conversation with session
     #[tokio::test]
     async fn full_project_build_workflow() {
         let server = MockServer::start().await;
@@ -1065,28 +967,32 @@ mod sidecar_workflow_tests {
         let session_id = scaffold_result["sessionId"].as_str().unwrap();
         assert!(!session_id.is_empty());
 
-        // Step 2: Verify with exec
+        // Step 2: Verify with terminal command
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "exitCode": 0,
-                "stdout": "package.json\nsrc\ntsconfig.json\nnode_modules",
-                "stderr": ""
+                "success": true,
+                "result": {
+                    "exitCode": 0,
+                    "stdout": "package.json\nsrc\ntsconfig.json\nnode_modules",
+                    "stderr": "",
+                    "duration": 20
+                }
             })))
             .mount(&server)
             .await;
 
         let ls_result = sidecar_post_json(
             &server.uri(),
-            "/exec",
+            "/terminals/commands",
             "build-token",
             json!({"command": "ls /workspace"}),
         )
         .await
         .unwrap();
 
-        assert_eq!(ls_result["exitCode"], 0);
-        let stdout = ls_result["stdout"].as_str().unwrap();
+        assert_eq!(ls_result["result"]["exitCode"], 0);
+        let stdout = ls_result["result"]["stdout"].as_str().unwrap();
         assert!(stdout.contains("package.json"));
         assert!(stdout.contains("src"));
 
@@ -1121,36 +1027,42 @@ mod sidecar_workflow_tests {
         assert_eq!(endpoint_result["sessionId"], session_id);
     }
 
-    /// Test parallel batch exec across multiple sidecars
     #[tokio::test]
     async fn batch_exec_multiple_sidecars() {
         let server1 = MockServer::start().await;
         let server2 = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "exitCode": 0,
-                "stdout": "sidecar-1-output",
-                "stderr": ""
+                "success": true,
+                "result": {
+                    "exitCode": 0,
+                    "stdout": "sidecar-1-output",
+                    "stderr": "",
+                    "duration": 10
+                }
             })))
             .mount(&server1)
             .await;
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "exitCode": 0,
-                "stdout": "sidecar-2-output",
-                "stderr": ""
+                "success": true,
+                "result": {
+                    "exitCode": 0,
+                    "stdout": "sidecar-2-output",
+                    "stderr": "",
+                    "duration": 10
+                }
             })))
             .mount(&server2)
             .await;
 
-        // Execute on both sidecars
         let r1 = sidecar_post_json(
             &server1.uri(),
-            "/exec",
+            "/terminals/commands",
             "token-1",
             json!({"command": "echo sidecar-1"}),
         )
@@ -1159,38 +1071,40 @@ mod sidecar_workflow_tests {
 
         let r2 = sidecar_post_json(
             &server2.uri(),
-            "/exec",
+            "/terminals/commands",
             "token-2",
             json!({"command": "echo sidecar-2"}),
         )
         .await
         .unwrap();
 
-        assert_eq!(r1["exitCode"], 0);
-        assert_eq!(r2["exitCode"], 0);
-        assert_eq!(r1["stdout"], "sidecar-1-output");
-        assert_eq!(r2["stdout"], "sidecar-2-output");
+        assert_eq!(r1["result"]["exitCode"], 0);
+        assert_eq!(r2["result"]["exitCode"], 0);
+        assert_eq!(r1["result"]["stdout"], "sidecar-1-output");
+        assert_eq!(r2["result"]["stdout"], "sidecar-2-output");
     }
 
-    /// Test SSH key provisioning via exec endpoint
     #[tokio::test]
-    async fn ssh_key_provisioning_via_exec() {
+    async fn ssh_key_provisioning_via_terminal_commands() {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "exitCode": 0,
-                "stdout": "",
-                "stderr": ""
+                "success": true,
+                "result": {
+                    "exitCode": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration": 50
+                }
             })))
             .mount(&server)
             .await;
 
-        // The SSH provision sends a shell command to /exec
         let result = sidecar_post_json(
             &server.uri(),
-            "/exec",
+            "/terminals/commands",
             "test-token",
             json!({
                 "command": "sh -c 'mkdir -p /root/.ssh && echo ssh-ed25519 AAAA >> /root/.ssh/authorized_keys'"
@@ -1199,10 +1113,9 @@ mod sidecar_workflow_tests {
         .await
         .unwrap();
 
-        assert_eq!(result["exitCode"], 0);
+        assert_eq!(result["result"]["exitCode"], 0);
     }
 
-    /// Test that auth failures are handled correctly
     #[tokio::test]
     async fn auth_failure_returns_401() {
         let server = MockServer::start().await;
@@ -1228,19 +1141,22 @@ mod sidecar_workflow_tests {
         assert!(err.contains("401"), "Should mention 401: {err}");
     }
 
-    /// Test timeout handling
     #[tokio::test]
     async fn sidecar_timeout_handling() {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(json!({
-                        "exitCode": 124,
-                        "stdout": "",
-                        "stderr": "command timed out"
+                        "success": true,
+                        "result": {
+                            "exitCode": 124,
+                            "stdout": "",
+                            "stderr": "command timed out",
+                            "duration": 1000
+                        }
                     }))
             )
             .mount(&server)
@@ -1248,14 +1164,14 @@ mod sidecar_workflow_tests {
 
         let result = sidecar_post_json(
             &server.uri(),
-            "/exec",
+            "/terminals/commands",
             "test-token",
             json!({"command": "sleep 999", "timeout": 1000}),
         )
         .await
         .unwrap();
 
-        assert_eq!(result["exitCode"], 124);
-        assert_eq!(result["stderr"], "command timed out");
+        assert_eq!(result["result"]["exitCode"], 124);
+        assert_eq!(result["result"]["stderr"], "command timed out");
     }
 }

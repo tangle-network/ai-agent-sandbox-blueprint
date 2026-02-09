@@ -332,14 +332,15 @@ async fn run_single_exec(sidecar_url: &str, token: &str, request: &BatchExecRequ
         }
     }
 
-    crate::http::sidecar_post_json(sidecar_url, "/exec", token, Value::Object(payload))
+    crate::http::sidecar_post_json(sidecar_url, "/terminals/commands", token, Value::Object(payload))
         .await
         .map(|parsed| {
+            let (exit_code, stdout, stderr) = crate::jobs::exec::extract_exec_fields(&parsed);
             json!({
                 "sidecarUrl": sidecar_url,
-                "exitCode": parsed.get("exitCode").and_then(Value::as_u64).unwrap_or(0),
-                "stdout": parsed.get("stdout").and_then(Value::as_str).unwrap_or_default(),
-                "stderr": parsed.get("stderr").and_then(Value::as_str).unwrap_or_default(),
+                "exitCode": exit_code,
+                "stdout": stdout,
+                "stderr": stderr,
             })
         })
         .unwrap_or_else(|err| {
@@ -373,15 +374,16 @@ async fn run_single_exec_owned(
     }
 
     let parsed =
-        crate::http::sidecar_post_json(sidecar_url, "/exec", token, Value::Object(payload))
+        crate::http::sidecar_post_json(sidecar_url, "/terminals/commands", token, Value::Object(payload))
             .await
             .map_err(|e| e.to_string())?;
 
+    let (exit_code, stdout, stderr) = crate::jobs::exec::extract_exec_fields(&parsed);
     Ok(json!({
         "sidecarUrl": sidecar_url,
-        "exitCode": parsed.get("exitCode").and_then(Value::as_u64).unwrap_or(0),
-        "stdout": parsed.get("stdout").and_then(Value::as_str).unwrap_or_default(),
-        "stderr": parsed.get("stderr").and_then(Value::as_str).unwrap_or_default(),
+        "exitCode": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
     }))
 }
 
