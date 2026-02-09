@@ -256,9 +256,10 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
         .env(env_vars)
         .config_override(override_config);
 
-    container.start(false).await.map_err(|err| {
-        SandboxError::Docker(format!("Failed to start sidecar container: {err}"))
-    })?;
+    container
+        .start(false)
+        .await
+        .map_err(|err| SandboxError::Docker(format!("Failed to start sidecar container: {err}")))?;
 
     let container_id = container
         .id()

@@ -26,8 +26,9 @@ pub fn parse_json_object(value: &str, field_name: &str) -> Result<Option<Value>>
         return Ok(None);
     }
 
-    let parsed: Value = serde_json::from_str(trimmed)
-        .map_err(|err| SandboxError::Validation(format!("{field_name} is not valid JSON: {err}")))?;
+    let parsed: Value = serde_json::from_str(trimmed).map_err(|err| {
+        SandboxError::Validation(format!("{field_name} is not valid JSON: {err}"))
+    })?;
 
     if !parsed.is_object() {
         return Err(SandboxError::Validation(format!(
