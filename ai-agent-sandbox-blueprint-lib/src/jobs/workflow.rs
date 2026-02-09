@@ -3,17 +3,17 @@ use serde_json::json;
 use crate::JsonResponse;
 use crate::WorkflowControlRequest;
 use crate::WorkflowCreateRequest;
-use crate::tangle_evm::extract::{CallId, Caller, TangleEvmArg, TangleEvmResult};
+use crate::tangle::extract::{CallId, Caller, TangleArg, TangleResult};
 use crate::workflows::{
-    WorkflowEntry, apply_workflow_execution, resolve_next_run, run_workflow, workflow_tick,
-    workflows,
+    WorkflowEntry, apply_workflow_execution, resolve_next_run, run_workflow, workflow_key,
+    workflow_tick, workflows,
 };
 
 pub async fn workflow_create(
     Caller(_caller): Caller,
     CallId(call_id): CallId,
-    TangleEvmArg(request): TangleEvmArg<WorkflowCreateRequest>,
-) -> Result<TangleEvmResult<JsonResponse>, String> {
+    TangleArg(request): TangleArg<WorkflowCreateRequest>,
+) -> Result<TangleResult<JsonResponse>, String> {
     if request.workflow_json.trim().is_empty() {
         return Err("workflow_json is required".to_string());
     }
@@ -35,80 +35,76 @@ pub async fn workflow_create(
     };
 
     workflows()?
-        .lock()
-        .map_err(|_| "Workflow store poisoned".to_string())?
-        .insert(call_id, entry);
+        .insert(workflow_key(call_id), entry)
+        .map_err(|e| e.to_string())?;
 
     let response = json!({
         "workflowId": call_id,
         "status": "active",
     });
 
-    Ok(TangleEvmResult(JsonResponse {
+    Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
 }
 
 pub async fn workflow_trigger(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<WorkflowControlRequest>,
-) -> Result<TangleEvmResult<JsonResponse>, String> {
-    let entry = {
-        let store = workflows()?
-            .lock()
-            .map_err(|_| "Workflow store poisoned".to_string())?;
-        let entry = store
-            .get(&request.workflow_id)
-            .ok_or_else(|| "Workflow not found".to_string())?;
-        if !entry.active {
-            return Err("Workflow is not active".to_string());
-        }
-        entry.clone()
-    };
+    TangleArg(request): TangleArg<WorkflowControlRequest>,
+) -> Result<TangleResult<JsonResponse>, String> {
+    let key = workflow_key(request.workflow_id);
+    let entry = workflows()?
+        .get(&key)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workflow not found".to_string())?;
 
-    let execution =
-        run_workflow(&entry, crate::runtime::SidecarRuntimeConfig::load().timeout).await?;
-
-    {
-        let mut store = workflows()?
-            .lock()
-            .map_err(|_| "Workflow store poisoned".to_string())?;
-        if let Some(entry) = store.get_mut(&request.workflow_id) {
-            apply_workflow_execution(entry, &execution);
-        }
+    if !entry.active {
+        return Err("Workflow is not active".to_string());
     }
 
-    Ok(TangleEvmResult(JsonResponse {
+    let execution = run_workflow(&entry).await?;
+
+    let last_run_at = execution.last_run_at;
+    let next_run_at = execution.next_run_at;
+    let _ = workflows()?.update(&key, |e| {
+        apply_workflow_execution(e, last_run_at, next_run_at);
+    });
+
+    Ok(TangleResult(JsonResponse {
         json: execution.response.to_string(),
     }))
 }
 
 pub async fn workflow_cancel(
     Caller(_caller): Caller,
-    TangleEvmArg(request): TangleEvmArg<WorkflowControlRequest>,
-) -> Result<TangleEvmResult<JsonResponse>, String> {
-    let mut store = workflows()?
-        .lock()
-        .map_err(|_| "Workflow store poisoned".to_string())?;
-    let entry = store
-        .get_mut(&request.workflow_id)
-        .ok_or_else(|| "Workflow not found".to_string())?;
-    entry.active = false;
-    entry.next_run_at = None;
+    TangleArg(request): TangleArg<WorkflowControlRequest>,
+) -> Result<TangleResult<JsonResponse>, String> {
+    let key = workflow_key(request.workflow_id);
+
+    let found = workflows()?
+        .update(&key, |entry| {
+            entry.active = false;
+            entry.next_run_at = None;
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err("Workflow not found".to_string());
+    }
 
     let response = json!({
-        "workflowId": entry.id,
+        "workflowId": request.workflow_id,
         "status": "canceled",
     });
 
-    Ok(TangleEvmResult(JsonResponse {
+    Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
 }
 
-pub async fn workflow_tick_job() -> Result<TangleEvmResult<JsonResponse>, String> {
-    let response = workflow_tick(crate::runtime::SidecarRuntimeConfig::load().timeout).await?;
-    Ok(TangleEvmResult(JsonResponse {
+pub async fn workflow_tick_job() -> Result<TangleResult<JsonResponse>, String> {
+    let response = workflow_tick().await?;
+    Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
 }

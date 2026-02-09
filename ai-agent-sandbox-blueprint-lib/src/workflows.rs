@@ -4,14 +4,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Mutex;
 
 use crate::SandboxTaskRequest;
 use crate::auth::require_sidecar_token;
 use crate::http::sidecar_post_json;
 use crate::runtime::require_sidecar_auth;
+use crate::store::PersistentStore;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowEntry {
     pub id: u64,
     pub name: String,
@@ -48,13 +48,20 @@ pub struct WorkflowTaskSpec {
     pub sidecar_token: Option<String>,
 }
 
-static WORKFLOWS: once_cell::sync::OnceCell<Mutex<HashMap<u64, WorkflowEntry>>> =
+static WORKFLOWS: once_cell::sync::OnceCell<PersistentStore<WorkflowEntry>> =
     once_cell::sync::OnceCell::new();
 
-pub fn workflows() -> Result<&'static Mutex<HashMap<u64, WorkflowEntry>>, String> {
+pub fn workflows() -> Result<&'static PersistentStore<WorkflowEntry>, String> {
     WORKFLOWS
-        .get_or_try_init(|| Ok(Mutex::new(HashMap::new())))
+        .get_or_try_init(|| {
+            let path = crate::store::state_dir().join("workflows.json");
+            PersistentStore::open(path).map_err(|e| e.to_string())
+        })
         .map_err(|err: String| err)
+}
+
+pub fn workflow_key(id: u64) -> String {
+    id.to_string()
 }
 
 pub fn now_ts() -> u64 {
@@ -87,10 +94,7 @@ fn compute_next_run(cron_expr: &str, from_ts: u64) -> Result<u64, String> {
         .ok_or_else(|| "Cron expression has no future run times".to_string())
 }
 
-pub async fn run_workflow(
-    entry: &WorkflowEntry,
-    timeout: std::time::Duration,
-) -> Result<WorkflowExecution, String> {
+pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, String> {
     if entry.workflow_json.trim().is_empty() {
         return Err("workflow_json is required".to_string());
     }
@@ -112,7 +116,7 @@ pub async fn run_workflow(
         sidecar_token: token,
     };
 
-    let response = run_task_request(&request, timeout).await?;
+    let response = run_task_request(&request).await?;
     let now = now_ts();
     let next_run_at = resolve_next_run(&entry.trigger_type, &entry.trigger_config, Some(now))?;
 
@@ -139,14 +143,17 @@ pub async fn run_workflow(
     })
 }
 
-pub fn apply_workflow_execution(entry: &mut WorkflowEntry, execution: &WorkflowExecution) {
-    entry.last_run_at = Some(execution.last_run_at);
-    entry.next_run_at = execution.next_run_at;
+pub fn apply_workflow_execution(
+    entry: &mut WorkflowEntry,
+    last_run_at: u64,
+    next_run_at: Option<u64>,
+) {
+    entry.last_run_at = Some(last_run_at);
+    entry.next_run_at = next_run_at;
 }
 
 pub async fn run_task_request(
     request: &SandboxTaskRequest,
-    timeout: std::time::Duration,
 ) -> Result<crate::SandboxTaskResponse, String> {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -190,12 +197,14 @@ pub async fn run_task_request(
         payload.insert("timeout".to_string(), json!(request.timeout_ms));
     }
 
+    let m = crate::metrics::metrics();
+    let _session = m.session_guard();
+
     let parsed = sidecar_post_json(
         &request.sidecar_url,
         "/agents/run",
         &request.sidecar_token,
         Value::Object(payload),
-        timeout,
     )
     .await?;
 
@@ -206,75 +215,65 @@ pub async fn run_task_request(
         .unwrap_or(request.session_id.as_str())
         .to_string();
 
+    let duration_ms = parsed
+        .get("durationMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let input_tokens = parsed
+        .get("usage")
+        .and_then(|usage| usage.get("inputTokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+    let output_tokens = parsed
+        .get("usage")
+        .and_then(|usage| usage.get("outputTokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    if success {
+        m.record_job(duration_ms, input_tokens, output_tokens);
+    } else {
+        m.record_failure();
+    }
+
     Ok(crate::SandboxTaskResponse {
         success,
         result,
         error,
         trace_id,
-        duration_ms: parsed
-            .get("durationMs")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        input_tokens: parsed
-            .get("usage")
-            .and_then(|usage| usage.get("inputTokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-        output_tokens: parsed
-            .get("usage")
-            .and_then(|usage| usage.get("outputTokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
+        duration_ms,
+        input_tokens,
+        output_tokens,
         session_id,
     })
 }
 
-pub async fn workflow_tick(timeout: std::time::Duration) -> Result<Value, String> {
+pub async fn workflow_tick() -> Result<Value, String> {
     let now = now_ts();
-    let mut due = Vec::new();
-    {
-        let store = workflows()?
-            .lock()
-            .map_err(|_| "Workflow store poisoned".to_string())?;
-        for entry in store.values() {
-            if !entry.active {
-                continue;
-            }
-            if entry.trigger_type != "cron" {
-                continue;
-            }
-            if let Some(next_run_at) = entry.next_run_at {
-                if next_run_at <= now {
-                    due.push(entry.id);
-                }
-            }
-        }
-    }
+    let all = workflows()?.values().map_err(|e| e.to_string())?;
+
+    let due: Vec<u64> = all
+        .iter()
+        .filter(|e| e.active && e.trigger_type == "cron")
+        .filter_map(|e| e.next_run_at.filter(|&t| t <= now).map(|_| e.id))
+        .collect();
 
     let mut executed = Vec::new();
     for workflow_id in due {
-        let entry = {
-            let store = workflows()?
-                .lock()
-                .map_err(|_| "Workflow store poisoned".to_string())?;
-            let entry = match store.get(&workflow_id) {
-                Some(entry) => entry,
-                None => continue,
-            };
-            if !entry.active {
-                continue;
-            }
-            entry.clone()
+        let key = workflow_key(workflow_id);
+        let entry = match workflows()?.get(&key).map_err(|e| e.to_string())? {
+            Some(e) if e.active => e,
+            _ => continue,
         };
 
-        match run_workflow(&entry, timeout).await {
+        match run_workflow(&entry).await {
             Ok(execution) => {
-                let mut store = workflows()?
-                    .lock()
-                    .map_err(|_| "Workflow store poisoned".to_string())?;
-                if let Some(entry) = store.get_mut(&workflow_id) {
-                    apply_workflow_execution(entry, &execution);
-                }
+                let last_run_at = execution.last_run_at;
+                let next_run_at = execution.next_run_at;
+                let _ = workflows()?.update(&key, |e| {
+                    e.last_run_at = Some(last_run_at);
+                    e.next_run_at = next_run_at;
+                });
                 executed.push(execution.response);
             }
             Err(err) => executed.push(json!({
@@ -292,7 +291,7 @@ pub async fn workflow_tick(timeout: std::time::Duration) -> Result<Value, String
 }
 
 pub async fn bootstrap_workflows_from_chain(
-    client: &blueprint_sdk::contexts::tangle_evm::TangleEvmClient,
+    client: &blueprint_sdk::contexts::tangle::TangleClient,
     service_id: u64,
 ) -> Result<(), String> {
     let manager = client
@@ -323,7 +322,7 @@ pub async fn bootstrap_workflows_from_chain(
         .map_err(|err| format!("Failed to read workflow IDs: {err}"))?;
 
     let ids = parse_workflow_ids(ids)?;
-    let mut entries = HashMap::new();
+    let mut entries: HashMap<String, WorkflowEntry> = HashMap::new();
     for workflow_id in ids {
         let output = contract
             .function(
@@ -338,13 +337,10 @@ pub async fn bootstrap_workflows_from_chain(
             .await
             .map_err(|err| format!("Failed to read workflow {workflow_id}: {err}"))?;
         let entry = parse_workflow_config(workflow_id, output)?;
-        entries.insert(workflow_id, entry);
+        entries.insert(workflow_key(workflow_id), entry);
     }
 
-    let mut store = workflows()?
-        .lock()
-        .map_err(|_| "Workflow store poisoned".to_string())?;
-    *store = entries;
+    workflows()?.replace(entries).map_err(|e| e.to_string())?;
     Ok(())
 }
 

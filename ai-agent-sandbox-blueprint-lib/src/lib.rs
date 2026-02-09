@@ -1,28 +1,32 @@
 //! AI Agent Sandbox Blueprint
 
 pub mod auth;
+pub mod error;
 pub mod http;
 pub mod jobs;
+pub mod metrics;
 pub mod runtime;
+pub mod store;
 pub mod util;
 pub mod workflows;
 
 use blueprint_sdk::Job;
 use blueprint_sdk::Router;
 use blueprint_sdk::alloy::sol;
-use blueprint_sdk::tangle_evm::TangleEvmLayer;
+use blueprint_sdk::tangle::TangleLayer;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-pub use blueprint_sdk::tangle_evm;
+pub use blueprint_sdk::tangle;
+pub use error::SandboxError;
 pub use jobs::batch::{batch_collect, batch_create, batch_exec, batch_task};
-pub use jobs::exec::{sandbox_exec, sandbox_prompt, sandbox_task};
+pub use jobs::exec::{
+    extract_exec_fields, run_exec_request, run_prompt_request, sandbox_exec, sandbox_prompt,
+    sandbox_task,
+};
 pub use jobs::sandbox::{
     sandbox_create, sandbox_delete, sandbox_resume, sandbox_snapshot, sandbox_stop,
 };
-pub use jobs::ssh::{ssh_provision, ssh_revoke};
+pub use jobs::ssh::{provision_key, revoke_key, ssh_provision, ssh_revoke};
 pub use jobs::workflow::{workflow_cancel, workflow_create, workflow_tick_job, workflow_trigger};
 pub use workflows::bootstrap_workflows_from_chain;
 
@@ -63,6 +67,13 @@ pub const MAX_BATCH_COUNT: u32 = 50;
 sol! {
     /// Generic JSON response payload.
     struct JsonResponse {
+        string json;
+    }
+
+    /// Sandbox create output with extractable sandboxId for on-chain routing.
+    /// The contract decodes the first field to store sandboxId → operator mapping.
+    struct SandboxCreateOutput {
+        string sandboxId;
         string json;
     }
 
@@ -231,26 +242,28 @@ sol! {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BatchRecord {
     pub id: String,
     pub kind: String,
     pub results: Value,
+    pub created_at: u64,
 }
 
-static BATCH_COUNTER: AtomicU64 = AtomicU64::new(1);
-static BATCH_RESULTS: once_cell::sync::OnceCell<Mutex<HashMap<String, BatchRecord>>> =
+static BATCH_RESULTS: once_cell::sync::OnceCell<store::PersistentStore<BatchRecord>> =
     once_cell::sync::OnceCell::new();
 
-pub fn batches() -> Result<&'static Mutex<HashMap<String, BatchRecord>>, String> {
+pub fn batches() -> error::Result<&'static store::PersistentStore<BatchRecord>> {
     BATCH_RESULTS
-        .get_or_try_init(|| Ok(Mutex::new(HashMap::new())))
-        .map_err(|err: String| err)
+        .get_or_try_init(|| {
+            let path = store::state_dir().join("batches.json");
+            store::PersistentStore::open(path)
+        })
+        .map_err(|err: SandboxError| err)
 }
 
 pub fn next_batch_id() -> String {
-    let id = BATCH_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("batch-{id}")
+    format!("batch-{}", uuid::Uuid::new_v4())
 }
 
 pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
@@ -298,24 +311,24 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
 #[must_use]
 pub fn router() -> Router {
     Router::new()
-        .route(JOB_SANDBOX_CREATE, sandbox_create.layer(TangleEvmLayer))
-        .route(JOB_SANDBOX_DELETE, sandbox_delete.layer(TangleEvmLayer))
-        .route(JOB_SANDBOX_STOP, sandbox_stop.layer(TangleEvmLayer))
-        .route(JOB_SANDBOX_RESUME, sandbox_resume.layer(TangleEvmLayer))
-        .route(JOB_SANDBOX_SNAPSHOT, sandbox_snapshot.layer(TangleEvmLayer))
-        .route(JOB_EXEC, sandbox_exec.layer(TangleEvmLayer))
-        .route(JOB_PROMPT, sandbox_prompt.layer(TangleEvmLayer))
-        .route(JOB_TASK, sandbox_task.layer(TangleEvmLayer))
-        .route(JOB_BATCH_CREATE, batch_create.layer(TangleEvmLayer))
-        .route(JOB_BATCH_TASK, batch_task.layer(TangleEvmLayer))
-        .route(JOB_BATCH_EXEC, batch_exec.layer(TangleEvmLayer))
-        .route(JOB_BATCH_COLLECT, batch_collect.layer(TangleEvmLayer))
-        .route(JOB_WORKFLOW_CREATE, workflow_create.layer(TangleEvmLayer))
-        .route(JOB_WORKFLOW_TRIGGER, workflow_trigger.layer(TangleEvmLayer))
-        .route(JOB_WORKFLOW_CANCEL, workflow_cancel.layer(TangleEvmLayer))
+        .route(JOB_SANDBOX_CREATE, sandbox_create.layer(TangleLayer))
+        .route(JOB_SANDBOX_DELETE, sandbox_delete.layer(TangleLayer))
+        .route(JOB_SANDBOX_STOP, sandbox_stop.layer(TangleLayer))
+        .route(JOB_SANDBOX_RESUME, sandbox_resume.layer(TangleLayer))
+        .route(JOB_SANDBOX_SNAPSHOT, sandbox_snapshot.layer(TangleLayer))
+        .route(JOB_EXEC, sandbox_exec.layer(TangleLayer))
+        .route(JOB_PROMPT, sandbox_prompt.layer(TangleLayer))
+        .route(JOB_TASK, sandbox_task.layer(TangleLayer))
+        .route(JOB_BATCH_CREATE, batch_create.layer(TangleLayer))
+        .route(JOB_BATCH_TASK, batch_task.layer(TangleLayer))
+        .route(JOB_BATCH_EXEC, batch_exec.layer(TangleLayer))
+        .route(JOB_BATCH_COLLECT, batch_collect.layer(TangleLayer))
+        .route(JOB_WORKFLOW_CREATE, workflow_create.layer(TangleLayer))
+        .route(JOB_WORKFLOW_TRIGGER, workflow_trigger.layer(TangleLayer))
+        .route(JOB_WORKFLOW_CANCEL, workflow_cancel.layer(TangleLayer))
         .route(JOB_WORKFLOW_TICK, workflow_tick_job)
-        .route(JOB_SSH_PROVISION, ssh_provision.layer(TangleEvmLayer))
-        .route(JOB_SSH_REVOKE, ssh_revoke.layer(TangleEvmLayer))
+        .route(JOB_SSH_PROVISION, ssh_provision.layer(TangleLayer))
+        .route(JOB_SSH_REVOKE, ssh_revoke.layer(TangleLayer))
 }
 
 #[cfg(test)]

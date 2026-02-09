@@ -6,10 +6,15 @@ import "tnt-core/interfaces/IMultiAssetDelegation.sol";
 
 /**
  * @title AgentSandboxBlueprint
- * @dev Service manager hooks for the AI Agent Sandbox Blueprint.
+ * @dev Multi-operator service manager for AI Agent Sandbox Blueprint.
+ *      Handles capacity-weighted operator assignment for sandbox creation,
+ *      on-chain routing of lifecycle operations, and workflow storage.
  */
 contract AgentSandboxBlueprint is OperatorSelectionBase {
-    /// Job IDs (write-only sandbox + sidecar operations).
+    // ═══════════════════════════════════════════════════════════════════════════
+    // JOB IDS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     uint8 public constant JOB_SANDBOX_CREATE = 0;
     uint8 public constant JOB_SANDBOX_STOP = 1;
     uint8 public constant JOB_SANDBOX_RESUME = 2;
@@ -32,9 +37,53 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     uint8 public constant JOB_SSH_PROVISION = 40;
     uint8 public constant JOB_SSH_REVOKE = 41;
 
-    /// Blueprint metadata helpers.
+    // ═══════════════════════════════════════════════════════════════════════════
+    // METADATA
+    // ═══════════════════════════════════════════════════════════════════════════
+
     string public constant BLUEPRINT_NAME = "ai-agent-sandbox-blueprint";
-    string public constant BLUEPRINT_VERSION = "0.1.0";
+    string public constant BLUEPRINT_VERSION = "0.2.0";
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPERATOR CAPACITY STATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Maximum sandboxes an operator declared they can run.
+    mapping(address => uint32) public operatorMaxCapacity;
+
+    /// @notice Current active sandbox count per operator.
+    mapping(address => uint32) public operatorActiveSandboxes;
+
+    /// @notice Default capacity assigned when operator registers without specifying one.
+    uint32 public defaultMaxCapacity = 100;
+
+    /// @notice Global counter of active sandboxes across all operators.
+    uint32 public totalActiveSandboxes;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPERATOR ASSIGNMENT STATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Temporary assignment: serviceId → callId → assigned operator (for SANDBOX_CREATE).
+    ///         Cleared after onJobResult processes the result.
+    mapping(uint64 => mapping(uint64 => address)) internal _createAssignments;
+
+    /// @notice Nonce for capacity-weighted selection entropy.
+    uint256 internal _selectionNonce;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SANDBOX REGISTRY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Routing: keccak256(sandboxId) → operator address.
+    mapping(bytes32 => address) public sandboxOperator;
+
+    /// @notice Whether a sandbox is currently active.
+    mapping(bytes32 => bool) public sandboxActive;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // WORKFLOW STATE (preserved from v0.1)
+    // ═══════════════════════════════════════════════════════════════════════════
 
     struct WorkflowCreateRequest {
         string name;
@@ -64,9 +113,31 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     mapping(uint64 => uint256) private workflow_index;
     uint64[] private workflow_ids;
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EVENTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    event OperatorAssigned(uint64 indexed serviceId, uint64 indexed callId, address indexed operator);
+    event OperatorRouted(uint64 indexed serviceId, uint64 indexed callId, address indexed operator);
+    event SandboxCreated(bytes32 indexed sandboxHash, address indexed operator);
+    event SandboxDeleted(bytes32 indexed sandboxHash, address indexed operator);
+
     event WorkflowStored(uint64 indexed workflow_id, string trigger_type, string trigger_config);
     event WorkflowTriggered(uint64 indexed workflow_id, uint64 triggered_at);
     event WorkflowCanceled(uint64 indexed workflow_id, uint64 canceled_at);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ERRORS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    error NoAvailableCapacity();
+    error OperatorMismatch(address expected, address actual);
+    error SandboxNotFound(bytes32 sandboxHash);
+    error SandboxAlreadyExists(bytes32 sandboxHash);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONSTRUCTOR
+    // ═══════════════════════════════════════════════════════════════════════════
 
     constructor(address restakingAddress) {
         if (restakingAddress != address(0)) {
@@ -74,7 +145,10 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         }
     }
 
-    /// @notice Returns all supported job IDs for this blueprint.
+    // ═══════════════════════════════════════════════════════════════════════════
+    // JOB METADATA
+    // ═══════════════════════════════════════════════════════════════════════════
+
     function jobIds() external pure returns (uint8[] memory ids) {
         ids = new uint8[](17);
         ids[0] = JOB_SANDBOX_CREATE;
@@ -96,7 +170,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         ids[16] = JOB_SSH_REVOKE;
     }
 
-    /// @notice Returns true if the job ID is supported by this blueprint.
     function supportsJob(uint8 jobId) external pure returns (bool) {
         return jobId == JOB_SANDBOX_CREATE
             || jobId == JOB_SANDBOX_STOP
@@ -117,28 +190,36 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             || jobId == JOB_SSH_REVOKE;
     }
 
-    /// @notice Count of supported jobs.
     function jobCount() external pure returns (uint256) {
         return 17;
     }
 
-    /**
-     * @dev Hook for service operator registration. Called when a service operator
-     * attempts to register with the blueprint.
-     * @param operator The operator's details.
-     * @param registrationInputs Inputs required for registration in bytes format.
-     */
-    function onRegister(address, bytes calldata) external payable override onlyFromTangle {
-        // Accept all registrations by default.
-    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPERATOR REGISTRATION
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     *  @dev Hook for service instance requests. Called when a user requests a service
-     *  instance from the blueprint but this does not mean the service is initiated yet.
-     *  To get notified when the service is initiated, implement the `onServiceInitialized` hook.
-     *
-     *  @param params The parameters for the service request.
+     * @dev Operator registration hook. Decodes optional capacity from inputs.
+     *      If inputs are empty or decode to 0, uses defaultMaxCapacity.
      */
+    function onRegister(
+        address operator,
+        bytes calldata registrationInputs
+    ) external payable override onlyFromTangle {
+        uint32 capacity = defaultMaxCapacity;
+        if (registrationInputs.length >= 32) {
+            uint32 decoded = abi.decode(registrationInputs, (uint32));
+            if (decoded > 0) {
+                capacity = decoded;
+            }
+        }
+        operatorMaxCapacity[operator] = capacity;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SERVICE REQUEST VALIDATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
     function onRequest(
         uint64 requestId,
         address requester,
@@ -158,15 +239,46 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         _validateOperatorSelection(operators, selection);
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // JOB CALL HOOK — OPERATOR ASSIGNMENT & ROUTING
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * @dev Hook for handling job result. Called when operators send the result
-     * of a job execution.
-     * @param serviceId The ID of the service related to the job.
-     * @param job The job identifier.
-     * @param jobCallId The unique ID for the job call.
-     * @param operator The operator sending the result in bytes format.
-     * @param inputs Inputs used for the job execution in bytes format.
-     * @param outputs Outputs resulting from the job execution in bytes format.
+     * @dev Called when a job is submitted. For sandbox lifecycle jobs,
+     *      assigns or routes to the correct operator.
+     */
+    function onJobCall(
+        uint64 serviceId,
+        uint8 job,
+        uint64 jobCallId,
+        bytes calldata inputs
+    ) external payable override onlyFromTangle {
+        if (job == JOB_SANDBOX_CREATE) {
+            address selected = _selectByCapacity(serviceId);
+            _createAssignments[serviceId][jobCallId] = selected;
+            emit OperatorAssigned(serviceId, jobCallId, selected);
+        } else if (
+            job == JOB_SANDBOX_STOP
+            || job == JOB_SANDBOX_RESUME
+            || job == JOB_SANDBOX_DELETE
+            || job == JOB_SANDBOX_SNAPSHOT
+        ) {
+            string memory sandboxId = abi.decode(inputs, (string));
+            bytes32 sandboxHash = keccak256(bytes(sandboxId));
+            address routed = sandboxOperator[sandboxHash];
+            if (routed == address(0)) revert SandboxNotFound(sandboxHash);
+            emit OperatorRouted(serviceId, jobCallId, routed);
+        }
+        // Exec/prompt/task/batch/workflow/ssh: no on-chain routing needed.
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // JOB RESULT HOOK — STATE UPDATES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @dev Called when an operator submits a job result. Validates operator
+     *      assignment and updates sandbox registry / load counters.
      */
     function onJobResult(
         uint64 serviceId,
@@ -176,14 +288,13 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         bytes calldata inputs,
         bytes calldata outputs
     ) external payable override onlyFromTangle {
-        serviceId;
-        job;
-        jobCallId;
-        operator;
-        inputs;
-        outputs;
-
-        if (job == JOB_WORKFLOW_CREATE) {
+        if (job == JOB_SANDBOX_CREATE) {
+            _handleCreateResult(serviceId, jobCallId, operator, outputs);
+        } else if (job == JOB_SANDBOX_DELETE) {
+            _handleDeleteResult(operator, inputs);
+        } else if (job == JOB_SANDBOX_STOP || job == JOB_SANDBOX_RESUME || job == JOB_SANDBOX_SNAPSHOT) {
+            _validateSandboxOperator(operator, inputs);
+        } else if (job == JOB_WORKFLOW_CREATE) {
             WorkflowCreateRequest memory request = abi.decode(inputs, (WorkflowCreateRequest));
             _upsert_workflow(jobCallId, request);
         } else if (job == JOB_WORKFLOW_TRIGGER) {
@@ -197,14 +308,73 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
     function getRequiredResultCount(uint64, uint8 job) external view override returns (uint32) {
         if (
-            job == JOB_BATCH_CREATE ||
-            job == JOB_BATCH_TASK ||
-            job == JOB_BATCH_EXEC
+            job == JOB_BATCH_CREATE
+            || job == JOB_BATCH_TASK
+            || job == JOB_BATCH_EXEC
         ) {
-            return 0; // Require results from all service operators.
+            return 0;
         }
         return 1;
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ADMIN FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function setDefaultMaxCapacity(uint32 capacity) external onlyBlueprintOwner {
+        defaultMaxCapacity = capacity;
+    }
+
+    function setOperatorCapacity(address operator, uint32 capacity) external onlyBlueprintOwner {
+        operatorMaxCapacity[operator] = capacity;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VIEW FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function getOperatorLoad(address operator) external view returns (uint32 active, uint32 max) {
+        return (operatorActiveSandboxes[operator], operatorMaxCapacity[operator]);
+    }
+
+    function getSandboxOperator(string calldata sandboxId) external view returns (address) {
+        return sandboxOperator[keccak256(bytes(sandboxId))];
+    }
+
+    function isSandboxActive(string calldata sandboxId) external view returns (bool) {
+        return sandboxActive[keccak256(bytes(sandboxId))];
+    }
+
+    function getAvailableCapacity() external view returns (uint32 available) {
+        if (address(restaking) == address(0)) return 0;
+        uint256 total = restaking.operatorCount();
+        for (uint256 i = 0; i < total; i++) {
+            address op = restaking.operatorAt(i);
+            if (_isEligibleOperator(op)) {
+                uint32 max = operatorMaxCapacity[op];
+                uint32 active = operatorActiveSandboxes[op];
+                if (max > active) {
+                    available += (max - active);
+                }
+            }
+        }
+    }
+
+    function getServiceStats() external view returns (uint32 totalSandboxes, uint32 totalCapacity) {
+        totalSandboxes = totalActiveSandboxes;
+        if (address(restaking) == address(0)) return (totalSandboxes, 0);
+        uint256 total = restaking.operatorCount();
+        for (uint256 i = 0; i < total; i++) {
+            address op = restaking.operatorAt(i);
+            if (_isEligibleOperator(op)) {
+                totalCapacity += operatorMaxCapacity[op];
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // WORKFLOW VIEWS (preserved from v0.1)
+    // ═══════════════════════════════════════════════════════════════════════════
 
     function getWorkflow(uint64 workflowId) external view returns (WorkflowConfig memory) {
         return workflows[workflowId];
@@ -233,6 +403,122 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             }
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: CAPACITY-WEIGHTED OPERATOR SELECTION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @dev Select an operator weighted by available capacity.
+     *      Operators with more room get proportionally more assignments.
+     *      Uses prevrandao + nonce for entropy (adequate for load balancing).
+     */
+    function _selectByCapacity(uint64 serviceId) internal returns (address) {
+        if (address(restaking) == address(0)) revert RestakingNotSet();
+
+        uint256 total = restaking.operatorCount();
+        // Build arrays of eligible operators and their weights
+        address[] memory candidates = new address[](total);
+        uint32[] memory weights = new uint32[](total);
+        uint32 totalWeight = 0;
+        uint256 count = 0;
+
+        for (uint256 i = 0; i < total; i++) {
+            address op = restaking.operatorAt(i);
+            if (!_isEligibleOperator(op)) continue;
+            uint32 max = operatorMaxCapacity[op];
+            uint32 active = operatorActiveSandboxes[op];
+            if (max <= active) continue;
+            uint32 weight = max - active;
+            candidates[count] = op;
+            weights[count] = weight;
+            totalWeight += weight;
+            count++;
+        }
+
+        if (count == 0 || totalWeight == 0) revert NoAvailableCapacity();
+
+        uint256 rand = uint256(keccak256(abi.encode(block.prevrandao, serviceId, _selectionNonce)));
+        _selectionNonce++;
+        uint256 pick = rand % totalWeight;
+
+        uint32 cumulative = 0;
+        for (uint256 i = 0; i < count; i++) {
+            cumulative += weights[i];
+            if (pick < cumulative) {
+                return candidates[i];
+            }
+        }
+
+        // Should not reach here, but return last candidate as safety.
+        return candidates[count - 1];
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: SANDBOX CREATE RESULT HANDLING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function _handleCreateResult(
+        uint64 serviceId,
+        uint64 jobCallId,
+        address operator,
+        bytes calldata outputs
+    ) internal {
+        address assigned = _createAssignments[serviceId][jobCallId];
+        if (assigned != operator) revert OperatorMismatch(assigned, operator);
+
+        // Decode new output format: (string sandboxId, string json)
+        (string memory sandboxId,) = abi.decode(outputs, (string, string));
+        bytes32 sandboxHash = keccak256(bytes(sandboxId));
+
+        if (sandboxOperator[sandboxHash] != address(0)) revert SandboxAlreadyExists(sandboxHash);
+
+        sandboxOperator[sandboxHash] = operator;
+        sandboxActive[sandboxHash] = true;
+        operatorActiveSandboxes[operator]++;
+        totalActiveSandboxes++;
+
+        // Clean up temporary assignment
+        delete _createAssignments[serviceId][jobCallId];
+
+        emit SandboxCreated(sandboxHash, operator);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: SANDBOX DELETE RESULT HANDLING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function _handleDeleteResult(address operator, bytes calldata inputs) internal {
+        string memory sandboxId = abi.decode(inputs, (string));
+        bytes32 sandboxHash = keccak256(bytes(sandboxId));
+
+        address expected = sandboxOperator[sandboxHash];
+        if (expected == address(0)) revert SandboxNotFound(sandboxHash);
+        if (expected != operator) revert OperatorMismatch(expected, operator);
+
+        delete sandboxOperator[sandboxHash];
+        sandboxActive[sandboxHash] = false;
+        operatorActiveSandboxes[operator]--;
+        totalActiveSandboxes--;
+
+        emit SandboxDeleted(sandboxHash, operator);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: SANDBOX OPERATOR VALIDATION (STOP/RESUME/SNAPSHOT)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function _validateSandboxOperator(address operator, bytes calldata inputs) internal view {
+        string memory sandboxId = abi.decode(inputs, (string));
+        bytes32 sandboxHash = keccak256(bytes(sandboxId));
+        address expected = sandboxOperator[sandboxHash];
+        if (expected == address(0)) revert SandboxNotFound(sandboxHash);
+        if (expected != operator) revert OperatorMismatch(expected, operator);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: WORKFLOW STORAGE (preserved from v0.1)
+    // ═══════════════════════════════════════════════════════════════════════════
 
     function _upsert_workflow(uint64 workflowId, WorkflowCreateRequest memory request) internal {
         WorkflowConfig storage config = workflows[workflowId];

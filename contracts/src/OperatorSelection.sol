@@ -162,6 +162,10 @@ abstract contract OperatorSelectionBase is BlueprintServiceManagerBase {
         return selected;
     }
 
+    function eligibleOperators() public view returns (address[] memory) {
+        return _eligibleOperators();
+    }
+
     function _eligibleOperators() internal view returns (address[] memory) {
         uint256 total = restaking.operatorCount();
         address[] memory temp = new address[](total);
