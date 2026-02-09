@@ -60,6 +60,21 @@ pub async fn ssh_provision(
     }))
 }
 
+pub async fn revoke_key(
+    sidecar_url: &str,
+    username: &str,
+    public_key: &str,
+    token: &str,
+) -> Result<Value, String> {
+    let username = normalize_username(username)?;
+    let command = build_ssh_revoke_command(&username, public_key);
+
+    let payload = json!({ "command": format!("sh -c {}", shell_escape(&command)) });
+    sidecar_post_json(sidecar_url, "/exec", token, payload)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 pub async fn ssh_revoke(
     Caller(_caller): Caller,
     TangleArg(request): TangleArg<SshRevokeRequest>,
@@ -67,18 +82,20 @@ pub async fn ssh_revoke(
     let token = require_sidecar_token(&request.sidecar_token)?;
     require_sidecar_auth(&request.sidecar_url, &token)?;
 
-    let username = normalize_username(&request.username)?;
-    let command = build_ssh_revoke_command(&username, &request.public_key);
-
-    let payload = json!({ "command": format!("sh -c {}", shell_escape(&command)) });
-    let response = sidecar_post_json(&request.sidecar_url, "/exec", &token, payload).await?;
+    let response = revoke_key(
+        &request.sidecar_url,
+        &request.username,
+        &request.public_key,
+        &token,
+    )
+    .await?;
 
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
 }
 
-pub(crate) async fn provision_key(
+pub async fn provision_key(
     sidecar_url: &str,
     username: &str,
     public_key: &str,

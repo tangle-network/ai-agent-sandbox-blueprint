@@ -13,7 +13,7 @@ use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 use crate::workflows::run_task_request;
 
 /// Extract exec response fields, handling both flat and nested `data` shapes.
-fn extract_exec_fields(parsed: &Value) -> (u32, String, String) {
+pub fn extract_exec_fields(parsed: &Value) -> (u32, String, String) {
     let exit_code = parsed
         .get("exitCode")
         .and_then(Value::as_u64)
@@ -52,13 +52,9 @@ fn extract_exec_fields(parsed: &Value) -> (u32, String, String) {
     (exit_code, stdout, stderr)
 }
 
-pub async fn sandbox_exec(
-    Caller(_caller): Caller,
-    TangleArg(request): TangleArg<SandboxExecRequest>,
-) -> Result<TangleResult<SandboxExecResponse>, String> {
-    let token = require_sidecar_token(&request.sidecar_token)?;
-    require_sidecar_auth(&request.sidecar_url, &token)?;
-
+/// Run an exec request against a sidecar. Builds the payload, sends it,
+/// and parses the response. Callable from tests without Tangle extractors.
+pub async fn run_exec_request(request: &SandboxExecRequest) -> Result<SandboxExecResponse, String> {
     let mut payload = Map::new();
     payload.insert(
         "command".to_string(),
@@ -80,27 +76,39 @@ pub async fn sandbox_exec(
     let parsed = sidecar_post_json(
         &request.sidecar_url,
         "/exec",
-        &token,
+        &request.sidecar_token,
         Value::Object(payload),
     )
-    .await?;
+    .await
+    .map_err(|e| e.to_string())?;
 
     let (exit_code, stdout, stderr) = extract_exec_fields(&parsed);
 
-    Ok(TangleResult(SandboxExecResponse {
+    Ok(SandboxExecResponse {
         exit_code,
         stdout,
         stderr,
-    }))
+    })
 }
 
-pub async fn sandbox_prompt(
+pub async fn sandbox_exec(
     Caller(_caller): Caller,
-    TangleArg(request): TangleArg<SandboxPromptRequest>,
-) -> Result<TangleResult<SandboxPromptResponse>, String> {
+    TangleArg(request): TangleArg<SandboxExecRequest>,
+) -> Result<TangleResult<SandboxExecResponse>, String> {
     let token = require_sidecar_token(&request.sidecar_token)?;
     require_sidecar_auth(&request.sidecar_url, &token)?;
 
+    let mut request = request;
+    request.sidecar_token = token;
+    let response = run_exec_request(&request).await?;
+    Ok(TangleResult(response))
+}
+
+/// Run a prompt request against a sidecar. Builds the payload, sends it,
+/// parses the response, and records metrics. Callable from tests.
+pub async fn run_prompt_request(
+    request: &SandboxPromptRequest,
+) -> Result<SandboxPromptResponse, String> {
     let mut payload = Map::new();
     payload.insert(
         "identifier".to_string(),
@@ -139,10 +147,11 @@ pub async fn sandbox_prompt(
     let parsed = sidecar_post_json(
         &request.sidecar_url,
         "/agents/run",
-        &token,
+        &request.sidecar_token,
         Value::Object(payload),
     )
-    .await?;
+    .await
+    .map_err(|e| e.to_string())?;
 
     let (success, response, error, trace_id) = crate::extract_agent_fields(&parsed);
 
@@ -167,7 +176,7 @@ pub async fn sandbox_prompt(
         m.record_failure();
     }
 
-    Ok(TangleResult(SandboxPromptResponse {
+    Ok(SandboxPromptResponse {
         success,
         response,
         error,
@@ -175,7 +184,20 @@ pub async fn sandbox_prompt(
         duration_ms,
         input_tokens,
         output_tokens,
-    }))
+    })
+}
+
+pub async fn sandbox_prompt(
+    Caller(_caller): Caller,
+    TangleArg(request): TangleArg<SandboxPromptRequest>,
+) -> Result<TangleResult<SandboxPromptResponse>, String> {
+    let token = require_sidecar_token(&request.sidecar_token)?;
+    require_sidecar_auth(&request.sidecar_url, &token)?;
+
+    let mut request = request;
+    request.sidecar_token = token;
+    let response = run_prompt_request(&request).await?;
+    Ok(TangleResult(response))
 }
 
 pub async fn sandbox_task(

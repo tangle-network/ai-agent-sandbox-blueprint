@@ -19,11 +19,14 @@ use serde_json::Value;
 pub use blueprint_sdk::tangle;
 pub use error::SandboxError;
 pub use jobs::batch::{batch_collect, batch_create, batch_exec, batch_task};
-pub use jobs::exec::{sandbox_exec, sandbox_prompt, sandbox_task};
+pub use jobs::exec::{
+    extract_exec_fields, run_exec_request, run_prompt_request, sandbox_exec, sandbox_prompt,
+    sandbox_task,
+};
 pub use jobs::sandbox::{
     sandbox_create, sandbox_delete, sandbox_resume, sandbox_snapshot, sandbox_stop,
 };
-pub use jobs::ssh::{ssh_provision, ssh_revoke};
+pub use jobs::ssh::{provision_key, revoke_key, ssh_provision, ssh_revoke};
 pub use jobs::workflow::{workflow_cancel, workflow_create, workflow_tick_job, workflow_trigger};
 pub use workflows::bootstrap_workflows_from_chain;
 
