@@ -7,15 +7,13 @@ cache_path = "contracts/cache"
 broadcast = "contracts/broadcast"
 libs = ["dependencies"]
 auto_detect_remappings = true
-allow_paths = ["../tnt-core"]
-
 [soldeer]
 recursive_deps = true
 remappings_location = "txt"
 remappings_version = false
 
 [dependencies]
-tnt-core = "0.3.0"
+tnt-core = "0.9.0"
 forge-std = "1.9.6"
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

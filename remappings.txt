@@ -1,5 +1,4 @@
+@openzeppelin/contracts-upgradeable/=dependencies/tnt-core-0.9.0/dependencies/@openzeppelin-contracts-upgradeable-5.1.0/
+@openzeppelin/contracts/=dependencies/tnt-core-0.9.0/dependencies/@openzeppelin-contracts-5.1.0/
 forge-std/=dependencies/forge-std-1.9.6/src/
-tnt-core/=../tnt-core/src/
-tnt-core/=dependencies/tnt-core-0.3.0/
-@openzeppelin/contracts/=../tnt-core/dependencies/@openzeppelin-contracts-5.1.0/
-@openzeppelin/contracts-upgradeable/=../tnt-core/dependencies/@openzeppelin-contracts-upgradeable-5.1.0/
+tnt-core/=dependencies/tnt-core-0.9.0/src/
