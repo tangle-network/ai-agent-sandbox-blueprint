@@ -5,6 +5,7 @@ pub mod error;
 pub mod http;
 pub mod jobs;
 pub mod metrics;
+pub mod reaper;
 pub mod runtime;
 pub mod store;
 pub mod util;

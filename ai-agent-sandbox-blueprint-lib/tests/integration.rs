@@ -69,6 +69,11 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 created_at: now_ts(),
                 cpu_cores: 2,
                 memory_mb: 4096,
+                state: Default::default(),
+                idle_timeout_seconds: 0,
+                max_lifetime_seconds: 0,
+                last_activity_at: now_ts(),
+                stopped_at: None,
             },
         )
         .unwrap();

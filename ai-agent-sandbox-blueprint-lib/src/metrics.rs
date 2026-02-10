@@ -30,6 +30,12 @@ pub struct OnChainMetrics {
     pub allocated_memory_mb: AtomicU64,
     /// Total failed jobs.
     pub failed_jobs: AtomicU64,
+    /// Sandboxes reaped due to idle timeout.
+    pub reaped_idle: AtomicU64,
+    /// Sandboxes reaped due to max lifetime exceeded.
+    pub reaped_lifetime: AtomicU64,
+    /// Stopped sandboxes garbage collected past retention.
+    pub garbage_collected: AtomicU64,
 }
 
 impl Default for OnChainMetrics {
@@ -51,6 +57,9 @@ impl OnChainMetrics {
             allocated_cpu_cores: AtomicU64::new(0),
             allocated_memory_mb: AtomicU64::new(0),
             failed_jobs: AtomicU64::new(0),
+            reaped_idle: AtomicU64::new(0),
+            reaped_lifetime: AtomicU64::new(0),
+            garbage_collected: AtomicU64::new(0),
         }
     }
 
@@ -68,6 +77,21 @@ impl OnChainMetrics {
     /// Record a failed job.
     pub fn record_failure(&self) {
         self.failed_jobs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a sandbox reaped due to idle timeout.
+    pub fn record_reaped_idle(&self) {
+        self.reaped_idle.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a sandbox reaped due to max lifetime exceeded.
+    pub fn record_reaped_lifetime(&self) {
+        self.reaped_lifetime.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a stopped sandbox garbage collected.
+    pub fn record_garbage_collected(&self) {
+        self.garbage_collected.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record sandbox creation with its resource allocation.
@@ -160,6 +184,18 @@ impl OnChainMetrics {
             (
                 "failed_jobs".into(),
                 self.failed_jobs.load(Ordering::Relaxed),
+            ),
+            (
+                "reaped_idle".into(),
+                self.reaped_idle.load(Ordering::Relaxed),
+            ),
+            (
+                "reaped_lifetime".into(),
+                self.reaped_lifetime.load(Ordering::Relaxed),
+            ),
+            (
+                "garbage_collected".into(),
+                self.garbage_collected.load(Ordering::Relaxed),
             ),
         ]
     }

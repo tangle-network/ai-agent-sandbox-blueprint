@@ -82,6 +82,10 @@ pub async fn run_exec_request(request: &SandboxExecRequest) -> Result<SandboxExe
     .await
     .map_err(|e| e.to_string())?;
 
+    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(&request.sidecar_url) {
+        crate::runtime::touch_sandbox(&record.id);
+    }
+
     let (exit_code, stdout, stderr) = extract_exec_fields(&parsed);
 
     Ok(SandboxExecResponse {
@@ -219,6 +223,10 @@ async fn call_agent(
     payload: Map<String, Value>,
     fallback_session_id: &str,
 ) -> Result<AgentResponse, String> {
+    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(sidecar_url) {
+        crate::runtime::touch_sandbox(&record.id);
+    }
+
     let m = crate::metrics::metrics();
     let _session = m.session_guard();
 

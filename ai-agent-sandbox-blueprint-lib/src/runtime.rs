@@ -28,11 +28,38 @@ pub struct SidecarRuntimeConfig {
     pub timeout: Duration,
     pub docker_host: Option<String>,
     pub pull_image: bool,
+    pub sandbox_default_idle_timeout: u64,
+    pub sandbox_default_max_lifetime: u64,
+    pub sandbox_max_idle_timeout: u64,
+    pub sandbox_max_max_lifetime: u64,
+    pub sandbox_reaper_interval: u64,
+    pub sandbox_gc_interval: u64,
+    pub sandbox_gc_stopped_retention: u64,
 }
 
 static RUNTIME_CONFIG: OnceCell<SidecarRuntimeConfig> = OnceCell::new();
 
 impl SidecarRuntimeConfig {
+    /// Compute the effective idle timeout: substitute default for 0, clamp to operator max.
+    pub fn effective_idle_timeout(&self, requested: u64) -> u64 {
+        let value = if requested == 0 {
+            self.sandbox_default_idle_timeout
+        } else {
+            requested
+        };
+        value.min(self.sandbox_max_idle_timeout)
+    }
+
+    /// Compute the effective max lifetime: substitute default for 0, clamp to operator max.
+    pub fn effective_max_lifetime(&self, requested: u64) -> u64 {
+        let value = if requested == 0 {
+            self.sandbox_default_max_lifetime
+        } else {
+            requested
+        };
+        value.min(self.sandbox_max_max_lifetime)
+    }
+
     /// Load configuration from environment variables.
     /// Cached after the first call — subsequent calls return the same config.
     pub fn load() -> &'static SidecarRuntimeConfig {
@@ -59,6 +86,35 @@ impl SidecarRuntimeConfig {
                 .and_then(|v| v.parse::<bool>().ok())
                 .unwrap_or(true);
 
+            let sandbox_default_idle_timeout = env::var("SANDBOX_DEFAULT_IDLE_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(1800);
+            let sandbox_default_max_lifetime = env::var("SANDBOX_DEFAULT_MAX_LIFETIME")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(86400);
+            let sandbox_max_idle_timeout = env::var("SANDBOX_MAX_IDLE_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(7200);
+            let sandbox_max_max_lifetime = env::var("SANDBOX_MAX_MAX_LIFETIME")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(172800);
+            let sandbox_reaper_interval = env::var("SANDBOX_REAPER_INTERVAL")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(30);
+            let sandbox_gc_interval = env::var("SANDBOX_GC_INTERVAL")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(3600);
+            let sandbox_gc_stopped_retention = env::var("SANDBOX_GC_STOPPED_RETENTION")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(86400);
+
             SidecarRuntimeConfig {
                 image,
                 public_host,
@@ -67,8 +123,27 @@ impl SidecarRuntimeConfig {
                 timeout: Duration::from_secs(timeout),
                 docker_host,
                 pull_image,
+                sandbox_default_idle_timeout,
+                sandbox_default_max_lifetime,
+                sandbox_max_idle_timeout,
+                sandbox_max_max_lifetime,
+                sandbox_reaper_interval,
+                sandbox_gc_interval,
+                sandbox_gc_stopped_retention,
             }
         })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SandboxState {
+    Running,
+    Stopped,
+}
+
+impl Default for SandboxState {
+    fn default() -> Self {
+        SandboxState::Running
     }
 }
 
@@ -85,6 +160,16 @@ pub struct SandboxRecord {
     pub cpu_cores: u64,
     #[serde(default)]
     pub memory_mb: u64,
+    #[serde(default)]
+    pub state: SandboxState,
+    #[serde(default)]
+    pub idle_timeout_seconds: u64,
+    #[serde(default)]
+    pub max_lifetime_seconds: u64,
+    #[serde(default)]
+    pub last_activity_at: u64,
+    #[serde(default)]
+    pub stopped_at: Option<u64>,
 }
 
 use crate::store::PersistentStore;
@@ -134,6 +219,24 @@ pub fn get_sandbox_by_url(sidecar_url: &str) -> Result<SandboxRecord> {
     sandboxes()?
         .find(|record| record.sidecar_url == url)?
         .ok_or_else(|| SandboxError::NotFound(format!("Sandbox not found for URL: {sidecar_url}")))
+}
+
+/// Update `last_activity_at` to now for the given sandbox.
+pub fn touch_sandbox(sandbox_id: &str) {
+    if let Ok(store) = sandboxes() {
+        let now = crate::workflows::now_ts();
+        let _ = store.update(sandbox_id, |r| {
+            r.last_activity_at = now;
+        });
+    }
+}
+
+/// Find a sandbox by its sidecar URL, returning `None` instead of an error if not found.
+pub fn get_sandbox_by_url_opt(sidecar_url: &str) -> Option<SandboxRecord> {
+    let url = sidecar_url.to_string();
+    sandboxes()
+        .ok()
+        .and_then(|store| store.find(|record| record.sidecar_url == url).ok().flatten())
 }
 
 /// Validate sidecar token using constant-time comparison to prevent timing attacks.
@@ -276,6 +379,10 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
         extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
     let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
+    let now = crate::workflows::now_ts();
+    let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
+    let max_lifetime = config.effective_max_lifetime(request.max_lifetime_seconds);
+
     let record = SandboxRecord {
         id: sandbox_id.clone(),
         container_id,
@@ -283,9 +390,14 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
         sidecar_port,
         ssh_port,
         token,
-        created_at: crate::workflows::now_ts(),
+        created_at: now,
         cpu_cores: request.cpu_cores,
         memory_mb: request.memory_mb,
+        state: SandboxState::Running,
+        idle_timeout_seconds: idle_timeout,
+        max_lifetime_seconds: max_lifetime,
+        last_activity_at: now,
+        stopped_at: None,
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
@@ -304,6 +416,12 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
         .stop()
         .await
         .map_err(|err| SandboxError::Docker(format!("Failed to stop container: {err}")))?;
+
+    let now = crate::workflows::now_ts();
+    let _ = sandboxes()?.update(&record.id, |r| {
+        r.state = SandboxState::Stopped;
+        r.stopped_at = Some(now);
+    });
     Ok(())
 }
 
@@ -316,6 +434,13 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         .start(false)
         .await
         .map_err(|err| SandboxError::Docker(format!("Failed to start container: {err}")))?;
+
+    let now = crate::workflows::now_ts();
+    let _ = sandboxes()?.update(&record.id, |r| {
+        r.state = SandboxState::Running;
+        r.stopped_at = None;
+        r.last_activity_at = now;
+    });
     Ok(())
 }
 

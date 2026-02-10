@@ -165,6 +165,35 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         error!("Failed to load workflows from chain: {err}");
     }
 
+    // Reconcile stored sandbox state with Docker reality
+    ai_agent_sandbox_blueprint_lib::reaper::reconcile_on_startup().await;
+
+    // Spawn reaper background task (idle timeout + max lifetime enforcement)
+    {
+        let config = ai_agent_sandbox_blueprint_lib::runtime::SidecarRuntimeConfig::load();
+        let reaper_interval = config.sandbox_reaper_interval;
+        let gc_interval = config.sandbox_gc_interval;
+
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(reaper_interval));
+            loop {
+                interval.tick().await;
+                ai_agent_sandbox_blueprint_lib::reaper::reaper_tick().await;
+            }
+        });
+
+        // Spawn GC background task (stopped sandbox cleanup)
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(gc_interval));
+            loop {
+                interval.tick().await;
+                ai_agent_sandbox_blueprint_lib::reaper::gc_tick().await;
+            }
+        });
+    }
+
     // Create producer (listens for JobSubmitted events) and consumer (submits results)
     let tangle_producer = TangleProducer::new(tangle_client.clone(), service_id);
     let tangle_consumer = TangleConsumer::new(tangle_client);
