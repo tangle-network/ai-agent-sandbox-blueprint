@@ -20,8 +20,6 @@ pub async fn sandbox_create(
 ) -> Result<TangleResult<SandboxCreateOutput>, String> {
     let record = create_sidecar(&request).await?;
 
-    crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
-
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
         crate::jobs::ssh::provision_key(
             &record.sidecar_url,
@@ -51,8 +49,6 @@ pub async fn sandbox_delete(
 ) -> Result<TangleResult<JsonResponse>, String> {
     let record = get_sandbox_by_id(&request.sandbox_id)?;
     delete_sidecar(&record).await?;
-
-    crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
 
     let sandbox_id = request.sandbox_id.to_string();
     sandboxes()

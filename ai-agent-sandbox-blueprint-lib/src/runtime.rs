@@ -125,7 +125,7 @@ fn next_sandbox_id() -> String {
 
 pub fn get_sandbox_by_id(id: &str) -> Result<SandboxRecord> {
     sandboxes()?
-        .get(&id.to_string())?
+        .get(id)?
         .ok_or_else(|| SandboxError::NotFound(format!("Sandbox '{id}' not found")))
 }
 
@@ -290,6 +290,8 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
 
+    crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
+
     Ok(record)
 }
 
@@ -329,6 +331,9 @@ pub async fn delete_sidecar(record: &SandboxRecord) -> Result<()> {
         }))
         .await
         .map_err(|err| SandboxError::Docker(format!("Failed to remove container: {err}")))?;
+
+    crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
+
     Ok(())
 }
 

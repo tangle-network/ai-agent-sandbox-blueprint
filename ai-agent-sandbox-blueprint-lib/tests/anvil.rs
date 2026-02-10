@@ -165,8 +165,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         let workflow_payload = WorkflowCreateRequest {
             name: "daily".to_string(),
             workflow_json: format!(
-                "{{\"sidecar_url\":\"{}\",\"prompt\":\"run\",\"sidecar_token\":\"sandbox-token\"}}",
-                sidecar_url
+                "{{\"sidecar_url\":\"{sidecar_url}\",\"prompt\":\"run\",\"sidecar_token\":\"sandbox-token\"}}"
             ),
             trigger_type: "cron".to_string(),
             trigger_config: "0 * * * * *".to_string(),

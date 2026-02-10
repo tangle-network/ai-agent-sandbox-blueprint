@@ -14,12 +14,10 @@ use ai_agent_sandbox_blueprint_lib::util::{
 use ai_agent_sandbox_blueprint_lib::workflows::{
     WorkflowEntry, apply_workflow_execution, resolve_next_run,
 };
-use ai_agent_sandbox_blueprint_lib::{
-    SandboxTaskRequest, extract_agent_fields,
-};
-use serde_json::{Value, json};
+use ai_agent_sandbox_blueprint_lib::extract_agent_fields;
+use serde_json::json;
 use std::sync::atomic::Ordering;
-use wiremock::matchers::{body_json_string, header, method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ─── HTTP Layer Tests ────────────────────────────────────────────────────────
@@ -114,7 +112,7 @@ mod http_tests {
             "/agents/run",
             "test-token",
             json!({
-                "identifier": "default-agent",
+                "identifier": "default",
                 "message": "run the task"
             }),
         )
@@ -315,7 +313,7 @@ mod agent_interaction_tests {
             "/agents/run",
             "test-token",
             json!({
-                "identifier": "default-agent",
+                "identifier": "default",
                 "message": "Create a new React project with TypeScript",
                 "sessionId": "session-persistent",
                 "backend": {"model": "claude-sonnet-4-5-20250929"},
@@ -351,7 +349,7 @@ mod agent_interaction_tests {
             "/agents/run",
             "test-token",
             json!({
-                "identifier": "default-agent",
+                "identifier": "default",
                 "message": "Build a project"
             }),
         )
@@ -386,7 +384,7 @@ mod agent_interaction_tests {
             "/agents/run",
             "test-token",
             json!({
-                "identifier": "default-agent",
+                "identifier": "default",
                 "message": "Build a Node.js REST API",
                 "metadata": {"maxTurns": 10, "maxSteps": 10}
             }),
@@ -955,7 +953,7 @@ mod sidecar_workflow_tests {
             "/agents/run",
             "build-token",
             json!({
-                "identifier": "default-agent",
+                "identifier": "default",
                 "message": "Create a new Express.js TypeScript project",
                 "metadata": {"maxTurns": 5}
             }),
@@ -1015,7 +1013,7 @@ mod sidecar_workflow_tests {
             "/agents/run",
             "build-token",
             json!({
-                "identifier": "default-agent",
+                "identifier": "default",
                 "message": "Add a health check endpoint at /api/health",
                 "sessionId": session_id
             }),
@@ -1132,7 +1130,7 @@ mod sidecar_workflow_tests {
             &server.uri(),
             "/agents/run",
             "bad-token",
-            json!({"identifier": "default-agent", "message": "hello"}),
+            json!({"identifier": "default", "message": "hello"}),
         )
         .await;
 

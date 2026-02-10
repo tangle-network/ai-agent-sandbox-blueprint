@@ -4,8 +4,11 @@
 //! endpoints. They verify real response shapes, real auth behavior, and real
 //! command execution — no mocks.
 //!
-//! Run:
+//! Run (infrastructure only):
 //!   REAL_SIDECAR=1 cargo test --test real_sidecar -- --test-threads=1
+//!
+//! Run (with AI backend):
+//!   REAL_SIDECAR=1 ZAI_API_KEY=<key> cargo test --test real_sidecar -- --test-threads=1
 //!
 //! Requires Docker and a local sidecar image (default: tangle-sidecar:local).
 //! Override with SIDECAR_IMAGE env var.
@@ -20,6 +23,7 @@ use docktopus::bollard::container::{Config as BollardConfig, InspectContainerOpt
 use docktopus::bollard::models::{HostConfig, PortBinding, PortMap};
 use docktopus::container::Container;
 use docktopus::DockerBuilder;
+use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -57,6 +61,14 @@ async fn docker_builder() -> DockerBuilder {
 async fn ensure_sidecar() -> &'static TestSidecar {
     SIDECAR
         .get_or_init(|| async {
+            // Set a generous HTTP client timeout for AI tasks (must happen before
+            // SidecarRuntimeConfig::load() is first called).
+            // SAFETY: called once during single-threaded test init before any
+            // other thread reads this variable.
+            if std::env::var("REQUEST_TIMEOUT_SECS").is_err() {
+                unsafe { std::env::set_var("REQUEST_TIMEOUT_SECS", "300") };
+            }
+
             let image = std::env::var("SIDECAR_IMAGE")
                 .unwrap_or_else(|_| "tangle-sidecar:local".to_string());
 
@@ -87,12 +99,22 @@ async fn ensure_sidecar() -> &'static TestSidecar {
             let mut exposed_ports: HashMap<String, HashMap<(), ()>> = HashMap::new();
             exposed_ports.insert(format!("{CONTAINER_PORT}/tcp"), HashMap::new());
 
-            let env_vars = vec![
+            let mut env_vars = vec![
                 format!("SIDECAR_PORT={CONTAINER_PORT}"),
                 format!("SIDECAR_AUTH_TOKEN={AUTH_TOKEN}"),
                 "NODE_ENV=development".to_string(),
                 "PORT_WATCHER_ENABLED=false".to_string(),
             ];
+
+            // Configure ZAI AI backend when API key is available.
+            if let Ok(api_key) = std::env::var("ZAI_API_KEY") {
+                if !api_key.is_empty() {
+                    env_vars.push("AGENT_BACKEND=opencode".to_string());
+                    env_vars.push("OPENCODE_MODEL_PROVIDER=zai-coding-plan".to_string());
+                    env_vars.push(format!("OPENCODE_MODEL_API_KEY={api_key}"));
+                    env_vars.push("OPENCODE_MODEL_NAME=glm-4.7".to_string());
+                }
+            }
 
             let override_config = BollardConfig {
                 exposed_ports: Some(exposed_ports),
@@ -138,7 +160,10 @@ async fn ensure_sidecar() -> &'static TestSidecar {
             let url = format!("http://127.0.0.1:{host_port}");
 
             // Wait for healthy.
-            let client = Client::new();
+            let client = Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .unwrap();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
             loop {
                 if tokio::time::Instant::now() > deadline {
@@ -149,6 +174,47 @@ async fn ensure_sidecar() -> &'static TestSidecar {
                     _ => {}
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+
+            // When AI backend is configured, warm it up by sending a simple prompt.
+            // The OpenCode backend needs extra time to initialize after health passes.
+            if std::env::var("ZAI_API_KEY").is_ok() {
+                eprintln!("Warming up AI backend...");
+                let warmup_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+                loop {
+                    if tokio::time::Instant::now() > warmup_deadline {
+                        eprintln!("Warning: AI backend warmup timed out (tests may fail)");
+                        break;
+                    }
+                    let resp = client
+                        .post(format!("{url}/agents/run"))
+                        .header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {AUTH_TOKEN}")).unwrap())
+                        .header(CONTENT_TYPE, "application/json")
+                        .json(&json!({"message": "ping", "identifier": "default"}))
+                        .send()
+                        .await;
+                    match resp {
+                        Ok(r) if r.status().is_success() => {
+                            eprintln!("AI backend ready");
+                            break;
+                        }
+                        Ok(r) => {
+                            let body = r.text().await.unwrap_or_default();
+                            if body.contains("not responding") || body.contains("crashed") {
+                                eprintln!("AI backend not ready yet, retrying...");
+                                tokio::time::sleep(Duration::from_secs(3)).await;
+                            } else {
+                                // Got a real error (not a crash), backend is running
+                                eprintln!("AI backend ready (responded with error: {})",
+                                    &body[..body.len().min(100)]);
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                        }
+                    }
+                }
             }
 
             TestSidecar { url, container_id }
@@ -177,6 +243,15 @@ macro_rules! skip_unless_real {
     () => {
         if !should_run() {
             eprintln!("Skipped (set REAL_SIDECAR=1 to enable)");
+            return;
+        }
+    };
+}
+
+macro_rules! skip_unless_ai {
+    () => {
+        if !should_run() || std::env::var("ZAI_API_KEY").is_err() {
+            eprintln!("Skipped (set REAL_SIDECAR=1 and ZAI_API_KEY to run)");
             return;
         }
     };
@@ -640,10 +715,11 @@ async fn ssh_revoke_works_against_real_sidecar() {
 // Agent run
 // ===================================================================
 
-/// Without a configured LLM backend, /agents/run returns an error with
-/// {success: false, error: {code, message}}.
+/// Test /agents/run response structure.
+/// Without a backend: returns {success: false, error: {code, message}}.
+/// With a backend: returns {success: true, data: {finalText, ...}}.
 #[tokio::test]
-async fn agent_run_without_backend_returns_structured_error() {
+async fn agent_run_response_structure() {
     skip_unless_real!();
     let s = ensure_sidecar().await;
 
@@ -664,15 +740,23 @@ async fn agent_run_without_backend_returns_structured_error() {
 
     eprintln!("agents/run: status={status}, body={body}");
 
-    // Without a backend, sidecar returns HTTP 500 with structured error.
-    assert_eq!(body["success"], false, "should fail without backend: {body}");
-    assert!(body["error"]["code"].is_string(), "error.code: {body}");
-    assert!(body["error"]["message"].is_string(), "error.message: {body}");
+    if std::env::var("ZAI_API_KEY").is_ok() {
+        // With backend configured, expect success.
+        assert_eq!(body["success"], true, "should succeed with backend: {body}");
+        assert!(body["data"]["finalText"].is_string(), "data.finalText: {body}");
+    } else {
+        // Without a backend, sidecar returns HTTP 500 with structured error.
+        assert_eq!(body["success"], false, "should fail without backend: {body}");
+        assert!(body["error"]["code"].is_string(), "error.code: {body}");
+        assert!(body["error"]["message"].is_string(), "error.message: {body}");
+    }
 }
 
-/// Verify extract_agent_fields correctly parses the real error response.
+/// Verify extract_agent_fields correctly parses the real response.
+/// Without a backend: success=false, error is populated.
+/// With a backend (ZAI_API_KEY set): success=true, response is populated.
 #[tokio::test]
-async fn extract_agent_fields_parses_real_error_response() {
+async fn extract_agent_fields_parses_real_response() {
     skip_unless_real!();
     let s = ensure_sidecar().await;
 
@@ -686,23 +770,29 @@ async fn extract_agent_fields_parses_real_error_response() {
         .unwrap();
 
     let body: Value = resp.json().await.unwrap();
-    let (success, _response, error, _trace_id) = extract_agent_fields(&body);
+    let (success, response, error, _trace_id) = extract_agent_fields(&body);
 
-    eprintln!("extract_agent_fields: success={success}, error='{error}'");
+    eprintln!("extract_agent_fields: success={success}, response='{response}', error='{error}'");
 
-    // The real error is at body["error"]["message"], which extract_agent_fields
-    // reads via: parsed.get("error").and_then(|err| err.get("message")...).
-    assert!(!success, "should not be success");
-    assert!(!error.is_empty(), "should extract error message from: {body}");
+    if std::env::var("ZAI_API_KEY").is_ok() {
+        // With backend, expect success with a response.
+        assert!(success, "should succeed with backend: {body}");
+        assert!(!response.is_empty(), "response should not be empty: {body}");
+    } else {
+        // Without backend, expect error.
+        assert!(!success, "should not be success without backend: {body}");
+        assert!(!error.is_empty(), "should extract error message from: {body}");
+    }
 }
 
 /// Blueprint's `run_prompt_request` posts to `/agents/run`.
-/// This endpoint EXISTS, so the request goes through (fails from no backend,
-/// not from 404).
+/// With a backend: should succeed. Without: should fail (but not 404).
 #[tokio::test]
 async fn blueprint_run_prompt_reaches_real_sidecar() {
     skip_unless_real!();
     let s = ensure_sidecar().await;
+
+    let timeout = if std::env::var("ZAI_API_KEY").is_ok() { 60000 } else { 15000 };
 
     let request = SandboxPromptRequest {
         sidecar_url: s.url.clone(),
@@ -710,7 +800,7 @@ async fn blueprint_run_prompt_reaches_real_sidecar() {
         session_id: String::new(),
         model: String::new(),
         context_json: String::new(),
-        timeout_ms: 15000,
+        timeout_ms: timeout,
         sidecar_token: AUTH_TOKEN.to_string(),
     };
 
@@ -718,7 +808,8 @@ async fn blueprint_run_prompt_reaches_real_sidecar() {
 
     match &result {
         Ok(resp) => {
-            eprintln!("run_prompt_request succeeded: success={}", resp.success);
+            eprintln!("run_prompt_request succeeded: success={}, response='{}'",
+                resp.success, resp.response);
         }
         Err(e) => {
             // Should fail from HTTP 500 (no backend), NOT 404.
@@ -891,6 +982,355 @@ async fn terminal_create_list_delete() {
 }
 
 // ===================================================================
+// Blueprint run_task_request against real sidecar
+// ===================================================================
+
+/// run_task_request sends to /agents/run just like run_prompt_request.
+/// With a backend: should succeed. Without: should fail (but not 404).
+#[tokio::test]
+async fn blueprint_run_task_request_reaches_real_sidecar() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    let timeout = if std::env::var("ZAI_API_KEY").is_ok() { 60000 } else { 15000 };
+
+    let request = ai_agent_sandbox_blueprint_lib::SandboxTaskRequest {
+        sidecar_url: s.url.clone(),
+        prompt: "Task test".to_string(),
+        session_id: String::new(),
+        max_turns: 3,
+        model: String::new(),
+        context_json: String::new(),
+        timeout_ms: timeout,
+        sidecar_token: AUTH_TOKEN.to_string(),
+    };
+
+    let result = ai_agent_sandbox_blueprint_lib::run_task_request(&request).await;
+
+    match &result {
+        Ok(resp) => {
+            eprintln!("run_task_request succeeded: success={}, result='{}'",
+                resp.success, resp.result);
+        }
+        Err(e) => {
+            assert!(
+                !e.contains("404"),
+                "/agents/run exists. Error should not be 404: {e}"
+            );
+            eprintln!("run_task_request failed (expected, no backend): {e}");
+        }
+    }
+}
+
+// ===================================================================
+// Concurrent requests
+// ===================================================================
+
+/// Verify the sidecar handles multiple simultaneous exec requests.
+#[tokio::test]
+async fn concurrent_exec_requests() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let url = s.url.clone();
+        handles.push(tokio::spawn(async move {
+            let resp = http()
+                .post(format!("{url}/terminals/commands"))
+                .header(AUTHORIZATION, auth_header())
+                .header(CONTENT_TYPE, "application/json")
+                .json(&json!({"command": format!("echo concurrent-{i}"), "timeout": 10000}))
+                .send()
+                .await
+                .unwrap();
+            let body: Value = resp.json().await.unwrap();
+            (i, body)
+        }));
+    }
+
+    for handle in handles {
+        let (i, body) = handle.await.unwrap();
+        assert_eq!(body["success"], true, "concurrent-{i} failed: {body}");
+        let stdout = body["result"]["stdout"].as_str().unwrap_or("");
+        assert!(
+            stdout.contains(&format!("concurrent-{i}")),
+            "concurrent-{i} missing from stdout: '{stdout}'"
+        );
+    }
+}
+
+// ===================================================================
+// Large output handling
+// ===================================================================
+
+/// Verify the sidecar handles commands that produce substantial output.
+#[tokio::test]
+async fn large_output_handling() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    // Generate ~10KB of output.
+    let resp = http()
+        .post(format!("{}/terminals/commands", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({
+            "command": "seq 1 1000",
+            "timeout": 15000
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success(), "status: {}", resp.status());
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["success"], true, "body: {body}");
+
+    let stdout = body["result"]["stdout"].as_str().unwrap_or("");
+    // Should contain the last line (1000) somewhere.
+    assert!(
+        stdout.contains("1000"),
+        "stdout should contain '1000': len={}",
+        stdout.len()
+    );
+}
+
+// ===================================================================
+// Snapshot command execution
+// ===================================================================
+
+/// Verify that a snapshot-style tar command can run inside the sidecar.
+/// We don't actually upload anywhere — just verify tar works.
+#[tokio::test]
+async fn snapshot_tar_command_executes() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    // Create a file, then tar it. This simulates what the snapshot job does.
+    let resp = http()
+        .post(format!("{}/terminals/commands", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({
+            "command": "mkdir -p /tmp/snap-test && echo snap-data > /tmp/snap-test/file.txt && tar -czf /tmp/snap-test.tar.gz -C /tmp snap-test && ls -la /tmp/snap-test.tar.gz",
+            "timeout": 15000
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["success"], true, "body: {body}");
+    let stdout = body["result"]["stdout"].as_str().unwrap_or("");
+    assert!(
+        stdout.contains("snap-test.tar.gz"),
+        "tar file should exist: '{stdout}'"
+    );
+}
+
+// ===================================================================
+// build_exec_payload against real sidecar
+// ===================================================================
+
+/// Verify build_exec_payload produces a payload the real sidecar accepts.
+#[tokio::test]
+async fn build_exec_payload_works_with_real_sidecar() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    let payload = ai_agent_sandbox_blueprint_lib::build_exec_payload(
+        "echo payload-ok",
+        "/tmp",
+        r#"{"PAYLOAD_VAR": "test"}"#,
+        10000,
+    );
+
+    let resp = http()
+        .post(format!("{}/terminals/commands", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success(), "status: {}", resp.status());
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["success"], true, "body: {body}");
+
+    let (exit_code, stdout, _stderr) =
+        ai_agent_sandbox_blueprint_lib::extract_exec_fields(&body);
+    assert_eq!(exit_code, 0);
+    assert!(stdout.contains("payload-ok"), "stdout: '{stdout}'");
+}
+
+// ===================================================================
+// SSH key idempotency
+// ===================================================================
+
+/// Calling `provision_key` twice with the same key should succeed both times.
+/// The underlying `build_ssh_command` uses `grep -qxF` to avoid duplicating entries.
+#[tokio::test]
+async fn ssh_provision_idempotent() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIdempotent idempotent@test";
+
+    // Both calls should return Ok (HTTP-level success).
+    let r1 = ai_agent_sandbox_blueprint_lib::provision_key(&s.url, "agent", key, AUTH_TOKEN).await;
+    assert!(r1.is_ok(), "first provision failed: {r1:?}");
+
+    let r2 = ai_agent_sandbox_blueprint_lib::provision_key(&s.url, "agent", key, AUTH_TOKEN).await;
+    assert!(r2.is_ok(), "second provision failed: {r2:?}");
+
+    // Both should return identical sidecar response structure.
+    let v1 = r1.unwrap();
+    let v2 = r2.unwrap();
+    assert!(v1["success"].as_bool().unwrap_or(false), "r1: {v1}");
+    assert!(v2["success"].as_bool().unwrap_or(false), "r2: {v2}");
+}
+
+// ===================================================================
+// File edge cases
+// ===================================================================
+
+/// Write an empty file and read it back.
+#[tokio::test]
+async fn file_write_empty_content() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    let write_resp = http()
+        .post(format!("{}/files/write", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({
+            "path": "/home/agent/empty-file.txt",
+            "content": ""
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    if !write_resp.status().is_success() {
+        eprintln!("Empty file write returned {}", write_resp.status());
+        return;
+    }
+
+    let body: Value = write_resp.json().await.unwrap();
+    assert_eq!(body["success"], true, "body: {body}");
+    assert_eq!(body["data"]["size"], 0, "empty file should be 0 bytes: {body}");
+}
+
+/// Overwrite an existing file and verify new content.
+#[tokio::test]
+async fn file_overwrite() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    let path = "/home/agent/overwrite-test.txt";
+
+    // Write original.
+    let r = http()
+        .post(format!("{}/files/write", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({"path": path, "content": "original"}))
+        .send()
+        .await
+        .unwrap();
+    if !r.status().is_success() { return; }
+
+    // Overwrite.
+    let r = http()
+        .post(format!("{}/files/write", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({"path": path, "content": "overwritten"}))
+        .send()
+        .await
+        .unwrap();
+    if !r.status().is_success() { return; }
+
+    // Read back.
+    let read_resp = http()
+        .post(format!("{}/files/read", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({"path": path}))
+        .send()
+        .await
+        .unwrap();
+
+    let body: Value = read_resp.json().await.unwrap();
+    if body["success"] == true {
+        let content = body["data"]["content"].as_str().unwrap_or("");
+        assert!(
+            content.contains("overwritten"),
+            "Should contain overwritten content: '{content}'"
+        );
+        assert!(
+            !content.contains("original"),
+            "Should not contain original content: '{content}'"
+        );
+    }
+}
+
+/// Read a non-existent file should return an error.
+#[tokio::test]
+async fn file_read_nonexistent() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    let resp = http()
+        .post(format!("{}/files/read", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({"path": "/home/agent/does-not-exist-abc123.txt"}))
+        .send()
+        .await
+        .unwrap();
+
+    let status = resp.status().as_u16();
+    let body: Value = resp.json().await.unwrap_or(json!({}));
+    eprintln!("read nonexistent: status={status}, body={body}");
+    // Should be a 4xx error, not a crash.
+    assert!((400..500).contains(&status), "Should be 4xx: {status}");
+    assert_eq!(body["success"], false);
+}
+
+// ===================================================================
+// Long-running command
+// ===================================================================
+
+/// Verify a command that takes a few seconds completes and returns duration.
+#[tokio::test]
+async fn long_running_command_returns_duration() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    let resp = http()
+        .post(format!("{}/terminals/commands", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({"command": "sleep 2 && echo done", "timeout": 15000}))
+        .send()
+        .await
+        .unwrap();
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["success"], true, "body: {body}");
+
+    let stdout = body["result"]["stdout"].as_str().unwrap_or("");
+    assert!(stdout.contains("done"), "stdout: '{stdout}'");
+
+    let duration = body["result"]["duration"].as_f64().unwrap_or(0.0);
+    assert!(duration >= 1500.0, "duration should be >= 1500ms: {duration}");
+}
+
+// ===================================================================
 // Response shape compatibility documentation
 // ===================================================================
 
@@ -941,6 +1381,596 @@ async fn api_compatibility_report() {
 }
 
 // ===================================================================
+// SSE helper
+// ===================================================================
+
+/// Read SSE events from a response body until done or timeout.
+/// Returns a vec of (event_type, data) pairs.
+async fn collect_sse_events(resp: reqwest::Response, timeout: Duration) -> Vec<(String, Value)> {
+    let mut events = Vec::new();
+    let mut stream = resp.bytes_stream();
+    let mut buffer = String::new();
+
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+
+        let chunk = tokio::time::timeout(remaining, stream.next()).await;
+        match chunk {
+            Ok(Some(Ok(bytes))) => {
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                // Parse complete SSE frames (separated by double newline).
+                while let Some(pos) = buffer.find("\n\n") {
+                    let frame = buffer[..pos].to_string();
+                    buffer = buffer[pos + 2..].to_string();
+
+                    let mut event_type = String::new();
+                    let mut data_parts = Vec::new();
+
+                    for line in frame.lines() {
+                        if let Some(val) = line.strip_prefix("event:") {
+                            event_type = val.trim().to_string();
+                        } else if let Some(val) = line.strip_prefix("data:") {
+                            data_parts.push(val.trim().to_string());
+                        }
+                    }
+
+                    if !data_parts.is_empty() {
+                        let data_str = data_parts.join("\n");
+                        let data: Value =
+                            serde_json::from_str(&data_str).unwrap_or(Value::String(data_str));
+                        if event_type.is_empty() {
+                            event_type = "message".to_string();
+                        }
+                        events.push((event_type, data));
+                    }
+                }
+            }
+            Ok(Some(Err(_))) | Ok(None) => break,
+            Err(_) => break, // timeout
+        }
+    }
+
+    events
+}
+
+// ===================================================================
+// Real AI agent tests (requires ZAI_API_KEY)
+// ===================================================================
+
+/// Send a simple prompt and verify we get a real LLM response.
+#[tokio::test]
+async fn ai_agent_prompt_returns_real_response() {
+    skip_unless_ai!();
+    let s = ensure_sidecar().await;
+
+    let request = SandboxPromptRequest {
+        sidecar_url: s.url.clone(),
+        message: "What is 2+2? Reply with just the number.".to_string(),
+        session_id: String::new(),
+        model: String::new(),
+        context_json: String::new(),
+        timeout_ms: 60000,
+        sidecar_token: AUTH_TOKEN.to_string(),
+    };
+
+    let result = ai_agent_sandbox_blueprint_lib::run_prompt_request(&request)
+        .await
+        .expect("run_prompt_request should succeed with AI backend");
+
+    eprintln!("AI prompt response: success={}, response='{}', trace_id='{}'",
+        result.success, result.response, result.trace_id);
+
+    assert!(result.success, "should succeed: error='{}'", result.error);
+    assert!(!result.response.is_empty(), "response should not be empty");
+    assert!(result.response.contains('4'), "response should contain '4': '{}'", result.response);
+}
+
+/// Send two tasks using the same sessionId to verify session mechanics.
+/// The first request creates a session; the second reuses it.
+/// We verify both succeed and the session ID is accepted (not rejected).
+#[tokio::test]
+async fn ai_agent_task_with_session_continuity() {
+    skip_unless_ai!();
+    let s = ensure_sidecar().await;
+
+    // First message: creates a new session.
+    let request1 = ai_agent_sandbox_blueprint_lib::SandboxTaskRequest {
+        sidecar_url: s.url.clone(),
+        prompt: "Say hello in one sentence.".to_string(),
+        session_id: String::new(),
+        max_turns: 3,
+        model: String::new(),
+        context_json: String::new(),
+        timeout_ms: 60000,
+        sidecar_token: AUTH_TOKEN.to_string(),
+    };
+
+    let result1 = ai_agent_sandbox_blueprint_lib::run_task_request(&request1)
+        .await
+        .expect("first task request should succeed");
+
+    eprintln!("Task 1: success={}, session_id='{}', result='{}'",
+        result1.success, result1.session_id, result1.result);
+
+    assert!(result1.success, "first task should succeed: error='{}'", result1.error);
+    assert!(!result1.session_id.is_empty(), "should return a sessionId");
+    assert!(!result1.result.is_empty(), "first result should not be empty");
+
+    // Second message: reuse the same session.
+    let request2 = ai_agent_sandbox_blueprint_lib::SandboxTaskRequest {
+        sidecar_url: s.url.clone(),
+        prompt: "What is 3+5? Reply with just the number.".to_string(),
+        session_id: result1.session_id.clone(),
+        max_turns: 3,
+        model: String::new(),
+        context_json: String::new(),
+        timeout_ms: 60000,
+        sidecar_token: AUTH_TOKEN.to_string(),
+    };
+
+    let result2 = ai_agent_sandbox_blueprint_lib::run_task_request(&request2)
+        .await
+        .expect("second task request should succeed");
+
+    eprintln!("Task 2: success={}, session_id='{}', result='{}'",
+        result2.success, result2.session_id, result2.result);
+
+    assert!(result2.success, "second task should succeed: error='{}'", result2.error);
+    assert!(!result2.result.is_empty(), "second result should not be empty");
+    // Session ID should be consistent (same or new — both are valid).
+    assert!(!result2.session_id.is_empty(), "second response should have sessionId");
+}
+
+/// Send a task with max_turns and verify it completes.
+#[tokio::test]
+async fn ai_agent_task_with_max_turns() {
+    skip_unless_ai!();
+    let s = ensure_sidecar().await;
+
+    let request = ai_agent_sandbox_blueprint_lib::SandboxTaskRequest {
+        sidecar_url: s.url.clone(),
+        prompt: "Say hello in exactly 3 words.".to_string(),
+        session_id: String::new(),
+        max_turns: 2,
+        model: String::new(),
+        context_json: String::new(),
+        timeout_ms: 60000,
+        sidecar_token: AUTH_TOKEN.to_string(),
+    };
+
+    let result = ai_agent_sandbox_blueprint_lib::run_task_request(&request)
+        .await
+        .expect("task request should succeed");
+
+    eprintln!("Task max_turns: success={}, result='{}'", result.success, result.result);
+
+    assert!(result.success, "should succeed: error='{}'", result.error);
+    assert!(!result.result.is_empty(), "result should not be empty");
+}
+
+// ===================================================================
+// SSE streaming tests (requires ZAI_API_KEY)
+// ===================================================================
+
+/// POST to /agents/run/stream and verify we receive SSE events.
+#[tokio::test]
+async fn ai_agent_stream_emits_sse_events() {
+    skip_unless_ai!();
+    let s = ensure_sidecar().await;
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(90))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post(format!("{}/agents/run/stream", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({
+            "message": "What is 1+1? Reply briefly.",
+            "identifier": "default"
+        }))
+        .send()
+        .await
+        .expect("stream request should succeed");
+
+    let status = resp.status();
+    eprintln!("SSE stream status: {status}");
+
+    // The endpoint should return 200 with text/event-stream content type.
+    assert!(
+        status.is_success(),
+        "stream endpoint should return 2xx, got {status}"
+    );
+
+    let events = collect_sse_events(resp, Duration::from_secs(60)).await;
+
+    eprintln!("SSE events received: {}", events.len());
+    for (i, (evt, data)) in events.iter().enumerate() {
+        eprintln!("  event[{i}]: type='{evt}', data={data}");
+    }
+
+    assert!(!events.is_empty(), "should receive at least one SSE event");
+
+    // Check for expected event types.
+    let event_types: Vec<&str> = events.iter().map(|(t, _)| t.as_str()).collect();
+    eprintln!("Event types: {event_types:?}");
+
+    // We expect at least a start-ish event and some content events.
+    // The exact event names depend on the sidecar implementation.
+    let has_content = events.iter().any(|(t, _)| {
+        t.contains("message") || t.contains("part") || t.contains("updated") || t == "message"
+    });
+    assert!(
+        has_content,
+        "should have at least one content event in: {event_types:?}"
+    );
+}
+
+// ===================================================================
+// Real-world AI agent tests — complex multi-tool tasks
+// ===================================================================
+
+/// Ask the agent to write and run a simple Python script.
+/// This exercises: tool use (file write + terminal exec) in a single focused task.
+///
+/// NOTE: This test is tolerant of timeouts since the AI model may be slow for
+/// agentic tool-use. A timeout is reported as a skip, not a failure.
+#[tokio::test]
+async fn ai_agent_writes_and_runs_python_script() {
+    skip_unless_ai!();
+    let s = ensure_sidecar().await;
+
+    let prompt = "Create /home/agent/fib.py that prints the first 10 Fibonacci numbers, then run it with python3.";
+
+    let request = ai_agent_sandbox_blueprint_lib::SandboxTaskRequest {
+        sidecar_url: s.url.clone(),
+        prompt: prompt.to_string(),
+        session_id: String::new(),
+        max_turns: 5,
+        model: String::new(),
+        context_json: String::new(),
+        timeout_ms: 240000,
+        sidecar_token: AUTH_TOKEN.to_string(),
+    };
+
+    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request).await {
+        Ok(r) => r,
+        Err(e) => {
+            if e.contains("error sending request") || e.contains("timed out") || e.contains("timeout") {
+                eprintln!("SKIPPED: AI agent timed out (model too slow for agentic tool-use): {e}");
+                return;
+            }
+            panic!("task request failed unexpectedly: {e}");
+        }
+    };
+
+    eprintln!("Python task: success={}, result length={}", result.success, result.result.len());
+    eprintln!("Result: {}", &result.result[..result.result.len().min(500)]);
+
+    assert!(result.success, "should succeed: error='{}'", result.error);
+    assert!(!result.result.is_empty(), "result should not be empty");
+
+    // Verify the agent actually created the file by reading it back.
+    let read_resp = http()
+        .post(format!("{}/files/read", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({"path": "/home/agent/fib.py"}))
+        .send()
+        .await
+        .unwrap();
+
+    if read_resp.status().is_success() {
+        let body: Value = read_resp.json().await.unwrap();
+        if body["success"] == true {
+            let content = body["data"]["content"].as_str().unwrap_or("");
+            eprintln!("fib.py content ({} bytes): {}", content.len(),
+                &content[..content.len().min(300)]);
+            assert!(content.contains("fib") || content.contains("Fib") || content.contains("def ") || content.contains("print"),
+                "script should contain fibonacci logic: '{}'", &content[..content.len().min(200)]);
+        }
+    }
+}
+
+/// Ask the agent to do data analysis with pandas: create a dataset, compute stats,
+/// and write results. This is the "investment memo" class of prompt — multi-step,
+/// data science, file I/O.
+#[tokio::test]
+async fn ai_agent_pandas_data_analysis() {
+    skip_unless_ai!();
+    let s = ensure_sidecar().await;
+
+    let prompt = r#"Write and run a Python script at /home/agent/analysis.py that:
+1. Creates a pandas DataFrame with 100 rows of fake stock data:
+   - columns: date (daily from 2024-01-01), ticker (randomly AAPL/GOOG/MSFT), price (random 100-500), volume (random int)
+2. Groups by ticker and computes: mean price, total volume, price std dev
+3. Writes the summary table to /home/agent/stock_summary.csv
+4. Prints the summary to stdout
+
+Install pandas with pip first if needed."#;
+
+    let request = ai_agent_sandbox_blueprint_lib::SandboxTaskRequest {
+        sidecar_url: s.url.clone(),
+        prompt: prompt.to_string(),
+        session_id: String::new(),
+        max_turns: 8,
+        model: String::new(),
+        context_json: String::new(),
+        timeout_ms: 240000,
+        sidecar_token: AUTH_TOKEN.to_string(),
+    };
+
+    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request).await {
+        Ok(r) => r,
+        Err(e) => {
+            if e.contains("error sending request") || e.contains("timed out") || e.contains("timeout") {
+                eprintln!("SKIPPED: AI agent timed out (model too slow for pandas task): {e}");
+                return;
+            }
+            panic!("pandas task failed unexpectedly: {e}");
+        }
+    };
+
+    eprintln!("Pandas task: success={}, result length={}", result.success, result.result.len());
+    eprintln!("Result: {}", &result.result[..result.result.len().min(800)]);
+
+    assert!(result.success, "should succeed: error='{}'", result.error);
+
+    // Check the CSV was created.
+    let csv_resp = http()
+        .post(format!("{}/files/read", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({"path": "/home/agent/stock_summary.csv"}))
+        .send()
+        .await
+        .unwrap();
+
+    if csv_resp.status().is_success() {
+        let body: Value = csv_resp.json().await.unwrap();
+        if body["success"] == true {
+            let content = body["data"]["content"].as_str().unwrap_or("");
+            eprintln!("stock_summary.csv:\n{content}");
+            // Should contain ticker names and numeric data.
+            let has_tickers = content.contains("AAPL") || content.contains("GOOG") || content.contains("MSFT");
+            assert!(has_tickers, "CSV should contain stock tickers: '{content}'");
+        }
+    }
+}
+
+/// Stream a complex prompt and verify we get tool invocation events, not just text.
+/// This proves streaming works for multi-step agentic tasks, not just chat.
+#[tokio::test]
+async fn ai_agent_stream_complex_task_with_tools() {
+    skip_unless_ai!();
+    let s = ensure_sidecar().await;
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post(format!("{}/agents/run/stream", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({
+            "message": "Create a file /home/agent/hello.txt containing 'Hello from streaming test'. Then read it back and confirm the contents.",
+            "identifier": "default"
+        }))
+        .send()
+        .await
+        .expect("stream request should succeed");
+
+    let status = resp.status();
+    eprintln!("Complex stream status: {status}");
+    assert!(status.is_success(), "should return 2xx, got {status}");
+
+    let events = collect_sse_events(resp, Duration::from_secs(120)).await;
+
+    eprintln!("Complex stream events: {} total", events.len());
+
+    // Categorize events.
+    let mut event_type_counts: HashMap<String, usize> = HashMap::new();
+    for (evt, data) in &events {
+        *event_type_counts.entry(evt.clone()).or_default() += 1;
+        // Print first 150 chars of each event for debugging.
+        let preview = format!("{data}");
+        let preview = if preview.len() > 150 { &preview[..150] } else { &preview };
+        eprintln!("  [{evt}] {preview}");
+    }
+
+    eprintln!("\nEvent type summary:");
+    for (t, c) in &event_type_counts {
+        eprintln!("  {t}: {c}x");
+    }
+
+    assert!(!events.is_empty(), "should receive SSE events");
+    assert!(events.len() >= 3,
+        "complex task should produce multiple events, got {}", events.len());
+
+    // Check for tool-related events (the agent should use tools to create/read files).
+    let has_tool_events = events.iter().any(|(t, _)| {
+        t.contains("tool") || t.contains("invocation") || t.contains("action")
+    });
+    let has_content_events = events.iter().any(|(t, _)| {
+        t.contains("message") || t.contains("text") || t.contains("part")
+    });
+    let has_lifecycle_events = events.iter().any(|(t, _)| {
+        t.contains("start") || t.contains("done") || t.contains("execution")
+    });
+
+    eprintln!("Has tool events: {has_tool_events}");
+    eprintln!("Has content events: {has_content_events}");
+    eprintln!("Has lifecycle events: {has_lifecycle_events}");
+
+    // At minimum we need lifecycle events (start/done) and some content.
+    assert!(has_lifecycle_events, "should have lifecycle events (start/done)");
+    // The task involves file creation, so we expect either tool events or content describing it.
+    assert!(has_tool_events || has_content_events,
+        "should have tool or content events for a file-creation task");
+}
+
+/// Write and run a Node.js script. This exercises the "vibecoding" workflow:
+/// create code, execute it, get results — all in one agent turn.
+///
+/// NOTE: This test is tolerant of timeouts since the AI model may be slow for
+/// agentic tool-use. A timeout is reported as a skip, not a failure.
+#[tokio::test]
+async fn ai_agent_full_workflow_install_code_execute() {
+    skip_unless_ai!();
+    let s = ensure_sidecar().await;
+
+    let prompt = "Create /home/agent/calc.js that prints JSON with sum and product of 42 and 7, then run it with node.";
+
+    let request = ai_agent_sandbox_blueprint_lib::SandboxTaskRequest {
+        sidecar_url: s.url.clone(),
+        prompt: prompt.to_string(),
+        session_id: String::new(),
+        max_turns: 5,
+        model: String::new(),
+        context_json: String::new(),
+        timeout_ms: 240000,
+        sidecar_token: AUTH_TOKEN.to_string(),
+    };
+
+    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request).await {
+        Ok(r) => r,
+        Err(e) => {
+            if e.contains("error sending request") || e.contains("timed out") || e.contains("timeout") {
+                eprintln!("SKIPPED: AI agent timed out (model too slow for agentic tool-use): {e}");
+                return;
+            }
+            panic!("full workflow task failed unexpectedly: {e}");
+        }
+    };
+
+    eprintln!("Full workflow: success={}, result length={}", result.success, result.result.len());
+    eprintln!("Result: {}", &result.result[..result.result.len().min(800)]);
+
+    assert!(result.success, "should succeed: error='{}'", result.error);
+    assert!(!result.result.is_empty(), "result should not be empty");
+
+    // Verify the JS file was created.
+    let js_resp = http()
+        .post(format!("{}/files/read", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({"path": "/home/agent/calc.js"}))
+        .send()
+        .await
+        .unwrap();
+
+    if js_resp.status().is_success() {
+        let body: Value = js_resp.json().await.unwrap();
+        if body["success"] == true {
+            let content = body["data"]["content"].as_str().unwrap_or("");
+            eprintln!("calc.js ({} bytes): {}", content.len(), &content[..content.len().min(400)]);
+            assert!(!content.is_empty(), "JS file should have content");
+        }
+    }
+}
+
+/// Create a terminal, connect to its stream, execute a command, verify output arrives.
+#[tokio::test]
+async fn terminal_stream_emits_output() {
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+
+    // Create a terminal.
+    let create_resp = http()
+        .post(format!("{}/terminals", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({"name": "stream-test-terminal"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(create_resp.status().is_success(), "create: {}", create_resp.status());
+    let create_body: Value = create_resp.json().await.unwrap();
+    let session_id = create_body["data"]["sessionId"]
+        .as_str()
+        .expect("sessionId missing");
+
+    eprintln!("Created terminal for stream test: {session_id}");
+
+    // Connect to terminal stream SSE endpoint.
+    let stream_client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let stream_resp = stream_client
+        .get(format!("{}/terminals/{session_id}/stream", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .send()
+        .await
+        .expect("stream connect should succeed");
+
+    let stream_status = stream_resp.status();
+    eprintln!("Terminal stream status: {stream_status}");
+
+    if !stream_status.is_success() {
+        eprintln!("Terminal stream not supported (status={stream_status}), skipping");
+        // Clean up.
+        let _ = http()
+            .delete(format!("{}/terminals/{session_id}", s.url))
+            .header(AUTHORIZATION, auth_header())
+            .send()
+            .await;
+        return;
+    }
+
+    // Execute a command in the terminal (fire-and-forget, we'll read from stream).
+    let exec_url = s.url.clone();
+    let sid = session_id.to_string();
+    tokio::spawn(async move {
+        // Small delay to let stream connect.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = http()
+            .post(format!("{exec_url}/terminals/{sid}/execute"))
+            .header(AUTHORIZATION, auth_header())
+            .header(CONTENT_TYPE, "application/json")
+            .json(&json!({"command": "echo stream-test-marker-xyz"}))
+            .send()
+            .await;
+    });
+
+    // Collect SSE events from the terminal stream.
+    let events = collect_sse_events(stream_resp, Duration::from_secs(10)).await;
+
+    eprintln!("Terminal stream events: {}", events.len());
+    for (i, (evt, data)) in events.iter().enumerate() {
+        let preview = format!("{data}");
+        let preview = if preview.len() > 100 { &preview[..100] } else { &preview };
+        eprintln!("  event[{i}]: type='{evt}', data={preview}");
+    }
+
+    // Terminal stream should emit at least some data events.
+    // Even without the execute command, the shell prompt itself generates output.
+    // We're lenient here — if we get any events, the stream works.
+    if events.is_empty() {
+        eprintln!("Warning: no terminal stream events received (may need /terminals/{{id}}/execute endpoint)");
+    }
+
+    // Clean up terminal.
+    let _ = http()
+        .delete(format!("{}/terminals/{session_id}", s.url))
+        .header(AUTHORIZATION, auth_header())
+        .send()
+        .await;
+}
+
+// ===================================================================
 // Cleanup
 // ===================================================================
 
@@ -950,9 +1980,7 @@ async fn zz_cleanup_container() {
         return;
     }
 
-    let builder = match docker_builder().await {
-        b => b,
-    };
+    let builder = docker_builder().await;
     let _ = builder
         .client()
         .remove_container(

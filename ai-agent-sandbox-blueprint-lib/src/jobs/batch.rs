@@ -36,11 +36,8 @@ pub async fn batch_create(
 
     let mut sandboxes_out = Vec::with_capacity(request.count as usize);
     for _ in 0..request.count {
+        // create_sidecar() records metrics internally.
         let record = create_sidecar(&request.template_request).await?;
-        crate::metrics::metrics().record_sandbox_created(
-            request.template_request.cpu_cores,
-            request.template_request.memory_mb,
-        );
         sandboxes_out.push(json!({
             "sandboxId": record.id,
             "sidecarUrl": record.sidecar_url,
@@ -59,6 +56,10 @@ pub async fn batch_create(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// Batch task
+// ---------------------------------------------------------------------------
+
 pub async fn batch_task(
     Caller(_caller): Caller,
     TangleArg(request): TangleArg<BatchTaskRequest>,
@@ -70,119 +71,45 @@ pub async fn batch_task(
         return Err("Batch task requires one sidecar_token per sidecar_url".to_string());
     }
 
-    // Validate all tokens upfront before starting any work
-    let validated: Vec<(String, String)> = request
-        .sidecar_urls
-        .iter()
-        .zip(request.sidecar_tokens.iter())
-        .map(|(url, tok)| {
-            let token = require_sidecar_token(tok)?;
-            require_sidecar_auth(url, &token)?;
-            Ok((url.to_string(), token))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let validated = validate_tokens(&request.sidecar_urls, &request.sidecar_tokens)?;
 
     let results = if request.parallel {
-        run_batch_tasks_parallel(&validated, &request).await
+        let mut results = vec![Value::Null; validated.len()];
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_BATCH_CONCURRENCY));
+        let mut set = JoinSet::new();
+
+        for (idx, (url, tok)) in validated.iter().enumerate() {
+            let sem = sem.clone();
+            let req = make_task_request(url, tok, &request);
+            let url = url.clone();
+            set.spawn(async move {
+                let _permit = sem.acquire().await;
+                (idx, format_task_result(&url, run_task_request(&req).await))
+            });
+        }
+
+        while let Some(Ok((idx, result))) = set.join_next().await {
+            results[idx] = result;
+        }
+        results
     } else {
-        run_batch_tasks_sequential(&validated, &request).await
+        let mut results = Vec::with_capacity(validated.len());
+        for (url, tok) in &validated {
+            let req = make_task_request(url, tok, &request);
+            results.push(format_task_result(url, run_task_request(&req).await));
+        }
+        results
     };
 
-    let batch_id = crate::next_batch_id();
-    let record = crate::BatchRecord {
-        id: batch_id.clone(),
-        kind: "task".to_string(),
-        results: Value::Array(results.clone()),
-        created_at: crate::workflows::now_ts(),
-    };
-
-    crate::batches()
-        .map_err(|e| e.to_string())?
-        .insert(batch_id.clone(), record)
-        .map_err(|e| e.to_string())?;
-
-    let response = json!({
-        "batchId": batch_id,
-        "taskResults": results,
-    });
-
-    Ok(TangleResult(JsonResponse {
-        json: response.to_string(),
-    }))
+    store_batch("task", results).await
 }
 
-async fn run_batch_tasks_sequential(
-    validated: &[(String, String)],
+fn make_task_request(
+    sidecar_url: &str,
+    token: &str,
     request: &BatchTaskRequest,
-) -> Vec<Value> {
-    let mut results = Vec::with_capacity(validated.len());
-    for (sidecar_url, token) in validated {
-        let result = run_single_task(sidecar_url, token, request).await;
-        results.push(result);
-    }
-    results
-}
-
-async fn run_batch_tasks_parallel(
-    validated: &[(String, String)],
-    request: &BatchTaskRequest,
-) -> Vec<Value> {
-    let mut results = vec![Value::Null; validated.len()];
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_BATCH_CONCURRENCY));
-
-    let mut set = JoinSet::new();
-    for (idx, (sidecar_url, token)) in validated.iter().enumerate() {
-        let sem = semaphore.clone();
-        let url = sidecar_url.clone();
-        let tok = token.clone();
-        let task_req = crate::SandboxTaskRequest {
-            sidecar_url: url.clone(),
-            prompt: request.prompt.to_string(),
-            session_id: request.session_id.to_string(),
-            max_turns: request.max_turns,
-            model: request.model.to_string(),
-            context_json: request.context_json.to_string(),
-            timeout_ms: request.timeout_ms,
-            sidecar_token: tok.clone(),
-        };
-
-        set.spawn(async move {
-            let _permit = sem.acquire().await;
-            let result = run_task_request(&task_req)
-                .await
-                .map(|resp| {
-                    json!({
-                        "sidecarUrl": url,
-                        "success": resp.success,
-                        "result": resp.result,
-                        "error": resp.error,
-                        "traceId": resp.trace_id,
-                        "durationMs": resp.duration_ms,
-                        "inputTokens": resp.input_tokens,
-                        "outputTokens": resp.output_tokens,
-                        "sessionId": resp.session_id,
-                    })
-                })
-                .unwrap_or_else(|err| {
-                    json!({
-                        "sidecarUrl": url,
-                        "success": false,
-                        "error": err,
-                    })
-                });
-            (idx, result)
-        });
-    }
-
-    while let Some(Ok((idx, result))) = set.join_next().await {
-        results[idx] = result;
-    }
-
-    results
-}
-
-async fn run_single_task(sidecar_url: &str, token: &str, request: &BatchTaskRequest) -> Value {
-    let task_request = crate::SandboxTaskRequest {
+) -> crate::SandboxTaskRequest {
+    crate::SandboxTaskRequest {
         sidecar_url: sidecar_url.to_string(),
         prompt: request.prompt.to_string(),
         session_id: request.session_id.to_string(),
@@ -191,31 +118,36 @@ async fn run_single_task(sidecar_url: &str, token: &str, request: &BatchTaskRequ
         context_json: request.context_json.to_string(),
         timeout_ms: request.timeout_ms,
         sidecar_token: token.to_string(),
-    };
-
-    run_task_request(&task_request)
-        .await
-        .map(|response| {
-            json!({
-                "sidecarUrl": sidecar_url,
-                "success": response.success,
-                "result": response.result,
-                "error": response.error,
-                "traceId": response.trace_id,
-                "durationMs": response.duration_ms,
-                "inputTokens": response.input_tokens,
-                "outputTokens": response.output_tokens,
-                "sessionId": response.session_id,
-            })
-        })
-        .unwrap_or_else(|err| {
-            json!({
-                "sidecarUrl": sidecar_url,
-                "success": false,
-                "error": err,
-            })
-        })
+    }
 }
+
+fn format_task_result(
+    sidecar_url: &str,
+    result: Result<crate::SandboxTaskResponse, String>,
+) -> Value {
+    match result {
+        Ok(resp) => json!({
+            "sidecarUrl": sidecar_url,
+            "success": resp.success,
+            "result": resp.result,
+            "error": resp.error,
+            "traceId": resp.trace_id,
+            "durationMs": resp.duration_ms,
+            "inputTokens": resp.input_tokens,
+            "outputTokens": resp.output_tokens,
+            "sessionId": resp.session_id,
+        }),
+        Err(err) => json!({
+            "sidecarUrl": sidecar_url,
+            "success": false,
+            "error": err,
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Batch exec
+// ---------------------------------------------------------------------------
 
 pub async fn batch_exec(
     Caller(_caller): Caller,
@@ -228,164 +160,82 @@ pub async fn batch_exec(
         return Err("Batch exec requires one sidecar_token per sidecar_url".to_string());
     }
 
-    // Validate all tokens upfront
-    let validated: Vec<(String, String)> = request
-        .sidecar_urls
-        .iter()
-        .zip(request.sidecar_tokens.iter())
-        .map(|(url, tok)| {
-            let token = require_sidecar_token(tok)?;
-            require_sidecar_auth(url, &token)?;
-            Ok((url.to_string(), token))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let validated = validate_tokens(&request.sidecar_urls, &request.sidecar_tokens)?;
 
     let results = if request.parallel {
-        run_batch_exec_parallel(&validated, &request).await
-    } else {
-        run_batch_exec_sequential(&validated, &request).await
-    };
+        let mut results = vec![Value::Null; validated.len()];
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_BATCH_CONCURRENCY));
+        let mut set = JoinSet::new();
 
-    let batch_id = crate::next_batch_id();
-    let record = crate::BatchRecord {
-        id: batch_id.clone(),
-        kind: "exec".to_string(),
-        results: Value::Array(results.clone()),
-        created_at: crate::workflows::now_ts(),
-    };
-
-    crate::batches()
-        .map_err(|e| e.to_string())?
-        .insert(batch_id.clone(), record)
-        .map_err(|e| e.to_string())?;
-
-    let response = json!({
-        "batchId": batch_id,
-        "execResults": results,
-    });
-
-    Ok(TangleResult(JsonResponse {
-        json: response.to_string(),
-    }))
-}
-
-async fn run_batch_exec_sequential(
-    validated: &[(String, String)],
-    request: &BatchExecRequest,
-) -> Vec<Value> {
-    let mut results = Vec::with_capacity(validated.len());
-    for (sidecar_url, token) in validated {
-        let result = run_single_exec(sidecar_url, token, request).await;
-        results.push(result);
-    }
-    results
-}
-
-async fn run_batch_exec_parallel(
-    validated: &[(String, String)],
-    request: &BatchExecRequest,
-) -> Vec<Value> {
-    let mut results = vec![Value::Null; validated.len()];
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_BATCH_CONCURRENCY));
-
-    let mut set = JoinSet::new();
-    for (idx, (sidecar_url, token)) in validated.iter().enumerate() {
-        let sem = semaphore.clone();
-        let url = sidecar_url.clone();
-        let tok = token.clone();
-        let cmd = request.command.to_string();
-        let cwd = request.cwd.to_string();
-        let env_json = request.env_json.to_string();
-        let timeout_ms = request.timeout_ms;
-
-        set.spawn(async move {
-            let _permit = sem.acquire().await;
-            run_single_exec_owned(&url, &tok, &cmd, &cwd, &env_json, timeout_ms)
-                .await
-                .map(|v| (idx, v))
-                .unwrap_or_else(|_| (idx, json!({"sidecarUrl": url, "error": "exec failed"})))
-        });
-    }
-
-    while let Some(Ok((idx, result))) = set.join_next().await {
-        results[idx] = result;
-    }
-
-    results
-}
-
-async fn run_single_exec(sidecar_url: &str, token: &str, request: &BatchExecRequest) -> Value {
-    let mut payload = serde_json::Map::new();
-    payload.insert(
-        "command".to_string(),
-        Value::String(request.command.to_string()),
-    );
-    if !request.cwd.is_empty() {
-        payload.insert("cwd".to_string(), Value::String(request.cwd.to_string()));
-    }
-    if request.timeout_ms > 0 {
-        payload.insert("timeout".to_string(), json!(request.timeout_ms));
-    }
-    if !request.env_json.trim().is_empty() {
-        if let Ok(Some(env_map)) = crate::util::parse_json_object(&request.env_json, "env_json") {
-            payload.insert("env".to_string(), env_map);
+        for (idx, (url, tok)) in validated.iter().enumerate() {
+            let sem = sem.clone();
+            let url = url.clone();
+            let tok = tok.clone();
+            let payload = crate::jobs::exec::build_exec_payload(
+                &request.command,
+                &request.cwd,
+                &request.env_json,
+                request.timeout_ms,
+            );
+            set.spawn(async move {
+                let _permit = sem.acquire().await;
+                (idx, exec_and_format(&url, &tok, payload).await)
+            });
         }
-    }
 
-    crate::http::sidecar_post_json(sidecar_url, "/terminals/commands", token, Value::Object(payload))
-        .await
-        .map(|parsed| {
-            let (exit_code, stdout, stderr) = crate::jobs::exec::extract_exec_fields(&parsed);
-            json!({
-                "sidecarUrl": sidecar_url,
-                "exitCode": exit_code,
-                "stdout": stdout,
-                "stderr": stderr,
-            })
-        })
-        .unwrap_or_else(|err| {
-            json!({
-                "sidecarUrl": sidecar_url,
-                "error": err.to_string(),
-            })
-        })
+        while let Some(Ok((idx, result))) = set.join_next().await {
+            results[idx] = result;
+        }
+        results
+    } else {
+        let mut results = Vec::with_capacity(validated.len());
+        for (url, tok) in &validated {
+            let payload = crate::jobs::exec::build_exec_payload(
+                &request.command,
+                &request.cwd,
+                &request.env_json,
+                request.timeout_ms,
+            );
+            results.push(exec_and_format(url, tok, payload).await);
+        }
+        results
+    };
+
+    store_batch("exec", results).await
 }
 
-async fn run_single_exec_owned(
+async fn exec_and_format(
     sidecar_url: &str,
     token: &str,
-    command: &str,
-    cwd: &str,
-    env_json: &str,
-    timeout_ms: u64,
-) -> Result<Value, String> {
-    let mut payload = serde_json::Map::new();
-    payload.insert("command".to_string(), Value::String(command.to_string()));
-    if !cwd.is_empty() {
-        payload.insert("cwd".to_string(), Value::String(cwd.to_string()));
-    }
-    if timeout_ms > 0 {
-        payload.insert("timeout".to_string(), json!(timeout_ms));
-    }
-    if !env_json.trim().is_empty() {
-        if let Ok(Some(env_map)) = crate::util::parse_json_object(env_json, "env_json") {
-            payload.insert("env".to_string(), env_map);
-        }
-    }
-
-    let parsed =
-        crate::http::sidecar_post_json(sidecar_url, "/terminals/commands", token, Value::Object(payload))
-            .await
-            .map_err(|e| e.to_string())?;
-
-    let (exit_code, stdout, stderr) = crate::jobs::exec::extract_exec_fields(&parsed);
-    Ok(json!({
-        "sidecarUrl": sidecar_url,
-        "exitCode": exit_code,
-        "stdout": stdout,
-        "stderr": stderr,
-    }))
+    payload: serde_json::Map<String, Value>,
+) -> Value {
+    crate::http::sidecar_post_json(
+        sidecar_url,
+        "/terminals/commands",
+        token,
+        Value::Object(payload),
+    )
+    .await
+    .map(|parsed| {
+        let (exit_code, stdout, stderr) = crate::jobs::exec::extract_exec_fields(&parsed);
+        json!({
+            "sidecarUrl": sidecar_url,
+            "exitCode": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+        })
+    })
+    .unwrap_or_else(|err| {
+        json!({
+            "sidecarUrl": sidecar_url,
+            "error": err.to_string(),
+        })
+    })
 }
+
+// ---------------------------------------------------------------------------
+// Batch collect
+// ---------------------------------------------------------------------------
 
 pub async fn batch_collect(
     Caller(_caller): Caller,
@@ -402,6 +252,46 @@ pub async fn batch_collect(
         "batchId": record.id,
         "kind": record.kind,
         "results": record.results,
+    });
+
+    Ok(TangleResult(JsonResponse {
+        json: response.to_string(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+fn validate_tokens(urls: &[String], tokens: &[String]) -> Result<Vec<(String, String)>, String> {
+    urls.iter()
+        .zip(tokens.iter())
+        .map(|(url, tok)| {
+            let token = require_sidecar_token(tok)?;
+            require_sidecar_auth(url, &token)?;
+            Ok((url.to_string(), token))
+        })
+        .collect()
+}
+
+async fn store_batch(kind: &str, results: Vec<Value>) -> Result<TangleResult<JsonResponse>, String> {
+    let batch_id = crate::next_batch_id();
+    let record = crate::BatchRecord {
+        id: batch_id.clone(),
+        kind: kind.to_string(),
+        results: Value::Array(results.clone()),
+        created_at: crate::workflows::now_ts(),
+    };
+
+    crate::batches()
+        .map_err(|e| e.to_string())?
+        .insert(batch_id.clone(), record)
+        .map_err(|e| e.to_string())?;
+
+    let results_key = format!("{kind}Results");
+    let response = json!({
+        "batchId": batch_id,
+        results_key: results,
     });
 
     Ok(TangleResult(JsonResponse {
