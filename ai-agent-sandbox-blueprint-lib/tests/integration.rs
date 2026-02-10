@@ -11,7 +11,9 @@
 //!   - `/agents/run` returns `{ success, response, traceId, durationMs, usage, sessionId }`
 
 use ai_agent_sandbox_blueprint_lib::http::sidecar_post_json;
-use ai_agent_sandbox_blueprint_lib::jobs::exec::{extract_exec_fields, run_exec_request, run_prompt_request};
+use ai_agent_sandbox_blueprint_lib::jobs::exec::{
+    extract_exec_fields, run_exec_request, run_prompt_request,
+};
 use ai_agent_sandbox_blueprint_lib::jobs::ssh::{provision_key, revoke_key};
 use ai_agent_sandbox_blueprint_lib::runtime::{
     SandboxRecord, get_sandbox_by_id, get_sandbox_by_url, require_sidecar_auth, sandboxes,
@@ -22,9 +24,9 @@ use ai_agent_sandbox_blueprint_lib::workflows::{
 };
 use ai_agent_sandbox_blueprint_lib::*;
 use blueprint_sdk::alloy::sol_types::SolValue;
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use serde_json::{Value, json};
 use std::sync::Once;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -346,7 +348,9 @@ mod task_job {
             .mount(&srv)
             .await;
 
-        let resp = run_task_request(&task_req(&srv.uri(), "t", "work")).await.unwrap();
+        let resp = run_task_request(&task_req(&srv.uri(), "t", "work"))
+            .await
+            .unwrap();
         assert!(resp.success);
         assert_eq!(resp.result, "done");
         assert_eq!(resp.trace_id, "t-done");
@@ -492,8 +496,16 @@ mod batch_jobs {
             .mount(&bad)
             .await;
 
-        assert!(run_task_request(&task_req(&good.uri(), "t", "go")).await.is_ok());
-        assert!(run_task_request(&task_req(&bad.uri(), "t", "go")).await.is_err());
+        assert!(
+            run_task_request(&task_req(&good.uri(), "t", "go"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            run_task_request(&task_req(&bad.uri(), "t", "go"))
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -791,37 +803,62 @@ mod abi {
         assert_eq!(d.command, "ls");
         assert_eq!(d.timeout_ms, 5000);
 
-        let exec_r = SandboxExecResponse { exit_code: 1, stdout: "out".into(), stderr: "err".into() };
+        let exec_r = SandboxExecResponse {
+            exit_code: 1,
+            stdout: "out".into(),
+            stderr: "err".into(),
+        };
         let d = SandboxExecResponse::abi_decode(&exec_r.abi_encode()).unwrap();
         assert_eq!(d.exit_code, 1);
 
         let prompt = SandboxPromptRequest {
-            sidecar_url: "http://h".into(), message: "hi".into(), session_id: "s".into(),
-            model: "m".into(), context_json: "{}".into(), timeout_ms: 1000, sidecar_token: "t".into(),
+            sidecar_url: "http://h".into(),
+            message: "hi".into(),
+            session_id: "s".into(),
+            model: "m".into(),
+            context_json: "{}".into(),
+            timeout_ms: 1000,
+            sidecar_token: "t".into(),
         };
         let d = SandboxPromptRequest::abi_decode(&prompt.abi_encode()).unwrap();
         assert_eq!(d.message, "hi");
 
         let prompt_r = SandboxPromptResponse {
-            success: true, response: "ok".into(), error: String::new(), trace_id: "tr".into(),
-            duration_ms: 500, input_tokens: 10, output_tokens: 5,
+            success: true,
+            response: "ok".into(),
+            error: String::new(),
+            trace_id: "tr".into(),
+            duration_ms: 500,
+            input_tokens: 10,
+            output_tokens: 5,
         };
         let d = SandboxPromptResponse::abi_decode(&prompt_r.abi_encode()).unwrap();
         assert!(d.success);
         assert_eq!(d.duration_ms, 500);
 
         let task = SandboxTaskRequest {
-            sidecar_url: "http://h".into(), prompt: "build".into(), session_id: "s".into(),
-            max_turns: 10, model: "claude".into(), context_json: "{}".into(),
-            timeout_ms: 60000, sidecar_token: "t".into(),
+            sidecar_url: "http://h".into(),
+            prompt: "build".into(),
+            session_id: "s".into(),
+            max_turns: 10,
+            model: "claude".into(),
+            context_json: "{}".into(),
+            timeout_ms: 60000,
+            sidecar_token: "t".into(),
         };
         let d = SandboxTaskRequest::abi_decode(&task.abi_encode()).unwrap();
         assert_eq!(d.prompt, "build");
         assert_eq!(d.max_turns, 10);
 
         let task_r = SandboxTaskResponse {
-            success: true, result: "done".into(), error: String::new(), trace_id: "tx".into(),
-            duration_ms: 15000, input_tokens: 2000, output_tokens: 800, session_id: "sx".into(),
+            success: true,
+            result: "done".into(),
+            error: String::new(),
+            trace_id: "tx".into(),
+            duration_ms: 15000,
+            input_tokens: 2000,
+            output_tokens: 800,
+            session_id: "sx".into(),
         };
         let d = SandboxTaskResponse::abi_decode(&task_r.abi_encode()).unwrap();
         assert_eq!(d.duration_ms, 15000);
@@ -833,18 +870,27 @@ mod abi {
         let bt = BatchTaskRequest {
             sidecar_urls: vec!["http://a".into(), "http://b".into()],
             sidecar_tokens: vec!["ta".into(), "tb".into()],
-            prompt: "go".into(), session_id: String::new(), max_turns: 5,
-            model: String::new(), context_json: String::new(), timeout_ms: 30000,
-            parallel: true, aggregation: "all".into(),
+            prompt: "go".into(),
+            session_id: String::new(),
+            max_turns: 5,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 30000,
+            parallel: true,
+            aggregation: "all".into(),
         };
         let d = BatchTaskRequest::abi_decode(&bt.abi_encode()).unwrap();
         assert_eq!(d.sidecar_urls.len(), 2);
         assert!(d.parallel);
 
         let be = BatchExecRequest {
-            sidecar_urls: vec!["http://h".into()], sidecar_tokens: vec!["t".into()],
-            command: "npm test".into(), cwd: "/app".into(), env_json: "{}".into(),
-            timeout_ms: 10000, parallel: false,
+            sidecar_urls: vec!["http://h".into()],
+            sidecar_tokens: vec!["t".into()],
+            command: "npm test".into(),
+            cwd: "/app".into(),
+            env_json: "{}".into(),
+            timeout_ms: 10000,
+            parallel: false,
         };
         let d = BatchExecRequest::abi_decode(&be.abi_encode()).unwrap();
         assert_eq!(d.command, "npm test");
@@ -852,11 +898,21 @@ mod abi {
         let bc = BatchCreateRequest {
             count: 3,
             template_request: SandboxCreateRequest {
-                name: "n".into(), image: "i".into(), stack: String::new(),
-                agent_identifier: String::new(), env_json: String::new(),
-                metadata_json: String::new(), ssh_enabled: false, ssh_public_key: String::new(),
-                web_terminal_enabled: false, max_lifetime_seconds: 60, idle_timeout_seconds: 30,
-                cpu_cores: 1, memory_mb: 256, disk_gb: 5, sidecar_token: String::new(),
+                name: "n".into(),
+                image: "i".into(),
+                stack: String::new(),
+                agent_identifier: String::new(),
+                env_json: String::new(),
+                metadata_json: String::new(),
+                ssh_enabled: false,
+                ssh_public_key: String::new(),
+                web_terminal_enabled: false,
+                max_lifetime_seconds: 60,
+                idle_timeout_seconds: 30,
+                cpu_cores: 1,
+                memory_mb: 256,
+                disk_gb: 5,
+                sidecar_token: String::new(),
             },
             operators: vec![Address::ZERO],
             distribution: "round-robin".into(),
@@ -866,27 +922,36 @@ mod abi {
         assert_eq!(d.operators.len(), 1);
 
         let wc = WorkflowCreateRequest {
-            name: "daily".into(), workflow_json: "{}".into(), trigger_type: "cron".into(),
-            trigger_config: "0 0 * * *".into(), sandbox_config_json: "{}".into(),
+            name: "daily".into(),
+            workflow_json: "{}".into(),
+            trigger_type: "cron".into(),
+            trigger_config: "0 0 * * *".into(),
+            sandbox_config_json: "{}".into(),
         };
         let d = WorkflowCreateRequest::abi_decode(&wc.abi_encode()).unwrap();
         assert_eq!(d.trigger_type, "cron");
 
         let ssh = SshProvisionRequest {
-            sidecar_url: "http://h".into(), username: "dev".into(),
-            public_key: "ssh-ed25519 AAAA".into(), sidecar_token: "t".into(),
+            sidecar_url: "http://h".into(),
+            username: "dev".into(),
+            public_key: "ssh-ed25519 AAAA".into(),
+            sidecar_token: "t".into(),
         };
         let d = SshProvisionRequest::abi_decode(&ssh.abi_encode()).unwrap();
         assert_eq!(d.username, "dev");
 
         let ssh_r = SshRevokeRequest {
-            sidecar_url: "http://h".into(), username: "dev".into(),
-            public_key: "ssh-ed25519 AAAA".into(), sidecar_token: "t".into(),
+            sidecar_url: "http://h".into(),
+            username: "dev".into(),
+            public_key: "ssh-ed25519 AAAA".into(),
+            sidecar_token: "t".into(),
         };
         let d = SshRevokeRequest::abi_decode(&ssh_r.abi_encode()).unwrap();
         assert_eq!(d.username, "dev");
 
-        let jr = JsonResponse { json: r#"{"k":"v"}"#.into() };
+        let jr = JsonResponse {
+            json: r#"{"k":"v"}"#.into(),
+        };
         let d = JsonResponse::abi_decode(&jr.abi_encode()).unwrap();
         let p: Value = serde_json::from_str(&d.json).unwrap();
         assert_eq!(p["k"], "v");
@@ -901,7 +966,8 @@ mod errors {
     #[tokio::test]
     async fn connection_refused() {
         init();
-        let r = sidecar_post_json("http://127.0.0.1:1", "/terminals/commands", "t", json!({})).await;
+        let r =
+            sidecar_post_json("http://127.0.0.1:1", "/terminals/commands", "t", json!({})).await;
         assert!(r.is_err());
     }
 
@@ -926,7 +992,11 @@ mod errors {
             .mount(&srv)
             .await;
         let r = sidecar_post_json(&srv.uri(), "/terminals/commands", "t", json!({})).await;
-        assert!(r.unwrap_err().to_string().contains("Invalid sidecar response JSON"));
+        assert!(
+            r.unwrap_err()
+                .to_string()
+                .contains("Invalid sidecar response JSON")
+        );
     }
 
     #[tokio::test]
@@ -978,7 +1048,11 @@ mod errors {
             .respond_with(ResponseTemplate::new(502).set_body_string("Bad Gateway"))
             .mount(&srv)
             .await;
-        assert!(run_task_request(&task_req(&srv.uri(), "t", "go")).await.is_err());
+        assert!(
+            run_task_request(&task_req(&srv.uri(), "t", "go"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1092,7 +1166,9 @@ mod metrics_tests {
         let m = metrics::metrics();
         let before = m.total_jobs.load(Ordering::Relaxed);
 
-        run_task_request(&task_req(&srv.uri(), "t", "work")).await.unwrap();
+        run_task_request(&task_req(&srv.uri(), "t", "work"))
+            .await
+            .unwrap();
 
         assert!(m.total_jobs.load(Ordering::Relaxed) > before);
     }
@@ -1115,7 +1191,9 @@ mod metrics_tests {
         let m = metrics::metrics();
         let before = m.failed_jobs.load(Ordering::Relaxed);
 
-        let resp = run_task_request(&task_req(&srv.uri(), "t", "fail")).await.unwrap();
+        let resp = run_task_request(&task_req(&srv.uri(), "t", "fail"))
+            .await
+            .unwrap();
         assert!(!resp.success);
 
         assert!(m.failed_jobs.load(Ordering::Relaxed) > before);
@@ -1155,13 +1233,7 @@ mod metrics_tests {
         );
 
         m.record_sandbox_deleted(4, 8192);
-        assert_eq!(
-            m.active_sandboxes.load(Ordering::Relaxed),
-            before_active
-        );
-        assert_eq!(
-            m.allocated_cpu_cores.load(Ordering::Relaxed),
-            before_cpu
-        );
+        assert_eq!(m.active_sandboxes.load(Ordering::Relaxed), before_active);
+        assert_eq!(m.allocated_cpu_cores.load(Ordering::Relaxed), before_cpu);
     }
 }

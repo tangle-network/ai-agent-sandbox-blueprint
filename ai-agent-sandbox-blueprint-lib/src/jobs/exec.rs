@@ -65,9 +65,7 @@ pub fn build_exec_payload(
 }
 
 /// Run an exec request against a sidecar. Callable from tests without Tangle extractors.
-pub async fn run_exec_request(
-    request: &SandboxExecRequest,
-) -> Result<SandboxExecResponse, String> {
+pub async fn run_exec_request(request: &SandboxExecRequest) -> Result<SandboxExecResponse, String> {
     let payload = build_exec_payload(
         &request.command,
         &request.cwd,
@@ -124,10 +122,7 @@ fn build_agent_payload(
         "identifier".to_string(),
         Value::String("default".to_string()),
     );
-    payload.insert(
-        "message".to_string(),
-        Value::String(message.to_string()),
-    );
+    payload.insert("message".to_string(), Value::String(message.to_string()));
 
     if !session_id.is_empty() {
         payload.insert(
@@ -301,9 +296,7 @@ pub async fn sandbox_prompt(
 // ---------------------------------------------------------------------------
 
 /// Run a task request against a sidecar. Callable from tests.
-pub async fn run_task_request(
-    request: &SandboxTaskRequest,
-) -> Result<SandboxTaskResponse, String> {
+pub async fn run_task_request(request: &SandboxTaskRequest) -> Result<SandboxTaskResponse, String> {
     let mut extra = Map::new();
     if request.max_turns > 0 {
         extra.insert("maxTurns".to_string(), json!(request.max_turns));

@@ -19,13 +19,15 @@ use std::time::Duration;
 use ai_agent_sandbox_blueprint_lib::{
     SandboxExecRequest, SandboxPromptRequest, extract_agent_fields, extract_exec_fields,
 };
-use docktopus::bollard::container::{Config as BollardConfig, InspectContainerOptions, RemoveContainerOptions};
+use docktopus::DockerBuilder;
+use docktopus::bollard::container::{
+    Config as BollardConfig, InspectContainerOptions, RemoveContainerOptions,
+};
 use docktopus::bollard::models::{HostConfig, PortBinding, PortMap};
 use docktopus::container::Container;
-use docktopus::DockerBuilder;
 use futures_util::StreamExt;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
@@ -188,7 +190,10 @@ async fn ensure_sidecar() -> &'static TestSidecar {
                     }
                     let resp = client
                         .post(format!("{url}/agents/run"))
-                        .header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {AUTH_TOKEN}")).unwrap())
+                        .header(
+                            AUTHORIZATION,
+                            HeaderValue::from_str(&format!("Bearer {AUTH_TOKEN}")).unwrap(),
+                        )
                         .header(CONTENT_TYPE, "application/json")
                         .json(&json!({"message": "ping", "identifier": "default"}))
                         .send()
@@ -205,8 +210,10 @@ async fn ensure_sidecar() -> &'static TestSidecar {
                                 tokio::time::sleep(Duration::from_secs(3)).await;
                             } else {
                                 // Got a real error (not a crash), backend is running
-                                eprintln!("AI backend ready (responded with error: {})",
-                                    &body[..body.len().min(100)]);
+                                eprintln!(
+                                    "AI backend ready (responded with error: {})",
+                                    &body[..body.len().min(100)]
+                                );
                                 break;
                             }
                         }
@@ -277,7 +284,10 @@ async fn health_response_shape() {
 
     assert_eq!(body["status"], "ok", "body: {body}");
     assert!(body["backends"].is_object(), "backends missing: {body}");
-    assert!(body["backends"]["total"].is_number(), "backends.total: {body}");
+    assert!(
+        body["backends"]["total"].is_number(),
+        "backends.total: {body}"
+    );
     assert!(body["timestamp"].is_string(), "timestamp: {body}");
 }
 
@@ -296,8 +306,7 @@ async fn health_detailed_response_shape() {
     let body: Value = resp.json().await.unwrap();
 
     assert!(
-        ["healthy", "degraded", "unhealthy"]
-            .contains(&body["status"].as_str().unwrap_or("")),
+        ["healthy", "degraded", "unhealthy"].contains(&body["status"].as_str().unwrap_or("")),
         "status: {body}"
     );
     assert!(body["memory"].is_object(), "memory: {body}");
@@ -560,7 +569,10 @@ async fn terminal_commands_empty_command() {
     let body: Value = resp.json().await.unwrap_or(json!({}));
     eprintln!("empty command: status={status}, body={body}");
     // Should either return an error or exit 0 — not crash.
-    assert!(status < 500 || body["error"].is_object(), "Should handle empty command: {body}");
+    assert!(
+        status < 500 || body["error"].is_object(),
+        "Should handle empty command: {body}"
+    );
 }
 
 /// Verify multiline command output.
@@ -633,7 +645,8 @@ async fn blueprint_run_exec_request_works_against_real_sidecar() {
             assert_eq!(resp.exit_code, 0, "exit_code should be 0");
             assert!(
                 resp.stdout.contains("blueprint-exec-ok"),
-                "stdout should contain our text: '{}'", resp.stdout
+                "stdout should contain our text: '{}'",
+                resp.stdout
             );
         }
         Err(err) => {
@@ -743,12 +756,21 @@ async fn agent_run_response_structure() {
     if std::env::var("ZAI_API_KEY").is_ok() {
         // With backend configured, expect success.
         assert_eq!(body["success"], true, "should succeed with backend: {body}");
-        assert!(body["data"]["finalText"].is_string(), "data.finalText: {body}");
+        assert!(
+            body["data"]["finalText"].is_string(),
+            "data.finalText: {body}"
+        );
     } else {
         // Without a backend, sidecar returns HTTP 500 with structured error.
-        assert_eq!(body["success"], false, "should fail without backend: {body}");
+        assert_eq!(
+            body["success"], false,
+            "should fail without backend: {body}"
+        );
         assert!(body["error"]["code"].is_string(), "error.code: {body}");
-        assert!(body["error"]["message"].is_string(), "error.message: {body}");
+        assert!(
+            body["error"]["message"].is_string(),
+            "error.message: {body}"
+        );
     }
 }
 
@@ -781,7 +803,10 @@ async fn extract_agent_fields_parses_real_response() {
     } else {
         // Without backend, expect error.
         assert!(!success, "should not be success without backend: {body}");
-        assert!(!error.is_empty(), "should extract error message from: {body}");
+        assert!(
+            !error.is_empty(),
+            "should extract error message from: {body}"
+        );
     }
 }
 
@@ -792,7 +817,11 @@ async fn blueprint_run_prompt_reaches_real_sidecar() {
     skip_unless_real!();
     let s = ensure_sidecar().await;
 
-    let timeout = if std::env::var("ZAI_API_KEY").is_ok() { 60000 } else { 15000 };
+    let timeout = if std::env::var("ZAI_API_KEY").is_ok() {
+        60000
+    } else {
+        15000
+    };
 
     let request = SandboxPromptRequest {
         sidecar_url: s.url.clone(),
@@ -808,8 +837,10 @@ async fn blueprint_run_prompt_reaches_real_sidecar() {
 
     match &result {
         Ok(resp) => {
-            eprintln!("run_prompt_request succeeded: success={}, response='{}'",
-                resp.success, resp.response);
+            eprintln!(
+                "run_prompt_request succeeded: success={}, response='{}'",
+                resp.success, resp.response
+            );
         }
         Err(e) => {
             // Should fail from HTTP 500 (no backend), NOT 404.
@@ -898,7 +929,11 @@ async fn file_write_outside_workspace_rejected() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 403, "Writing outside workspace should be 403");
+    assert_eq!(
+        resp.status(),
+        403,
+        "Writing outside workspace should be 403"
+    );
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["success"], false, "body: {body}");
 }
@@ -922,7 +957,11 @@ async fn terminal_create_list_delete() {
         .await
         .unwrap();
 
-    assert!(create_resp.status().is_success(), "create: {}", create_resp.status());
+    assert!(
+        create_resp.status().is_success(),
+        "create: {}",
+        create_resp.status()
+    );
     let create_body: Value = create_resp.json().await.unwrap();
     assert_eq!(create_body["success"], true, "create: {create_body}");
 
@@ -978,7 +1017,11 @@ async fn terminal_create_list_delete() {
         .await
         .unwrap();
 
-    assert!(delete_resp.status().is_success(), "delete: {}", delete_resp.status());
+    assert!(
+        delete_resp.status().is_success(),
+        "delete: {}",
+        delete_resp.status()
+    );
 }
 
 // ===================================================================
@@ -992,7 +1035,11 @@ async fn blueprint_run_task_request_reaches_real_sidecar() {
     skip_unless_real!();
     let s = ensure_sidecar().await;
 
-    let timeout = if std::env::var("ZAI_API_KEY").is_ok() { 60000 } else { 15000 };
+    let timeout = if std::env::var("ZAI_API_KEY").is_ok() {
+        60000
+    } else {
+        15000
+    };
 
     let request = ai_agent_sandbox_blueprint_lib::SandboxTaskRequest {
         sidecar_url: s.url.clone(),
@@ -1009,8 +1056,10 @@ async fn blueprint_run_task_request_reaches_real_sidecar() {
 
     match &result {
         Ok(resp) => {
-            eprintln!("run_task_request succeeded: success={}, result='{}'",
-                resp.success, resp.result);
+            eprintln!(
+                "run_task_request succeeded: success={}, result='{}'",
+                resp.success, resp.result
+            );
         }
         Err(e) => {
             assert!(
@@ -1159,8 +1208,7 @@ async fn build_exec_payload_works_with_real_sidecar() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["success"], true, "body: {body}");
 
-    let (exit_code, stdout, _stderr) =
-        ai_agent_sandbox_blueprint_lib::extract_exec_fields(&body);
+    let (exit_code, stdout, _stderr) = ai_agent_sandbox_blueprint_lib::extract_exec_fields(&body);
     assert_eq!(exit_code, 0);
     assert!(stdout.contains("payload-ok"), "stdout: '{stdout}'");
 }
@@ -1221,7 +1269,10 @@ async fn file_write_empty_content() {
 
     let body: Value = write_resp.json().await.unwrap();
     assert_eq!(body["success"], true, "body: {body}");
-    assert_eq!(body["data"]["size"], 0, "empty file should be 0 bytes: {body}");
+    assert_eq!(
+        body["data"]["size"], 0,
+        "empty file should be 0 bytes: {body}"
+    );
 }
 
 /// Overwrite an existing file and verify new content.
@@ -1241,7 +1292,9 @@ async fn file_overwrite() {
         .send()
         .await
         .unwrap();
-    if !r.status().is_success() { return; }
+    if !r.status().is_success() {
+        return;
+    }
 
     // Overwrite.
     let r = http()
@@ -1252,7 +1305,9 @@ async fn file_overwrite() {
         .send()
         .await
         .unwrap();
-    if !r.status().is_success() { return; }
+    if !r.status().is_success() {
+        return;
+    }
 
     // Read back.
     let read_resp = http()
@@ -1327,7 +1382,10 @@ async fn long_running_command_returns_duration() {
     assert!(stdout.contains("done"), "stdout: '{stdout}'");
 
     let duration = body["result"]["duration"].as_f64().unwrap_or(0.0);
-    assert!(duration >= 1500.0, "duration should be >= 1500ms: {duration}");
+    assert!(
+        duration >= 1500.0,
+        "duration should be >= 1500ms: {duration}"
+    );
 }
 
 // ===================================================================
@@ -1356,7 +1414,9 @@ async fn api_compatibility_report() {
     } else {
         format!("status {}", r.status())
     };
-    report.push(format!("/terminals/commands (exec, ssh, snapshot): {tc_status}"));
+    report.push(format!(
+        "/terminals/commands (exec, ssh, snapshot): {tc_status}"
+    ));
 
     // /agents/run — used by prompt/task jobs
     let r = http()
@@ -1370,7 +1430,11 @@ async fn api_compatibility_report() {
     let status = r.status().as_u16();
     report.push(format!(
         "/agents/run (prompt/task): status {status} ({})",
-        if status == 500 { "no backend configured" } else { "unexpected" }
+        if status == 500 {
+            "no backend configured"
+        } else {
+            "unexpected"
+        }
     ));
 
     eprintln!("\n=== API COMPATIBILITY REPORT ===");
@@ -1463,12 +1527,18 @@ async fn ai_agent_prompt_returns_real_response() {
         .await
         .expect("run_prompt_request should succeed with AI backend");
 
-    eprintln!("AI prompt response: success={}, response='{}', trace_id='{}'",
-        result.success, result.response, result.trace_id);
+    eprintln!(
+        "AI prompt response: success={}, response='{}', trace_id='{}'",
+        result.success, result.response, result.trace_id
+    );
 
     assert!(result.success, "should succeed: error='{}'", result.error);
     assert!(!result.response.is_empty(), "response should not be empty");
-    assert!(result.response.contains('4'), "response should contain '4': '{}'", result.response);
+    assert!(
+        result.response.contains('4'),
+        "response should contain '4': '{}'",
+        result.response
+    );
 }
 
 /// Send two tasks using the same sessionId to verify session mechanics.
@@ -1495,12 +1565,21 @@ async fn ai_agent_task_with_session_continuity() {
         .await
         .expect("first task request should succeed");
 
-    eprintln!("Task 1: success={}, session_id='{}', result='{}'",
-        result1.success, result1.session_id, result1.result);
+    eprintln!(
+        "Task 1: success={}, session_id='{}', result='{}'",
+        result1.success, result1.session_id, result1.result
+    );
 
-    assert!(result1.success, "first task should succeed: error='{}'", result1.error);
+    assert!(
+        result1.success,
+        "first task should succeed: error='{}'",
+        result1.error
+    );
     assert!(!result1.session_id.is_empty(), "should return a sessionId");
-    assert!(!result1.result.is_empty(), "first result should not be empty");
+    assert!(
+        !result1.result.is_empty(),
+        "first result should not be empty"
+    );
 
     // Second message: reuse the same session.
     let request2 = ai_agent_sandbox_blueprint_lib::SandboxTaskRequest {
@@ -1518,13 +1597,25 @@ async fn ai_agent_task_with_session_continuity() {
         .await
         .expect("second task request should succeed");
 
-    eprintln!("Task 2: success={}, session_id='{}', result='{}'",
-        result2.success, result2.session_id, result2.result);
+    eprintln!(
+        "Task 2: success={}, session_id='{}', result='{}'",
+        result2.success, result2.session_id, result2.result
+    );
 
-    assert!(result2.success, "second task should succeed: error='{}'", result2.error);
-    assert!(!result2.result.is_empty(), "second result should not be empty");
+    assert!(
+        result2.success,
+        "second task should succeed: error='{}'",
+        result2.error
+    );
+    assert!(
+        !result2.result.is_empty(),
+        "second result should not be empty"
+    );
     // Session ID should be consistent (same or new — both are valid).
-    assert!(!result2.session_id.is_empty(), "second response should have sessionId");
+    assert!(
+        !result2.session_id.is_empty(),
+        "second response should have sessionId"
+    );
 }
 
 /// Send a task with max_turns and verify it completes.
@@ -1548,7 +1639,10 @@ async fn ai_agent_task_with_max_turns() {
         .await
         .expect("task request should succeed");
 
-    eprintln!("Task max_turns: success={}, result='{}'", result.success, result.result);
+    eprintln!(
+        "Task max_turns: success={}, result='{}'",
+        result.success, result.result
+    );
 
     assert!(result.success, "should succeed: error='{}'", result.error);
     assert!(!result.result.is_empty(), "result should not be empty");
@@ -1644,7 +1738,10 @@ async fn ai_agent_writes_and_runs_python_script() {
     let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request).await {
         Ok(r) => r,
         Err(e) => {
-            if e.contains("error sending request") || e.contains("timed out") || e.contains("timeout") {
+            if e.contains("error sending request")
+                || e.contains("timed out")
+                || e.contains("timeout")
+            {
                 eprintln!("SKIPPED: AI agent timed out (model too slow for agentic tool-use): {e}");
                 return;
             }
@@ -1652,7 +1749,11 @@ async fn ai_agent_writes_and_runs_python_script() {
         }
     };
 
-    eprintln!("Python task: success={}, result length={}", result.success, result.result.len());
+    eprintln!(
+        "Python task: success={}, result length={}",
+        result.success,
+        result.result.len()
+    );
     eprintln!("Result: {}", &result.result[..result.result.len().min(500)]);
 
     assert!(result.success, "should succeed: error='{}'", result.error);
@@ -1672,10 +1773,19 @@ async fn ai_agent_writes_and_runs_python_script() {
         let body: Value = read_resp.json().await.unwrap();
         if body["success"] == true {
             let content = body["data"]["content"].as_str().unwrap_or("");
-            eprintln!("fib.py content ({} bytes): {}", content.len(),
-                &content[..content.len().min(300)]);
-            assert!(content.contains("fib") || content.contains("Fib") || content.contains("def ") || content.contains("print"),
-                "script should contain fibonacci logic: '{}'", &content[..content.len().min(200)]);
+            eprintln!(
+                "fib.py content ({} bytes): {}",
+                content.len(),
+                &content[..content.len().min(300)]
+            );
+            assert!(
+                content.contains("fib")
+                    || content.contains("Fib")
+                    || content.contains("def ")
+                    || content.contains("print"),
+                "script should contain fibonacci logic: '{}'",
+                &content[..content.len().min(200)]
+            );
         }
     }
 }
@@ -1711,7 +1821,10 @@ Install pandas with pip first if needed."#;
     let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request).await {
         Ok(r) => r,
         Err(e) => {
-            if e.contains("error sending request") || e.contains("timed out") || e.contains("timeout") {
+            if e.contains("error sending request")
+                || e.contains("timed out")
+                || e.contains("timeout")
+            {
                 eprintln!("SKIPPED: AI agent timed out (model too slow for pandas task): {e}");
                 return;
             }
@@ -1719,7 +1832,11 @@ Install pandas with pip first if needed."#;
         }
     };
 
-    eprintln!("Pandas task: success={}, result length={}", result.success, result.result.len());
+    eprintln!(
+        "Pandas task: success={}, result length={}",
+        result.success,
+        result.result.len()
+    );
     eprintln!("Result: {}", &result.result[..result.result.len().min(800)]);
 
     assert!(result.success, "should succeed: error='{}'", result.error);
@@ -1740,7 +1857,8 @@ Install pandas with pip first if needed."#;
             let content = body["data"]["content"].as_str().unwrap_or("");
             eprintln!("stock_summary.csv:\n{content}");
             // Should contain ticker names and numeric data.
-            let has_tickers = content.contains("AAPL") || content.contains("GOOG") || content.contains("MSFT");
+            let has_tickers =
+                content.contains("AAPL") || content.contains("GOOG") || content.contains("MSFT");
             assert!(has_tickers, "CSV should contain stock tickers: '{content}'");
         }
     }
@@ -1784,7 +1902,11 @@ async fn ai_agent_stream_complex_task_with_tools() {
         *event_type_counts.entry(evt.clone()).or_default() += 1;
         // Print first 150 chars of each event for debugging.
         let preview = format!("{data}");
-        let preview = if preview.len() > 150 { &preview[..150] } else { &preview };
+        let preview = if preview.len() > 150 {
+            &preview[..150]
+        } else {
+            &preview
+        };
         eprintln!("  [{evt}] {preview}");
     }
 
@@ -1794,29 +1916,37 @@ async fn ai_agent_stream_complex_task_with_tools() {
     }
 
     assert!(!events.is_empty(), "should receive SSE events");
-    assert!(events.len() >= 3,
-        "complex task should produce multiple events, got {}", events.len());
+    assert!(
+        events.len() >= 3,
+        "complex task should produce multiple events, got {}",
+        events.len()
+    );
 
     // Check for tool-related events (the agent should use tools to create/read files).
-    let has_tool_events = events.iter().any(|(t, _)| {
-        t.contains("tool") || t.contains("invocation") || t.contains("action")
-    });
-    let has_content_events = events.iter().any(|(t, _)| {
-        t.contains("message") || t.contains("text") || t.contains("part")
-    });
-    let has_lifecycle_events = events.iter().any(|(t, _)| {
-        t.contains("start") || t.contains("done") || t.contains("execution")
-    });
+    let has_tool_events = events
+        .iter()
+        .any(|(t, _)| t.contains("tool") || t.contains("invocation") || t.contains("action"));
+    let has_content_events = events
+        .iter()
+        .any(|(t, _)| t.contains("message") || t.contains("text") || t.contains("part"));
+    let has_lifecycle_events = events
+        .iter()
+        .any(|(t, _)| t.contains("start") || t.contains("done") || t.contains("execution"));
 
     eprintln!("Has tool events: {has_tool_events}");
     eprintln!("Has content events: {has_content_events}");
     eprintln!("Has lifecycle events: {has_lifecycle_events}");
 
     // At minimum we need lifecycle events (start/done) and some content.
-    assert!(has_lifecycle_events, "should have lifecycle events (start/done)");
+    assert!(
+        has_lifecycle_events,
+        "should have lifecycle events (start/done)"
+    );
     // The task involves file creation, so we expect either tool events or content describing it.
-    assert!(has_tool_events || has_content_events,
-        "should have tool or content events for a file-creation task");
+    assert!(
+        has_tool_events || has_content_events,
+        "should have tool or content events for a file-creation task"
+    );
 }
 
 /// Write and run a Node.js script. This exercises the "vibecoding" workflow:
@@ -1845,7 +1975,10 @@ async fn ai_agent_full_workflow_install_code_execute() {
     let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request).await {
         Ok(r) => r,
         Err(e) => {
-            if e.contains("error sending request") || e.contains("timed out") || e.contains("timeout") {
+            if e.contains("error sending request")
+                || e.contains("timed out")
+                || e.contains("timeout")
+            {
                 eprintln!("SKIPPED: AI agent timed out (model too slow for agentic tool-use): {e}");
                 return;
             }
@@ -1853,7 +1986,11 @@ async fn ai_agent_full_workflow_install_code_execute() {
         }
     };
 
-    eprintln!("Full workflow: success={}, result length={}", result.success, result.result.len());
+    eprintln!(
+        "Full workflow: success={}, result length={}",
+        result.success,
+        result.result.len()
+    );
     eprintln!("Result: {}", &result.result[..result.result.len().min(800)]);
 
     assert!(result.success, "should succeed: error='{}'", result.error);
@@ -1873,7 +2010,11 @@ async fn ai_agent_full_workflow_install_code_execute() {
         let body: Value = js_resp.json().await.unwrap();
         if body["success"] == true {
             let content = body["data"]["content"].as_str().unwrap_or("");
-            eprintln!("calc.js ({} bytes): {}", content.len(), &content[..content.len().min(400)]);
+            eprintln!(
+                "calc.js ({} bytes): {}",
+                content.len(),
+                &content[..content.len().min(400)]
+            );
             assert!(!content.is_empty(), "JS file should have content");
         }
     }
@@ -1895,7 +2036,11 @@ async fn terminal_stream_emits_output() {
         .await
         .unwrap();
 
-    assert!(create_resp.status().is_success(), "create: {}", create_resp.status());
+    assert!(
+        create_resp.status().is_success(),
+        "create: {}",
+        create_resp.status()
+    );
     let create_body: Value = create_resp.json().await.unwrap();
     let session_id = create_body["data"]["sessionId"]
         .as_str()
@@ -1951,7 +2096,11 @@ async fn terminal_stream_emits_output() {
     eprintln!("Terminal stream events: {}", events.len());
     for (i, (evt, data)) in events.iter().enumerate() {
         let preview = format!("{data}");
-        let preview = if preview.len() > 100 { &preview[..100] } else { &preview };
+        let preview = if preview.len() > 100 {
+            &preview[..100]
+        } else {
+            &preview
+        };
         eprintln!("  event[{i}]: type='{evt}', data={preview}");
     }
 
@@ -1959,7 +2108,9 @@ async fn terminal_stream_emits_output() {
     // Even without the execute command, the shell prompt itself generates output.
     // We're lenient here — if we get any events, the stream works.
     if events.is_empty() {
-        eprintln!("Warning: no terminal stream events received (may need /terminals/{{id}}/execute endpoint)");
+        eprintln!(
+            "Warning: no terminal stream events received (may need /terminals/{{id}}/execute endpoint)"
+        );
     }
 
     // Clean up terminal.

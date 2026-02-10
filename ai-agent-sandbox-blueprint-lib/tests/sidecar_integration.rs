@@ -6,6 +6,7 @@
 //! actual sidecar response shapes: `/terminals/commands` for exec,
 //! `/agents/run` for agent interactions.
 
+use ai_agent_sandbox_blueprint_lib::extract_agent_fields;
 use ai_agent_sandbox_blueprint_lib::http::{auth_headers, build_url, sidecar_post_json};
 use ai_agent_sandbox_blueprint_lib::metrics::{OnChainMetrics, metrics};
 use ai_agent_sandbox_blueprint_lib::util::{
@@ -14,7 +15,6 @@ use ai_agent_sandbox_blueprint_lib::util::{
 use ai_agent_sandbox_blueprint_lib::workflows::{
     WorkflowEntry, apply_workflow_execution, resolve_next_run,
 };
-use ai_agent_sandbox_blueprint_lib::extract_agent_fields;
 use serde_json::json;
 use std::sync::atomic::Ordering;
 use wiremock::matchers::{header, method, path};
@@ -75,9 +75,14 @@ mod http_tests {
             .mount(&server)
             .await;
 
-        let result = sidecar_post_json(&server.uri(), "/terminals/commands", "test-token", json!({
-            "command": "echo hello world"
-        }))
+        let result = sidecar_post_json(
+            &server.uri(),
+            "/terminals/commands",
+            "test-token",
+            json!({
+                "command": "echo hello world"
+            }),
+        )
         .await
         .unwrap();
 
@@ -134,9 +139,7 @@ mod http_tests {
 
         Mock::given(method("POST"))
             .and(path("/terminals/commands"))
-            .respond_with(
-                ResponseTemplate::new(500).set_body_string("Internal Server Error"),
-            )
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
             .mount(&server)
             .await;
 
@@ -150,7 +153,10 @@ mod http_tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("500"), "Error should mention status code: {err}");
+        assert!(
+            err.contains("500"),
+            "Error should mention status code: {err}"
+        );
     }
 
     #[tokio::test]
@@ -288,7 +294,12 @@ mod agent_interaction_tests {
         .unwrap();
 
         assert_eq!(result["result"]["exitCode"], 0);
-        assert!(result["result"]["stdout"].as_str().unwrap().contains("/workspace"));
+        assert!(
+            result["result"]["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("/workspace")
+        );
     }
 
     #[tokio::test]
@@ -497,7 +508,12 @@ mod util_tests {
     fn parse_json_object_array_rejected() {
         let result = parse_json_object("[1, 2, 3]", "test");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must be a JSON object"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be a JSON object")
+        );
     }
 
     #[test]
@@ -636,10 +652,12 @@ mod util_tests {
     fn build_snapshot_command_neither_fails() {
         let result = build_snapshot_command("https://example.com/upload", false, false);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("must include workspace or state"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must include workspace or state")
+        );
     }
 
     #[test]
@@ -795,10 +813,7 @@ mod metrics_tests {
         let initial = m.active_sessions.load(Ordering::Relaxed);
         {
             let _guard = m.session_guard();
-            assert_eq!(
-                m.active_sessions.load(Ordering::Relaxed),
-                initial + 1
-            );
+            assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial + 1);
         }
         assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial);
     }
@@ -810,16 +825,10 @@ mod metrics_tests {
 
         let _g1 = m.session_guard();
         let _g2 = m.session_guard();
-        assert_eq!(
-            m.active_sessions.load(Ordering::Relaxed),
-            initial + 2
-        );
+        assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial + 2);
 
         drop(_g1);
-        assert_eq!(
-            m.active_sessions.load(Ordering::Relaxed),
-            initial + 1
-        );
+        assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial + 1);
 
         drop(_g2);
         assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial);
@@ -1120,9 +1129,7 @@ mod sidecar_workflow_tests {
 
         Mock::given(method("POST"))
             .and(path("/agents/run"))
-            .respond_with(
-                ResponseTemplate::new(401).set_body_string("Unauthorized"),
-            )
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
             .mount(&server)
             .await;
 
@@ -1145,18 +1152,15 @@ mod sidecar_workflow_tests {
 
         Mock::given(method("POST"))
             .and(path("/terminals/commands"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({
-                        "success": true,
-                        "result": {
-                            "exitCode": 124,
-                            "stdout": "",
-                            "stderr": "command timed out",
-                            "duration": 1000
-                        }
-                    }))
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "result": {
+                    "exitCode": 124,
+                    "stdout": "",
+                    "stderr": "command timed out",
+                    "duration": 1000
+                }
+            })))
             .mount(&server)
             .await;
 

@@ -274,7 +274,10 @@ fn validate_tokens(urls: &[String], tokens: &[String]) -> Result<Vec<(String, St
         .collect()
 }
 
-async fn store_batch(kind: &str, results: Vec<Value>) -> Result<TangleResult<JsonResponse>, String> {
+async fn store_batch(
+    kind: &str,
+    results: Vec<Value>,
+) -> Result<TangleResult<JsonResponse>, String> {
     let batch_id = crate::next_batch_id();
     let record = crate::BatchRecord {
         id: batch_id.clone(),
