@@ -55,6 +55,10 @@ pub async fn ssh_provision(
     )
     .await?;
 
+    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(&request.sidecar_url) {
+        crate::runtime::touch_sandbox(&record.id);
+    }
+
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
@@ -89,6 +93,10 @@ pub async fn ssh_revoke(
         &token,
     )
     .await?;
+
+    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(&request.sidecar_url) {
+        crate::runtime::touch_sandbox(&record.id);
+    }
 
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),

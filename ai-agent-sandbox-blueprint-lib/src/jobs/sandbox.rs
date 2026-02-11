@@ -124,6 +124,10 @@ pub async fn sandbox_snapshot(
     let response =
         sidecar_post_json(&request.sidecar_url, "/terminals/commands", &token, payload).await?;
 
+    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(&request.sidecar_url) {
+        crate::runtime::touch_sandbox(&record.id);
+    }
+
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))

@@ -217,6 +217,9 @@ async fn exec_and_format(
     )
     .await
     .map(|parsed| {
+        if let Some(record) = crate::runtime::get_sandbox_by_url_opt(sidecar_url) {
+            crate::runtime::touch_sandbox(&record.id);
+        }
         let (exit_code, stdout, stderr) = crate::jobs::exec::extract_exec_fields(&parsed);
         json!({
             "sidecarUrl": sidecar_url,

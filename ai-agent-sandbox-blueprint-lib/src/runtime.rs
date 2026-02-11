@@ -481,6 +481,25 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
     Ok(())
 }
 
+/// Poll a sidecar's `/health` endpoint until it responds successfully or the timeout expires.
+async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
+    let ready = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
+        loop {
+            let url = format!("{sidecar_url}/health");
+            if let Ok(resp) = crate::util::http_client().and_then(|c| Ok(c.get(&url))) {
+                if let Ok(r) = resp.send().await {
+                    if r.status().is_success() {
+                        return;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await;
+    ready.is_ok()
+}
+
 pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
     // Tier 1 (Hot): container still exists → docker start
     if record.container_removed_at.is_none() {
@@ -503,6 +522,12 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
                     r.stopped_at = None;
                     r.last_activity_at = now;
                 });
+                if !wait_for_sidecar_health(&record.sidecar_url, 30).await {
+                    blueprint_sdk::info!(
+                        "resume: hot start sidecar slow to respond for sandbox {}",
+                        record.id
+                    );
+                }
                 return Ok(());
             }
             Err(err) => {
@@ -517,7 +542,12 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
     // Tier 2 (Warm): container gone, snapshot image exists → create from image
     if record.snapshot_image_id.is_some() {
         let updated = create_from_snapshot_image(record).await?;
-        let _ = updated; // record already persisted inside the function
+        if !wait_for_sidecar_health(&updated.sidecar_url, 30).await {
+            blueprint_sdk::info!(
+                "resume: warm start sidecar slow to respond for sandbox {}",
+                record.id
+            );
+        }
         return Ok(());
     }
 
@@ -803,25 +833,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
     let token = &record.token;
 
-    // Wait for sidecar to become ready (up to 30s)
-    let ready = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let url = format!("{sidecar_url}/health");
-            if let Ok(resp) = crate::util::http_client()
-                .and_then(|c| Ok(c.get(&url)))
-            {
-                if let Ok(r) = resp.send().await {
-                    if r.status().is_success() {
-                        return;
-                    }
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    })
-    .await;
-
-    if ready.is_err() {
+    if !wait_for_sidecar_health(&sidecar_url, 30).await {
         blueprint_sdk::info!("S3 restore: sidecar slow to start, proceeding with restore anyway");
     }
 
