@@ -1194,7 +1194,10 @@ mod docker {
         };
 
         // Verify new fields are populated at creation
-        assert!(!record.original_image.is_empty(), "original_image should be set");
+        assert!(
+            !record.original_image.is_empty(),
+            "original_image should be set"
+        );
         assert_eq!(record.env_json, r#"{"MY_VAR":"hello"}"#);
         assert_eq!(
             record.snapshot_destination.as_deref(),
@@ -1288,9 +1291,18 @@ mod docker {
             resumed.state,
             ai_agent_sandbox_blueprint_lib::runtime::SandboxState::Running
         );
-        assert!(resumed.container_removed_at.is_none(), "container_removed_at should be cleared");
-        assert!(resumed.snapshot_image_id.is_none(), "snapshot_image_id should be consumed");
-        assert_ne!(resumed.container_id, record.container_id, "should have a new container");
+        assert!(
+            resumed.container_removed_at.is_none(),
+            "container_removed_at should be cleared"
+        );
+        assert!(
+            resumed.snapshot_image_id.is_none(),
+            "snapshot_image_id should be consumed"
+        );
+        assert_ne!(
+            resumed.container_id, record.container_id,
+            "should have a new container"
+        );
         assert!(resumed.sidecar_port > 0);
 
         // Cleanup: delete the new container and snapshot image

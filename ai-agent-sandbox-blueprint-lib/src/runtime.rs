@@ -164,16 +164,11 @@ impl SidecarRuntimeConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SandboxState {
+    #[default]
     Running,
     Stopped,
-}
-
-impl Default for SandboxState {
-    fn default() -> Self {
-        SandboxState::Running
-    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -277,9 +272,12 @@ pub fn touch_sandbox(sandbox_id: &str) {
 /// Find a sandbox by its sidecar URL, returning `None` instead of an error if not found.
 pub fn get_sandbox_by_url_opt(sidecar_url: &str) -> Option<SandboxRecord> {
     let url = sidecar_url.to_string();
-    sandboxes()
-        .ok()
-        .and_then(|store| store.find(|record| record.sidecar_url == url).ok().flatten())
+    sandboxes().ok().and_then(|store| {
+        store
+            .find(|record| record.sidecar_url == url)
+            .ok()
+            .flatten()
+    })
 }
 
 /// Validate sidecar token using constant-time comparison to prevent timing attacks.
@@ -486,7 +484,7 @@ async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
     let ready = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
         loop {
             let url = format!("{sidecar_url}/health");
-            if let Ok(resp) = crate::util::http_client().and_then(|c| Ok(c.get(&url))) {
+            if let Ok(resp) = crate::util::http_client().map(|c| c.get(&url)) {
                 if let Ok(r) = resp.send().await {
                     if r.status().is_success() {
                         return;
@@ -634,7 +632,9 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
     env_vars.push(format!("SIDECAR_AUTH_TOKEN={}", record.token));
 
     if !record.env_json.trim().is_empty() {
-        if let Ok(Some(Value::Object(map))) = crate::util::parse_json_object(&record.env_json, "env_json") {
+        if let Ok(Some(Value::Object(map))) =
+            crate::util::parse_json_object(&record.env_json, "env_json")
+        {
             for (key, value) in map {
                 let val = match value {
                     Value::String(v) => v,
@@ -696,10 +696,9 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .env(env_vars)
         .config_override(override_config);
 
-    container
-        .start(false)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to start from snapshot image: {err}")))?;
+    container.start(false).await.map_err(|err| {
+        SandboxError::Docker(format!("Failed to start from snapshot image: {err}"))
+    })?;
 
     let container_id = container
         .id()
@@ -754,7 +753,9 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     env_vars.push(format!("SIDECAR_AUTH_TOKEN={}", record.token));
 
     if !record.env_json.trim().is_empty() {
-        if let Ok(Some(Value::Object(map))) = crate::util::parse_json_object(&record.env_json, "env_json") {
+        if let Ok(Some(Value::Object(map))) =
+            crate::util::parse_json_object(&record.env_json, "env_json")
+        {
             for (key, value) in map {
                 let val = match value {
                     Value::String(v) => v,
@@ -848,7 +849,9 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     let payload = serde_json::json!({
         "command": format!("sh -c {}", crate::util::shell_escape(&restore_cmd)),
     });
-    if let Err(err) = crate::http::sidecar_post_json(&sidecar_url, "/terminals/commands", token, payload).await {
+    if let Err(err) =
+        crate::http::sidecar_post_json(&sidecar_url, "/terminals/commands", token, payload).await
+    {
         blueprint_sdk::error!("S3 restore failed for sandbox {}: {err}", record.id);
         return Err(SandboxError::Docker(format!("S3 restore failed: {err}")));
     }

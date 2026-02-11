@@ -18,11 +18,11 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use ai_agent_sandbox_blueprint_lib::runtime::{
-    SandboxRecord, SandboxState, commit_container, create_sidecar, delete_sidecar,
-    docker_builder, remove_snapshot_image, resume_sidecar, sandboxes, stop_sidecar,
-};
 use ai_agent_sandbox_blueprint_lib::SandboxCreateRequest;
+use ai_agent_sandbox_blueprint_lib::runtime::{
+    SandboxRecord, SandboxState, commit_container, create_sidecar, delete_sidecar, docker_builder,
+    remove_snapshot_image, resume_sidecar, sandboxes, stop_sidecar,
+};
 use docktopus::bollard::container::RemoveContainerOptions;
 use reqwest::Client;
 
@@ -130,7 +130,7 @@ fn setup_test_env() {
         let container_minio = minio_endpoint_for_container();
         std::env::set_var(
             "SANDBOX_SNAPSHOT_DESTINATION_PREFIX",
-            &format!("{container_minio}/{MINIO_BUCKET}/"),
+            format!("{container_minio}/{MINIO_BUCKET}/"),
         );
         // Short retention for tests
         std::env::set_var("SANDBOX_GC_HOT_RETENTION", "0");
@@ -219,8 +219,7 @@ async fn exec_in_sandbox(record: &SandboxRecord, command: &str) -> (u32, String,
         .expect("exec request failed");
 
     let body: serde_json::Value = resp.json().await.expect("exec response not JSON");
-    let (exit_code, stdout, stderr) =
-        ai_agent_sandbox_blueprint_lib::extract_exec_fields(&body);
+    let (exit_code, stdout, stderr) = ai_agent_sandbox_blueprint_lib::extract_exec_fields(&body);
     (exit_code, stdout, stderr)
 }
 
@@ -290,9 +289,7 @@ async fn create_populates_snapshot_fields_real() {
         return;
     }
 
-    let dest = format!(
-        "{MINIO_ENDPOINT}/{MINIO_BUCKET}/user-dest-test/snapshot.tar.gz"
-    );
+    let dest = format!("{MINIO_ENDPOINT}/{MINIO_BUCKET}/user-dest-test/snapshot.tar.gz");
     let record = create_test_sandbox_with_destination(&dest).await;
     wait_healthy(&record.sidecar_url, 60).await;
 
@@ -407,8 +404,7 @@ async fn commit_and_warm_resume_real() {
 
     // Verify the resumed container is functional and preserved state
     wait_healthy(&resumed.sidecar_url, 60).await;
-    let (exit_code, stdout, _) =
-        exec_in_sandbox(&resumed, "cat /home/agent/warm-marker.txt").await;
+    let (exit_code, stdout, _) = exec_in_sandbox(&resumed, "cat /home/agent/warm-marker.txt").await;
     assert_eq!(exit_code, 0, "marker read should succeed");
     assert!(
         stdout.contains(&marker),
@@ -449,14 +445,16 @@ async fn s3_snapshot_upload_and_cold_resume_real() {
     let s3_path = format!("{}/snapshot.tar.gz", record.id);
     let container_minio = minio_endpoint_for_container();
     let dest = format!("{container_minio}/{MINIO_BUCKET}/{s3_path}");
-    let snapshot_cmd = ai_agent_sandbox_blueprint_lib::util::build_snapshot_command(
-        &dest, true, false,
-    )
-    .expect("build_snapshot_command should succeed");
+    let snapshot_cmd =
+        ai_agent_sandbox_blueprint_lib::util::build_snapshot_command(&dest, true, false)
+            .expect("build_snapshot_command should succeed");
 
     let (exit_code, stdout, stderr) = exec_in_sandbox(
         &record,
-        &format!("sh -c {}", ai_agent_sandbox_blueprint_lib::util::shell_escape(&snapshot_cmd)),
+        &format!(
+            "sh -c {}",
+            ai_agent_sandbox_blueprint_lib::util::shell_escape(&snapshot_cmd)
+        ),
     )
     .await;
     eprintln!("Snapshot upload: exit={exit_code}, stdout='{stdout}', stderr='{stderr}'");
@@ -515,9 +513,11 @@ async fn s3_snapshot_upload_and_cold_resume_real() {
 
     // Verify workspace was restored from S3
     wait_healthy(&resumed.sidecar_url, 60).await;
-    let (exit_code, stdout, _) =
-        exec_in_sandbox(&resumed, "cat /home/agent/cold-marker.txt").await;
-    assert_eq!(exit_code, 0, "marker read should succeed after cold restore");
+    let (exit_code, stdout, _) = exec_in_sandbox(&resumed, "cat /home/agent/cold-marker.txt").await;
+    assert_eq!(
+        exit_code, 0,
+        "marker read should succeed after cold restore"
+    );
     assert!(
         stdout.contains(&marker),
         "workspace should contain our marker after cold restore: got '{stdout}'"
@@ -555,8 +555,7 @@ async fn resume_no_snapshot_fails_real() {
     sandboxes()
         .unwrap()
         .update(&record.id, |r| {
-            r.container_removed_at =
-                Some(ai_agent_sandbox_blueprint_lib::workflows::now_ts());
+            r.container_removed_at = Some(ai_agent_sandbox_blueprint_lib::workflows::now_ts());
             r.snapshot_image_id = None;
             r.snapshot_s3_url = None;
             r.snapshot_destination = None;
@@ -900,10 +899,7 @@ async fn user_byos3_never_deleted_by_gc() {
 
     // Verify: record removed
     let after_gc = sandboxes().unwrap().get(&sandbox_id).unwrap();
-    assert!(
-        after_gc.is_none(),
-        "record should be removed after GC"
-    );
+    assert!(after_gc.is_none(), "record should be removed after GC");
 
     // Verify: S3 object still exists (user BYOS3 preserved)
     assert!(
@@ -953,17 +949,22 @@ async fn full_lifecycle_all_tiers() {
     let s3_path = format!("{}/snapshot.tar.gz", record.id);
     let container_minio = minio_endpoint_for_container();
     let s3_dest = format!("{container_minio}/{MINIO_BUCKET}/{s3_path}");
-    let snapshot_cmd = ai_agent_sandbox_blueprint_lib::util::build_snapshot_command(
-        &s3_dest, true, false,
-    )
-    .expect("build_snapshot_command should succeed");
+    let snapshot_cmd =
+        ai_agent_sandbox_blueprint_lib::util::build_snapshot_command(&s3_dest, true, false)
+            .expect("build_snapshot_command should succeed");
     let (exit_code, _, _) = exec_in_sandbox(
         &record,
-        &format!("sh -c {}", ai_agent_sandbox_blueprint_lib::util::shell_escape(&snapshot_cmd)),
+        &format!(
+            "sh -c {}",
+            ai_agent_sandbox_blueprint_lib::util::shell_escape(&snapshot_cmd)
+        ),
     )
     .await;
     assert_eq!(exit_code, 0, "S3 upload should succeed");
-    assert!(minio_object_exists(&s3_path).await, "S3 object should exist");
+    assert!(
+        minio_object_exists(&s3_path).await,
+        "S3 object should exist"
+    );
 
     stop_sidecar(&record).await.expect("stop should succeed");
     let image_id = commit_container(&record)
@@ -1025,14 +1026,16 @@ async fn full_lifecycle_all_tiers() {
                     }
                     break;
                 }
-                match http().get(format!("{}/health", after_hot.sidecar_url)).send().await {
+                match http()
+                    .get(format!("{}/health", after_hot.sidecar_url))
+                    .send()
+                    .await
+                {
                     Ok(resp) if resp.status().is_success() => {
                         // Hot resume is healthy — verify marker
-                        let (exit_code, stdout, _) = exec_in_sandbox(
-                            &after_hot,
-                            "cat /home/agent/lifecycle-marker.txt",
-                        )
-                        .await;
+                        let (exit_code, stdout, _) =
+                            exec_in_sandbox(&after_hot, "cat /home/agent/lifecycle-marker.txt")
+                                .await;
                         assert_eq!(exit_code, 0);
                         assert!(
                             stdout.contains(&marker),
@@ -1069,9 +1072,7 @@ async fn full_lifecycle_all_tiers() {
         .expect("record exists");
     // Ensure container is stopped for commit
     if current.state == SandboxState::Running {
-        stop_sidecar(&current)
-            .await
-            .expect("stop should succeed");
+        stop_sidecar(&current).await.expect("stop should succeed");
     }
     // Re-commit after stop
     let current = sandboxes()
@@ -1116,11 +1117,8 @@ async fn full_lifecycle_all_tiers() {
         .expect("record exists");
     assert_eq!(after_warm_resume.state, SandboxState::Running);
     wait_healthy(&after_warm_resume.sidecar_url, 60).await;
-    let (exit_code, stdout, _) = exec_in_sandbox(
-        &after_warm_resume,
-        "cat /home/agent/lifecycle-marker.txt",
-    )
-    .await;
+    let (exit_code, stdout, _) =
+        exec_in_sandbox(&after_warm_resume, "cat /home/agent/lifecycle-marker.txt").await;
     assert_eq!(exit_code, 0);
     assert!(
         stdout.contains(&marker),

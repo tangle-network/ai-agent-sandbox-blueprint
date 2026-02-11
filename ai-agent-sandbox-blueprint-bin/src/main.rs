@@ -46,6 +46,7 @@ impl HeartbeatConsumer for LoggingHeartbeatConsumer {
 }
 
 #[tokio::main]
+#[allow(clippy::result_large_err)]
 async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
 
@@ -185,8 +186,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
         // Spawn GC background task (stopped sandbox cleanup)
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(gc_interval));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(gc_interval));
             loop {
                 interval.tick().await;
                 ai_agent_sandbox_blueprint_lib::reaper::gc_tick().await;

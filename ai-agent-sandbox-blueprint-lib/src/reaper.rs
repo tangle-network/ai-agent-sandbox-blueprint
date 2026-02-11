@@ -41,8 +41,7 @@ pub async fn reaper_tick() {
         };
 
         // Hard kill: exceeded max lifetime
-        if record.max_lifetime_seconds > 0
-            && record.created_at + record.max_lifetime_seconds <= now
+        if record.max_lifetime_seconds > 0 && record.created_at + record.max_lifetime_seconds <= now
         {
             info!(
                 "reaper: deleting sandbox {} (exceeded max lifetime {}s)",
@@ -60,9 +59,7 @@ pub async fn reaper_tick() {
         }
 
         // Soft stop: idle too long
-        if record.idle_timeout_seconds > 0
-            && activity + record.idle_timeout_seconds <= now
-        {
+        if record.idle_timeout_seconds > 0 && activity + record.idle_timeout_seconds <= now {
             info!(
                 "reaper: stopping sandbox {} (idle for {}s, timeout {}s)",
                 record.id,
@@ -170,7 +167,10 @@ pub async fn gc_tick() {
                     record.id
                 );
                 if let Err(err) = delete_sidecar(&record).await {
-                    error!("gc: failed to remove container for sandbox {}: {err}", record.id);
+                    error!(
+                        "gc: failed to remove container for sandbox {}: {err}",
+                        record.id
+                    );
                     continue;
                 }
                 if let Ok(store) = sandboxes() {
@@ -345,11 +345,7 @@ pub async fn reconcile_on_startup() {
                 }
             }
             Ok(info) => {
-                let running = info
-                    .state
-                    .as_ref()
-                    .and_then(|s| s.running)
-                    .unwrap_or(false);
+                let running = info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
 
                 if !running && record.state == SandboxState::Running {
                     info!(
