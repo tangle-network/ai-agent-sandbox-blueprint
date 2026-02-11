@@ -46,6 +46,7 @@ impl HeartbeatConsumer for LoggingHeartbeatConsumer {
 }
 
 #[tokio::main]
+#[allow(clippy::result_large_err)]
 async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
 
@@ -163,6 +164,34 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
     if let Err(err) = bootstrap_workflows_from_chain(&tangle_client, service_id).await {
         error!("Failed to load workflows from chain: {err}");
+    }
+
+    // Reconcile stored sandbox state with Docker reality
+    ai_agent_sandbox_blueprint_lib::reaper::reconcile_on_startup().await;
+
+    // Spawn reaper background task (idle timeout + max lifetime enforcement)
+    {
+        let config = ai_agent_sandbox_blueprint_lib::runtime::SidecarRuntimeConfig::load();
+        let reaper_interval = config.sandbox_reaper_interval;
+        let gc_interval = config.sandbox_gc_interval;
+
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(reaper_interval));
+            loop {
+                interval.tick().await;
+                ai_agent_sandbox_blueprint_lib::reaper::reaper_tick().await;
+            }
+        });
+
+        // Spawn GC background task (stopped sandbox cleanup)
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(gc_interval));
+            loop {
+                interval.tick().await;
+                ai_agent_sandbox_blueprint_lib::reaper::gc_tick().await;
+            }
+        });
     }
 
     // Create producer (listens for JobSubmitted events) and consumer (submits results)

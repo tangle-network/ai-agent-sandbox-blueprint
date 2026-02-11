@@ -7,14 +7,14 @@ description.workspace = true
 license.workspace = true
 
 [dependencies]
-blueprint-sdk = { path = "../../blueprint-sdk/crates/sdk", default-features = false, features = ["std", "tracing", "macros", "tangle", "local-store"] }
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tracing", "macros", "tangle", "local-store"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 cron = "0.15"
-docktopus = { path = "../../docktopus", features = ["deploy"] }
+docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
 hex = "0.4"
 once_cell = "1"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 subtle = "2"
@@ -23,8 +23,9 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 anyhow = "1"
-blueprint-anvil-testing-utils = { path = "../../blueprint-sdk/crates/testing-utils/anvil" }
+blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", branch = "main" }
 futures = "0.3"
+futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = "0.3"
 wiremock = "0.6"

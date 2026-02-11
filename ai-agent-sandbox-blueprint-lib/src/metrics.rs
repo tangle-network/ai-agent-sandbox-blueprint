@@ -30,6 +30,22 @@ pub struct OnChainMetrics {
     pub allocated_memory_mb: AtomicU64,
     /// Total failed jobs.
     pub failed_jobs: AtomicU64,
+    /// Sandboxes reaped due to idle timeout.
+    pub reaped_idle: AtomicU64,
+    /// Sandboxes reaped due to max lifetime exceeded.
+    pub reaped_lifetime: AtomicU64,
+    /// Stopped sandboxes garbage collected past retention.
+    pub garbage_collected: AtomicU64,
+    /// Docker commits (snapshots) performed.
+    pub snapshots_committed: AtomicU64,
+    /// S3 snapshot uploads performed.
+    pub snapshots_uploaded: AtomicU64,
+    /// Hot→Warm GC transitions (containers removed).
+    pub gc_containers_removed: AtomicU64,
+    /// Warm→Cold GC transitions (images removed).
+    pub gc_images_removed: AtomicU64,
+    /// Cold→Gone GC transitions (S3 snapshots cleaned).
+    pub gc_s3_cleaned: AtomicU64,
 }
 
 impl Default for OnChainMetrics {
@@ -51,6 +67,14 @@ impl OnChainMetrics {
             allocated_cpu_cores: AtomicU64::new(0),
             allocated_memory_mb: AtomicU64::new(0),
             failed_jobs: AtomicU64::new(0),
+            reaped_idle: AtomicU64::new(0),
+            reaped_lifetime: AtomicU64::new(0),
+            garbage_collected: AtomicU64::new(0),
+            snapshots_committed: AtomicU64::new(0),
+            snapshots_uploaded: AtomicU64::new(0),
+            gc_containers_removed: AtomicU64::new(0),
+            gc_images_removed: AtomicU64::new(0),
+            gc_s3_cleaned: AtomicU64::new(0),
         }
     }
 
@@ -68,6 +92,46 @@ impl OnChainMetrics {
     /// Record a failed job.
     pub fn record_failure(&self) {
         self.failed_jobs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a sandbox reaped due to idle timeout.
+    pub fn record_reaped_idle(&self) {
+        self.reaped_idle.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a sandbox reaped due to max lifetime exceeded.
+    pub fn record_reaped_lifetime(&self) {
+        self.reaped_lifetime.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a stopped sandbox garbage collected.
+    pub fn record_garbage_collected(&self) {
+        self.garbage_collected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a docker commit (snapshot) performed.
+    pub fn record_snapshot_committed(&self) {
+        self.snapshots_committed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record an S3 snapshot upload performed.
+    pub fn record_snapshot_uploaded(&self) {
+        self.snapshots_uploaded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a Hot→Warm GC transition (container removed).
+    pub fn record_gc_container_removed(&self) {
+        self.gc_containers_removed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a Warm→Cold GC transition (image removed).
+    pub fn record_gc_image_removed(&self) {
+        self.gc_images_removed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a Cold→Gone GC transition (S3 snapshot cleaned).
+    pub fn record_gc_s3_cleaned(&self) {
+        self.gc_s3_cleaned.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record sandbox creation with its resource allocation.
@@ -160,6 +224,38 @@ impl OnChainMetrics {
             (
                 "failed_jobs".into(),
                 self.failed_jobs.load(Ordering::Relaxed),
+            ),
+            (
+                "reaped_idle".into(),
+                self.reaped_idle.load(Ordering::Relaxed),
+            ),
+            (
+                "reaped_lifetime".into(),
+                self.reaped_lifetime.load(Ordering::Relaxed),
+            ),
+            (
+                "garbage_collected".into(),
+                self.garbage_collected.load(Ordering::Relaxed),
+            ),
+            (
+                "snapshots_committed".into(),
+                self.snapshots_committed.load(Ordering::Relaxed),
+            ),
+            (
+                "snapshots_uploaded".into(),
+                self.snapshots_uploaded.load(Ordering::Relaxed),
+            ),
+            (
+                "gc_containers_removed".into(),
+                self.gc_containers_removed.load(Ordering::Relaxed),
+            ),
+            (
+                "gc_images_removed".into(),
+                self.gc_images_removed.load(Ordering::Relaxed),
+            ),
+            (
+                "gc_s3_cleaned".into(),
+                self.gc_s3_cleaned.load(Ordering::Relaxed),
             ),
         ]
     }

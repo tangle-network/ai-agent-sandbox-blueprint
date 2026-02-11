@@ -19,9 +19,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: nightly-2024-10-13
           components: rustfmt
 
       - name: Check Formatting
@@ -34,6 +36,9 @@ jobs:
     steps:
       - name: checkout code
         uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -48,7 +53,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: nightly-2024-10-13
           components: clippy
 
       - uses: swatinem/rust-cache@v2
@@ -71,6 +75,9 @@ jobs:
       - name: checkout code
         uses: actions/checkout@v4
 
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
@@ -84,7 +91,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: nightly-2024-10-13
           components: clippy
 
       - uses: swatinem/rust-cache@v2

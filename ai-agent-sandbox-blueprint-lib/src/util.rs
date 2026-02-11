@@ -93,7 +93,7 @@ pub fn build_snapshot_command(
 ) -> Result<String> {
     let mut paths = Vec::new();
     if include_workspace {
-        paths.push("/workspace");
+        paths.push("/home/agent");
     }
     if include_state {
         paths.push("/var/lib/sidecar");
@@ -107,7 +107,7 @@ pub fn build_snapshot_command(
     let dest = shell_escape(destination);
     let targets = paths.join(" ");
     Ok(format!(
-        "set -euo pipefail; tmp=$(mktemp /tmp/sandbox-snapshot.XXXXXX.tar.gz); \
+        "set -euo pipefail; tmp=$(mktemp /tmp/snapshot-XXXXXX); \
  tar -czf \"$tmp\" {targets}; \
  curl -fsSL -X PUT --upload-file \"$tmp\" {dest}; \
  rm -f \"$tmp\""

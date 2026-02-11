@@ -5,9 +5,15 @@
 //! `run_task_request`, `run_exec_request`, `run_prompt_request`, `provision_key`,
 //! `revoke_key`) and test those. The Tangle wrapper is a 3-line adapter — if the
 //! core logic works, the handler works.
+//!
+//! All mocks use the actual sidecar response shapes:
+//!   - `/terminals/commands` returns `{ success, result: { exitCode, stdout, stderr, duration } }`
+//!   - `/agents/run` returns `{ success, response, traceId, durationMs, usage, sessionId }`
 
 use ai_agent_sandbox_blueprint_lib::http::sidecar_post_json;
-use ai_agent_sandbox_blueprint_lib::jobs::exec::{extract_exec_fields, run_exec_request, run_prompt_request};
+use ai_agent_sandbox_blueprint_lib::jobs::exec::{
+    extract_exec_fields, run_exec_request, run_prompt_request,
+};
 use ai_agent_sandbox_blueprint_lib::jobs::ssh::{provision_key, revoke_key};
 use ai_agent_sandbox_blueprint_lib::runtime::{
     SandboxRecord, get_sandbox_by_id, get_sandbox_by_url, require_sidecar_auth, sandboxes,
@@ -18,9 +24,9 @@ use ai_agent_sandbox_blueprint_lib::workflows::{
 };
 use ai_agent_sandbox_blueprint_lib::*;
 use blueprint_sdk::alloy::sol_types::SolValue;
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use serde_json::{Value, json};
 use std::sync::Once;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -63,6 +69,18 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 created_at: now_ts(),
                 cpu_cores: 2,
                 memory_mb: 4096,
+                state: Default::default(),
+                idle_timeout_seconds: 0,
+                max_lifetime_seconds: 0,
+                last_activity_at: now_ts(),
+                stopped_at: None,
+                snapshot_image_id: None,
+                snapshot_s3_url: None,
+                container_removed_at: None,
+                image_removed_at: None,
+                original_image: String::new(),
+                env_json: String::new(),
+                snapshot_destination: None,
             },
         )
         .unwrap();
@@ -79,6 +97,19 @@ fn mock_agent_ok(label: &str) -> ResponseTemplate {
         "traceId": format!("t-{label}"), "durationMs": 100,
         "usage": {"inputTokens": 10, "outputTokens": 5},
         "sessionId": format!("s-{label}")
+    }))
+}
+
+/// Mock for /terminals/commands returning the sidecar shape.
+fn mock_exec_ok(stdout: &str, exit_code: u32) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "success": true,
+        "result": {
+            "exitCode": exit_code,
+            "stdout": stdout,
+            "stderr": "",
+            "duration": 50
+        }
     }))
 }
 
@@ -155,14 +186,14 @@ mod exec_job {
     use super::*;
 
     #[tokio::test]
-    async fn flat_response() {
+    async fn sidecar_response_shape() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "hello", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "result": {"exitCode": 0, "stdout": "hello", "stderr": "", "duration": 30}
+            })))
             .mount(&srv)
             .await;
 
@@ -180,44 +211,16 @@ mod exec_job {
         assert!(resp.stderr.is_empty());
     }
 
-    #[tokio::test]
-    async fn nested_data_response() {
-        let srv = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": {"exitCode": 1, "stdout": "out", "stderr": "err"}
-            })))
-            .mount(&srv)
-            .await;
-
-        let req = SandboxExecRequest {
-            sidecar_url: srv.uri(),
-            command: "fail".into(),
-            cwd: String::new(),
-            env_json: String::new(),
-            timeout_ms: 0,
-            sidecar_token: "t".into(),
-        };
-        let resp = run_exec_request(&req).await.unwrap();
-        assert_eq!(resp.exit_code, 1);
-        assert_eq!(resp.stdout, "out");
-        assert_eq!(resp.stderr, "err");
-    }
-
     #[test]
-    fn extract_exec_fields_flat_and_nested() {
-        let flat = json!({"exitCode": 42, "stdout": "ok", "stderr": "warn"});
-        let (code, out, err) = extract_exec_fields(&flat);
+    fn extract_exec_fields_from_result() {
+        let response = json!({
+            "success": true,
+            "result": {"exitCode": 42, "stdout": "ok", "stderr": "warn", "duration": 100}
+        });
+        let (code, out, err) = extract_exec_fields(&response);
         assert_eq!(code, 42);
         assert_eq!(out, "ok");
         assert_eq!(err, "warn");
-
-        let nested = json!({"data": {"exitCode": 7, "stdout": "n-out", "stderr": "n-err"}});
-        let (code, out, err) = extract_exec_fields(&nested);
-        assert_eq!(code, 7);
-        assert_eq!(out, "n-out");
-        assert_eq!(err, "n-err");
 
         // Missing fields default to 0/empty
         let empty = json!({});
@@ -231,11 +234,8 @@ mod exec_job {
     async fn payload_includes_cwd_env_timeout() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(mock_exec_ok("", 0))
             .expect(1)
             .mount(&srv)
             .await;
@@ -249,18 +249,14 @@ mod exec_job {
             sidecar_token: "t".into(),
         };
         run_exec_request(&req).await.unwrap();
-        // wiremock .expect(1) verifies the request was received
     }
 
     #[tokio::test]
     async fn empty_optional_fields_omitted() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(mock_exec_ok("", 0))
             .expect(1)
             .mount(&srv)
             .await;
@@ -268,9 +264,9 @@ mod exec_job {
         let req = SandboxExecRequest {
             sidecar_url: srv.uri(),
             command: "pwd".into(),
-            cwd: String::new(),       // should be omitted
-            env_json: String::new(),   // should be omitted
-            timeout_ms: 0,            // should be omitted
+            cwd: String::new(),
+            env_json: String::new(),
+            timeout_ms: 0,
             sidecar_token: "t".into(),
         };
         run_exec_request(&req).await.unwrap();
@@ -348,38 +344,6 @@ mod prompt_job {
         assert_eq!(resp.error, "rate limited");
         assert!(m.failed_jobs.load(Ordering::Relaxed) > before);
     }
-
-    #[tokio::test]
-    async fn nested_data_shape() {
-        let srv = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/agents/run"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "success": true,
-                "data": {
-                    "finalText": "nested response",
-                    "metadata": {"traceId": "nested-trace"}
-                },
-                "durationMs": 100,
-                "usage": {"inputTokens": 5, "outputTokens": 3},
-                "sessionId": "s"
-            })))
-            .mount(&srv)
-            .await;
-
-        let req = SandboxPromptRequest {
-            sidecar_url: srv.uri(),
-            message: "test".into(),
-            session_id: String::new(),
-            model: String::new(),
-            context_json: String::new(),
-            timeout_ms: 0,
-            sidecar_token: "t".into(),
-        };
-        let resp = run_prompt_request(&req).await.unwrap();
-        assert_eq!(resp.response, "nested response");
-        assert_eq!(resp.trace_id, "nested-trace");
-    }
 }
 
 // ─── JOB 12: sandbox_task (via run_task_request) ─────────────────────────────
@@ -396,7 +360,9 @@ mod task_job {
             .mount(&srv)
             .await;
 
-        let resp = run_task_request(&task_req(&srv.uri(), "t", "work")).await.unwrap();
+        let resp = run_task_request(&task_req(&srv.uri(), "t", "work"))
+            .await
+            .unwrap();
         assert!(resp.success);
         assert_eq!(resp.result, "done");
         assert_eq!(resp.trace_id, "t-done");
@@ -438,7 +404,7 @@ mod snapshot_job {
     #[test]
     fn workspace_only() {
         let cmd = build_snapshot_command("s3://bucket/snap.tar.gz", true, false).unwrap();
-        assert!(cmd.contains("/workspace"));
+        assert!(cmd.contains("/home/agent"));
         assert!(!cmd.contains("/var/lib/sidecar"));
         assert!(cmd.contains("s3://bucket/snap.tar.gz"));
     }
@@ -446,14 +412,14 @@ mod snapshot_job {
     #[test]
     fn state_only() {
         let cmd = build_snapshot_command("s3://bucket/snap.tar.gz", false, true).unwrap();
-        assert!(!cmd.contains("/workspace"));
+        assert!(!cmd.contains("/home/agent"));
         assert!(cmd.contains("/var/lib/sidecar"));
     }
 
     #[test]
     fn both_workspace_and_state() {
         let cmd = build_snapshot_command("https://dest/snap", true, true).unwrap();
-        assert!(cmd.contains("/workspace"));
+        assert!(cmd.contains("/home/agent"));
         assert!(cmd.contains("/var/lib/sidecar"));
     }
 
@@ -469,22 +435,27 @@ mod snapshot_job {
         let id = insert_sandbox(&srv.uri(), "snap-tok");
 
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "uploaded", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "result": {
+                    "exitCode": 0,
+                    "stdout": "uploaded",
+                    "stderr": "",
+                    "duration": 500
+                }
+            })))
             .expect(1)
             .mount(&srv)
             .await;
 
-        // Replicate what sandbox_snapshot does
         let cmd = build_snapshot_command("s3://bucket/snap.tar.gz", true, false).unwrap();
         let payload = json!({"command": format!("sh -c {}", util::shell_escape(&cmd))});
-        let resp = sidecar_post_json(&srv.uri(), "/exec", "snap-tok", payload)
+        let resp = sidecar_post_json(&srv.uri(), "/terminals/commands", "snap-tok", payload)
             .await
             .unwrap();
-        assert_eq!(resp["stdout"], "uploaded");
+        let (_, stdout, _) = extract_exec_fields(&resp);
+        assert_eq!(stdout, "uploaded");
         rm(&id);
     }
 }
@@ -537,8 +508,16 @@ mod batch_jobs {
             .mount(&bad)
             .await;
 
-        assert!(run_task_request(&task_req(&good.uri(), "t", "go")).await.is_ok());
-        assert!(run_task_request(&task_req(&bad.uri(), "t", "go")).await.is_err());
+        assert!(
+            run_task_request(&task_req(&good.uri(), "t", "go"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            run_task_request(&task_req(&bad.uri(), "t", "go"))
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -572,11 +551,8 @@ mod ssh_jobs {
     async fn provision_key_sends_command() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(mock_exec_ok("", 0))
             .expect(1)
             .mount(&srv)
             .await;
@@ -590,11 +566,8 @@ mod ssh_jobs {
     async fn revoke_key_sends_command() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(json!({"exitCode": 0, "stdout": "", "stderr": ""})),
-            )
+            .and(path("/terminals/commands"))
+            .respond_with(mock_exec_ok("", 0))
             .expect(1)
             .mount(&srv)
             .await;
@@ -607,7 +580,6 @@ mod ssh_jobs {
     #[tokio::test]
     async fn invalid_username_rejected() {
         let srv = MockServer::start().await;
-        // Should not even reach the sidecar
         let r = provision_key(&srv.uri(), "user;rm -rf /", "key", "t").await;
         assert!(r.is_err());
         let r = revoke_key(&srv.uri(), "user$(evil)", "key", "t").await;
@@ -716,11 +688,9 @@ mod workflow_jobs {
             .insert(key.clone(), wf(90005, "http://unused", "t"))
             .unwrap();
 
-        // Verify it's active
         let w = workflows().unwrap().get(&key).unwrap().unwrap();
         assert!(w.active);
 
-        // Cancel it
         workflows()
             .unwrap()
             .update(&key, |e| {
@@ -758,28 +728,13 @@ mod response_parsing {
     use super::*;
 
     #[test]
-    fn flat_shape() {
+    fn success_shape() {
         let v = json!({"success": true, "response": "hello", "error": "none", "traceId": "t1"});
         let (success, response, error, trace_id) = extract_agent_fields(&v);
         assert!(success);
         assert_eq!(response, "hello");
         assert_eq!(error, "none");
         assert_eq!(trace_id, "t1");
-    }
-
-    #[test]
-    fn nested_data_shape() {
-        let v = json!({
-            "success": true,
-            "data": {
-                "finalText": "nested hello",
-                "metadata": {"traceId": "nested-t"}
-            }
-        });
-        let (success, response, _error, trace_id) = extract_agent_fields(&v);
-        assert!(success);
-        assert_eq!(response, "nested hello");
-        assert_eq!(trace_id, "nested-t");
     }
 
     #[test]
@@ -860,37 +815,62 @@ mod abi {
         assert_eq!(d.command, "ls");
         assert_eq!(d.timeout_ms, 5000);
 
-        let exec_r = SandboxExecResponse { exit_code: 1, stdout: "out".into(), stderr: "err".into() };
+        let exec_r = SandboxExecResponse {
+            exit_code: 1,
+            stdout: "out".into(),
+            stderr: "err".into(),
+        };
         let d = SandboxExecResponse::abi_decode(&exec_r.abi_encode()).unwrap();
         assert_eq!(d.exit_code, 1);
 
         let prompt = SandboxPromptRequest {
-            sidecar_url: "http://h".into(), message: "hi".into(), session_id: "s".into(),
-            model: "m".into(), context_json: "{}".into(), timeout_ms: 1000, sidecar_token: "t".into(),
+            sidecar_url: "http://h".into(),
+            message: "hi".into(),
+            session_id: "s".into(),
+            model: "m".into(),
+            context_json: "{}".into(),
+            timeout_ms: 1000,
+            sidecar_token: "t".into(),
         };
         let d = SandboxPromptRequest::abi_decode(&prompt.abi_encode()).unwrap();
         assert_eq!(d.message, "hi");
 
         let prompt_r = SandboxPromptResponse {
-            success: true, response: "ok".into(), error: String::new(), trace_id: "tr".into(),
-            duration_ms: 500, input_tokens: 10, output_tokens: 5,
+            success: true,
+            response: "ok".into(),
+            error: String::new(),
+            trace_id: "tr".into(),
+            duration_ms: 500,
+            input_tokens: 10,
+            output_tokens: 5,
         };
         let d = SandboxPromptResponse::abi_decode(&prompt_r.abi_encode()).unwrap();
         assert!(d.success);
         assert_eq!(d.duration_ms, 500);
 
         let task = SandboxTaskRequest {
-            sidecar_url: "http://h".into(), prompt: "build".into(), session_id: "s".into(),
-            max_turns: 10, model: "claude".into(), context_json: "{}".into(),
-            timeout_ms: 60000, sidecar_token: "t".into(),
+            sidecar_url: "http://h".into(),
+            prompt: "build".into(),
+            session_id: "s".into(),
+            max_turns: 10,
+            model: "claude".into(),
+            context_json: "{}".into(),
+            timeout_ms: 60000,
+            sidecar_token: "t".into(),
         };
         let d = SandboxTaskRequest::abi_decode(&task.abi_encode()).unwrap();
         assert_eq!(d.prompt, "build");
         assert_eq!(d.max_turns, 10);
 
         let task_r = SandboxTaskResponse {
-            success: true, result: "done".into(), error: String::new(), trace_id: "tx".into(),
-            duration_ms: 15000, input_tokens: 2000, output_tokens: 800, session_id: "sx".into(),
+            success: true,
+            result: "done".into(),
+            error: String::new(),
+            trace_id: "tx".into(),
+            duration_ms: 15000,
+            input_tokens: 2000,
+            output_tokens: 800,
+            session_id: "sx".into(),
         };
         let d = SandboxTaskResponse::abi_decode(&task_r.abi_encode()).unwrap();
         assert_eq!(d.duration_ms, 15000);
@@ -902,18 +882,27 @@ mod abi {
         let bt = BatchTaskRequest {
             sidecar_urls: vec!["http://a".into(), "http://b".into()],
             sidecar_tokens: vec!["ta".into(), "tb".into()],
-            prompt: "go".into(), session_id: String::new(), max_turns: 5,
-            model: String::new(), context_json: String::new(), timeout_ms: 30000,
-            parallel: true, aggregation: "all".into(),
+            prompt: "go".into(),
+            session_id: String::new(),
+            max_turns: 5,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 30000,
+            parallel: true,
+            aggregation: "all".into(),
         };
         let d = BatchTaskRequest::abi_decode(&bt.abi_encode()).unwrap();
         assert_eq!(d.sidecar_urls.len(), 2);
         assert!(d.parallel);
 
         let be = BatchExecRequest {
-            sidecar_urls: vec!["http://h".into()], sidecar_tokens: vec!["t".into()],
-            command: "npm test".into(), cwd: "/app".into(), env_json: "{}".into(),
-            timeout_ms: 10000, parallel: false,
+            sidecar_urls: vec!["http://h".into()],
+            sidecar_tokens: vec!["t".into()],
+            command: "npm test".into(),
+            cwd: "/app".into(),
+            env_json: "{}".into(),
+            timeout_ms: 10000,
+            parallel: false,
         };
         let d = BatchExecRequest::abi_decode(&be.abi_encode()).unwrap();
         assert_eq!(d.command, "npm test");
@@ -921,11 +910,21 @@ mod abi {
         let bc = BatchCreateRequest {
             count: 3,
             template_request: SandboxCreateRequest {
-                name: "n".into(), image: "i".into(), stack: String::new(),
-                agent_identifier: String::new(), env_json: String::new(),
-                metadata_json: String::new(), ssh_enabled: false, ssh_public_key: String::new(),
-                web_terminal_enabled: false, max_lifetime_seconds: 60, idle_timeout_seconds: 30,
-                cpu_cores: 1, memory_mb: 256, disk_gb: 5, sidecar_token: String::new(),
+                name: "n".into(),
+                image: "i".into(),
+                stack: String::new(),
+                agent_identifier: String::new(),
+                env_json: String::new(),
+                metadata_json: String::new(),
+                ssh_enabled: false,
+                ssh_public_key: String::new(),
+                web_terminal_enabled: false,
+                max_lifetime_seconds: 60,
+                idle_timeout_seconds: 30,
+                cpu_cores: 1,
+                memory_mb: 256,
+                disk_gb: 5,
+                sidecar_token: String::new(),
             },
             operators: vec![Address::ZERO],
             distribution: "round-robin".into(),
@@ -935,27 +934,36 @@ mod abi {
         assert_eq!(d.operators.len(), 1);
 
         let wc = WorkflowCreateRequest {
-            name: "daily".into(), workflow_json: "{}".into(), trigger_type: "cron".into(),
-            trigger_config: "0 0 * * *".into(), sandbox_config_json: "{}".into(),
+            name: "daily".into(),
+            workflow_json: "{}".into(),
+            trigger_type: "cron".into(),
+            trigger_config: "0 0 * * *".into(),
+            sandbox_config_json: "{}".into(),
         };
         let d = WorkflowCreateRequest::abi_decode(&wc.abi_encode()).unwrap();
         assert_eq!(d.trigger_type, "cron");
 
         let ssh = SshProvisionRequest {
-            sidecar_url: "http://h".into(), username: "dev".into(),
-            public_key: "ssh-ed25519 AAAA".into(), sidecar_token: "t".into(),
+            sidecar_url: "http://h".into(),
+            username: "dev".into(),
+            public_key: "ssh-ed25519 AAAA".into(),
+            sidecar_token: "t".into(),
         };
         let d = SshProvisionRequest::abi_decode(&ssh.abi_encode()).unwrap();
         assert_eq!(d.username, "dev");
 
         let ssh_r = SshRevokeRequest {
-            sidecar_url: "http://h".into(), username: "dev".into(),
-            public_key: "ssh-ed25519 AAAA".into(), sidecar_token: "t".into(),
+            sidecar_url: "http://h".into(),
+            username: "dev".into(),
+            public_key: "ssh-ed25519 AAAA".into(),
+            sidecar_token: "t".into(),
         };
         let d = SshRevokeRequest::abi_decode(&ssh_r.abi_encode()).unwrap();
         assert_eq!(d.username, "dev");
 
-        let jr = JsonResponse { json: r#"{"k":"v"}"#.into() };
+        let jr = JsonResponse {
+            json: r#"{"k":"v"}"#.into(),
+        };
         let d = JsonResponse::abi_decode(&jr.abi_encode()).unwrap();
         let p: Value = serde_json::from_str(&d.json).unwrap();
         assert_eq!(p["k"], "v");
@@ -970,7 +978,8 @@ mod errors {
     #[tokio::test]
     async fn connection_refused() {
         init();
-        let r = sidecar_post_json("http://127.0.0.1:1", "/exec", "t", json!({})).await;
+        let r =
+            sidecar_post_json("http://127.0.0.1:1", "/terminals/commands", "t", json!({})).await;
         assert!(r.is_err());
     }
 
@@ -978,11 +987,11 @@ mod errors {
     async fn http_500() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&srv)
             .await;
-        let r = sidecar_post_json(&srv.uri(), "/exec", "t", json!({})).await;
+        let r = sidecar_post_json(&srv.uri(), "/terminals/commands", "t", json!({})).await;
         assert!(r.unwrap_err().to_string().contains("500"));
     }
 
@@ -990,12 +999,16 @@ mod errors {
     async fn invalid_json_response() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
             .mount(&srv)
             .await;
-        let r = sidecar_post_json(&srv.uri(), "/exec", "t", json!({})).await;
-        assert!(r.unwrap_err().to_string().contains("Invalid sidecar response JSON"));
+        let r = sidecar_post_json(&srv.uri(), "/terminals/commands", "t", json!({})).await;
+        assert!(
+            r.unwrap_err()
+                .to_string()
+                .contains("Invalid sidecar response JSON")
+        );
     }
 
     #[tokio::test]
@@ -1024,7 +1037,7 @@ mod errors {
     async fn exec_sidecar_502() {
         let srv = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/exec"))
+            .and(path("/terminals/commands"))
             .respond_with(ResponseTemplate::new(502).set_body_string("Bad Gateway"))
             .mount(&srv)
             .await;
@@ -1047,7 +1060,11 @@ mod errors {
             .respond_with(ResponseTemplate::new(502).set_body_string("Bad Gateway"))
             .mount(&srv)
             .await;
-        assert!(run_task_request(&task_req(&srv.uri(), "t", "go")).await.is_err());
+        assert!(
+            run_task_request(&task_req(&srv.uri(), "t", "go"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1133,13 +1150,222 @@ mod docker {
         let stored = get_sandbox_by_id(&record.id).unwrap();
         assert_eq!(stored.container_id, record.container_id);
 
-        // Verify metrics
         let m = metrics::metrics();
         assert!(m.active_sandboxes.load(Ordering::Relaxed) >= 1);
 
         stop_sidecar(&record).await.unwrap();
         resume_sidecar(&record).await.unwrap();
         delete_sidecar(&record).await.unwrap();
+        rm(&record.id);
+    }
+
+    #[tokio::test]
+    async fn create_populates_snapshot_fields() {
+        init();
+        if !docker_ok() {
+            eprintln!("SKIP: Docker not available");
+            return;
+        }
+
+        let request = SandboxCreateRequest {
+            name: "snap-fields".into(),
+            image: String::new(),
+            stack: String::new(),
+            agent_identifier: String::new(),
+            env_json: r#"{"MY_VAR":"hello"}"#.into(),
+            metadata_json: r#"{"snapshot_destination":"s3://user-bucket/my-snap.tar.gz"}"#.into(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 60,
+            idle_timeout_seconds: 30,
+            cpu_cores: 1,
+            memory_mb: 256,
+            disk_gb: 1,
+            sidecar_token: "sf-tok".into(),
+        };
+
+        let record = match create_sidecar(&request).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("SKIP: create_sidecar failed: {e}");
+                return;
+            }
+        };
+
+        // Verify new fields are populated at creation
+        assert!(
+            !record.original_image.is_empty(),
+            "original_image should be set"
+        );
+        assert_eq!(record.env_json, r#"{"MY_VAR":"hello"}"#);
+        assert_eq!(
+            record.snapshot_destination.as_deref(),
+            Some("s3://user-bucket/my-snap.tar.gz")
+        );
+        assert!(record.snapshot_image_id.is_none());
+        assert!(record.snapshot_s3_url.is_none());
+        assert!(record.container_removed_at.is_none());
+        assert!(record.image_removed_at.is_none());
+
+        // Verify persisted record matches
+        let stored = get_sandbox_by_id(&record.id).unwrap();
+        assert_eq!(stored.original_image, record.original_image);
+        assert_eq!(stored.env_json, record.env_json);
+        assert_eq!(stored.snapshot_destination, record.snapshot_destination);
+
+        delete_sidecar(&record).await.unwrap();
+        rm(&record.id);
+    }
+
+    #[tokio::test]
+    async fn commit_and_warm_resume() {
+        use ai_agent_sandbox_blueprint_lib::runtime::commit_container;
+
+        init();
+        if !docker_ok() {
+            eprintln!("SKIP: Docker not available");
+            return;
+        }
+
+        let request = SandboxCreateRequest {
+            name: "warm-resume".into(),
+            image: String::new(),
+            stack: String::new(),
+            agent_identifier: String::new(),
+            env_json: "{}".into(),
+            metadata_json: "{}".into(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 60,
+            idle_timeout_seconds: 30,
+            cpu_cores: 1,
+            memory_mb: 256,
+            disk_gb: 1,
+            sidecar_token: "warm-tok".into(),
+        };
+
+        let record = match create_sidecar(&request).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("SKIP: create_sidecar failed: {e}");
+                return;
+            }
+        };
+
+        // Stop the container
+        stop_sidecar(&record).await.unwrap();
+
+        // Commit the stopped container → snapshot image
+        let image_id = commit_container(&record).await.unwrap();
+        assert!(!image_id.is_empty(), "commit should return an image ID");
+
+        // Store the snapshot_image_id
+        sandboxes()
+            .unwrap()
+            .update(&record.id, |r| {
+                r.snapshot_image_id = Some(image_id.clone());
+            })
+            .unwrap();
+
+        // Force-remove the container to simulate Hot→Warm GC transition
+        delete_sidecar(&record).await.unwrap();
+        sandboxes()
+            .unwrap()
+            .update(&record.id, |r| {
+                r.container_removed_at = Some(now_ts());
+            })
+            .unwrap();
+
+        // Resume should detect container gone + snapshot_image_id → warm path
+        let updated_record = get_sandbox_by_id(&record.id).unwrap();
+        assert!(updated_record.container_removed_at.is_some());
+        assert!(updated_record.snapshot_image_id.is_some());
+
+        resume_sidecar(&updated_record).await.unwrap();
+
+        // After warm resume: new container running, snapshot consumed
+        let resumed = get_sandbox_by_id(&record.id).unwrap();
+        assert_eq!(
+            resumed.state,
+            ai_agent_sandbox_blueprint_lib::runtime::SandboxState::Running
+        );
+        assert!(
+            resumed.container_removed_at.is_none(),
+            "container_removed_at should be cleared"
+        );
+        assert!(
+            resumed.snapshot_image_id.is_none(),
+            "snapshot_image_id should be consumed"
+        );
+        assert_ne!(
+            resumed.container_id, record.container_id,
+            "should have a new container"
+        );
+        assert!(resumed.sidecar_port > 0);
+
+        // Cleanup: delete the new container and snapshot image
+        delete_sidecar(&resumed).await.unwrap();
+        // Clean up the snapshot image if it still exists
+        let _ = ai_agent_sandbox_blueprint_lib::runtime::remove_snapshot_image(&image_id).await;
+        rm(&record.id);
+    }
+
+    #[tokio::test]
+    async fn resume_with_no_snapshot_returns_error() {
+        init();
+        if !docker_ok() {
+            eprintln!("SKIP: Docker not available");
+            return;
+        }
+
+        let request = SandboxCreateRequest {
+            name: "no-snap".into(),
+            image: String::new(),
+            stack: String::new(),
+            agent_identifier: String::new(),
+            env_json: "{}".into(),
+            metadata_json: "{}".into(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 60,
+            idle_timeout_seconds: 30,
+            cpu_cores: 1,
+            memory_mb: 256,
+            disk_gb: 1,
+            sidecar_token: "nosn-tok".into(),
+        };
+
+        let record = match create_sidecar(&request).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("SKIP: create_sidecar failed: {e}");
+                return;
+            }
+        };
+
+        stop_sidecar(&record).await.unwrap();
+        delete_sidecar(&record).await.unwrap();
+
+        // Mark container as removed, no snapshots
+        sandboxes()
+            .unwrap()
+            .update(&record.id, |r| {
+                r.container_removed_at = Some(now_ts());
+            })
+            .unwrap();
+
+        // Resume should fail — no container, no image, no S3
+        let updated = get_sandbox_by_id(&record.id).unwrap();
+        let result = resume_sidecar(&updated).await;
+        assert!(result.is_err(), "resume with no snapshots should fail");
+        assert!(
+            result.unwrap_err().to_string().contains("Cannot resume"),
+            "error should mention Cannot resume"
+        );
+
         rm(&record.id);
     }
 }
@@ -1162,7 +1388,9 @@ mod metrics_tests {
         let m = metrics::metrics();
         let before = m.total_jobs.load(Ordering::Relaxed);
 
-        run_task_request(&task_req(&srv.uri(), "t", "work")).await.unwrap();
+        run_task_request(&task_req(&srv.uri(), "t", "work"))
+            .await
+            .unwrap();
 
         assert!(m.total_jobs.load(Ordering::Relaxed) > before);
     }
@@ -1185,7 +1413,9 @@ mod metrics_tests {
         let m = metrics::metrics();
         let before = m.failed_jobs.load(Ordering::Relaxed);
 
-        let resp = run_task_request(&task_req(&srv.uri(), "t", "fail")).await.unwrap();
+        let resp = run_task_request(&task_req(&srv.uri(), "t", "fail"))
+            .await
+            .unwrap();
         assert!(!resp.success);
 
         assert!(m.failed_jobs.load(Ordering::Relaxed) > before);
@@ -1225,13 +1455,7 @@ mod metrics_tests {
         );
 
         m.record_sandbox_deleted(4, 8192);
-        assert_eq!(
-            m.active_sandboxes.load(Ordering::Relaxed),
-            before_active
-        );
-        assert_eq!(
-            m.allocated_cpu_cores.load(Ordering::Relaxed),
-            before_cpu
-        );
+        assert_eq!(m.active_sandboxes.load(Ordering::Relaxed), before_active);
+        assert_eq!(m.allocated_cpu_cores.load(Ordering::Relaxed), before_cpu);
     }
 }

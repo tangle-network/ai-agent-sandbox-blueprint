@@ -1,0 +1,36 @@
+# MinIO for snapshot integration tests.
+#
+# Start:   docker compose -f docker-compose.test.yml up -d
+# Wait:    docker compose -f docker-compose.test.yml logs -f minio-init
+# Run:     SNAPSHOT_TEST=1 cargo test --test snapshot_integration -- --test-threads=1
+# Cleanup: docker compose -f docker-compose.test.yml down -v
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: blueprint-test-minio
+    ports:
+      - "9100:9000"
+      - "9101:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb local/snapshots --ignore-existing;
+      mc anonymous set public local/snapshots;
+      echo 'Snapshot bucket ready';
+      "

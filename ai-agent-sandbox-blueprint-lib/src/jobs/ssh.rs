@@ -55,6 +55,10 @@ pub async fn ssh_provision(
     )
     .await?;
 
+    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(&request.sidecar_url) {
+        crate::runtime::touch_sandbox(&record.id);
+    }
+
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
@@ -70,7 +74,7 @@ pub async fn revoke_key(
     let command = build_ssh_revoke_command(&username, public_key);
 
     let payload = json!({ "command": format!("sh -c {}", shell_escape(&command)) });
-    sidecar_post_json(sidecar_url, "/exec", token, payload)
+    sidecar_post_json(sidecar_url, "/terminals/commands", token, payload)
         .await
         .map_err(|e| e.to_string())
 }
@@ -90,6 +94,10 @@ pub async fn ssh_revoke(
     )
     .await?;
 
+    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(&request.sidecar_url) {
+        crate::runtime::touch_sandbox(&record.id);
+    }
+
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
@@ -105,7 +113,7 @@ pub async fn provision_key(
     let command = build_ssh_command(&username, public_key);
 
     let payload = json!({ "command": format!("sh -c {}", shell_escape(&command)) });
-    sidecar_post_json(sidecar_url, "/exec", token, payload)
+    sidecar_post_json(sidecar_url, "/terminals/commands", token, payload)
         .await
         .map_err(|e| e.to_string())
 }

@@ -5,6 +5,7 @@ pub mod error;
 pub mod http;
 pub mod jobs;
 pub mod metrics;
+pub mod reaper;
 pub mod runtime;
 pub mod store;
 pub mod util;
@@ -20,8 +21,8 @@ pub use blueprint_sdk::tangle;
 pub use error::SandboxError;
 pub use jobs::batch::{batch_collect, batch_create, batch_exec, batch_task};
 pub use jobs::exec::{
-    extract_exec_fields, run_exec_request, run_prompt_request, sandbox_exec, sandbox_prompt,
-    sandbox_task,
+    build_exec_payload, extract_exec_fields, run_exec_request, run_prompt_request,
+    run_task_request, sandbox_exec, sandbox_prompt, sandbox_task,
 };
 pub use jobs::sandbox::{
     sandbox_create, sandbox_delete, sandbox_resume, sandbox_snapshot, sandbox_stop,
@@ -266,6 +267,9 @@ pub fn next_batch_id() -> String {
     format!("batch-{}", uuid::Uuid::new_v4())
 }
 
+/// Extract agent response fields from the sidecar `/agents/run` response.
+///
+/// Response shape: `{ success, response, error, traceId, durationMs, usage, sessionId }`
 pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
     let success = parsed
         .get("success")
@@ -277,7 +281,7 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
         .or_else(|| {
             parsed
                 .get("data")
-                .and_then(|data| data.get("finalText"))
+                .and_then(|d| d.get("finalText"))
                 .and_then(Value::as_str)
         })
         .unwrap_or_default()
@@ -294,13 +298,6 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
     let trace_id = parsed
         .get("traceId")
         .and_then(Value::as_str)
-        .or_else(|| {
-            parsed
-                .get("data")
-                .and_then(|data| data.get("metadata"))
-                .and_then(|meta| meta.get("traceId"))
-                .and_then(Value::as_str)
-        })
         .unwrap_or_default()
         .to_string();
 
@@ -308,7 +305,6 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
 }
 
 /// Router that maps job IDs to handlers.
-#[must_use]
 pub fn router() -> Router {
     Router::new()
         .route(JOB_SANDBOX_CREATE, sandbox_create.layer(TangleLayer))
@@ -333,8 +329,6 @@ pub fn router() -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn parse_json_object_empty() {
         let result = crate::util::parse_json_object("", "env_json").unwrap();

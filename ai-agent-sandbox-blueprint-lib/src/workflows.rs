@@ -7,9 +7,11 @@ use std::str::FromStr;
 
 use crate::SandboxTaskRequest;
 use crate::auth::require_sidecar_token;
-use crate::http::sidecar_post_json;
 use crate::runtime::require_sidecar_auth;
 use crate::store::PersistentStore;
+
+// Re-export so callers that import from workflows still work.
+pub use crate::jobs::exec::run_task_request;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowEntry {
@@ -152,102 +154,6 @@ pub fn apply_workflow_execution(
     entry.next_run_at = next_run_at;
 }
 
-pub async fn run_task_request(
-    request: &SandboxTaskRequest,
-) -> Result<crate::SandboxTaskResponse, String> {
-    let mut payload = serde_json::Map::new();
-    payload.insert(
-        "identifier".to_string(),
-        Value::String("default-agent".to_string()),
-    );
-    payload.insert(
-        "message".to_string(),
-        Value::String(request.prompt.to_string()),
-    );
-
-    if !request.session_id.is_empty() {
-        payload.insert(
-            "sessionId".to_string(),
-            Value::String(request.session_id.to_string()),
-        );
-    }
-
-    if !request.model.is_empty() {
-        payload.insert("backend".to_string(), json!({ "model": request.model }));
-    }
-
-    let mut metadata = serde_json::Map::new();
-    if !request.context_json.trim().is_empty() {
-        let context = crate::util::parse_json_object(&request.context_json, "context_json")?;
-        if let Some(Value::Object(context)) = context {
-            metadata.extend(context);
-        }
-    }
-
-    if request.max_turns > 0 {
-        metadata.insert("maxTurns".to_string(), json!(request.max_turns));
-        metadata.insert("maxSteps".to_string(), json!(request.max_turns));
-    }
-
-    if !metadata.is_empty() {
-        payload.insert("metadata".to_string(), Value::Object(metadata));
-    }
-
-    if request.timeout_ms > 0 {
-        payload.insert("timeout".to_string(), json!(request.timeout_ms));
-    }
-
-    let m = crate::metrics::metrics();
-    let _session = m.session_guard();
-
-    let parsed = sidecar_post_json(
-        &request.sidecar_url,
-        "/agents/run",
-        &request.sidecar_token,
-        Value::Object(payload),
-    )
-    .await?;
-
-    let (success, result, error, trace_id) = crate::extract_agent_fields(&parsed);
-    let session_id = parsed
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .unwrap_or(request.session_id.as_str())
-        .to_string();
-
-    let duration_ms = parsed
-        .get("durationMs")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let input_tokens = parsed
-        .get("usage")
-        .and_then(|usage| usage.get("inputTokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as u32;
-    let output_tokens = parsed
-        .get("usage")
-        .and_then(|usage| usage.get("outputTokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as u32;
-
-    if success {
-        m.record_job(duration_ms, input_tokens, output_tokens);
-    } else {
-        m.record_failure();
-    }
-
-    Ok(crate::SandboxTaskResponse {
-        success,
-        result,
-        error,
-        trace_id,
-        duration_ms,
-        input_tokens,
-        output_tokens,
-        session_id,
-    })
-}
-
 pub async fn workflow_tick() -> Result<Value, String> {
     let now = now_ts();
     let all = workflows()?.values().map_err(|e| e.to_string())?;
@@ -270,10 +176,12 @@ pub async fn workflow_tick() -> Result<Value, String> {
             Ok(execution) => {
                 let last_run_at = execution.last_run_at;
                 let next_run_at = execution.next_run_at;
-                let _ = workflows()?.update(&key, |e| {
-                    e.last_run_at = Some(last_run_at);
-                    e.next_run_at = next_run_at;
-                });
+                workflows()?
+                    .update(&key, |e| {
+                        e.last_run_at = Some(last_run_at);
+                        e.next_run_at = next_run_at;
+                    })
+                    .map_err(|e| e.to_string())?;
                 executed.push(execution.response);
             }
             Err(err) => executed.push(json!({
@@ -348,7 +256,7 @@ fn parse_workflow_ids(
     values: Vec<blueprint_sdk::alloy::dyn_abi::DynSolValue>,
 ) -> Result<Vec<u64>, String> {
     let first = values
-        .get(0)
+        .first()
         .ok_or_else(|| "Missing workflow IDs output".to_string())?;
     let blueprint_sdk::alloy::dyn_abi::DynSolValue::Array(ids) = first else {
         return Err("Unexpected workflow IDs output type".to_string());
@@ -371,7 +279,7 @@ fn parse_workflow_config(
     values: Vec<blueprint_sdk::alloy::dyn_abi::DynSolValue>,
 ) -> Result<WorkflowEntry, String> {
     let first = values
-        .get(0)
+        .first()
         .ok_or_else(|| "Missing workflow output".to_string())?;
     let blueprint_sdk::alloy::dyn_abi::DynSolValue::Tuple(fields) = first else {
         return Err("Unexpected workflow output type".to_string());
