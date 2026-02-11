@@ -74,6 +74,13 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 max_lifetime_seconds: 0,
                 last_activity_at: now_ts(),
                 stopped_at: None,
+                snapshot_image_id: None,
+                snapshot_s3_url: None,
+                container_removed_at: None,
+                image_removed_at: None,
+                original_image: String::new(),
+                env_json: String::new(),
+                snapshot_destination: None,
             },
         )
         .unwrap();
@@ -1149,6 +1156,204 @@ mod docker {
         stop_sidecar(&record).await.unwrap();
         resume_sidecar(&record).await.unwrap();
         delete_sidecar(&record).await.unwrap();
+        rm(&record.id);
+    }
+
+    #[tokio::test]
+    async fn create_populates_snapshot_fields() {
+        init();
+        if !docker_ok() {
+            eprintln!("SKIP: Docker not available");
+            return;
+        }
+
+        let request = SandboxCreateRequest {
+            name: "snap-fields".into(),
+            image: String::new(),
+            stack: String::new(),
+            agent_identifier: String::new(),
+            env_json: r#"{"MY_VAR":"hello"}"#.into(),
+            metadata_json: r#"{"snapshot_destination":"s3://user-bucket/my-snap.tar.gz"}"#.into(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 60,
+            idle_timeout_seconds: 30,
+            cpu_cores: 1,
+            memory_mb: 256,
+            disk_gb: 1,
+            sidecar_token: "sf-tok".into(),
+        };
+
+        let record = match create_sidecar(&request).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("SKIP: create_sidecar failed: {e}");
+                return;
+            }
+        };
+
+        // Verify new fields are populated at creation
+        assert!(!record.original_image.is_empty(), "original_image should be set");
+        assert_eq!(record.env_json, r#"{"MY_VAR":"hello"}"#);
+        assert_eq!(
+            record.snapshot_destination.as_deref(),
+            Some("s3://user-bucket/my-snap.tar.gz")
+        );
+        assert!(record.snapshot_image_id.is_none());
+        assert!(record.snapshot_s3_url.is_none());
+        assert!(record.container_removed_at.is_none());
+        assert!(record.image_removed_at.is_none());
+
+        // Verify persisted record matches
+        let stored = get_sandbox_by_id(&record.id).unwrap();
+        assert_eq!(stored.original_image, record.original_image);
+        assert_eq!(stored.env_json, record.env_json);
+        assert_eq!(stored.snapshot_destination, record.snapshot_destination);
+
+        delete_sidecar(&record).await.unwrap();
+        rm(&record.id);
+    }
+
+    #[tokio::test]
+    async fn commit_and_warm_resume() {
+        use ai_agent_sandbox_blueprint_lib::runtime::commit_container;
+
+        init();
+        if !docker_ok() {
+            eprintln!("SKIP: Docker not available");
+            return;
+        }
+
+        let request = SandboxCreateRequest {
+            name: "warm-resume".into(),
+            image: String::new(),
+            stack: String::new(),
+            agent_identifier: String::new(),
+            env_json: "{}".into(),
+            metadata_json: "{}".into(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 60,
+            idle_timeout_seconds: 30,
+            cpu_cores: 1,
+            memory_mb: 256,
+            disk_gb: 1,
+            sidecar_token: "warm-tok".into(),
+        };
+
+        let record = match create_sidecar(&request).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("SKIP: create_sidecar failed: {e}");
+                return;
+            }
+        };
+
+        // Stop the container
+        stop_sidecar(&record).await.unwrap();
+
+        // Commit the stopped container → snapshot image
+        let image_id = commit_container(&record).await.unwrap();
+        assert!(!image_id.is_empty(), "commit should return an image ID");
+
+        // Store the snapshot_image_id
+        sandboxes()
+            .unwrap()
+            .update(&record.id, |r| {
+                r.snapshot_image_id = Some(image_id.clone());
+            })
+            .unwrap();
+
+        // Force-remove the container to simulate Hot→Warm GC transition
+        delete_sidecar(&record).await.unwrap();
+        sandboxes()
+            .unwrap()
+            .update(&record.id, |r| {
+                r.container_removed_at = Some(now_ts());
+            })
+            .unwrap();
+
+        // Resume should detect container gone + snapshot_image_id → warm path
+        let updated_record = get_sandbox_by_id(&record.id).unwrap();
+        assert!(updated_record.container_removed_at.is_some());
+        assert!(updated_record.snapshot_image_id.is_some());
+
+        resume_sidecar(&updated_record).await.unwrap();
+
+        // After warm resume: new container running, snapshot consumed
+        let resumed = get_sandbox_by_id(&record.id).unwrap();
+        assert_eq!(
+            resumed.state,
+            ai_agent_sandbox_blueprint_lib::runtime::SandboxState::Running
+        );
+        assert!(resumed.container_removed_at.is_none(), "container_removed_at should be cleared");
+        assert!(resumed.snapshot_image_id.is_none(), "snapshot_image_id should be consumed");
+        assert_ne!(resumed.container_id, record.container_id, "should have a new container");
+        assert!(resumed.sidecar_port > 0);
+
+        // Cleanup: delete the new container and snapshot image
+        delete_sidecar(&resumed).await.unwrap();
+        // Clean up the snapshot image if it still exists
+        let _ = ai_agent_sandbox_blueprint_lib::runtime::remove_snapshot_image(&image_id).await;
+        rm(&record.id);
+    }
+
+    #[tokio::test]
+    async fn resume_with_no_snapshot_returns_error() {
+        init();
+        if !docker_ok() {
+            eprintln!("SKIP: Docker not available");
+            return;
+        }
+
+        let request = SandboxCreateRequest {
+            name: "no-snap".into(),
+            image: String::new(),
+            stack: String::new(),
+            agent_identifier: String::new(),
+            env_json: "{}".into(),
+            metadata_json: "{}".into(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 60,
+            idle_timeout_seconds: 30,
+            cpu_cores: 1,
+            memory_mb: 256,
+            disk_gb: 1,
+            sidecar_token: "nosn-tok".into(),
+        };
+
+        let record = match create_sidecar(&request).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("SKIP: create_sidecar failed: {e}");
+                return;
+            }
+        };
+
+        stop_sidecar(&record).await.unwrap();
+        delete_sidecar(&record).await.unwrap();
+
+        // Mark container as removed, no snapshots
+        sandboxes()
+            .unwrap()
+            .update(&record.id, |r| {
+                r.container_removed_at = Some(now_ts());
+            })
+            .unwrap();
+
+        // Resume should fail — no container, no image, no S3
+        let updated = get_sandbox_by_id(&record.id).unwrap();
+        let result = resume_sidecar(&updated).await;
+        assert!(result.is_err(), "resume with no snapshots should fail");
+        assert!(
+            result.unwrap_err().to_string().contains("Cannot resume"),
+            "error should mention Cannot resume"
+        );
+
         rm(&record.id);
     }
 }

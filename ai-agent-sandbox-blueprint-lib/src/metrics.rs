@@ -36,6 +36,16 @@ pub struct OnChainMetrics {
     pub reaped_lifetime: AtomicU64,
     /// Stopped sandboxes garbage collected past retention.
     pub garbage_collected: AtomicU64,
+    /// Docker commits (snapshots) performed.
+    pub snapshots_committed: AtomicU64,
+    /// S3 snapshot uploads performed.
+    pub snapshots_uploaded: AtomicU64,
+    /// Hot→Warm GC transitions (containers removed).
+    pub gc_containers_removed: AtomicU64,
+    /// Warm→Cold GC transitions (images removed).
+    pub gc_images_removed: AtomicU64,
+    /// Cold→Gone GC transitions (S3 snapshots cleaned).
+    pub gc_s3_cleaned: AtomicU64,
 }
 
 impl Default for OnChainMetrics {
@@ -60,6 +70,11 @@ impl OnChainMetrics {
             reaped_idle: AtomicU64::new(0),
             reaped_lifetime: AtomicU64::new(0),
             garbage_collected: AtomicU64::new(0),
+            snapshots_committed: AtomicU64::new(0),
+            snapshots_uploaded: AtomicU64::new(0),
+            gc_containers_removed: AtomicU64::new(0),
+            gc_images_removed: AtomicU64::new(0),
+            gc_s3_cleaned: AtomicU64::new(0),
         }
     }
 
@@ -92,6 +107,31 @@ impl OnChainMetrics {
     /// Record a stopped sandbox garbage collected.
     pub fn record_garbage_collected(&self) {
         self.garbage_collected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a docker commit (snapshot) performed.
+    pub fn record_snapshot_committed(&self) {
+        self.snapshots_committed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record an S3 snapshot upload performed.
+    pub fn record_snapshot_uploaded(&self) {
+        self.snapshots_uploaded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a Hot→Warm GC transition (container removed).
+    pub fn record_gc_container_removed(&self) {
+        self.gc_containers_removed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a Warm→Cold GC transition (image removed).
+    pub fn record_gc_image_removed(&self) {
+        self.gc_images_removed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a Cold→Gone GC transition (S3 snapshot cleaned).
+    pub fn record_gc_s3_cleaned(&self) {
+        self.gc_s3_cleaned.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record sandbox creation with its resource allocation.
@@ -196,6 +236,26 @@ impl OnChainMetrics {
             (
                 "garbage_collected".into(),
                 self.garbage_collected.load(Ordering::Relaxed),
+            ),
+            (
+                "snapshots_committed".into(),
+                self.snapshots_committed.load(Ordering::Relaxed),
+            ),
+            (
+                "snapshots_uploaded".into(),
+                self.snapshots_uploaded.load(Ordering::Relaxed),
+            ),
+            (
+                "gc_containers_removed".into(),
+                self.gc_containers_removed.load(Ordering::Relaxed),
+            ),
+            (
+                "gc_images_removed".into(),
+                self.gc_images_removed.load(Ordering::Relaxed),
+            ),
+            (
+                "gc_s3_cleaned".into(),
+                self.gc_s3_cleaned.load(Ordering::Relaxed),
             ),
         ]
     }

@@ -34,7 +34,11 @@ pub struct SidecarRuntimeConfig {
     pub sandbox_max_max_lifetime: u64,
     pub sandbox_reaper_interval: u64,
     pub sandbox_gc_interval: u64,
-    pub sandbox_gc_stopped_retention: u64,
+    pub sandbox_gc_hot_retention: u64,
+    pub sandbox_gc_warm_retention: u64,
+    pub sandbox_gc_cold_retention: u64,
+    pub snapshot_auto_commit: bool,
+    pub snapshot_destination_prefix: Option<String>,
 }
 
 static RUNTIME_CONFIG: OnceCell<SidecarRuntimeConfig> = OnceCell::new();
@@ -110,10 +114,31 @@ impl SidecarRuntimeConfig {
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(3600);
-            let sandbox_gc_stopped_retention = env::var("SANDBOX_GC_STOPPED_RETENTION")
+            let sandbox_gc_hot_retention = env::var("SANDBOX_GC_HOT_RETENTION")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
+                .or_else(|| {
+                    // Backward compat: fall back to old env var name
+                    env::var("SANDBOX_GC_STOPPED_RETENTION")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                })
                 .unwrap_or(86400);
+            let sandbox_gc_warm_retention = env::var("SANDBOX_GC_WARM_RETENTION")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(172800);
+            let sandbox_gc_cold_retention = env::var("SANDBOX_GC_COLD_RETENTION")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(604800);
+            let snapshot_auto_commit = env::var("SANDBOX_SNAPSHOT_AUTO_COMMIT")
+                .ok()
+                .and_then(|v| v.parse::<bool>().ok())
+                .unwrap_or(true);
+            let snapshot_destination_prefix = env::var("SANDBOX_SNAPSHOT_DESTINATION_PREFIX")
+                .ok()
+                .filter(|v| !v.trim().is_empty());
 
             SidecarRuntimeConfig {
                 image,
@@ -129,7 +154,11 @@ impl SidecarRuntimeConfig {
                 sandbox_max_max_lifetime,
                 sandbox_reaper_interval,
                 sandbox_gc_interval,
-                sandbox_gc_stopped_retention,
+                sandbox_gc_hot_retention,
+                sandbox_gc_warm_retention,
+                sandbox_gc_cold_retention,
+                snapshot_auto_commit,
+                snapshot_destination_prefix,
             }
         })
     }
@@ -170,6 +199,20 @@ pub struct SandboxRecord {
     pub last_activity_at: u64,
     #[serde(default)]
     pub stopped_at: Option<u64>,
+    #[serde(default)]
+    pub snapshot_image_id: Option<String>,
+    #[serde(default)]
+    pub snapshot_s3_url: Option<String>,
+    #[serde(default)]
+    pub container_removed_at: Option<u64>,
+    #[serde(default)]
+    pub image_removed_at: Option<u64>,
+    #[serde(default)]
+    pub original_image: String,
+    #[serde(default)]
+    pub env_json: String,
+    #[serde(default)]
+    pub snapshot_destination: Option<String>,
 }
 
 use crate::store::PersistentStore;
@@ -321,6 +364,12 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
     }
 
     let metadata = parse_json_object(&request.metadata_json, "metadata_json")?;
+    // Extract snapshot_destination before metadata is consumed by merge/labels
+    let snapshot_destination = metadata
+        .as_ref()
+        .and_then(|v| v.get("snapshot_destination"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let metadata = merge_metadata(metadata, &request.image, &request.stack)?;
     let labels = match metadata {
         Some(Value::Object(map)) => Some(
@@ -398,6 +447,13 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
         max_lifetime_seconds: max_lifetime,
         last_activity_at: now,
         stopped_at: None,
+        snapshot_image_id: None,
+        snapshot_s3_url: None,
+        container_removed_at: None,
+        image_removed_at: None,
+        original_image: config.image.clone(),
+        env_json: request.env_json.clone(),
+        snapshot_destination,
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
@@ -426,22 +482,57 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
 }
 
 pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
-    let builder = docker_builder().await?;
-    let mut container = Container::from_id(builder.client(), &record.container_id)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to load container: {err}")))?;
-    container
-        .start(false)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to start container: {err}")))?;
+    // Tier 1 (Hot): container still exists → docker start
+    if record.container_removed_at.is_none() {
+        let builder = docker_builder().await?;
+        let try_start = async {
+            let mut container = Container::from_id(builder.client(), &record.container_id)
+                .await
+                .map_err(|err| SandboxError::Docker(format!("Failed to load container: {err}")))?;
+            container
+                .start(false)
+                .await
+                .map_err(|err| SandboxError::Docker(format!("Failed to start container: {err}")))?;
+            Ok::<(), SandboxError>(())
+        };
+        match try_start.await {
+            Ok(()) => {
+                let now = crate::workflows::now_ts();
+                let _ = sandboxes()?.update(&record.id, |r| {
+                    r.state = SandboxState::Running;
+                    r.stopped_at = None;
+                    r.last_activity_at = now;
+                });
+                return Ok(());
+            }
+            Err(err) => {
+                blueprint_sdk::info!(
+                    "resume: hot start failed for sandbox {}, trying warm: {err}",
+                    record.id
+                );
+            }
+        }
+    }
 
-    let now = crate::workflows::now_ts();
-    let _ = sandboxes()?.update(&record.id, |r| {
-        r.state = SandboxState::Running;
-        r.stopped_at = None;
-        r.last_activity_at = now;
-    });
-    Ok(())
+    // Tier 2 (Warm): container gone, snapshot image exists → create from image
+    if record.snapshot_image_id.is_some() {
+        let updated = create_from_snapshot_image(record).await?;
+        let _ = updated; // record already persisted inside the function
+        return Ok(());
+    }
+
+    // Tier 3 (Cold): no image, S3 snapshot exists → create from base + restore
+    if record.snapshot_s3_url.is_some() {
+        let updated = create_and_restore_from_s3(record).await?;
+        let _ = updated;
+        return Ok(());
+    }
+
+    // Nothing available
+    Err(SandboxError::Docker(format!(
+        "Cannot resume sandbox {}: no container, snapshot image, or S3 snapshot available",
+        record.id
+    )))
 }
 
 pub async fn delete_sidecar(record: &SandboxRecord) -> Result<()> {
@@ -460,6 +551,308 @@ pub async fn delete_sidecar(record: &SandboxRecord) -> Result<()> {
     crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
 
     Ok(())
+}
+
+/// Docker-commit a stopped container to preserve filesystem state. Returns the image ID.
+pub async fn commit_container(record: &SandboxRecord) -> Result<String> {
+    let builder = docker_builder().await?;
+    use docktopus::bollard::image::CommitContainerOptions;
+    let options = CommitContainerOptions {
+        container: record.container_id.clone(),
+        repo: format!("sandbox-snapshot/{}", record.id),
+        tag: "latest".to_string(),
+        comment: format!("Auto-snapshot of sandbox {}", record.id),
+        pause: true,
+        ..Default::default()
+    };
+    let response = builder
+        .client()
+        .commit_container(options, BollardConfig::<String>::default())
+        .await
+        .map_err(|err| SandboxError::Docker(format!("Failed to commit container: {err}")))?;
+    Ok(response.id.unwrap_or_default())
+}
+
+/// Remove a committed snapshot image from the local Docker daemon.
+pub async fn remove_snapshot_image(image_id: &str) -> Result<()> {
+    let builder = docker_builder().await?;
+    builder
+        .client()
+        .remove_image(image_id, None, None)
+        .await
+        .map_err(|err| SandboxError::Docker(format!("Failed to remove image {image_id}: {err}")))?;
+    Ok(())
+}
+
+/// Create a new container from a previously committed Docker image.
+///
+/// Reuses the original env vars, port bindings, and resource constraints stored in the record.
+pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<SandboxRecord> {
+    let config = SidecarRuntimeConfig::load();
+    let builder = docker_builder().await?;
+
+    let image_id = record
+        .snapshot_image_id
+        .as_deref()
+        .ok_or_else(|| SandboxError::Docker("No snapshot image available".into()))?;
+
+    let mut env_vars = Vec::new();
+    env_vars.push(format!("SIDECAR_PORT={}", config.container_port));
+    env_vars.push(format!("SIDECAR_AUTH_TOKEN={}", record.token));
+
+    if !record.env_json.trim().is_empty() {
+        if let Ok(Some(Value::Object(map))) = crate::util::parse_json_object(&record.env_json, "env_json") {
+            for (key, value) in map {
+                let val = match value {
+                    Value::String(v) => v,
+                    Value::Number(v) => v.to_string(),
+                    Value::Bool(v) => v.to_string(),
+                    _ => continue,
+                };
+                env_vars.push(format!("{key}={val}"));
+            }
+        }
+    }
+
+    let mut port_bindings = PortMap::new();
+    port_bindings.insert(
+        format!("{}/tcp", config.container_port),
+        Some(vec![PortBinding {
+            host_ip: Some("0.0.0.0".to_string()),
+            host_port: None,
+        }]),
+    );
+    let ssh_enabled = record.ssh_port.is_some();
+    if ssh_enabled {
+        port_bindings.insert(
+            format!("{}/tcp", config.ssh_port),
+            Some(vec![PortBinding {
+                host_ip: Some("0.0.0.0".to_string()),
+                host_port: None,
+            }]),
+        );
+    }
+
+    let mut exposed_ports = HashMap::new();
+    exposed_ports.insert(format!("{}/tcp", config.container_port), HashMap::new());
+    if ssh_enabled {
+        exposed_ports.insert(format!("{}/tcp", config.ssh_port), HashMap::new());
+    }
+
+    let mut host_config = HostConfig {
+        port_bindings: Some(port_bindings),
+        ..Default::default()
+    };
+    if record.cpu_cores > 0 {
+        host_config.nano_cpus = Some((record.cpu_cores as i64) * 1_000_000_000);
+    }
+    if record.memory_mb > 0 {
+        host_config.memory = Some((record.memory_mb as i64) * 1024 * 1024);
+    }
+
+    let override_config = BollardConfig {
+        exposed_ports: Some(exposed_ports),
+        host_config: Some(host_config),
+        labels: None,
+        ..Default::default()
+    };
+
+    let container_name = format!("sidecar-{}-warm", record.id);
+    let mut container = Container::new(builder.client(), image_id.to_string())
+        .with_name(container_name)
+        .env(env_vars)
+        .config_override(override_config);
+
+    container
+        .start(false)
+        .await
+        .map_err(|err| SandboxError::Docker(format!("Failed to start from snapshot image: {err}")))?;
+
+    let container_id = container
+        .id()
+        .ok_or_else(|| SandboxError::Docker("Missing container id".into()))?
+        .to_string();
+
+    let inspect = builder
+        .client()
+        .inspect_container(&container_id, None::<InspectContainerOptions>)
+        .await
+        .map_err(|err| SandboxError::Docker(format!("Failed to inspect container: {err}")))?;
+
+    let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
+    let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
+
+    let now = crate::workflows::now_ts();
+    let mut updated = record.clone();
+    updated.container_id = container_id;
+    updated.sidecar_url = sidecar_url;
+    updated.sidecar_port = sidecar_port;
+    updated.ssh_port = ssh_port;
+    updated.state = SandboxState::Running;
+    updated.stopped_at = None;
+    updated.last_activity_at = now;
+    updated.container_removed_at = None;
+    updated.snapshot_image_id = None;
+
+    sandboxes()?.insert(record.id.clone(), updated.clone())?;
+    Ok(updated)
+}
+
+/// Create a fresh container from the original base image, then restore workspace from S3 snapshot.
+pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<SandboxRecord> {
+    let config = SidecarRuntimeConfig::load();
+    let builder = docker_builder().await?;
+
+    let s3_url = record
+        .snapshot_s3_url
+        .as_deref()
+        .ok_or_else(|| SandboxError::Docker("No S3 snapshot URL available".into()))?;
+
+    let image = if record.original_image.is_empty() {
+        &config.image
+    } else {
+        &record.original_image
+    };
+
+    ensure_image_pulled(builder, image).await?;
+
+    let mut env_vars = Vec::new();
+    env_vars.push(format!("SIDECAR_PORT={}", config.container_port));
+    env_vars.push(format!("SIDECAR_AUTH_TOKEN={}", record.token));
+
+    if !record.env_json.trim().is_empty() {
+        if let Ok(Some(Value::Object(map))) = crate::util::parse_json_object(&record.env_json, "env_json") {
+            for (key, value) in map {
+                let val = match value {
+                    Value::String(v) => v,
+                    Value::Number(v) => v.to_string(),
+                    Value::Bool(v) => v.to_string(),
+                    _ => continue,
+                };
+                env_vars.push(format!("{key}={val}"));
+            }
+        }
+    }
+
+    let mut port_bindings = PortMap::new();
+    port_bindings.insert(
+        format!("{}/tcp", config.container_port),
+        Some(vec![PortBinding {
+            host_ip: Some("0.0.0.0".to_string()),
+            host_port: None,
+        }]),
+    );
+    let ssh_enabled = record.ssh_port.is_some();
+    if ssh_enabled {
+        port_bindings.insert(
+            format!("{}/tcp", config.ssh_port),
+            Some(vec![PortBinding {
+                host_ip: Some("0.0.0.0".to_string()),
+                host_port: None,
+            }]),
+        );
+    }
+
+    let mut exposed_ports = HashMap::new();
+    exposed_ports.insert(format!("{}/tcp", config.container_port), HashMap::new());
+    if ssh_enabled {
+        exposed_ports.insert(format!("{}/tcp", config.ssh_port), HashMap::new());
+    }
+
+    let mut host_config = HostConfig {
+        port_bindings: Some(port_bindings),
+        ..Default::default()
+    };
+    if record.cpu_cores > 0 {
+        host_config.nano_cpus = Some((record.cpu_cores as i64) * 1_000_000_000);
+    }
+    if record.memory_mb > 0 {
+        host_config.memory = Some((record.memory_mb as i64) * 1024 * 1024);
+    }
+
+    let override_config = BollardConfig {
+        exposed_ports: Some(exposed_ports),
+        host_config: Some(host_config),
+        labels: None,
+        ..Default::default()
+    };
+
+    let container_name = format!("sidecar-{}-cold", record.id);
+    let mut container = Container::new(builder.client(), image.to_string())
+        .with_name(container_name)
+        .env(env_vars)
+        .config_override(override_config);
+
+    container
+        .start(false)
+        .await
+        .map_err(|err| SandboxError::Docker(format!("Failed to start from base image: {err}")))?;
+
+    let container_id = container
+        .id()
+        .ok_or_else(|| SandboxError::Docker("Missing container id".into()))?
+        .to_string();
+
+    let inspect = builder
+        .client()
+        .inspect_container(&container_id, None::<InspectContainerOptions>)
+        .await
+        .map_err(|err| SandboxError::Docker(format!("Failed to inspect container: {err}")))?;
+
+    let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
+    let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
+    let token = &record.token;
+
+    // Wait for sidecar to become ready (up to 30s)
+    let ready = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let url = format!("{sidecar_url}/health");
+            if let Ok(resp) = crate::util::http_client()
+                .and_then(|c| Ok(c.get(&url)))
+            {
+                if let Ok(r) = resp.send().await {
+                    if r.status().is_success() {
+                        return;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await;
+
+    if ready.is_err() {
+        blueprint_sdk::info!("S3 restore: sidecar slow to start, proceeding with restore anyway");
+    }
+
+    // Restore workspace from S3 snapshot
+    let restore_cmd = format!(
+        "set -euo pipefail; curl -fsSL {} | tar -xzf - -C /",
+        crate::util::shell_escape(s3_url)
+    );
+    let payload = serde_json::json!({
+        "command": format!("sh -c {}", crate::util::shell_escape(&restore_cmd)),
+    });
+    if let Err(err) = crate::http::sidecar_post_json(&sidecar_url, "/terminals/commands", token, payload).await {
+        blueprint_sdk::error!("S3 restore failed for sandbox {}: {err}", record.id);
+        return Err(SandboxError::Docker(format!("S3 restore failed: {err}")));
+    }
+
+    let now = crate::workflows::now_ts();
+    let mut updated = record.clone();
+    updated.container_id = container_id;
+    updated.sidecar_url = sidecar_url;
+    updated.sidecar_port = sidecar_port;
+    updated.ssh_port = ssh_port;
+    updated.state = SandboxState::Running;
+    updated.stopped_at = None;
+    updated.last_activity_at = now;
+    updated.container_removed_at = None;
+    updated.image_removed_at = None;
+    updated.snapshot_s3_url = None;
+
+    sandboxes()?.insert(record.id.clone(), updated.clone())?;
+    Ok(updated)
 }
 
 fn extract_ports(
