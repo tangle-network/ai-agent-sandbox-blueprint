@@ -1,8 +1,8 @@
 use ai_agent_sandbox_blueprint_lib::{
     BatchExecRequest, JOB_BATCH_EXEC, JOB_EXEC, JOB_PROMPT, JOB_SANDBOX_CREATE, JOB_TASK,
     JOB_WORKFLOW_CANCEL, JOB_WORKFLOW_CREATE, JOB_WORKFLOW_TRIGGER, JsonResponse,
-    SandboxCreateRequest, SandboxExecRequest, SandboxPromptRequest, SandboxTaskRequest,
-    WorkflowControlRequest, WorkflowCreateRequest, router,
+    SandboxCreateOutput, SandboxCreateRequest, SandboxExecRequest, SandboxPromptRequest,
+    SandboxTaskRequest, WorkflowControlRequest, WorkflowCreateRequest, router,
 };
 use anyhow::{Context, Result};
 use blueprint_anvil_testing_utils::{BlueprintHarness, missing_tnt_core_artifacts};
@@ -26,6 +26,19 @@ fn setup_log() {
     });
 }
 
+/// Set up environment for the sidecar runtime config.
+/// Must be called before the first SidecarRuntimeConfig::load().
+fn setup_sidecar_env() {
+    let image =
+        std::env::var("SIDECAR_IMAGE").unwrap_or_else(|_| "tangle-sidecar:local".to_string());
+    unsafe {
+        std::env::set_var("SIDECAR_IMAGE", &image);
+        std::env::set_var("SIDECAR_PULL_IMAGE", "false");
+        std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
+        std::env::set_var("REQUEST_TIMEOUT_SECS", "60");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
     setup_log();
@@ -34,6 +47,8 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         if std::env::var("SIDECAR_E2E").ok().as_deref() != Some("1") {
             return Ok(());
         }
+
+        setup_sidecar_env();
 
         let Some(harness) = spawn_harness().await? else {
             return Ok(());
@@ -64,7 +79,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         let create_output = harness
             .wait_for_job_result_with_deadline(create_submission, JOB_RESULT_TIMEOUT)
             .await?;
-        let create_receipt = JsonResponse::abi_decode(&create_output)?;
+        let create_receipt = SandboxCreateOutput::abi_decode(&create_output)?;
         let create_json: serde_json::Value = serde_json::from_str(&create_receipt.json)
             .context("sandbox create response must be json")?;
         let sidecar_url = create_json
@@ -72,13 +87,36 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             .and_then(|value| value.as_str())
             .context("missing sidecarUrl")?
             .to_string();
+        eprintln!("Sandbox created: id={}, url={sidecar_url}", create_receipt.sandboxId);
+
+        // Wait for the sidecar to become healthy before sending jobs
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let health_deadline =
+            tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            if tokio::time::Instant::now() > health_deadline {
+                anyhow::bail!(
+                    "Sidecar not healthy within 60s at {sidecar_url}"
+                );
+            }
+            if let Ok(resp) = client.get(format!("{sidecar_url}/health")).send().await {
+                if resp.status().is_success() {
+                    eprintln!("Sidecar healthy at {sidecar_url}");
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
 
         let exec_payload = SandboxExecRequest {
             sidecar_url: sidecar_url.clone(),
             command: "echo ok".to_string(),
             cwd: "".to_string(),
             env_json: "".to_string(),
-            timeout_ms: 1000,
+            timeout_ms: 30000,
             sidecar_token: "sandbox-token".to_string(),
         }
         .abi_encode();

@@ -595,12 +595,15 @@ pub async fn commit_container(record: &SandboxRecord) -> Result<String> {
         pause: true,
         ..Default::default()
     };
+    let repo_tag = format!("sandbox-snapshot/{}:latest", record.id);
     let response = builder
         .client()
         .commit_container(options, BollardConfig::<String>::default())
         .await
         .map_err(|err| SandboxError::Docker(format!("Failed to commit container: {err}")))?;
-    Ok(response.id.unwrap_or_default())
+    // Docker may return the SHA in response.id, or it may be empty.
+    // Fall back to the repo:tag we specified.
+    Ok(response.id.filter(|s| !s.is_empty()).unwrap_or(repo_tag))
 }
 
 /// Remove a committed snapshot image from the local Docker daemon.

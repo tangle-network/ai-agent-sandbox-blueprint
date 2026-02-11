@@ -628,7 +628,7 @@ mod util_tests {
     #[test]
     fn build_snapshot_command_workspace_only() {
         let cmd = build_snapshot_command("https://example.com/upload", true, false).unwrap();
-        assert!(cmd.contains("/workspace"));
+        assert!(cmd.contains("/home/agent"));
         assert!(!cmd.contains("/var/lib/sidecar"));
         assert!(cmd.contains("tar -czf"));
         assert!(cmd.contains("curl"));
@@ -637,14 +637,14 @@ mod util_tests {
     #[test]
     fn build_snapshot_command_state_only() {
         let cmd = build_snapshot_command("https://example.com/upload", false, true).unwrap();
-        assert!(!cmd.contains("/workspace"));
+        assert!(!cmd.contains("/home/agent"));
         assert!(cmd.contains("/var/lib/sidecar"));
     }
 
     #[test]
     fn build_snapshot_command_both() {
         let cmd = build_snapshot_command("https://example.com/upload", true, true).unwrap();
-        assert!(cmd.contains("/workspace"));
+        assert!(cmd.contains("/home/agent"));
         assert!(cmd.contains("/var/lib/sidecar"));
     }
 

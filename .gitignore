@@ -35,3 +35,7 @@ blueprint.lock
 
 # Soldeer dependencies
 dependencies/
+
+# Runtime state (test artifacts)
+blueprint-state/
+**/blueprint-state/

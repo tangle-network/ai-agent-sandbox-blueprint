@@ -404,7 +404,7 @@ mod snapshot_job {
     #[test]
     fn workspace_only() {
         let cmd = build_snapshot_command("s3://bucket/snap.tar.gz", true, false).unwrap();
-        assert!(cmd.contains("/workspace"));
+        assert!(cmd.contains("/home/agent"));
         assert!(!cmd.contains("/var/lib/sidecar"));
         assert!(cmd.contains("s3://bucket/snap.tar.gz"));
     }
@@ -412,14 +412,14 @@ mod snapshot_job {
     #[test]
     fn state_only() {
         let cmd = build_snapshot_command("s3://bucket/snap.tar.gz", false, true).unwrap();
-        assert!(!cmd.contains("/workspace"));
+        assert!(!cmd.contains("/home/agent"));
         assert!(cmd.contains("/var/lib/sidecar"));
     }
 
     #[test]
     fn both_workspace_and_state() {
         let cmd = build_snapshot_command("https://dest/snap", true, true).unwrap();
-        assert!(cmd.contains("/workspace"));
+        assert!(cmd.contains("/home/agent"));
         assert!(cmd.contains("/var/lib/sidecar"));
     }
 
