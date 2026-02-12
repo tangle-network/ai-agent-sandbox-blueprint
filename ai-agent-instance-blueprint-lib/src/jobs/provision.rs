@@ -4,14 +4,25 @@ use crate::CreateSandboxParams;
 use crate::JsonResponse;
 use crate::ProvisionOutput;
 use crate::ProvisionRequest;
+use crate::SandboxRecord;
 use crate::runtime::{create_sidecar, delete_sidecar};
 use crate::tangle::extract::{Caller, TangleArg, TangleResult};
+use crate::tee::TeeBackend;
 use crate::{clear_instance_sandbox, require_instance_sandbox, set_instance_sandbox};
 
-pub async fn instance_provision(
-    Caller(_caller): Caller,
-    TangleArg(request): TangleArg<ProvisionRequest>,
-) -> Result<TangleResult<ProvisionOutput>, String> {
+// ─────────────────────────────────────────────────────────────────────────────
+// Core logic (reusable by TEE blueprint)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Provision a sandbox, optionally inside a TEE.
+///
+/// Returns the `ProvisionOutput` (for on-chain result) and the `SandboxRecord`
+/// (for local persistent storage). The caller is responsible for storing the
+/// record via `set_instance_sandbox`.
+pub async fn provision_core(
+    request: &ProvisionRequest,
+    tee: Option<&dyn TeeBackend>,
+) -> Result<(ProvisionOutput, SandboxRecord), String> {
     // Fail if already provisioned — deprovision first.
     if crate::get_instance_sandbox()
         .map_err(|e| e.to_string())?
@@ -20,8 +31,8 @@ pub async fn instance_provision(
         return Err("Instance already provisioned — deprovision first".to_string());
     }
 
-    let params = CreateSandboxParams::from(&request);
-    let (record, attestation) = create_sidecar(&params, None).await.map_err(|e| e.to_string())?;
+    let params = CreateSandboxParams::from(request);
+    let (record, attestation) = create_sidecar(&params, tee).await.map_err(|e| e.to_string())?;
 
     // Provision SSH key if requested.
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
@@ -60,18 +71,17 @@ pub async fn instance_provision(
         tee_attestation_json,
     };
 
-    // Store as the instance's sandbox.
-    set_instance_sandbox(record).map_err(|e| e.to_string())?;
-
-    Ok(TangleResult(output))
+    Ok((output, record))
 }
 
-pub async fn instance_deprovision(
-    Caller(_caller): Caller,
-    TangleArg(_request): TangleArg<JsonResponse>,
-) -> Result<TangleResult<JsonResponse>, String> {
+/// Deprovision the instance sandbox, optionally tearing down a TEE deployment.
+///
+/// Returns the JSON response body and the sandbox ID that was deprovisioned.
+pub async fn deprovision_core(
+    tee: Option<&dyn TeeBackend>,
+) -> Result<(JsonResponse, String), String> {
     let record = require_instance_sandbox()?;
-    delete_sidecar(&record, None).await.map_err(|e| e.to_string())?;
+    delete_sidecar(&record, tee).await.map_err(|e| e.to_string())?;
 
     // Remove from runtime store.
     let _ = crate::runtime::sandboxes()
@@ -80,12 +90,37 @@ pub async fn instance_deprovision(
 
     clear_instance_sandbox().map_err(|e| e.to_string())?;
 
+    let sandbox_id = record.id.clone();
     let response = json!({
-        "sandboxId": record.id,
+        "sandboxId": sandbox_id,
         "deprovisioned": true,
     });
 
-    Ok(TangleResult(JsonResponse {
-        json: response.to_string(),
-    }))
+    Ok((
+        JsonResponse {
+            json: response.to_string(),
+        },
+        sandbox_id,
+    ))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Job handlers (thin wrappers — pass None for TEE backend)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn instance_provision(
+    Caller(_caller): Caller,
+    TangleArg(request): TangleArg<ProvisionRequest>,
+) -> Result<TangleResult<ProvisionOutput>, String> {
+    let (output, record) = provision_core(&request, None).await?;
+    set_instance_sandbox(record).map_err(|e| e.to_string())?;
+    Ok(TangleResult(output))
+}
+
+pub async fn instance_deprovision(
+    Caller(_caller): Caller,
+    TangleArg(_request): TangleArg<JsonResponse>,
+) -> Result<TangleResult<JsonResponse>, String> {
+    let (response, _sandbox_id) = deprovision_core(None).await?;
+    Ok(TangleResult(response))
 }

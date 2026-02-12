@@ -31,7 +31,9 @@ pub use jobs::exec::{
     instance_prompt, instance_task, parse_agent_response, run_instance_exec, run_instance_prompt,
     run_instance_task, AgentResponse,
 };
-pub use jobs::provision::{instance_deprovision, instance_provision};
+pub use jobs::provision::{
+    deprovision_core, instance_deprovision, instance_provision, provision_core,
+};
 pub use jobs::snapshot::instance_snapshot;
 pub use jobs::ssh::{instance_ssh_provision, instance_ssh_revoke, provision_key, revoke_key};
 

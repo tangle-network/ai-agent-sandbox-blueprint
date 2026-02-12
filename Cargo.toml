@@ -6,6 +6,8 @@ members = [
     "ai-agent-sandbox-blueprint-bin",
     "ai-agent-instance-blueprint-lib",
     "ai-agent-instance-blueprint-bin",
+    "ai-agent-tee-instance-blueprint-lib",
+    "ai-agent-tee-instance-blueprint-bin",
 ]
 
 [workspace.package]
