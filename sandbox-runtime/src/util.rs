@@ -1,3 +1,4 @@
+use chrono::Utc;
 use once_cell::sync::OnceCell;
 use reqwest::Client;
 use serde_json::{Map, Value};
@@ -18,6 +19,11 @@ pub fn http_client() -> Result<&'static Client> {
                 .map_err(|err| SandboxError::Http(format!("Failed to build HTTP client: {err}")))
         })
         .map_err(|err| SandboxError::Http(err.to_string()))
+}
+
+/// Current UTC timestamp as seconds since epoch.
+pub fn now_ts() -> u64 {
+    Utc::now().timestamp().max(0) as u64
 }
 
 pub fn parse_json_object(value: &str, field_name: &str) -> Result<Option<Value>> {

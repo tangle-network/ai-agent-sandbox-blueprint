@@ -1,15 +1,19 @@
 //! AI Agent Sandbox Blueprint
+//!
+//! Event-driven multi-sandbox blueprint. For the shared container runtime
+//! used by this and other blueprints, see `sandbox-runtime`.
 
-pub mod auth;
-pub mod error;
-pub mod http;
 pub mod jobs;
-pub mod metrics;
-pub mod reaper;
-pub mod runtime;
-pub mod store;
-pub mod util;
 pub mod workflows;
+
+// Re-export sandbox-runtime modules so existing consumers (job handlers,
+// tests, binary crate) can keep using `crate::runtime::*`, `crate::auth::*`, etc.
+pub use sandbox_runtime::{auth, error, http, metrics, reaper, runtime, store, util};
+pub use sandbox_runtime::{
+    CreateSandboxParams, SandboxError, SandboxRecord, SandboxState,
+    DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SSH_PORT,
+    DEFAULT_TIMEOUT_SECS,
+};
 
 use blueprint_sdk::Job;
 use blueprint_sdk::Router;
@@ -18,7 +22,7 @@ use blueprint_sdk::tangle::TangleLayer;
 use serde_json::Value;
 
 pub use blueprint_sdk::tangle;
-pub use error::SandboxError;
+pub use error::SandboxError as _SandboxErrorAlias;
 pub use jobs::batch::{batch_collect, batch_create, batch_exec, batch_task};
 pub use jobs::exec::{
     build_exec_payload, extract_exec_fields, run_exec_request, run_prompt_request,
@@ -59,10 +63,6 @@ pub const JOB_WORKFLOW_TICK: u8 = 33;
 pub const JOB_SSH_PROVISION: u8 = 40;
 pub const JOB_SSH_REVOKE: u8 = 41;
 
-pub const DEFAULT_SIDECAR_IMAGE: &str = "ghcr.io/tangle-network/sidecar:latest";
-pub const DEFAULT_SIDECAR_HTTP_PORT: u16 = 8080;
-pub const DEFAULT_SIDECAR_SSH_PORT: u16 = 22;
-pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const MAX_BATCH_COUNT: u32 = 50;
 
 sol! {
@@ -240,6 +240,30 @@ sol! {
         string username;
         string public_key;
         string sidecar_token;
+    }
+}
+
+/// Convert an ABI `SandboxCreateRequest` into runtime-level `CreateSandboxParams`.
+impl From<&SandboxCreateRequest> for CreateSandboxParams {
+    fn from(r: &SandboxCreateRequest) -> Self {
+        Self {
+            name: r.name.to_string(),
+            image: r.image.to_string(),
+            stack: r.stack.to_string(),
+            agent_identifier: r.agent_identifier.to_string(),
+            env_json: r.env_json.to_string(),
+            metadata_json: r.metadata_json.to_string(),
+            ssh_enabled: r.ssh_enabled,
+            ssh_public_key: r.ssh_public_key.to_string(),
+            web_terminal_enabled: r.web_terminal_enabled,
+            max_lifetime_seconds: r.max_lifetime_seconds,
+            idle_timeout_seconds: r.idle_timeout_seconds,
+            cpu_cores: r.cpu_cores,
+            memory_mb: r.memory_mb,
+            disk_gb: r.disk_gb,
+            sidecar_token: r.sidecar_token.to_string(),
+            tee_config: None,
+        }
     }
 }
 

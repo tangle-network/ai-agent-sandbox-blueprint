@@ -1,5 +1,6 @@
 use serde_json::json;
 
+use crate::CreateSandboxParams;
 use crate::JsonResponse;
 use crate::SandboxCreateOutput;
 use crate::SandboxCreateRequest;
@@ -18,7 +19,8 @@ pub async fn sandbox_create(
     Caller(_caller): Caller,
     TangleArg(request): TangleArg<SandboxCreateRequest>,
 ) -> Result<TangleResult<SandboxCreateOutput>, String> {
-    let record = create_sidecar(&request).await?;
+    let params = CreateSandboxParams::from(&request);
+    let (record, _attestation) = create_sidecar(&params, None).await?;
 
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
         crate::jobs::ssh::provision_key(
@@ -48,7 +50,7 @@ pub async fn sandbox_delete(
     TangleArg(request): TangleArg<SandboxIdRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
     let record = get_sandbox_by_id(&request.sandbox_id)?;
-    delete_sidecar(&record).await?;
+    delete_sidecar(&record, None).await?;
 
     let sandbox_id = request.sandbox_id.to_string();
     sandboxes()

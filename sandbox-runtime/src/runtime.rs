@@ -12,11 +12,36 @@ use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio::sync::OnceCell as AsyncOnceCell;
 
-use crate::SandboxCreateRequest;
 use crate::auth::token_from_request;
 use crate::error::{Result, SandboxError};
 use crate::util::{merge_metadata, parse_json_object};
 use crate::{DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SSH_PORT};
+
+/// ABI-independent parameters for sandbox creation.
+///
+/// Blueprint-specific job handlers convert their ABI types into this struct
+/// before calling `create_sidecar`.
+#[derive(Clone, Debug, Default)]
+pub struct CreateSandboxParams {
+    pub name: String,
+    pub image: String,
+    pub stack: String,
+    pub agent_identifier: String,
+    pub env_json: String,
+    pub metadata_json: String,
+    pub ssh_enabled: bool,
+    pub ssh_public_key: String,
+    pub web_terminal_enabled: bool,
+    pub max_lifetime_seconds: u64,
+    pub idle_timeout_seconds: u64,
+    pub cpu_cores: u64,
+    pub memory_mb: u64,
+    pub disk_gb: u64,
+    pub sidecar_token: String,
+    /// Optional TEE configuration. When set with `required: true`, the runtime
+    /// must provision the sandbox inside a trusted execution environment.
+    pub tee_config: Option<crate::tee::TeeConfig>,
+}
 
 /// Runtime configuration loaded once at startup from environment variables.
 #[derive(Clone, Debug)]
@@ -118,7 +143,6 @@ impl SidecarRuntimeConfig {
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .or_else(|| {
-                    // Backward compat: fall back to old env var name
                     env::var("SANDBOX_GC_STOPPED_RETENTION")
                         .ok()
                         .and_then(|v| v.parse::<u64>().ok())
@@ -208,6 +232,12 @@ pub struct SandboxRecord {
     pub env_json: String,
     #[serde(default)]
     pub snapshot_destination: Option<String>,
+    /// Backend-specific deployment ID for TEE sandboxes (e.g. Phala app_id).
+    #[serde(default)]
+    pub tee_deployment_id: Option<String>,
+    /// Opaque backend metadata JSON for TEE sandboxes.
+    #[serde(default)]
+    pub tee_metadata_json: Option<String>,
 }
 
 use crate::store::PersistentStore;
@@ -262,7 +292,7 @@ pub fn get_sandbox_by_url(sidecar_url: &str) -> Result<SandboxRecord> {
 /// Update `last_activity_at` to now for the given sandbox.
 pub fn touch_sandbox(sandbox_id: &str) {
     if let Ok(store) = sandboxes() {
-        let now = crate::workflows::now_ts();
+        let now = crate::util::now_ts();
         let _ = store.update(sandbox_id, |r| {
             r.last_activity_at = now;
         });
@@ -307,14 +337,84 @@ async fn ensure_image_pulled(builder: &DockerBuilder, image: &str) -> Result<()>
     Ok(())
 }
 
-pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRecord> {
+pub async fn create_sidecar(
+    request: &CreateSandboxParams,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
+    // Route to TEE backend if TEE is required.
+    if let Some(config) = &request.tee_config {
+        if config.required {
+            let backend = tee.ok_or_else(|| {
+                SandboxError::Validation("TEE required but no backend configured".into())
+            })?;
+            return create_sidecar_tee(request, backend).await;
+        }
+    }
+    // Default Docker path.
+    create_sidecar_docker(request).await.map(|r| (r, None))
+}
+
+async fn create_sidecar_tee(
+    request: &CreateSandboxParams,
+    backend: &dyn crate::tee::TeeBackend,
+) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
+    let config = SidecarRuntimeConfig::load();
+    let sandbox_id = next_sandbox_id();
+    let token = token_from_request(&request.sidecar_token);
+
+    let tee_params = crate::tee::TeeDeployParams::from_sandbox_params(
+        &sandbox_id,
+        request,
+        config.container_port,
+        config.ssh_port,
+    );
+
+    let deployment = backend.deploy(&tee_params).await?;
+
+    let now = crate::util::now_ts();
+    let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
+    let max_lifetime = config.effective_max_lifetime(request.max_lifetime_seconds);
+
+    let record = SandboxRecord {
+        id: sandbox_id.clone(),
+        container_id: format!("tee-{}", deployment.deployment_id),
+        sidecar_url: deployment.sidecar_url,
+        sidecar_port: config.container_port,
+        ssh_port: deployment.ssh_port,
+        token,
+        created_at: now,
+        cpu_cores: request.cpu_cores,
+        memory_mb: request.memory_mb,
+        state: SandboxState::Running,
+        idle_timeout_seconds: idle_timeout,
+        max_lifetime_seconds: max_lifetime,
+        last_activity_at: now,
+        stopped_at: None,
+        snapshot_image_id: None,
+        snapshot_s3_url: None,
+        container_removed_at: None,
+        image_removed_at: None,
+        original_image: request.image.clone(),
+        env_json: request.env_json.clone(),
+        snapshot_destination: None,
+        tee_deployment_id: Some(deployment.deployment_id),
+        tee_metadata_json: Some(deployment.metadata_json),
+    };
+
+    sandboxes()?.insert(sandbox_id, record.clone())?;
+    crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
+
+    Ok((record, Some(deployment.attestation)))
+}
+
+async fn create_sidecar_docker(request: &CreateSandboxParams) -> Result<SandboxRecord> {
     let config = SidecarRuntimeConfig::load();
     let builder = docker_builder().await?;
 
     ensure_image_pulled(builder, &config.image).await?;
 
     let sandbox_id = next_sandbox_id();
-    let token = token_from_request(request.sidecar_token.as_str());
+    let token = token_from_request(&request.sidecar_token);
     let container_name = format!("sidecar-{sandbox_id}");
 
     let mut env_vars = Vec::new();
@@ -426,7 +526,7 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
         extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
     let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
-    let now = crate::workflows::now_ts();
+    let now = crate::util::now_ts();
     let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
     let max_lifetime = config.effective_max_lifetime(request.max_lifetime_seconds);
 
@@ -452,6 +552,8 @@ pub async fn create_sidecar(request: &SandboxCreateRequest) -> Result<SandboxRec
         original_image: config.image.clone(),
         env_json: request.env_json.clone(),
         snapshot_destination,
+        tee_deployment_id: None,
+        tee_metadata_json: None,
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
@@ -471,7 +573,7 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
         .await
         .map_err(|err| SandboxError::Docker(format!("Failed to stop container: {err}")))?;
 
-    let now = crate::workflows::now_ts();
+    let now = crate::util::now_ts();
     let _ = sandboxes()?.update(&record.id, |r| {
         r.state = SandboxState::Stopped;
         r.stopped_at = Some(now);
@@ -499,7 +601,7 @@ async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
 }
 
 pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
-    // Tier 1 (Hot): container still exists → docker start
+    // Tier 1 (Hot): container still exists -> docker start
     if record.container_removed_at.is_none() {
         let builder = docker_builder().await?;
         let try_start = async {
@@ -514,7 +616,7 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         };
         match try_start.await {
             Ok(()) => {
-                let now = crate::workflows::now_ts();
+                let now = crate::util::now_ts();
                 let _ = sandboxes()?.update(&record.id, |r| {
                     r.state = SandboxState::Running;
                     r.stopped_at = None;
@@ -537,7 +639,7 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         }
     }
 
-    // Tier 2 (Warm): container gone, snapshot image exists → create from image
+    // Tier 2 (Warm): container gone, snapshot image exists -> create from image
     if record.snapshot_image_id.is_some() {
         let updated = create_from_snapshot_image(record).await?;
         if !wait_for_sidecar_health(&updated.sidecar_url, 30).await {
@@ -549,7 +651,7 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         return Ok(());
     }
 
-    // Tier 3 (Cold): no image, S3 snapshot exists → create from base + restore
+    // Tier 3 (Cold): no image, S3 snapshot exists -> create from base + restore
     if record.snapshot_s3_url.is_some() {
         let updated = create_and_restore_from_s3(record).await?;
         let _ = updated;
@@ -563,7 +665,23 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
     )))
 }
 
-pub async fn delete_sidecar(record: &SandboxRecord) -> Result<()> {
+pub async fn delete_sidecar(
+    record: &SandboxRecord,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<()> {
+    // If this is a TEE-managed sandbox, delegate to the backend.
+    if let Some(deployment_id) = &record.tee_deployment_id {
+        if let Some(backend) = tee {
+            backend.destroy(deployment_id).await?;
+            crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
+            return Ok(());
+        }
+    }
+    // Default Docker removal path.
+    delete_sidecar_docker(record).await
+}
+
+async fn delete_sidecar_docker(record: &SandboxRecord) -> Result<()> {
     let builder = docker_builder().await?;
     let container = Container::from_id(builder.client(), &record.container_id)
         .await
@@ -599,8 +717,6 @@ pub async fn commit_container(record: &SandboxRecord) -> Result<String> {
         .commit_container(options, BollardConfig::<String>::default())
         .await
         .map_err(|err| SandboxError::Docker(format!("Failed to commit container: {err}")))?;
-    // Docker may return the SHA in response.id, or it may be empty.
-    // Fall back to the repo:tag we specified.
     Ok(response.id.filter(|s| !s.is_empty()).unwrap_or(repo_tag))
 }
 
@@ -616,8 +732,6 @@ pub async fn remove_snapshot_image(image_id: &str) -> Result<()> {
 }
 
 /// Create a new container from a previously committed Docker image.
-///
-/// Reuses the original env vars, port bindings, and resource constraints stored in the record.
 pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<SandboxRecord> {
     let config = SidecarRuntimeConfig::load();
     let builder = docker_builder().await?;
@@ -714,7 +828,7 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
     let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
     let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
-    let now = crate::workflows::now_ts();
+    let now = crate::util::now_ts();
     let mut updated = record.clone();
     updated.container_id = container_id;
     updated.sidecar_url = sidecar_url;
@@ -856,7 +970,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         return Err(SandboxError::Docker(format!("S3 restore failed: {err}")));
     }
 
-    let now = crate::workflows::now_ts();
+    let now = crate::util::now_ts();
     let mut updated = record.clone();
     updated.container_id = container_id;
     updated.sidecar_url = sidecar_url;

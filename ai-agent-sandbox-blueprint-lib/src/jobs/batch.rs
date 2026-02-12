@@ -5,6 +5,7 @@ use crate::BatchCollectRequest;
 use crate::BatchCreateRequest;
 use crate::BatchExecRequest;
 use crate::BatchTaskRequest;
+use crate::CreateSandboxParams;
 use crate::JsonResponse;
 use crate::auth::require_sidecar_token;
 use crate::runtime::{create_sidecar, require_sidecar_auth};
@@ -34,10 +35,10 @@ pub async fn batch_create(
         );
     }
 
+    let params = CreateSandboxParams::from(&request.template_request);
     let mut sandboxes_out = Vec::with_capacity(request.count as usize);
     for _ in 0..request.count {
-        // create_sidecar() records metrics internally.
-        let record = create_sidecar(&request.template_request).await?;
+        let (record, _) = create_sidecar(&params, None).await?;
         sandboxes_out.push(json!({
             "sandboxId": record.id,
             "sidecarUrl": record.sidecar_url,
@@ -286,7 +287,7 @@ async fn store_batch(
         id: batch_id.clone(),
         kind: kind.to_string(),
         results: Value::Array(results.clone()),
-        created_at: crate::workflows::now_ts(),
+        created_at: crate::util::now_ts(),
     };
 
     crate::batches()
