@@ -15,11 +15,8 @@ use docktopus::bollard::container::InspectContainerOptions;
 /// Enforce idle timeout and max lifetime on running sandboxes.
 ///
 /// Called every `SANDBOX_REAPER_INTERVAL` seconds.
-/// - If `created_at + max_lifetime <= now` → hard delete (container removed + record purged)
-/// - Else if `last_activity_at + idle_timeout <= now` → soft stop (container stopped, record kept)
-/// - Backward compat: if `last_activity_at == 0`, falls back to `created_at`
 pub async fn reaper_tick() {
-    let now = crate::workflows::now_ts();
+    let now = crate::util::now_ts();
 
     let records = match sandboxes().and_then(|s| s.values()) {
         Ok(v) => v,
@@ -47,7 +44,7 @@ pub async fn reaper_tick() {
                 "reaper: deleting sandbox {} (exceeded max lifetime {}s)",
                 record.id, record.max_lifetime_seconds
             );
-            if let Err(err) = delete_sidecar(&record).await {
+            if let Err(err) = delete_sidecar(&record, None).await {
                 error!("reaper: failed to delete sandbox {}: {err}", record.id);
                 continue;
             }
@@ -127,14 +124,14 @@ pub async fn reaper_tick() {
 /// Tiered garbage collection for stopped sandboxes.
 ///
 /// Progressively moves sandboxes through storage tiers:
-///   Hot (stopped container) → Warm (committed image) → Cold (S3 snapshot) → Gone
+///   Hot (stopped container) -> Warm (committed image) -> Cold (S3 snapshot) -> Gone
 ///
 /// Each tier has a configurable retention period. User BYOS3 copies are never deleted.
 ///
 /// Called every `SANDBOX_GC_INTERVAL` seconds.
 pub async fn gc_tick() {
     let config = SidecarRuntimeConfig::load();
-    let now = crate::workflows::now_ts();
+    let now = crate::util::now_ts();
 
     let records = match sandboxes().and_then(|s| s.values()) {
         Ok(v) => v,
@@ -154,7 +151,7 @@ pub async fn gc_tick() {
             None => continue,
         };
 
-        // Tier 1: Hot → Warm (remove container, keep committed image)
+        // Tier 1: Hot -> Warm (remove container, keep committed image)
         if record.container_removed_at.is_none()
             && stopped_at + config.sandbox_gc_hot_retention <= now
         {
@@ -163,10 +160,10 @@ pub async fn gc_tick() {
 
             if has_snapshot {
                 info!(
-                    "gc: hot→warm for sandbox {} (removing container, keeping snapshot)",
+                    "gc: hot->warm for sandbox {} (removing container, keeping snapshot)",
                     record.id
                 );
-                if let Err(err) = delete_sidecar(&record).await {
+                if let Err(err) = delete_sidecar(&record, None).await {
                     error!(
                         "gc: failed to remove container for sandbox {}: {err}",
                         record.id
@@ -186,7 +183,7 @@ pub async fn gc_tick() {
                     record.id,
                     now.saturating_sub(stopped_at)
                 );
-                if let Err(err) = delete_sidecar(&record).await {
+                if let Err(err) = delete_sidecar(&record, None).await {
                     error!("gc: failed to delete sandbox {}: {err}", record.id);
                     continue;
                 }
@@ -198,13 +195,13 @@ pub async fn gc_tick() {
             continue;
         }
 
-        // Tier 2: Warm → Cold (remove committed image, keep S3)
+        // Tier 2: Warm -> Cold (remove committed image, keep S3)
         if let (Some(container_removed_at), Some(image_id)) =
             (record.container_removed_at, &record.snapshot_image_id)
         {
             if container_removed_at + config.sandbox_gc_warm_retention <= now {
                 info!(
-                    "gc: warm→cold for sandbox {} (removing image {})",
+                    "gc: warm->cold for sandbox {} (removing image {})",
                     record.id, image_id
                 );
                 if let Err(err) = remove_snapshot_image(image_id).await {
@@ -232,7 +229,7 @@ pub async fn gc_tick() {
             }
         }
 
-        // Tier 3: Cold → Gone (remove S3 snapshot, remove record)
+        // Tier 3: Cold -> Gone (remove S3 snapshot, remove record)
         if record.snapshot_image_id.is_none() {
             if let (Some(s3_url), Some(image_removed_at)) =
                 (&record.snapshot_s3_url, record.image_removed_at)
@@ -242,7 +239,7 @@ pub async fn gc_tick() {
                     let is_operator_managed = is_operator_s3(s3_url, &record, config);
                     if is_operator_managed {
                         info!(
-                            "gc: cold→gone for sandbox {} (deleting S3 snapshot)",
+                            "gc: cold->gone for sandbox {} (deleting S3 snapshot)",
                             record.id
                         );
                         if let Err(err) = delete_s3_snapshot(s3_url).await {
@@ -267,7 +264,7 @@ pub async fn gc_tick() {
             }
         }
 
-        // Cleanup: record has no container, no image, no S3 → remove
+        // Cleanup: record has no container, no image, no S3 -> remove
         if record.container_removed_at.is_some()
             && record.snapshot_image_id.is_none()
             && record.snapshot_s3_url.is_none()
@@ -282,10 +279,6 @@ pub async fn gc_tick() {
 }
 
 /// Reconcile stored sandbox state with Docker reality on startup.
-///
-/// - Container gone → remove orphan record
-/// - Container stopped but record says Running → update to Stopped
-/// - Container running but record says Stopped → update to Running
 pub async fn reconcile_on_startup() {
     let builder = match docker_builder().await {
         Ok(b) => b,
@@ -303,7 +296,7 @@ pub async fn reconcile_on_startup() {
         }
     };
 
-    let now = crate::workflows::now_ts();
+    let now = crate::util::now_ts();
 
     for record in records {
         let inspect = builder
@@ -313,11 +306,9 @@ pub async fn reconcile_on_startup() {
 
         match inspect {
             Err(_) => {
-                // Container doesn't exist
                 let has_snapshot =
                     record.snapshot_image_id.is_some() || record.snapshot_s3_url.is_some();
                 if has_snapshot {
-                    // Container gone but snapshot exists — mark as warm/cold tier
                     info!(
                         "reconcile: container gone for sandbox {}, preserving snapshot record",
                         record.id
@@ -334,7 +325,6 @@ pub async fn reconcile_on_startup() {
                         });
                     }
                 } else {
-                    // No snapshot — remove orphan record
                     info!(
                         "reconcile: removing orphan record for sandbox {} (container {} gone)",
                         record.id, record.container_id
@@ -376,8 +366,6 @@ pub async fn reconcile_on_startup() {
 }
 
 /// Resolve the snapshot destination URL for a sandbox.
-///
-/// Priority: user-supplied `snapshot_destination` > operator prefix > None.
 fn resolve_snapshot_destination(
     record: &crate::runtime::SandboxRecord,
     config: &SidecarRuntimeConfig,
@@ -418,15 +406,12 @@ fn is_operator_s3(
     record: &crate::runtime::SandboxRecord,
     config: &SidecarRuntimeConfig,
 ) -> bool {
-    // If the user supplied a snapshot_destination at creation, it's user BYOS3
     if record.snapshot_destination.is_some() {
         return false;
     }
-    // If the URL starts with the operator prefix, it's operator-managed
     if let Some(ref prefix) = config.snapshot_destination_prefix {
         return s3_url.starts_with(prefix.as_str());
     }
-    // No operator prefix configured — shouldn't have operator S3, but be safe
     false
 }
 

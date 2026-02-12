@@ -1,0 +1,21 @@
+[package]
+name = "ai-agent-instance-blueprint-bin"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+description = "AI Agent Instance Blueprint runner binary"
+license.workspace = true
+
+[[bin]]
+name = "ai-agent-instance-blueprint"
+path = "src/main.rs"
+
+[features]
+qos = ["dep:blueprint-qos"]
+
+[dependencies]
+ai-agent-instance-blueprint-lib = { path = "../ai-agent-instance-blueprint-lib" }
+blueprint-qos = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", optional = true }
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tangle"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

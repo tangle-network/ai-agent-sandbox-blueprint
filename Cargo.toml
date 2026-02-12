@@ -1,8 +1,13 @@
 [workspace]
 resolver = "3"
 members = [
+    "sandbox-runtime",
     "ai-agent-sandbox-blueprint-lib",
     "ai-agent-sandbox-blueprint-bin",
+    "ai-agent-instance-blueprint-lib",
+    "ai-agent-instance-blueprint-bin",
+    "ai-agent-tee-instance-blueprint-lib",
+    "ai-agent-tee-instance-blueprint-bin",
 ]
 
 [workspace.package]

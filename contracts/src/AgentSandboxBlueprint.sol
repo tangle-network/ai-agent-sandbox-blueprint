@@ -42,7 +42,100 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // ═══════════════════════════════════════════════════════════════════════════
 
     string public constant BLUEPRINT_NAME = "ai-agent-sandbox-blueprint";
-    string public constant BLUEPRINT_VERSION = "0.2.0";
+    string public constant BLUEPRINT_VERSION = "0.3.0";
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PER-JOB PRICING MULTIPLIERS
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Each job type has a multiplier relative to a configurable base rate.
+    // The blueprint owner sets ONE base rate (the cost of the cheapest
+    // operation — a single command exec), and all other rates scale from it.
+    //
+    // Multipliers are derived from real infrastructure cost analysis:
+    //
+    // TIER 1 (1x) — Trivial ops, <100ms CPU, no external calls:
+    //   EXEC (single bash command), STOP, RESUME, DELETE, BATCH_COLLECT,
+    //   WORKFLOW_CANCEL, SSH_REVOKE
+    //   Raw cost: ~$0.0001 (container exec overhead + <1s CPU burst)
+    //   Competitors: E2B/Daytona bill per-second (~$0.000014/vCPU/s)
+    //
+    // TIER 2 (2x) — Light state changes, key generation:
+    //   SSH_PROVISION, WORKFLOW_CREATE
+    //   Raw cost: ~$0.0002 (key generation or config validation + storage)
+    //
+    // TIER 3 (5x) — I/O-heavy or trigger operations:
+    //   SANDBOX_SNAPSHOT (docker commit ~300MB, 5-15s I/O)
+    //   WORKFLOW_TRIGGER (initiates sandbox + execution)
+    //   Raw cost: ~$0.0005-0.002 (disk I/O + storage write)
+    //   Competitors: Vercel charges $0.60/million creations
+    //
+    // TIER 4 (20x) — Single LLM inference call:
+    //   PROMPT (one model call with context)
+    //   Raw cost: $0.002-0.035 depending on model
+    //     - Budget (GPT-4o-mini/Gemini Flash): ~$0.001/call
+    //     - Mid (GPT-4o/Claude Sonnet): ~$0.015/call
+    //     - Premium (Claude Opus): ~$0.035/call
+    //   Competitors: Together AI code sandbox $0.03/session
+    //
+    // TIER 5 (50x) — Container lifecycle with compute reservation:
+    //   SANDBOX_CREATE (pull image + start container + reserve resources)
+    //   Raw cost: $0.005-0.02 (cold start + prepaid compute)
+    //     - AWS Fargate: ~$0.001 startup + $0.05/hr reserved
+    //     - E2B: $0.083/hr (1vCPU+2GB)
+    //     - Hetzner: $0.012/hr (2vCPU+4GB)
+    //   BATCH_EXEC (N commands, priced per-submission)
+    //
+    // TIER 6 (100x) — Batch container creation:
+    //   BATCH_CREATE (N sandbox creations in one call)
+    //   Raw cost: N × $0.005-0.02
+    //
+    // TIER 7 (250x) — Multi-turn AI agent task:
+    //   TASK (5-10 LLM turns with accumulating context)
+    //   Raw cost: $0.01-0.50 depending on model and turns
+    //     - Budget (GPT-4o-mini, 7 turns): ~$0.014
+    //     - Mid (Claude Sonnet, 7 turns): ~$0.10 (with caching)
+    //     - Premium (Claude Opus, 7 turns): ~$0.17 (with caching)
+    //   Competitors: Replit agent tasks $0.25-$10+
+    //
+    // TIER 8 (500x) — Batch multi-turn agent tasks:
+    //   BATCH_TASK (N agent tasks in one call)
+    //   Raw cost: N × $0.01-0.50
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Tier 1: Trivial operations (1x base)
+    uint256 public constant PRICE_MULT_EXEC = 1;
+    uint256 public constant PRICE_MULT_STOP = 1;
+    uint256 public constant PRICE_MULT_RESUME = 1;
+    uint256 public constant PRICE_MULT_DELETE = 1;
+    uint256 public constant PRICE_MULT_BATCH_COLLECT = 1;
+    uint256 public constant PRICE_MULT_WORKFLOW_CANCEL = 1;
+    uint256 public constant PRICE_MULT_SSH_REVOKE = 1;
+
+    // Tier 2: Light state changes (2x base)
+    uint256 public constant PRICE_MULT_SSH_PROVISION = 2;
+    uint256 public constant PRICE_MULT_WORKFLOW_CREATE = 2;
+
+    // Tier 3: I/O-heavy operations (5x base)
+    uint256 public constant PRICE_MULT_SNAPSHOT = 5;
+    uint256 public constant PRICE_MULT_WORKFLOW_TRIGGER = 5;
+
+    // Tier 4: Single LLM call (20x base)
+    uint256 public constant PRICE_MULT_PROMPT = 20;
+
+    // Tier 5: Container lifecycle (50x base)
+    uint256 public constant PRICE_MULT_SANDBOX_CREATE = 50;
+    uint256 public constant PRICE_MULT_BATCH_EXEC = 50;
+
+    // Tier 6: Batch container creation (100x base)
+    uint256 public constant PRICE_MULT_BATCH_CREATE = 100;
+
+    // Tier 7: Multi-turn agent (250x base)
+    uint256 public constant PRICE_MULT_TASK = 250;
+
+    // Tier 8: Batch agent tasks (500x base)
+    uint256 public constant PRICE_MULT_BATCH_TASK = 500;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // OPERATOR CAPACITY STATE
@@ -402,6 +495,86 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
                 idx++;
             }
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRICING HELPERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Returns the recommended per-job event rates for all 17 job types,
+     *         scaled from a single base rate. The base rate represents the cost
+     *         of the cheapest operation (a single EXEC command).
+     *
+     *         After registering a blueprint, the owner should call:
+     *           tangle.setJobEventRates(blueprintId, jobIndexes, rates)
+     *         using the arrays returned by this function.
+     *
+     * @param baseRate The cost of the cheapest job (EXEC) in native token wei.
+     *                 Example: if 1 TNT = $1 and EXEC should cost $0.001,
+     *                 set baseRate = 1e15 (0.001 * 1e18).
+     * @return jobIndexes Array of job IDs (matches jobIds() ordering)
+     * @return rates Array of per-job rates in wei
+     */
+    function getDefaultJobRates(uint256 baseRate)
+        external
+        pure
+        returns (uint8[] memory jobIndexes, uint256[] memory rates)
+    {
+        jobIndexes = new uint8[](17);
+        rates = new uint256[](17);
+
+        // Sandbox lifecycle
+        jobIndexes[0]  = JOB_SANDBOX_CREATE;   rates[0]  = baseRate * PRICE_MULT_SANDBOX_CREATE;
+        jobIndexes[1]  = JOB_SANDBOX_STOP;     rates[1]  = baseRate * PRICE_MULT_STOP;
+        jobIndexes[2]  = JOB_SANDBOX_RESUME;   rates[2]  = baseRate * PRICE_MULT_RESUME;
+        jobIndexes[3]  = JOB_SANDBOX_DELETE;   rates[3]  = baseRate * PRICE_MULT_DELETE;
+        jobIndexes[4]  = JOB_SANDBOX_SNAPSHOT;  rates[4]  = baseRate * PRICE_MULT_SNAPSHOT;
+
+        // Execution
+        jobIndexes[5]  = JOB_EXEC;             rates[5]  = baseRate * PRICE_MULT_EXEC;
+        jobIndexes[6]  = JOB_PROMPT;           rates[6]  = baseRate * PRICE_MULT_PROMPT;
+        jobIndexes[7]  = JOB_TASK;             rates[7]  = baseRate * PRICE_MULT_TASK;
+
+        // Batch
+        jobIndexes[8]  = JOB_BATCH_CREATE;     rates[8]  = baseRate * PRICE_MULT_BATCH_CREATE;
+        jobIndexes[9]  = JOB_BATCH_TASK;       rates[9]  = baseRate * PRICE_MULT_BATCH_TASK;
+        jobIndexes[10] = JOB_BATCH_EXEC;       rates[10] = baseRate * PRICE_MULT_BATCH_EXEC;
+        jobIndexes[11] = JOB_BATCH_COLLECT;    rates[11] = baseRate * PRICE_MULT_BATCH_COLLECT;
+
+        // Workflow
+        jobIndexes[12] = JOB_WORKFLOW_CREATE;  rates[12] = baseRate * PRICE_MULT_WORKFLOW_CREATE;
+        jobIndexes[13] = JOB_WORKFLOW_TRIGGER; rates[13] = baseRate * PRICE_MULT_WORKFLOW_TRIGGER;
+        jobIndexes[14] = JOB_WORKFLOW_CANCEL;  rates[14] = baseRate * PRICE_MULT_WORKFLOW_CANCEL;
+
+        // SSH
+        jobIndexes[15] = JOB_SSH_PROVISION;    rates[15] = baseRate * PRICE_MULT_SSH_PROVISION;
+        jobIndexes[16] = JOB_SSH_REVOKE;       rates[16] = baseRate * PRICE_MULT_SSH_REVOKE;
+    }
+
+    /**
+     * @notice Returns the multiplier for a given job type. Useful for off-chain
+     *         pricing calculators and operator quote generation.
+     */
+    function getJobPriceMultiplier(uint8 jobId) external pure returns (uint256) {
+        if (jobId == JOB_SANDBOX_CREATE)   return PRICE_MULT_SANDBOX_CREATE;
+        if (jobId == JOB_SANDBOX_STOP)     return PRICE_MULT_STOP;
+        if (jobId == JOB_SANDBOX_RESUME)   return PRICE_MULT_RESUME;
+        if (jobId == JOB_SANDBOX_DELETE)   return PRICE_MULT_DELETE;
+        if (jobId == JOB_SANDBOX_SNAPSHOT)  return PRICE_MULT_SNAPSHOT;
+        if (jobId == JOB_EXEC)             return PRICE_MULT_EXEC;
+        if (jobId == JOB_PROMPT)           return PRICE_MULT_PROMPT;
+        if (jobId == JOB_TASK)             return PRICE_MULT_TASK;
+        if (jobId == JOB_BATCH_CREATE)     return PRICE_MULT_BATCH_CREATE;
+        if (jobId == JOB_BATCH_TASK)       return PRICE_MULT_BATCH_TASK;
+        if (jobId == JOB_BATCH_EXEC)       return PRICE_MULT_BATCH_EXEC;
+        if (jobId == JOB_BATCH_COLLECT)    return PRICE_MULT_BATCH_COLLECT;
+        if (jobId == JOB_WORKFLOW_CREATE)  return PRICE_MULT_WORKFLOW_CREATE;
+        if (jobId == JOB_WORKFLOW_TRIGGER) return PRICE_MULT_WORKFLOW_TRIGGER;
+        if (jobId == JOB_WORKFLOW_CANCEL)  return PRICE_MULT_WORKFLOW_CANCEL;
+        if (jobId == JOB_SSH_PROVISION)    return PRICE_MULT_SSH_PROVISION;
+        if (jobId == JOB_SSH_REVOKE)       return PRICE_MULT_SSH_REVOKE;
+        return 0;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

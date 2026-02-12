@@ -1,6 +1,6 @@
 use std::fmt;
 
-/// Errors returned by sandbox blueprint operations.
+/// Errors returned by sandbox runtime operations.
 #[derive(Debug)]
 pub enum SandboxError {
     /// Authentication failure (invalid or missing token).
@@ -33,10 +33,6 @@ impl fmt::Display for SandboxError {
 impl std::error::Error for SandboxError {}
 
 /// Convert SandboxError to String for blueprint job return types.
-///
-/// The blueprint SDK job handlers return `Result<T, String>`, so we need
-/// this conversion. As the SDK evolves to support typed errors, this can
-/// be replaced with a direct `impl IntoJobResult for SandboxError`.
 impl From<SandboxError> for String {
     fn from(err: SandboxError) -> Self {
         err.to_string()

@@ -40,11 +40,11 @@ pub struct OnChainMetrics {
     pub snapshots_committed: AtomicU64,
     /// S3 snapshot uploads performed.
     pub snapshots_uploaded: AtomicU64,
-    /// Hot→Warm GC transitions (containers removed).
+    /// Hot->Warm GC transitions (containers removed).
     pub gc_containers_removed: AtomicU64,
-    /// Warm→Cold GC transitions (images removed).
+    /// Warm->Cold GC transitions (images removed).
     pub gc_images_removed: AtomicU64,
-    /// Cold→Gone GC transitions (S3 snapshots cleaned).
+    /// Cold->Gone GC transitions (S3 snapshots cleaned).
     pub gc_s3_cleaned: AtomicU64,
 }
 
@@ -119,17 +119,17 @@ impl OnChainMetrics {
         self.snapshots_uploaded.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a Hot→Warm GC transition (container removed).
+    /// Record a Hot->Warm GC transition (container removed).
     pub fn record_gc_container_removed(&self) {
         self.gc_containers_removed.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a Warm→Cold GC transition (image removed).
+    /// Record a Warm->Cold GC transition (image removed).
     pub fn record_gc_image_removed(&self) {
         self.gc_images_removed.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a Cold→Gone GC transition (S3 snapshot cleaned).
+    /// Record a Cold->Gone GC transition (S3 snapshot cleaned).
     pub fn record_gc_s3_cleaned(&self) {
         self.gc_s3_cleaned.fetch_add(1, Ordering::Relaxed);
     }
@@ -164,9 +164,6 @@ impl OnChainMetrics {
     }
 
     /// Start a session and return a guard that decrements on drop.
-    ///
-    /// Guarantees `session_end` is called even on early returns, panics, or
-    /// task cancellation — fixing the session counter leak audit finding.
     pub fn session_guard(&'static self) -> SessionGuard {
         self.active_sessions.fetch_add(1, Ordering::Relaxed);
         SessionGuard(self)
@@ -262,8 +259,6 @@ impl OnChainMetrics {
 }
 
 /// RAII guard that decrements `active_sessions` when dropped.
-///
-/// Prevents session counter leaks on early returns, panics, or task cancellation.
 pub struct SessionGuard(&'static OnChainMetrics);
 
 impl Drop for SessionGuard {

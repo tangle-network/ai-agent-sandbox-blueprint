@@ -81,6 +81,8 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 original_image: String::new(),
                 env_json: String::new(),
                 snapshot_destination: None,
+                tee_deployment_id: None,
+                tee_metadata_json: None,
             },
         )
         .unwrap();
@@ -1132,8 +1134,8 @@ mod docker {
             sidecar_token: "lc-tok".into(),
         };
 
-        let record = match create_sidecar(&request).await {
-            Ok(r) => r,
+        let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
+            Ok((r, _)) => r,
             Err(e) => {
                 eprintln!("SKIP: create_sidecar failed (image pull?): {e}");
                 return;
@@ -1155,7 +1157,7 @@ mod docker {
 
         stop_sidecar(&record).await.unwrap();
         resume_sidecar(&record).await.unwrap();
-        delete_sidecar(&record).await.unwrap();
+        delete_sidecar(&record, None).await.unwrap();
         rm(&record.id);
     }
 
@@ -1185,8 +1187,8 @@ mod docker {
             sidecar_token: "sf-tok".into(),
         };
 
-        let record = match create_sidecar(&request).await {
-            Ok(r) => r,
+        let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
+            Ok((r, _)) => r,
             Err(e) => {
                 eprintln!("SKIP: create_sidecar failed: {e}");
                 return;
@@ -1214,7 +1216,7 @@ mod docker {
         assert_eq!(stored.env_json, record.env_json);
         assert_eq!(stored.snapshot_destination, record.snapshot_destination);
 
-        delete_sidecar(&record).await.unwrap();
+        delete_sidecar(&record, None).await.unwrap();
         rm(&record.id);
     }
 
@@ -1246,8 +1248,8 @@ mod docker {
             sidecar_token: "warm-tok".into(),
         };
 
-        let record = match create_sidecar(&request).await {
-            Ok(r) => r,
+        let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
+            Ok((r, _)) => r,
             Err(e) => {
                 eprintln!("SKIP: create_sidecar failed: {e}");
                 return;
@@ -1270,7 +1272,7 @@ mod docker {
             .unwrap();
 
         // Force-remove the container to simulate Hot→Warm GC transition
-        delete_sidecar(&record).await.unwrap();
+        delete_sidecar(&record, None).await.unwrap();
         sandboxes()
             .unwrap()
             .update(&record.id, |r| {
@@ -1306,7 +1308,7 @@ mod docker {
         assert!(resumed.sidecar_port > 0);
 
         // Cleanup: delete the new container and snapshot image
-        delete_sidecar(&resumed).await.unwrap();
+        delete_sidecar(&resumed, None).await.unwrap();
         // Clean up the snapshot image if it still exists
         let _ = ai_agent_sandbox_blueprint_lib::runtime::remove_snapshot_image(&image_id).await;
         rm(&record.id);
@@ -1338,8 +1340,8 @@ mod docker {
             sidecar_token: "nosn-tok".into(),
         };
 
-        let record = match create_sidecar(&request).await {
-            Ok(r) => r,
+        let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
+            Ok((r, _)) => r,
             Err(e) => {
                 eprintln!("SKIP: create_sidecar failed: {e}");
                 return;
@@ -1347,7 +1349,7 @@ mod docker {
         };
 
         stop_sidecar(&record).await.unwrap();
-        delete_sidecar(&record).await.unwrap();
+        delete_sidecar(&record, None).await.unwrap();
 
         // Mark container as removed, no snapshots
         sandboxes()

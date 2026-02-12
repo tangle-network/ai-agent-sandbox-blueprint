@@ -1,0 +1,28 @@
+[package]
+name = "sandbox-runtime"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+description = "Shared sandbox container runtime for AI agent blueprints"
+license.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tracing", "local-store"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
+hex = "0.4"
+once_cell = "1"
+phala-tee-deploy-rs = { version = "0.2.0", optional = true }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+subtle = "2"
+tokio = { version = "1", default-features = false, features = ["sync", "rt", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = []
+tee-phala = ["dep:phala-tee-deploy-rs"]
+tee-direct = []

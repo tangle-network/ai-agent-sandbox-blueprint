@@ -18,11 +18,11 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use ai_agent_sandbox_blueprint_lib::SandboxCreateRequest;
 use ai_agent_sandbox_blueprint_lib::runtime::{
     SandboxRecord, SandboxState, commit_container, create_sidecar, delete_sidecar, docker_builder,
     remove_snapshot_image, resume_sidecar, sandboxes, stop_sidecar,
 };
+use ai_agent_sandbox_blueprint_lib::{CreateSandboxParams, SandboxCreateRequest};
 use docktopus::bollard::container::RemoveContainerOptions;
 use reqwest::Client;
 
@@ -158,9 +158,10 @@ async fn create_test_sandbox() -> SandboxRecord {
         disk_gb: 0,
         sidecar_token: String::new(),
     };
-    create_sidecar(&request)
+    create_sidecar(&CreateSandboxParams::from(&request), None)
         .await
         .expect("Failed to create test sandbox")
+        .0
 }
 
 /// Create a sandbox with user-supplied snapshot_destination in metadata.
@@ -183,9 +184,10 @@ async fn create_test_sandbox_with_destination(dest: &str) -> SandboxRecord {
         disk_gb: 0,
         sidecar_token: String::new(),
     };
-    create_sidecar(&request)
+    create_sidecar(&CreateSandboxParams::from(&request), None)
         .await
         .expect("Failed to create test sandbox with destination")
+        .0
 }
 
 /// Wait for sidecar to become healthy.
@@ -361,7 +363,7 @@ async fn commit_and_warm_resume_real() {
         .unwrap();
 
     // Delete the original container
-    delete_sidecar(&record)
+    delete_sidecar(&record, None)
         .await
         .expect("delete should succeed");
     sandboxes()
@@ -468,7 +470,7 @@ async fn s3_snapshot_upload_and_cold_resume_real() {
 
     // Stop and fully remove container + any committed image
     stop_sidecar(&record).await.expect("stop should succeed");
-    delete_sidecar(&record)
+    delete_sidecar(&record, None)
         .await
         .expect("delete should succeed");
 
@@ -547,7 +549,7 @@ async fn resume_no_snapshot_fails_real() {
 
     // Stop and delete container
     stop_sidecar(&record).await.expect("stop should succeed");
-    delete_sidecar(&record)
+    delete_sidecar(&record, None)
         .await
         .expect("delete should succeed");
 
@@ -690,7 +692,7 @@ async fn tiered_gc_warm_to_cold_real() {
     );
 
     // Delete container to simulate warm tier state
-    delete_sidecar(&record)
+    delete_sidecar(&record, None)
         .await
         .expect("delete should succeed");
 
@@ -800,6 +802,8 @@ async fn tiered_gc_cold_to_gone_real() {
         original_image: sidecar_image(),
         env_json: String::new(),
         snapshot_destination: None, // operator-managed (not user BYOS3)
+        tee_deployment_id: None,
+        tee_metadata_json: None,
     };
 
     sandboxes()
@@ -887,6 +891,8 @@ async fn user_byos3_never_deleted_by_gc() {
         original_image: sidecar_image(),
         env_json: String::new(),
         snapshot_destination: Some(user_dest.clone()), // user BYOS3
+        tee_deployment_id: None,
+        tee_metadata_json: None,
     };
 
     sandboxes()
@@ -1131,7 +1137,7 @@ async fn full_lifecycle_all_tiers() {
     stop_sidecar(&after_warm_resume)
         .await
         .expect("stop should succeed");
-    delete_sidecar(&after_warm_resume)
+    delete_sidecar(&after_warm_resume, None)
         .await
         .expect("delete should succeed");
 
@@ -1184,7 +1190,7 @@ async fn full_lifecycle_all_tiers() {
     stop_sidecar(&after_cold)
         .await
         .expect("stop should succeed");
-    delete_sidecar(&after_cold)
+    delete_sidecar(&after_cold, None)
         .await
         .expect("delete should succeed");
     let past = ai_agent_sandbox_blueprint_lib::workflows::now_ts() - 10;

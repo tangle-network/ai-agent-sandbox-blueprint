@@ -9,6 +9,9 @@ use crate::SandboxTaskRequest;
 use crate::auth::require_sidecar_token;
 use crate::runtime::require_sidecar_auth;
 use crate::store::PersistentStore;
+// Re-export now_ts from sandbox-runtime so existing callers of
+// `workflows::now_ts` keep working.
+pub use crate::util::now_ts;
 
 // Re-export so callers that import from workflows still work.
 pub use crate::jobs::exec::run_task_request;
@@ -64,10 +67,6 @@ pub fn workflows() -> Result<&'static PersistentStore<WorkflowEntry>, String> {
 
 pub fn workflow_key(id: u64) -> String {
     id.to_string()
-}
-
-pub fn now_ts() -> u64 {
-    Utc::now().timestamp().max(0) as u64
 }
 
 pub fn resolve_next_run(
