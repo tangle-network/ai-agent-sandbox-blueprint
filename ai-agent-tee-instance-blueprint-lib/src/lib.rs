@@ -14,38 +14,81 @@ pub mod jobs;
 // `router()` (callers should use `tee_router()`) and `jobs` module (shadowed
 // by our own).
 pub use ai_agent_instance_blueprint_lib::{
-    // Modules (runtime, store, reaper, etc.)
-    auth, error, http, metrics, reaper, runtime, store, tangle, tee, util,
+    AgentResponse,
     // Types
-    CreateSandboxParams, SandboxError, SandboxRecord, SandboxState, TeeConfig, TeeType,
-    DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SSH_PORT,
+    CreateSandboxParams,
+    DEFAULT_SIDECAR_HTTP_PORT,
+    DEFAULT_SIDECAR_IMAGE,
+    DEFAULT_SIDECAR_SSH_PORT,
     DEFAULT_TIMEOUT_SECS,
-    // ABI types
-    JsonResponse, ProvisionRequest, ProvisionOutput,
-    InstanceExecRequest, InstanceExecResponse,
-    InstancePromptRequest, InstancePromptResponse,
-    InstanceTaskRequest, InstanceTaskResponse,
-    InstanceSshProvisionRequest, InstanceSshRevokeRequest,
+    InstanceExecRequest,
+    InstanceExecResponse,
+    InstancePromptRequest,
+    InstancePromptResponse,
     InstanceSnapshotRequest,
+    InstanceSshProvisionRequest,
+    InstanceSshRevokeRequest,
+    InstanceTaskRequest,
+    InstanceTaskResponse,
+    JOB_DEPROVISION,
+    JOB_EXEC,
+    JOB_PROMPT,
     // Job IDs
-    JOB_PROVISION, JOB_EXEC, JOB_PROMPT, JOB_TASK,
-    JOB_SSH_PROVISION, JOB_SSH_REVOKE, JOB_SNAPSHOT, JOB_DEPROVISION,
-    // Instance state
-    instance_store, get_instance_sandbox, require_instance_sandbox,
-    set_instance_sandbox, clear_instance_sandbox,
-    // Core functions (for composition)
-    provision_core, deprovision_core,
-    // Reused job handlers
-    instance_exec, instance_prompt, instance_task,
-    instance_ssh_provision, instance_ssh_revoke, instance_snapshot,
+    JOB_PROVISION,
+    JOB_SNAPSHOT,
+    JOB_SSH_PROVISION,
+    JOB_SSH_REVOKE,
+    JOB_TASK,
+    // ABI types
+    JsonResponse,
+    ProvisionOutput,
+    ProvisionRequest,
+    SandboxError,
+    SandboxRecord,
+    SandboxState,
+    TeeConfig,
+    TeeType,
+    // Modules (runtime, store, reaper, etc.)
+    auth,
     // Exec helpers
-    build_agent_payload, build_exec_payload, call_agent, extract_exec_fields,
-    run_instance_exec, run_instance_prompt, run_instance_task,
-    parse_agent_response, AgentResponse,
-    // SSH helpers
-    provision_key, revoke_key,
+    build_agent_payload,
+    build_exec_payload,
+    call_agent,
+    clear_instance_sandbox,
+    deprovision_core,
+    error,
     // Agent response parsing
     extract_agent_fields,
+    extract_exec_fields,
+    get_instance_sandbox,
+    http,
+    // Reused job handlers
+    instance_exec,
+    instance_prompt,
+    instance_snapshot,
+    instance_ssh_provision,
+    instance_ssh_revoke,
+    // Instance state
+    instance_store,
+    instance_task,
+    metrics,
+    parse_agent_response,
+    // Core functions (for composition)
+    provision_core,
+    // SSH helpers
+    provision_key,
+    reaper,
+    require_instance_sandbox,
+    revoke_key,
+    run_instance_exec,
+    run_instance_prompt,
+    run_instance_task,
+    runtime,
+    set_instance_sandbox,
+    store,
+    tangle,
+    tee,
+    util,
 };
 
 use once_cell::sync::OnceCell;

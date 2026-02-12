@@ -98,13 +98,8 @@ pub async fn instance_exec(
     TangleArg(request): TangleArg<InstanceExecRequest>,
 ) -> Result<TangleResult<InstanceExecResponse>, String> {
     let sandbox = require_instance_sandbox()?;
-    let resp = run_instance_exec(
-        &sandbox.sidecar_url,
-        &sandbox.token,
-        &sandbox.id,
-        &request,
-    )
-    .await?;
+    let resp =
+        run_instance_exec(&sandbox.sidecar_url, &sandbox.token, &sandbox.id, &request).await?;
     Ok(TangleResult(resp))
 }
 
@@ -292,13 +287,8 @@ pub async fn instance_prompt(
     TangleArg(request): TangleArg<InstancePromptRequest>,
 ) -> Result<TangleResult<InstancePromptResponse>, String> {
     let sandbox = require_instance_sandbox()?;
-    let resp = run_instance_prompt(
-        &sandbox.sidecar_url,
-        &sandbox.token,
-        &sandbox.id,
-        &request,
-    )
-    .await?;
+    let resp =
+        run_instance_prompt(&sandbox.sidecar_url, &sandbox.token, &sandbox.id, &request).await?;
     Ok(TangleResult(resp))
 }
 
@@ -354,12 +344,7 @@ pub async fn instance_task(
     TangleArg(request): TangleArg<InstanceTaskRequest>,
 ) -> Result<TangleResult<InstanceTaskResponse>, String> {
     let sandbox = require_instance_sandbox()?;
-    let resp = run_instance_task(
-        &sandbox.sidecar_url,
-        &sandbox.token,
-        &sandbox.id,
-        &request,
-    )
-    .await?;
+    let resp =
+        run_instance_task(&sandbox.sidecar_url, &sandbox.token, &sandbox.id, &request).await?;
     Ok(TangleResult(resp))
 }

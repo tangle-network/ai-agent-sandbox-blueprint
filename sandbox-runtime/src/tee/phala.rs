@@ -26,9 +26,9 @@ impl PhalaBackend {
         if let Some(endpoint) = api_endpoint {
             builder = builder.with_api_endpoint(endpoint);
         }
-        let deployer = builder
-            .build()
-            .map_err(|e| SandboxError::Validation(format!("Failed to create Phala deployer: {e}")))?;
+        let deployer = builder.build().map_err(|e| {
+            SandboxError::Validation(format!("Failed to create Phala deployer: {e}"))
+        })?;
         Ok(Self { deployer })
     }
 
@@ -44,14 +44,14 @@ impl PhalaBackend {
             params.http_port, params.http_port
         ));
         if let Some(ssh) = params.ssh_port {
-            yaml.push_str(&format!("      - \"{}:22\"\n", ssh));
+            yaml.push_str(&format!("      - \"{ssh}:22\"\n"));
         }
 
         // Environment
         if !params.env_vars.is_empty() {
             yaml.push_str("    environment:\n");
             for (k, v) in &params.env_vars {
-                yaml.push_str(&format!("      - {}={}\n", k, v));
+                yaml.push_str(&format!("      - {k}={v}\n"));
             }
         }
 
@@ -68,11 +68,7 @@ impl TeeBackend for PhalaBackend {
     async fn deploy(&self, params: &TeeDeployParams) -> Result<TeeDeployment> {
         let compose = Self::compose_yaml(params);
 
-        let env_vars: HashMap<String, String> = params
-            .env_vars
-            .iter()
-            .cloned()
-            .collect();
+        let env_vars: HashMap<String, String> = params.env_vars.iter().cloned().collect();
 
         let app_name = format!("sandbox-{}", &params.sandbox_id);
 
@@ -98,11 +94,10 @@ impl TeeBackend for PhalaBackend {
             .map_err(|e| SandboxError::Docker(format!("Phala CVM failed to start: {e}")))?;
 
         // Fetch attestation.
-        let att_resp = self
-            .deployer
-            .get_attestation(&app_id)
-            .await
-            .map_err(|e| SandboxError::Docker(format!("Phala attestation fetch failed: {e}")))?;
+        let att_resp =
+            self.deployer.get_attestation(&app_id).await.map_err(|e| {
+                SandboxError::Docker(format!("Phala attestation fetch failed: {e}"))
+            })?;
 
         let attestation = AttestationReport {
             tee_type: TeeType::Sgx,

@@ -32,7 +32,9 @@ pub async fn provision_core(
     }
 
     let params = CreateSandboxParams::from(request);
-    let (record, attestation) = create_sidecar(&params, tee).await.map_err(|e| e.to_string())?;
+    let (record, attestation) = create_sidecar(&params, tee)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Provision SSH key if requested.
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
@@ -81,7 +83,9 @@ pub async fn deprovision_core(
     tee: Option<&dyn TeeBackend>,
 ) -> Result<(JsonResponse, String), String> {
     let record = require_instance_sandbox()?;
-    delete_sidecar(&record, tee).await.map_err(|e| e.to_string())?;
+    delete_sidecar(&record, tee)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Remove from runtime store.
     let _ = crate::runtime::sandboxes()

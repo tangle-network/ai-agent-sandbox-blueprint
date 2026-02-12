@@ -11,7 +11,7 @@
 //!   - `/agents/run` → `{ success, response, traceId, durationMs, usage, sessionId }`
 
 use ai_agent_instance_blueprint_lib::*;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wiremock::matchers::{header, method, path};
@@ -614,8 +614,7 @@ mod helper_tests {
 
     #[test]
     fn build_agent_payload_with_session_and_model() {
-        let payload =
-            build_agent_payload("hello", "sess-1", "gpt-4", "", 30000, None).unwrap();
+        let payload = build_agent_payload("hello", "sess-1", "gpt-4", "", 30000, None).unwrap();
         assert_eq!(payload["sessionId"], "sess-1");
         assert_eq!(payload["backend"]["model"], "gpt-4");
         assert_eq!(payload["timeout"], 30000);
@@ -623,8 +622,7 @@ mod helper_tests {
 
     #[test]
     fn build_agent_payload_with_context() {
-        let payload =
-            build_agent_payload("hello", "", "", r#"{"key":"val"}"#, 0, None).unwrap();
+        let payload = build_agent_payload("hello", "", "", r#"{"key":"val"}"#, 0, None).unwrap();
         assert_eq!(payload["metadata"]["key"], "val");
     }
 
@@ -1067,9 +1065,7 @@ mod conversion_tests {
             assert_eq!(
                 std::mem::discriminant(&tee.tee_type),
                 std::mem::discriminant(&expected),
-                "tee_type {} should map to {:?}",
-                tee_type_id,
-                expected
+                "tee_type {tee_type_id} should map to {expected:?}"
             );
         }
     }

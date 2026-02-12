@@ -10,8 +10,7 @@ static INIT: Once = Once::new();
 
 fn init() {
     INIT.call_once(|| {
-        let dir =
-            std::env::temp_dir().join(format!("tee-instance-bp-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tee-instance-bp-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         // SAFETY: tests run single-threaded during init; no concurrent env reads.
         unsafe {
