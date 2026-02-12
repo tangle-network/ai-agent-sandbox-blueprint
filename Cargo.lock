@@ -6988,7 +6988,8 @@ dependencies = [
 [[package]]
 name = "phala-tee-deploy-rs"
 version = "0.2.0"
-source = "git+https://github.com/tangle-network/phala-tee-deploy-rs.git?branch=eliza#d7a8f9e7b712ab6c9355b7063e532aebe85596c5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ae05ada6f0efee848a56950608a0964377614d5f879376c3bd869cff1daaa4a"
 dependencies = [
  "aes-gcm",
  "dotenv",
