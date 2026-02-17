@@ -10,6 +10,9 @@ pub mod phala;
 #[cfg(feature = "tee-direct")]
 pub mod direct;
 
+pub mod sealed_secrets;
+pub mod sealed_secrets_api;
+
 /// Supported TEE backend types.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TeeType {
@@ -157,4 +160,41 @@ pub trait TeeBackend: Send + Sync {
 
     /// Which TEE type this backend provides.
     fn tee_type(&self) -> TeeType;
+
+    // ── Sealed secrets (optional, default: not supported) ────────────────
+
+    /// Derive a TEE-bound public key for sealed secret encryption.
+    ///
+    /// The returned key is bound to the enclave measurement via attestation.
+    /// Clients verify the attestation before encrypting secrets to this key.
+    ///
+    /// Default: returns an error indicating sealed secrets are not supported.
+    async fn derive_public_key(
+        &self,
+        deployment_id: &str,
+    ) -> crate::error::Result<sealed_secrets::TeePublicKey> {
+        let _ = deployment_id;
+        Err(crate::error::SandboxError::Validation(format!(
+            "Sealed secrets not supported by {:?} backend",
+            self.tee_type()
+        )))
+    }
+
+    /// Inject sealed (encrypted) secrets into a TEE deployment.
+    ///
+    /// The operator calls this to forward the client's encrypted blob to the
+    /// sidecar running inside the TEE. Only the TEE can decrypt.
+    ///
+    /// Default: returns an error indicating sealed secrets are not supported.
+    async fn inject_sealed_secrets(
+        &self,
+        deployment_id: &str,
+        sealed: &sealed_secrets::SealedSecret,
+    ) -> crate::error::Result<sealed_secrets::SealedSecretResult> {
+        let _ = (deployment_id, sealed);
+        Err(crate::error::SandboxError::Validation(format!(
+            "Sealed secrets not supported by {:?} backend",
+            self.tee_type()
+        )))
+    }
 }

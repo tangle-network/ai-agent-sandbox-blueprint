@@ -10,6 +10,7 @@ use std::time::Duration;
 use phala_tee_deploy_rs::{TeeDeployer, TeeDeployerBuilder};
 
 use super::{AttestationReport, TeeBackend, TeeDeployParams, TeeDeployment, TeeType};
+use super::sealed_secrets::{SealedSecret, SealedSecretResult, TeePublicKey};
 use crate::error::{Result, SandboxError};
 
 /// TEE backend that deploys containers to Phala Cloud CVMs.
@@ -170,4 +171,49 @@ impl TeeBackend for PhalaBackend {
     fn tee_type(&self) -> TeeType {
         TeeType::Sgx
     }
+
+    // ── Sealed secrets ──────────────────────────────────────────────────────
+
+    async fn derive_public_key(&self, deployment_id: &str) -> Result<TeePublicKey> {
+        let (sidecar_url, token) = sidecar_info_for_deployment(deployment_id)?;
+        let url = crate::http::build_url(&sidecar_url, "/tee/public-key")?;
+        let headers = crate::http::auth_headers(&token)?;
+        let (_status, body) =
+            crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
+        serde_json::from_str(&body).map_err(|e| {
+            SandboxError::Http(format!("Invalid TeePublicKey response: {e}"))
+        })
+    }
+
+    async fn inject_sealed_secrets(
+        &self,
+        deployment_id: &str,
+        sealed: &SealedSecret,
+    ) -> Result<SealedSecretResult> {
+        let (sidecar_url, token) = sidecar_info_for_deployment(deployment_id)?;
+        let payload = serde_json::to_value(sealed).map_err(|e| {
+            SandboxError::Validation(format!("Failed to serialize sealed secret: {e}"))
+        })?;
+        let resp =
+            crate::http::sidecar_post_json(&sidecar_url, "/tee/sealed-secrets", &token, payload)
+                .await?;
+        serde_json::from_value(resp).map_err(|e| {
+            SandboxError::Http(format!("Invalid SealedSecretResult response: {e}"))
+        })
+    }
+}
+
+/// Look up the sidecar URL and auth token for a TEE deployment by its deployment ID.
+///
+/// Scans the sandbox store for a record whose `tee_deployment_id` matches.
+fn sidecar_info_for_deployment(deployment_id: &str) -> Result<(String, String)> {
+    let store = crate::runtime::sandboxes()?;
+    let record = store
+        .find(|r| r.tee_deployment_id.as_deref() == Some(deployment_id))?
+        .ok_or_else(|| {
+            SandboxError::NotFound(format!(
+                "No sandbox found for TEE deployment '{deployment_id}'"
+            ))
+        })?;
+    Ok((record.sidecar_url.clone(), record.token.clone()))
 }

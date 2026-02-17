@@ -92,6 +92,7 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 disk_gb: 0,
                 stack: String::new(),
                 owner: String::new(),
+                tee_config: None,
             },
         )
         .unwrap();

@@ -32,7 +32,7 @@ pub struct ApiError {
     error: String,
 }
 
-fn api_error(status: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
+pub(crate) fn api_error(status: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
     (status, Json(ApiError { error: msg.into() }))
 }
 
@@ -161,7 +161,7 @@ async fn inject_secrets(
         return api_error(StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
 
-    match secret_provisioning::inject_secrets(&sandbox_id, body.env_json).await {
+    match secret_provisioning::inject_secrets(&sandbox_id, body.env_json, None).await {
         Ok(record) => (
             StatusCode::OK,
             Json(SecretsResponse {
@@ -182,7 +182,7 @@ async fn wipe_secrets(
         return api_error(StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
 
-    match secret_provisioning::wipe_secrets(&sandbox_id).await {
+    match secret_provisioning::wipe_secrets(&sandbox_id, None).await {
         Ok(record) => (
             StatusCode::OK,
             Json(SecretsResponse {
@@ -247,7 +247,23 @@ pub fn extract_session_from_headers(headers: &HeaderMap) -> Result<session_auth:
 // ---------------------------------------------------------------------------
 
 /// Build the operator API router with all endpoints, CORS, and rate limiting.
+///
+/// For TEE-enabled operators, use [`operator_api_router_with_tee`] instead.
 pub fn operator_api_router() -> Router {
+    operator_api_router_with_tee(None)
+}
+
+/// Build the operator API router with optional TEE sealed secrets endpoints.
+///
+/// When `tee` is `Some(backend)`, the following endpoints are added:
+/// - `GET  /api/sandboxes/{id}/tee/public-key`
+/// - `POST /api/sandboxes/{id}/tee/sealed-secrets`
+///
+/// When `tee` is `None`, those routes are not registered and the router
+/// behaves identically to [`operator_api_router`].
+pub fn operator_api_router_with_tee(
+    tee: Option<std::sync::Arc<dyn crate::tee::TeeBackend>>,
+) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -270,13 +286,31 @@ pub fn operator_api_router() -> Router {
         .route("/api/auth/session", post(create_session))
         .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
-    Router::new()
+    let mut router = Router::new()
         // Health & metrics (unauthenticated, no rate limiting)
         .route("/health", get(health))
         .route("/metrics", get(prometheus_metrics))
         .merge(read_routes)
-        .merge(write_routes)
-        .layer(cors)
+        .merge(write_routes);
+
+    // TEE sealed secrets endpoints (only when backend is configured)
+    if let Some(backend) = tee {
+        let tee_routes = Router::new()
+            .route(
+                "/api/sandboxes/{sandbox_id}/tee/public-key",
+                get(crate::tee::sealed_secrets_api::get_tee_public_key),
+            )
+            .route(
+                "/api/sandboxes/{sandbox_id}/tee/sealed-secrets",
+                post(crate::tee::sealed_secrets_api::inject_sealed_secrets),
+            )
+            .layer(axum::Extension(Some(backend) as Option<std::sync::Arc<dyn crate::tee::TeeBackend>>))
+            .layer(middleware::from_fn(rate_limit::write_rate_limit));
+
+        router = router.merge(tee_routes);
+    }
+
+    router.layer(cors)
 }
 
 #[cfg(test)]

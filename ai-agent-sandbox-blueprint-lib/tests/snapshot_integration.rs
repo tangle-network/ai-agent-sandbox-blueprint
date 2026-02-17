@@ -809,6 +809,7 @@ async fn tiered_gc_cold_to_gone_real() {
         disk_gb: 0,
         stack: String::new(),
         owner: String::new(),
+        tee_config: None,
     };
 
     sandboxes()
@@ -905,6 +906,7 @@ async fn user_byos3_never_deleted_by_gc() {
         disk_gb: 0,
         stack: String::new(),
         owner: String::new(),
+        tee_config: None,
     };
 
     sandboxes()

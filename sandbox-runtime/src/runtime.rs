@@ -266,6 +266,9 @@ pub struct SandboxRecord {
     /// ownership checks — only the owner may stop, resume, or delete a sandbox.
     #[serde(default)]
     pub owner: String,
+    /// TEE configuration used to create this sandbox (preserved for recreation).
+    #[serde(default)]
+    pub tee_config: Option<crate::tee::TeeConfig>,
 }
 
 impl SandboxRecord {
@@ -505,6 +508,7 @@ async fn create_sidecar_tee(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
+        tee_config: request.tee_config.clone(),
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
@@ -716,6 +720,7 @@ async fn create_sidecar_docker(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
+        tee_config: None,
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
@@ -892,7 +897,7 @@ pub async fn recreate_sidecar_with_env(
         memory_mb: old.memory_mb,
         disk_gb: if old.disk_gb > 0 { old.disk_gb } else { 10 },
         owner: old.owner.clone(),
-        tee_config: None,
+        tee_config: old.tee_config.clone(),
     };
 
     // Preserve the original token so existing workflows/references keep working.

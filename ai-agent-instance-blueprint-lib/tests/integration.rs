@@ -78,6 +78,7 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 disk_gb: 0,
                 stack: String::new(),
                 owner: String::new(),
+                tee_config: None,
             },
         )
         .unwrap();
@@ -765,6 +766,7 @@ mod instance_state_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            tee_config: None,
         };
 
         set_instance_sandbox(record).unwrap();
@@ -812,6 +814,7 @@ mod instance_state_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            tee_config: None,
         };
 
         set_instance_sandbox(record).unwrap();
@@ -953,6 +956,7 @@ mod abi_tests {
             sidecar_url: "http://localhost:8080".to_string(),
             ssh_port: 2222,
             tee_attestation_json: r#"{"tee_type":"nitro"}"#.to_string(),
+            tee_public_key_json: String::new(),
         };
 
         let encoded = output.abi_encode();

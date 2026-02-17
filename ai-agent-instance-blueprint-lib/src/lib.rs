@@ -90,6 +90,9 @@ sol! {
         string sidecar_url;
         uint32 ssh_port;
         string tee_attestation_json;
+        /// TEE-bound public key JSON (empty for non-TEE sandboxes).
+        /// Clients verify the attestation inside, then encrypt secrets to this key.
+        string tee_public_key_json;
     }
 
     // ── Exec (no sidecar_url/token — instance-scoped) ─────────────────────

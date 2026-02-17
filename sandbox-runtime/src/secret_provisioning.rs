@@ -25,11 +25,12 @@ use crate::runtime::{get_sandbox_by_id, recreate_sidecar_with_env, SandboxRecord
 pub async fn inject_secrets(
     sandbox_id: &str,
     secret_env: Map<String, Value>,
+    tee: Option<&dyn crate::tee::TeeBackend>,
 ) -> Result<SandboxRecord> {
     let user_env_json = serde_json::to_string(&secret_env)
         .map_err(|e| SandboxError::Validation(format!("Invalid secret env: {e}")))?;
 
-    let new_record = recreate_sidecar_with_env(sandbox_id, &user_env_json, None).await?;
+    let new_record = recreate_sidecar_with_env(sandbox_id, &user_env_json, tee).await?;
     Ok(new_record)
 }
 
@@ -37,8 +38,11 @@ pub async fn inject_secrets(
 /// only the base environment. The `base_env_json` is preserved.
 ///
 /// Returns the new `SandboxRecord` for the recreated sandbox.
-pub async fn wipe_secrets(sandbox_id: &str) -> Result<SandboxRecord> {
-    let new_record = recreate_sidecar_with_env(sandbox_id, "", None).await?;
+pub async fn wipe_secrets(
+    sandbox_id: &str,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<SandboxRecord> {
+    let new_record = recreate_sidecar_with_env(sandbox_id, "", tee).await?;
     Ok(new_record)
 }
 

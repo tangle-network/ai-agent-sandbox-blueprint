@@ -51,6 +51,7 @@ mod re_export_tests {
             sidecar_url: "http://tee-sidecar:8080".to_string(),
             ssh_port: 2222,
             tee_attestation_json: r#"{"tee_type":"phala"}"#.to_string(),
+            tee_public_key_json: String::new(),
         };
 
         let encoded = output.abi_encode();
