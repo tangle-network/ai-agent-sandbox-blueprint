@@ -717,6 +717,7 @@ mod workflow_tests {
             active: true,
             next_run_at: None,
             last_run_at: None,
+            owner: String::new(),
         };
 
         apply_workflow_execution(&mut entry, 1000, Some(2000));
@@ -737,6 +738,7 @@ mod workflow_tests {
             active: true,
             next_run_at: Some(999),
             last_run_at: None,
+            owner: String::new(),
         };
 
         apply_workflow_execution(&mut entry, 1000, None);

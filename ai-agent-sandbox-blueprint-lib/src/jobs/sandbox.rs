@@ -6,21 +6,56 @@ use crate::SandboxCreateOutput;
 use crate::SandboxCreateRequest;
 use crate::SandboxIdRequest;
 use crate::SandboxSnapshotRequest;
-use crate::auth::require_sidecar_token;
 use crate::http::sidecar_post_json;
 use crate::runtime::{
-    create_sidecar, delete_sidecar, get_sandbox_by_id, require_sidecar_auth, resume_sidecar,
-    sandboxes, stop_sidecar,
+    create_sidecar, delete_sidecar, require_sandbox_owner, require_sandbox_owner_by_url,
+    resume_sidecar, sandboxes, stop_sidecar,
 };
-use crate::tangle::extract::{Caller, TangleArg, TangleResult};
+use crate::tangle::extract::{CallId, Caller, TangleArg, TangleResult};
 use crate::util::build_snapshot_command;
+use sandbox_runtime::provision_progress::{self, ProvisionPhase};
 
 pub async fn sandbox_create(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
+    CallId(call_id): CallId,
     TangleArg(request): TangleArg<SandboxCreateRequest>,
 ) -> Result<TangleResult<SandboxCreateOutput>, String> {
-    let params = CreateSandboxParams::from(&request);
-    let (record, _attestation) = create_sidecar(&params, None).await?;
+    // Track provision progress for this call
+    let _ = provision_progress::start_provision(call_id);
+
+    let _ = provision_progress::update_provision(
+        call_id,
+        ProvisionPhase::ImagePull,
+        Some("Preparing sandbox image".into()),
+        None,
+    );
+
+    let mut params = CreateSandboxParams::from(&request);
+    params.owner = super::caller_hex(&caller);
+
+    let _ = provision_progress::update_provision(
+        call_id,
+        ProvisionPhase::ContainerCreate,
+        Some("Creating container".into()),
+        None,
+    );
+
+    let (record, _attestation) = create_sidecar(&params, None).await.map_err(|e| {
+        let _ = provision_progress::update_provision(
+            call_id,
+            ProvisionPhase::Failed,
+            Some(format!("Container creation failed: {e}")),
+            None,
+        );
+        e
+    })?;
+
+    let _ = provision_progress::update_provision(
+        call_id,
+        ProvisionPhase::ContainerStart,
+        Some("Container started, configuring".into()),
+        Some(record.id.clone()),
+    );
 
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
         crate::jobs::ssh::provision_key(
@@ -29,8 +64,24 @@ pub async fn sandbox_create(
             &request.ssh_public_key,
             &record.token,
         )
-        .await?;
+        .await
+        .map_err(|e| {
+            let _ = provision_progress::update_provision(
+                call_id,
+                ProvisionPhase::Failed,
+                Some(format!("SSH key provisioning failed: {e}")),
+                Some(record.id.clone()),
+            );
+            e
+        })?;
     }
+
+    let _ = provision_progress::update_provision(
+        call_id,
+        ProvisionPhase::Ready,
+        Some("Sandbox ready".into()),
+        Some(record.id.clone()),
+    );
 
     let response = json!({
         "sandboxId": record.id,
@@ -46,10 +97,11 @@ pub async fn sandbox_create(
 }
 
 pub async fn sandbox_delete(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<SandboxIdRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
-    let record = get_sandbox_by_id(&request.sandbox_id)?;
+    let caller_hex = super::caller_hex(&caller);
+    let record = require_sandbox_owner(&request.sandbox_id, &caller_hex)?;
     delete_sidecar(&record, None).await?;
 
     let sandbox_id = request.sandbox_id.to_string();
@@ -69,10 +121,11 @@ pub async fn sandbox_delete(
 }
 
 pub async fn sandbox_stop(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<SandboxIdRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
-    let record = get_sandbox_by_id(&request.sandbox_id)?;
+    let caller_hex = super::caller_hex(&caller);
+    let record = require_sandbox_owner(&request.sandbox_id, &caller_hex)?;
     stop_sidecar(&record).await?;
 
     let response = json!({
@@ -86,10 +139,11 @@ pub async fn sandbox_stop(
 }
 
 pub async fn sandbox_resume(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<SandboxIdRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
-    let record = get_sandbox_by_id(&request.sandbox_id)?;
+    let caller_hex = super::caller_hex(&caller);
+    let record = require_sandbox_owner(&request.sandbox_id, &caller_hex)?;
     resume_sidecar(&record).await?;
 
     let response = json!({
@@ -103,15 +157,15 @@ pub async fn sandbox_resume(
 }
 
 pub async fn sandbox_snapshot(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<SandboxSnapshotRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
     if request.destination.trim().is_empty() {
         return Err("Snapshot destination is required".to_string());
     }
 
-    let token = require_sidecar_token(&request.sidecar_token)?;
-    require_sidecar_auth(&request.sidecar_url, &token)?;
+    let caller_hex = super::caller_hex(&caller);
+    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
 
     let command = build_snapshot_command(
         &request.destination,
@@ -124,11 +178,9 @@ pub async fn sandbox_snapshot(
     });
 
     let response =
-        sidecar_post_json(&request.sidecar_url, "/terminals/commands", &token, payload).await?;
+        sidecar_post_json(&request.sidecar_url, "/terminals/commands", &record.token, payload).await?;
 
-    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(&request.sidecar_url) {
-        crate::runtime::touch_sandbox(&record.id);
-    }
+    crate::runtime::touch_sandbox(&record.id);
 
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),

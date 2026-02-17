@@ -85,6 +85,13 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 snapshot_destination: None,
                 tee_deployment_id: None,
                 tee_metadata_json: None,
+                name: String::new(),
+                agent_identifier: String::new(),
+                metadata_json: String::new(),
+                disk_gb: 0,
+                stack: String::new(),
+                owner: String::new(),
+                secrets_configured: false,
             },
         )
         .unwrap();
@@ -117,7 +124,7 @@ fn mock_exec_ok(stdout: &str, exit_code: u32) -> ResponseTemplate {
     }))
 }
 
-fn task_req(url: &str, token: &str, prompt: &str) -> SandboxTaskRequest {
+fn task_req(url: &str, prompt: &str) -> SandboxTaskRequest {
     SandboxTaskRequest {
         sidecar_url: url.to_string(),
         prompt: prompt.to_string(),
@@ -126,7 +133,6 @@ fn task_req(url: &str, token: &str, prompt: &str) -> SandboxTaskRequest {
         model: String::new(),
         context_json: String::new(),
         timeout_ms: 0,
-        sidecar_token: token.to_string(),
     }
 }
 
@@ -207,9 +213,8 @@ mod exec_job {
             cwd: "/app".into(),
             env_json: r#"{"FOO":"bar"}"#.into(),
             timeout_ms: 5000,
-            sidecar_token: "t".into(),
         };
-        let resp = run_exec_request(&req).await.unwrap();
+        let resp = run_exec_request(&req, "t").await.unwrap();
         assert_eq!(resp.exit_code, 0);
         assert_eq!(resp.stdout, "hello");
         assert!(resp.stderr.is_empty());
@@ -250,9 +255,8 @@ mod exec_job {
             cwd: "/workspace".into(),
             env_json: r#"{"NODE_ENV":"test"}"#.into(),
             timeout_ms: 3000,
-            sidecar_token: "t".into(),
         };
-        run_exec_request(&req).await.unwrap();
+        run_exec_request(&req, "t").await.unwrap();
     }
 
     #[tokio::test]
@@ -271,9 +275,8 @@ mod exec_job {
             cwd: String::new(),
             env_json: String::new(),
             timeout_ms: 0,
-            sidecar_token: "t".into(),
         };
-        run_exec_request(&req).await.unwrap();
+        run_exec_request(&req, "t").await.unwrap();
     }
 }
 
@@ -305,9 +308,8 @@ mod prompt_job {
             model: "claude-4".into(),
             context_json: r#"{"key":"val"}"#.into(),
             timeout_ms: 10000,
-            sidecar_token: "t".into(),
         };
-        let resp = run_prompt_request(&req).await.unwrap();
+        let resp = run_prompt_request(&req, "t").await.unwrap();
         assert!(resp.success);
         assert_eq!(resp.response, "Hello!");
         assert_eq!(resp.trace_id, "tr-1");
@@ -341,9 +343,8 @@ mod prompt_job {
             model: String::new(),
             context_json: String::new(),
             timeout_ms: 0,
-            sidecar_token: "t".into(),
         };
-        let resp = run_prompt_request(&req).await.unwrap();
+        let resp = run_prompt_request(&req, "t").await.unwrap();
         assert!(!resp.success);
         assert_eq!(resp.error, "rate limited");
         assert!(m.failed_jobs.load(Ordering::Relaxed) > before);
@@ -364,7 +365,7 @@ mod task_job {
             .mount(&srv)
             .await;
 
-        let resp = run_task_request(&task_req(&srv.uri(), "t", "work"))
+        let resp = run_task_request(&task_req(&srv.uri(), "work"), "t")
             .await
             .unwrap();
         assert!(resp.success);
@@ -393,9 +394,8 @@ mod task_job {
             model: "claude".into(),
             context_json: r#"{"project":"x"}"#.into(),
             timeout_ms: 30000,
-            sidecar_token: "t".into(),
         };
-        let resp = run_task_request(&req).await.unwrap();
+        let resp = run_task_request(&req, "t").await.unwrap();
         assert!(resp.success);
     }
 }
@@ -484,8 +484,8 @@ mod batch_jobs {
 
         let mut set = tokio::task::JoinSet::new();
         for srv in &servers {
-            let req = task_req(&srv.uri(), "t", "go");
-            set.spawn(async move { run_task_request(&req).await });
+            let req = task_req(&srv.uri(), "go");
+            set.spawn(async move { run_task_request(&req, "t").await });
         }
 
         let mut results = Vec::new();
@@ -513,12 +513,12 @@ mod batch_jobs {
             .await;
 
         assert!(
-            run_task_request(&task_req(&good.uri(), "t", "go"))
+            run_task_request(&task_req(&good.uri(), "go"), "t")
                 .await
                 .is_ok()
         );
         assert!(
-            run_task_request(&task_req(&bad.uri(), "t", "go"))
+            run_task_request(&task_req(&bad.uri(), "go"), "t")
                 .await
                 .is_err()
         );
@@ -609,6 +609,7 @@ mod workflow_jobs {
             active: true,
             next_run_at: Some(1),
             last_run_at: None,
+            owner: String::new(),
         }
     }
 
@@ -790,7 +791,6 @@ mod abi {
             cpu_cores: 4,
             memory_mb: 8192,
             disk_gb: 50,
-            sidecar_token: "tok".into(),
         };
         let d = SandboxCreateRequest::abi_decode(&req.abi_encode()).unwrap();
         assert_eq!(d.name, "t");
@@ -813,7 +813,6 @@ mod abi {
             cwd: "/w".into(),
             env_json: "{}".into(),
             timeout_ms: 5000,
-            sidecar_token: "t".into(),
         };
         let d = SandboxExecRequest::abi_decode(&exec.abi_encode()).unwrap();
         assert_eq!(d.command, "ls");
@@ -834,7 +833,6 @@ mod abi {
             model: "m".into(),
             context_json: "{}".into(),
             timeout_ms: 1000,
-            sidecar_token: "t".into(),
         };
         let d = SandboxPromptRequest::abi_decode(&prompt.abi_encode()).unwrap();
         assert_eq!(d.message, "hi");
@@ -860,7 +858,6 @@ mod abi {
             model: "claude".into(),
             context_json: "{}".into(),
             timeout_ms: 60000,
-            sidecar_token: "t".into(),
         };
         let d = SandboxTaskRequest::abi_decode(&task.abi_encode()).unwrap();
         assert_eq!(d.prompt, "build");
@@ -885,7 +882,6 @@ mod abi {
     fn batch_and_workflow_types() {
         let bt = BatchTaskRequest {
             sidecar_urls: vec!["http://a".into(), "http://b".into()],
-            sidecar_tokens: vec!["ta".into(), "tb".into()],
             prompt: "go".into(),
             session_id: String::new(),
             max_turns: 5,
@@ -901,7 +897,6 @@ mod abi {
 
         let be = BatchExecRequest {
             sidecar_urls: vec!["http://h".into()],
-            sidecar_tokens: vec!["t".into()],
             command: "npm test".into(),
             cwd: "/app".into(),
             env_json: "{}".into(),
@@ -928,7 +923,6 @@ mod abi {
                 cpu_cores: 1,
                 memory_mb: 256,
                 disk_gb: 5,
-                sidecar_token: String::new(),
             },
             operators: vec![Address::ZERO],
             distribution: "round-robin".into(),
@@ -951,7 +945,6 @@ mod abi {
             sidecar_url: "http://h".into(),
             username: "dev".into(),
             public_key: "ssh-ed25519 AAAA".into(),
-            sidecar_token: "t".into(),
         };
         let d = SshProvisionRequest::abi_decode(&ssh.abi_encode()).unwrap();
         assert_eq!(d.username, "dev");
@@ -960,7 +953,6 @@ mod abi {
             sidecar_url: "http://h".into(),
             username: "dev".into(),
             public_key: "ssh-ed25519 AAAA".into(),
-            sidecar_token: "t".into(),
         };
         let d = SshRevokeRequest::abi_decode(&ssh_r.abi_encode()).unwrap();
         assert_eq!(d.username, "dev");
@@ -1029,6 +1021,7 @@ mod errors {
             active: true,
             next_run_at: None,
             last_run_at: None,
+            owner: String::new(),
         };
         let r = run_workflow(&entry).await;
         match r {
@@ -1051,9 +1044,8 @@ mod errors {
             cwd: String::new(),
             env_json: String::new(),
             timeout_ms: 0,
-            sidecar_token: "t".into(),
         };
-        assert!(run_exec_request(&req).await.is_err());
+        assert!(run_exec_request(&req, "t").await.is_err());
     }
 
     #[tokio::test]
@@ -1065,7 +1057,7 @@ mod errors {
             .mount(&srv)
             .await;
         assert!(
-            run_task_request(&task_req(&srv.uri(), "t", "go"))
+            run_task_request(&task_req(&srv.uri(), "go"), "t")
                 .await
                 .is_err()
         );
@@ -1086,9 +1078,8 @@ mod errors {
             model: String::new(),
             context_json: String::new(),
             timeout_ms: 0,
-            sidecar_token: "t".into(),
         };
-        assert!(run_prompt_request(&req).await.is_err());
+        assert!(run_prompt_request(&req, "t").await.is_err());
     }
 }
 
@@ -1133,7 +1124,6 @@ mod docker {
             cpu_cores: 1,
             memory_mb: 256,
             disk_gb: 1,
-            sidecar_token: "lc-tok".into(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -1146,7 +1136,7 @@ mod docker {
 
         assert!(!record.id.is_empty());
         assert!(!record.container_id.is_empty());
-        assert_eq!(record.token, "lc-tok");
+        assert!(!record.token.is_empty());
         assert_eq!(record.cpu_cores, 1);
         assert_eq!(record.memory_mb, 256);
         assert!(record.sidecar_port > 0);
@@ -1186,7 +1176,6 @@ mod docker {
             cpu_cores: 1,
             memory_mb: 256,
             disk_gb: 1,
-            sidecar_token: "sf-tok".into(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -1247,7 +1236,6 @@ mod docker {
             cpu_cores: 1,
             memory_mb: 256,
             disk_gb: 1,
-            sidecar_token: "warm-tok".into(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -1339,7 +1327,6 @@ mod docker {
             cpu_cores: 1,
             memory_mb: 256,
             disk_gb: 1,
-            sidecar_token: "nosn-tok".into(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -1392,7 +1379,7 @@ mod metrics_tests {
         let m = metrics::metrics();
         let before = m.total_jobs.load(Ordering::Relaxed);
 
-        run_task_request(&task_req(&srv.uri(), "t", "work"))
+        run_task_request(&task_req(&srv.uri(), "work"), "t")
             .await
             .unwrap();
 
@@ -1417,7 +1404,7 @@ mod metrics_tests {
         let m = metrics::metrics();
         let before = m.failed_jobs.load(Ordering::Relaxed);
 
-        let resp = run_task_request(&task_req(&srv.uri(), "t", "fail"))
+        let resp = run_task_request(&task_req(&srv.uri(), "fail"), "t")
             .await
             .unwrap();
         assert!(!resp.success);

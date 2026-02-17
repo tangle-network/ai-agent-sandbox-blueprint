@@ -10,7 +10,7 @@ use crate::workflows::{
 };
 
 pub async fn workflow_create(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     CallId(call_id): CallId,
     TangleArg(request): TangleArg<WorkflowCreateRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
@@ -32,6 +32,7 @@ pub async fn workflow_create(
         active: true,
         next_run_at,
         last_run_at: None,
+        owner: super::caller_hex(&caller),
     };
 
     workflows()?
@@ -49,14 +50,19 @@ pub async fn workflow_create(
 }
 
 pub async fn workflow_trigger(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<WorkflowControlRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
+    let caller_hex = super::caller_hex(&caller);
     let key = workflow_key(request.workflow_id);
     let entry = workflows()?
         .get(&key)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Workflow not found".to_string())?;
+
+    if !entry.owner.is_empty() && !entry.owner.eq_ignore_ascii_case(&caller_hex) {
+        return Err(format!("Caller {caller_hex} does not own workflow {}", request.workflow_id));
+    }
 
     if !entry.active {
         return Err("Workflow is not active".to_string());
@@ -76,10 +82,20 @@ pub async fn workflow_trigger(
 }
 
 pub async fn workflow_cancel(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<WorkflowControlRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
+    let caller_hex = super::caller_hex(&caller);
     let key = workflow_key(request.workflow_id);
+
+    let entry = workflows()?
+        .get(&key)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workflow not found".to_string())?;
+
+    if !entry.owner.is_empty() && !entry.owner.eq_ignore_ascii_case(&caller_hex) {
+        return Err(format!("Caller {caller_hex} does not own workflow {}", request.workflow_id));
+    }
 
     let found = workflows()?
         .update(&key, |entry| {

@@ -12,6 +12,9 @@ use crate::runtime::require_sidecar_auth;
 use crate::store::PersistentStore;
 use crate::util::now_ts;
 
+// Sidecar token in WorkflowTaskSpec is stored in the workflow JSON config
+// (not on-chain ABI). It's validated against the stored sandbox record.
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowEntry {
     pub id: u64,
@@ -23,6 +26,9 @@ pub struct WorkflowEntry {
     pub active: bool,
     pub next_run_at: Option<u64>,
     pub last_run_at: Option<u64>,
+    /// On-chain address of the caller who created this workflow.
+    #[serde(default)]
+    pub owner: String,
 }
 
 pub struct WorkflowExecution {
@@ -107,18 +113,35 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
     let spec: WorkflowTaskSpec = serde_json::from_str(entry.workflow_json.as_str())
         .map_err(|err| format!("workflow_json must be valid task JSON: {err}"))?;
 
-    let token = require_sidecar_token(spec.sidecar_token.as_deref().unwrap_or(""))?;
-    let _record = require_sidecar_auth(&spec.sidecar_url, &token)?;
+    // Look up token from sandbox record. Falls back to spec.sidecar_token for
+    // backward compat with workflows created before 2-phase provisioning.
+    let record = crate::runtime::get_sandbox_by_url(&spec.sidecar_url)?;
+    let token = record.token.clone();
+    if token.is_empty() {
+        // Legacy path: use token from workflow spec
+        let token_fallback = require_sidecar_token(spec.sidecar_token.as_deref().unwrap_or(""))?;
+        let _record = require_sidecar_auth(&spec.sidecar_url, &token_fallback)?;
+    }
 
+    // Session-per-tick: each execution gets a unique session so messages don't
+    // accumulate in a single session forever. The stored session_id acts as a
+    // prefix (e.g. "trading-bot123") and we append a timestamp suffix.
+    let session_id = match spec.session_id {
+        Some(ref base) if !base.is_empty() => {
+            format!("{}-{}", base, chrono::Utc::now().timestamp())
+        }
+        _ => String::new(),
+    };
+
+    let sidecar_url = spec.sidecar_url;
     let request = SandboxTaskRequest {
-        sidecar_url: spec.sidecar_url,
+        sidecar_url: sidecar_url.clone(),
         prompt: spec.prompt,
-        session_id: spec.session_id.unwrap_or_default(),
+        session_id,
         max_turns: spec.max_turns.unwrap_or(0),
         model: spec.model.unwrap_or_default(),
         context_json: spec.context_json.unwrap_or_default(),
         timeout_ms: spec.timeout_ms.unwrap_or(0),
-        sidecar_token: token,
     };
 
     // Resolve backend profile: prefer backend_profile_json, fall back to
@@ -134,7 +157,7 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
                 .map(|sp| json!({ "systemPrompt": sp }))
         });
 
-    let response = run_task_request_with_profile(&request, backend_profile.as_ref()).await?;
+    let response = run_task_request_with_profile(&request, &token, backend_profile.as_ref()).await?;
     let now = now_ts();
     let next_run_at = resolve_next_run(&entry.trigger_type, &entry.trigger_config, Some(now))?;
 
@@ -328,6 +351,7 @@ fn parse_workflow_config(
         active,
         next_run_at,
         last_run_at,
+        owner: String::new(), // On-chain workflows don't have a caller context
     })
 }
 

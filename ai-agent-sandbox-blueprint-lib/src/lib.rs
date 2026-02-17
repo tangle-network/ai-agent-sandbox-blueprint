@@ -78,6 +78,10 @@ sol! {
     }
 
     /// Sandbox create request.
+    ///
+    /// Note: `sidecar_token` is generated server-side and never appears in
+    /// on-chain calldata. Secrets (API keys, etc.) should be injected via the
+    /// operator API's 2-phase secret provisioning endpoint after creation.
     struct SandboxCreateRequest {
         string name;
         string image;
@@ -93,7 +97,6 @@ sol! {
         uint64 cpu_cores;
         uint64 memory_mb;
         uint64 disk_gb;
-        string sidecar_token;
     }
 
     /// Sandbox identifier request.
@@ -102,22 +105,26 @@ sol! {
     }
 
     /// Sandbox snapshot request.
+    ///
+    /// Auth: the on-chain `Caller` must own the sandbox at `sidecar_url`.
+    /// The sidecar token is looked up from the stored record.
     struct SandboxSnapshotRequest {
         string sidecar_url;
         string destination;
         bool include_workspace;
         bool include_state;
-        string sidecar_token;
     }
 
     /// Exec request for a sandbox sidecar.
+    ///
+    /// Auth: the on-chain `Caller` must own the sandbox at `sidecar_url`.
+    /// The sidecar token is looked up from the stored record.
     struct SandboxExecRequest {
         string sidecar_url;
         string command;
         string cwd;
         string env_json;
         uint64 timeout_ms;
-        string sidecar_token;
     }
 
     /// Exec response from sandbox sidecar.
@@ -128,6 +135,9 @@ sol! {
     }
 
     /// Prompt request for a sandbox sidecar.
+    ///
+    /// Auth: the on-chain `Caller` must own the sandbox at `sidecar_url`.
+    /// The sidecar token is looked up from the stored record.
     struct SandboxPromptRequest {
         string sidecar_url;
         string message;
@@ -135,7 +145,6 @@ sol! {
         string model;
         string context_json;
         uint64 timeout_ms;
-        string sidecar_token;
     }
 
     /// Prompt response from sandbox sidecar.
@@ -150,6 +159,9 @@ sol! {
     }
 
     /// Task request for a sandbox sidecar.
+    ///
+    /// Auth: the on-chain `Caller` must own the sandbox at `sidecar_url`.
+    /// The sidecar token is looked up from the stored record.
     struct SandboxTaskRequest {
         string sidecar_url;
         string prompt;
@@ -158,7 +170,6 @@ sol! {
         string model;
         string context_json;
         uint64 timeout_ms;
-        string sidecar_token;
     }
 
     /// Task response from sandbox sidecar.
@@ -182,9 +193,11 @@ sol! {
     }
 
     /// Batch task request.
+    ///
+    /// Auth: the on-chain `Caller` must own all sandboxes at `sidecar_urls`.
+    /// Sidecar tokens are looked up from stored records.
     struct BatchTaskRequest {
         string[] sidecar_urls;
-        string[] sidecar_tokens;
         string prompt;
         string session_id;
         uint64 max_turns;
@@ -196,9 +209,11 @@ sol! {
     }
 
     /// Batch exec request.
+    ///
+    /// Auth: the on-chain `Caller` must own all sandboxes at `sidecar_urls`.
+    /// Sidecar tokens are looked up from stored records.
     struct BatchExecRequest {
         string[] sidecar_urls;
-        string[] sidecar_tokens;
         string command;
         string cwd;
         string env_json;
@@ -226,19 +241,23 @@ sol! {
     }
 
     /// SSH provision request.
+    ///
+    /// Auth: the on-chain `Caller` must own the sandbox at `sidecar_url`.
+    /// The sidecar token is looked up from the stored record.
     struct SshProvisionRequest {
         string sidecar_url;
         string username;
         string public_key;
-        string sidecar_token;
     }
 
     /// SSH revoke request.
+    ///
+    /// Auth: the on-chain `Caller` must own the sandbox at `sidecar_url`.
+    /// The sidecar token is looked up from the stored record.
     struct SshRevokeRequest {
         string sidecar_url;
         string username;
         string public_key;
-        string sidecar_token;
     }
 }
 
@@ -260,8 +279,9 @@ impl From<&SandboxCreateRequest> for CreateSandboxParams {
             cpu_cores: r.cpu_cores,
             memory_mb: r.memory_mb,
             disk_gb: r.disk_gb,
-            sidecar_token: r.sidecar_token.to_string(),
+            owner: String::new(), // Set by the job handler from Caller extractor
             tee_config: None,
+            secrets_pending: false,
         }
     }
 }

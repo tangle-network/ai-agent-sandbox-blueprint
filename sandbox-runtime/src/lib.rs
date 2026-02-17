@@ -12,6 +12,7 @@ pub mod operator_api;
 pub mod provision_progress;
 pub mod reaper;
 pub mod runtime;
+pub mod secret_provisioning;
 pub mod session_auth;
 pub mod store;
 pub mod tee;

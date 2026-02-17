@@ -609,10 +609,9 @@ async fn blueprint_run_exec_with_cwd_and_env() {
         cwd: "/tmp".to_string(),
         env_json: r#"{"MY_VAR": "test123"}"#.to_string(),
         timeout_ms: 15000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = ai_agent_sandbox_blueprint_lib::run_exec_request(&request).await;
+    let result = ai_agent_sandbox_blueprint_lib::run_exec_request(&request, AUTH_TOKEN).await;
     match result {
         Ok(_) => {}
         Err(e) => panic!("should succeed: {e}"),
@@ -635,10 +634,9 @@ async fn blueprint_run_exec_request_works_against_real_sidecar() {
         cwd: String::new(),
         env_json: String::new(),
         timeout_ms: 15000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = ai_agent_sandbox_blueprint_lib::run_exec_request(&request).await;
+    let result = ai_agent_sandbox_blueprint_lib::run_exec_request(&request, AUTH_TOKEN).await;
 
     match result {
         Ok(resp) => {
@@ -667,10 +665,9 @@ async fn blueprint_run_exec_captures_exit_code() {
         cwd: String::new(),
         env_json: String::new(),
         timeout_ms: 15000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = ai_agent_sandbox_blueprint_lib::run_exec_request(&request).await;
+    let result = ai_agent_sandbox_blueprint_lib::run_exec_request(&request, AUTH_TOKEN).await;
 
     match result {
         Ok(resp) => {
@@ -830,10 +827,9 @@ async fn blueprint_run_prompt_reaches_real_sidecar() {
         model: String::new(),
         context_json: String::new(),
         timeout_ms: timeout,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = ai_agent_sandbox_blueprint_lib::run_prompt_request(&request).await;
+    let result = ai_agent_sandbox_blueprint_lib::run_prompt_request(&request, AUTH_TOKEN).await;
 
     match &result {
         Ok(resp) => {
@@ -1049,10 +1045,9 @@ async fn blueprint_run_task_request_reaches_real_sidecar() {
         model: String::new(),
         context_json: String::new(),
         timeout_ms: timeout,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = ai_agent_sandbox_blueprint_lib::run_task_request(&request).await;
+    let result = ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await;
 
     match &result {
         Ok(resp) => {
@@ -1520,10 +1515,9 @@ async fn ai_agent_prompt_returns_real_response() {
         model: String::new(),
         context_json: String::new(),
         timeout_ms: 60000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = ai_agent_sandbox_blueprint_lib::run_prompt_request(&request)
+    let result = ai_agent_sandbox_blueprint_lib::run_prompt_request(&request, AUTH_TOKEN)
         .await
         .expect("run_prompt_request should succeed with AI backend");
 
@@ -1558,10 +1552,9 @@ async fn ai_agent_task_with_session_continuity() {
         model: String::new(),
         context_json: String::new(),
         timeout_ms: 60000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result1 = ai_agent_sandbox_blueprint_lib::run_task_request(&request1)
+    let result1 = ai_agent_sandbox_blueprint_lib::run_task_request(&request1, AUTH_TOKEN)
         .await
         .expect("first task request should succeed");
 
@@ -1590,10 +1583,9 @@ async fn ai_agent_task_with_session_continuity() {
         model: String::new(),
         context_json: String::new(),
         timeout_ms: 60000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result2 = ai_agent_sandbox_blueprint_lib::run_task_request(&request2)
+    let result2 = ai_agent_sandbox_blueprint_lib::run_task_request(&request2, AUTH_TOKEN)
         .await
         .expect("second task request should succeed");
 
@@ -1632,10 +1624,9 @@ async fn ai_agent_task_with_max_turns() {
         model: String::new(),
         context_json: String::new(),
         timeout_ms: 60000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = ai_agent_sandbox_blueprint_lib::run_task_request(&request)
+    let result = ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN)
         .await
         .expect("task request should succeed");
 
@@ -1732,10 +1723,9 @@ async fn ai_agent_writes_and_runs_python_script() {
         model: String::new(),
         context_json: String::new(),
         timeout_ms: 240000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request).await {
+    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await {
         Ok(r) => r,
         Err(e) => {
             if e.contains("error sending request")
@@ -1815,10 +1805,9 @@ Install pandas with pip first if needed."#;
         model: String::new(),
         context_json: String::new(),
         timeout_ms: 240000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request).await {
+    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await {
         Ok(r) => r,
         Err(e) => {
             if e.contains("error sending request")
@@ -1969,10 +1958,9 @@ async fn ai_agent_full_workflow_install_code_execute() {
         model: String::new(),
         context_json: String::new(),
         timeout_ms: 240000,
-        sidecar_token: AUTH_TOKEN.to_string(),
     };
 
-    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request).await {
+    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await {
         Ok(r) => r,
         Err(e) => {
             if e.contains("error sending request")

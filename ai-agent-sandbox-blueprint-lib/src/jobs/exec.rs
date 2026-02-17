@@ -6,9 +6,8 @@ use crate::SandboxPromptRequest;
 use crate::SandboxPromptResponse;
 use crate::SandboxTaskRequest;
 use crate::SandboxTaskResponse;
-use crate::auth::require_sidecar_token;
 use crate::http::sidecar_post_json;
-use crate::runtime::require_sidecar_auth;
+use crate::runtime::require_sandbox_owner_by_url;
 use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 
 // ---------------------------------------------------------------------------
@@ -65,7 +64,13 @@ pub fn build_exec_payload(
 }
 
 /// Run an exec request against a sidecar. Callable from tests without Tangle extractors.
-pub async fn run_exec_request(request: &SandboxExecRequest) -> Result<SandboxExecResponse, String> {
+///
+/// The `sidecar_token` is passed explicitly rather than being part of the
+/// ABI struct, because tokens are never included in on-chain calldata.
+pub async fn run_exec_request(
+    request: &SandboxExecRequest,
+    sidecar_token: &str,
+) -> Result<SandboxExecResponse, String> {
     let payload = build_exec_payload(
         &request.command,
         &request.cwd,
@@ -76,7 +81,7 @@ pub async fn run_exec_request(request: &SandboxExecRequest) -> Result<SandboxExe
     let parsed = sidecar_post_json(
         &request.sidecar_url,
         "/terminals/commands",
-        &request.sidecar_token,
+        sidecar_token,
         Value::Object(payload),
     )
     .await
@@ -96,15 +101,13 @@ pub async fn run_exec_request(request: &SandboxExecRequest) -> Result<SandboxExe
 }
 
 pub async fn sandbox_exec(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<SandboxExecRequest>,
 ) -> Result<TangleResult<SandboxExecResponse>, String> {
-    let token = require_sidecar_token(&request.sidecar_token)?;
-    require_sidecar_auth(&request.sidecar_url, &token)?;
+    let caller_hex = super::caller_hex(&caller);
+    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
 
-    let mut request = request;
-    request.sidecar_token = token;
-    let response = run_exec_request(&request).await?;
+    let response = run_exec_request(&request, &record.token).await?;
     Ok(TangleResult(response))
 }
 
@@ -279,6 +282,7 @@ async fn call_agent(
 /// Run a prompt request against a sidecar. Callable from tests.
 pub async fn run_prompt_request(
     request: &SandboxPromptRequest,
+    sidecar_token: &str,
 ) -> Result<SandboxPromptResponse, String> {
     let payload = build_agent_payload(
         &request.message,
@@ -292,7 +296,7 @@ pub async fn run_prompt_request(
 
     let resp = call_agent(
         &request.sidecar_url,
-        &request.sidecar_token,
+        sidecar_token,
         payload,
         &request.session_id,
     )
@@ -310,15 +314,13 @@ pub async fn run_prompt_request(
 }
 
 pub async fn sandbox_prompt(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<SandboxPromptRequest>,
 ) -> Result<TangleResult<SandboxPromptResponse>, String> {
-    let token = require_sidecar_token(&request.sidecar_token)?;
-    require_sidecar_auth(&request.sidecar_url, &token)?;
+    let caller_hex = super::caller_hex(&caller);
+    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
 
-    let mut request = request;
-    request.sidecar_token = token;
-    let response = run_prompt_request(&request).await?;
+    let response = run_prompt_request(&request, &record.token).await?;
     Ok(TangleResult(response))
 }
 
@@ -327,8 +329,11 @@ pub async fn sandbox_prompt(
 // ---------------------------------------------------------------------------
 
 /// Run a task request against a sidecar. Callable from tests.
-pub async fn run_task_request(request: &SandboxTaskRequest) -> Result<SandboxTaskResponse, String> {
-    run_task_request_with_profile(request, None).await
+pub async fn run_task_request(
+    request: &SandboxTaskRequest,
+    sidecar_token: &str,
+) -> Result<SandboxTaskResponse, String> {
+    run_task_request_with_profile(request, sidecar_token, None).await
 }
 
 /// Run a task request with an optional system prompt that persists across the
@@ -337,12 +342,13 @@ pub async fn run_task_request(request: &SandboxTaskRequest) -> Result<SandboxTas
 /// This is a backward-compatible wrapper around `run_task_request_with_profile`.
 pub async fn run_task_request_with_system_prompt(
     request: &SandboxTaskRequest,
+    sidecar_token: &str,
     system_prompt: Option<&str>,
 ) -> Result<SandboxTaskResponse, String> {
     let profile = system_prompt
         .filter(|s| !s.is_empty())
         .map(system_prompt_to_profile);
-    run_task_request_with_profile(request, profile.as_ref()).await
+    run_task_request_with_profile(request, sidecar_token, profile.as_ref()).await
 }
 
 /// Run a task request with an optional full agent profile.
@@ -352,6 +358,7 @@ pub async fn run_task_request_with_system_prompt(
 /// `permission`, `memory`, and other sidecar profile fields.
 pub async fn run_task_request_with_profile(
     request: &SandboxTaskRequest,
+    sidecar_token: &str,
     backend_profile: Option<&Value>,
 ) -> Result<SandboxTaskResponse, String> {
     let mut extra = Map::new();
@@ -372,7 +379,7 @@ pub async fn run_task_request_with_profile(
 
     let resp = call_agent(
         &request.sidecar_url,
-        &request.sidecar_token,
+        sidecar_token,
         payload,
         &request.session_id,
     )
@@ -391,16 +398,13 @@ pub async fn run_task_request_with_profile(
 }
 
 pub async fn sandbox_task(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<SandboxTaskRequest>,
 ) -> Result<TangleResult<SandboxTaskResponse>, String> {
-    let token = require_sidecar_token(&request.sidecar_token)?;
-    require_sidecar_auth(&request.sidecar_url, &token)?;
+    let caller_hex = super::caller_hex(&caller);
+    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
 
-    let mut request = request;
-    request.sidecar_token = token;
-
-    let response = run_task_request(&request).await?;
+    let response = run_task_request(&request, &record.token).await?;
     Ok(TangleResult(response))
 }
 

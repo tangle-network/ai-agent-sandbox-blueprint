@@ -7,8 +7,7 @@ use crate::BatchExecRequest;
 use crate::BatchTaskRequest;
 use crate::CreateSandboxParams;
 use crate::JsonResponse;
-use crate::auth::require_sidecar_token;
-use crate::runtime::{create_sidecar, require_sidecar_auth};
+use crate::runtime::{create_sidecar, require_sandbox_owner_by_url};
 use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 use crate::jobs::exec::run_task_request;
 
@@ -16,7 +15,7 @@ use crate::jobs::exec::run_task_request;
 const MAX_BATCH_CONCURRENCY: usize = 10;
 
 pub async fn batch_create(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<BatchCreateRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
     if request.count == 0 {
@@ -29,13 +28,8 @@ pub async fn batch_create(
         ));
     }
 
-    if !request.template_request.sidecar_token.trim().is_empty() {
-        return Err(
-            "Batch create must not reuse sidecar_token; leave blank to auto-generate".to_string(),
-        );
-    }
-
-    let params = CreateSandboxParams::from(&request.template_request);
+    let mut params = CreateSandboxParams::from(&request.template_request);
+    params.owner = super::caller_hex(&caller);
     let mut sandboxes_out = Vec::with_capacity(request.count as usize);
     for _ in 0..request.count {
         let (record, _) = create_sidecar(&params, None).await?;
@@ -62,17 +56,15 @@ pub async fn batch_create(
 // ---------------------------------------------------------------------------
 
 pub async fn batch_task(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<BatchTaskRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
     if request.sidecar_urls.is_empty() {
         return Err("Batch task requires at least one sidecar_url".to_string());
     }
-    if request.sidecar_tokens.len() != request.sidecar_urls.len() {
-        return Err("Batch task requires one sidecar_token per sidecar_url".to_string());
-    }
 
-    let validated = validate_tokens(&request.sidecar_urls, &request.sidecar_tokens)?;
+    let caller_hex = super::caller_hex(&caller);
+    let validated = validate_urls_with_owner(&request.sidecar_urls, &caller_hex)?;
 
     let results = if request.parallel {
         let mut results = vec![Value::Null; validated.len()];
@@ -81,11 +73,12 @@ pub async fn batch_task(
 
         for (idx, (url, tok)) in validated.iter().enumerate() {
             let sem = sem.clone();
-            let req = make_task_request(url, tok, &request);
+            let req = make_task_request(url, &request);
             let url = url.clone();
+            let tok = tok.clone();
             set.spawn(async move {
                 let _permit = sem.acquire().await;
-                (idx, format_task_result(&url, run_task_request(&req).await))
+                (idx, format_task_result(&url, run_task_request(&req, &tok).await))
             });
         }
 
@@ -96,8 +89,8 @@ pub async fn batch_task(
     } else {
         let mut results = Vec::with_capacity(validated.len());
         for (url, tok) in &validated {
-            let req = make_task_request(url, tok, &request);
-            results.push(format_task_result(url, run_task_request(&req).await));
+            let req = make_task_request(url, &request);
+            results.push(format_task_result(url, run_task_request(&req, tok).await));
         }
         results
     };
@@ -107,7 +100,6 @@ pub async fn batch_task(
 
 fn make_task_request(
     sidecar_url: &str,
-    token: &str,
     request: &BatchTaskRequest,
 ) -> crate::SandboxTaskRequest {
     crate::SandboxTaskRequest {
@@ -118,7 +110,6 @@ fn make_task_request(
         model: request.model.to_string(),
         context_json: request.context_json.to_string(),
         timeout_ms: request.timeout_ms,
-        sidecar_token: token.to_string(),
     }
 }
 
@@ -151,17 +142,15 @@ fn format_task_result(
 // ---------------------------------------------------------------------------
 
 pub async fn batch_exec(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<BatchExecRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
     if request.sidecar_urls.is_empty() {
         return Err("Batch exec requires at least one sidecar_url".to_string());
     }
-    if request.sidecar_tokens.len() != request.sidecar_urls.len() {
-        return Err("Batch exec requires one sidecar_token per sidecar_url".to_string());
-    }
 
-    let validated = validate_tokens(&request.sidecar_urls, &request.sidecar_tokens)?;
+    let caller_hex = super::caller_hex(&caller);
+    let validated = validate_urls_with_owner(&request.sidecar_urls, &caller_hex)?;
 
     let results = if request.parallel {
         let mut results = vec![Value::Null; validated.len()];
@@ -267,13 +256,12 @@ pub async fn batch_collect(
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn validate_tokens(urls: &[String], tokens: &[String]) -> Result<Vec<(String, String)>, String> {
+/// Validate caller owns all sandboxes at the given URLs. Returns (url, token) pairs.
+fn validate_urls_with_owner(urls: &[String], caller: &str) -> Result<Vec<(String, String)>, String> {
     urls.iter()
-        .zip(tokens.iter())
-        .map(|(url, tok)| {
-            let token = require_sidecar_token(tok)?;
-            require_sidecar_auth(url, &token)?;
-            Ok((url.to_string(), token))
+        .map(|url| {
+            let record = require_sandbox_owner_by_url(url, caller)?;
+            Ok((url.to_string(), record.token))
         })
         .collect()
 }

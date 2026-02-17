@@ -224,9 +224,15 @@ pub fn exchange_signature_for_token(
     paseto_claims
         .add_additional("address", serde_json::json!(address))
         .map_err(|e| SandboxError::Auth(format!("Failed to add address claim: {e}")))?;
+    // Set issued-at using the standard PASETO iat claim
+    let iat_dt = time::OffsetDateTime::from_unix_timestamp(now as i64)
+        .map_err(|e| SandboxError::Auth(format!("Invalid issued-at timestamp: {e}")))?;
+    let iat_str = iat_dt
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|e| SandboxError::Auth(format!("Failed to format issued-at: {e}")))?;
     paseto_claims
-        .add_additional("iat", serde_json::json!(now))
-        .map_err(|e| SandboxError::Auth(format!("Failed to add iat claim: {e}")))?;
+        .issued_at(&iat_str)
+        .map_err(|e| SandboxError::Auth(format!("Failed to set iat claim: {e}")))?;
 
     // Set expiration
     let exp_dt = time::OffsetDateTime::from_unix_timestamp(expires_at as i64)
@@ -294,7 +300,9 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
 
     let iat = json
         .get("iat")
-        .and_then(|v| v.as_u64())
+        .and_then(|v| v.as_str())
+        .and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok())
+        .map(|dt| dt.unix_timestamp() as u64)
         .unwrap_or(0);
 
     // Parse expiration from PASETO standard "exp" field
@@ -334,6 +342,84 @@ pub fn extract_bearer_token(auth_header: &str) -> Option<&str> {
         .map(|t| t.trim())
 }
 
+// ---------------------------------------------------------------------------
+// Axum extractor — reusable across any blueprint's operator API
+// ---------------------------------------------------------------------------
+
+/// Axum extractor that validates the `Authorization: Bearer <token>` header
+/// and yields the authenticated wallet address.
+///
+/// Usage in handler:
+/// ```ignore
+/// async fn my_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse { ... }
+/// ```
+pub struct SessionAuth(pub String);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for SessionAuth {
+    type Rejection = (axum::http::StatusCode, String);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        let auth_header = parts
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "Missing Authorization header".to_string(),
+                )
+            })?;
+
+        let token = extract_bearer_token(auth_header).ok_or_else(|| {
+            (
+                axum::http::StatusCode::UNAUTHORIZED,
+                "Invalid Authorization header format".to_string(),
+            )
+        })?;
+
+        let claims = validate_session_token(token)
+            .map_err(|e| (axum::http::StatusCode::UNAUTHORIZED, e.to_string()))?;
+
+        Ok(SessionAuth(claims.address))
+    }
+}
+
+/// Create a session token for a given address without going through EIP-191 signing.
+/// Available in test builds and when the `test-utils` feature is enabled.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn create_test_token(address: &str) -> String {
+    let now = now_secs();
+    let expires_at = now + SESSION_TTL_SECS;
+
+    let claims = SessionClaims {
+        address: address.to_string(),
+        issued_at: now,
+        expires_at,
+    };
+
+    let mut paseto_claims = pasetors::claims::Claims::new().unwrap();
+    paseto_claims
+        .add_additional("address", serde_json::json!(address))
+        .unwrap();
+    let iat_dt = time::OffsetDateTime::from_unix_timestamp(now as i64).unwrap();
+    let iat_str = iat_dt
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    paseto_claims.issued_at(&iat_str).unwrap();
+    let exp_dt = time::OffsetDateTime::from_unix_timestamp(expires_at as i64).unwrap();
+    let exp_str = exp_dt
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    paseto_claims.expiration(&exp_str).unwrap();
+
+    let token = pasetors::local::encrypt(&*SYMMETRIC_KEY, &paseto_claims, None, None).unwrap();
+    SESSIONS.lock().unwrap().insert(token.clone(), claims);
+    token
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +438,155 @@ mod tests {
         // Should not be consumable again
         let msg2 = consume_challenge(&challenge.nonce);
         assert!(msg2.is_err());
+    }
+
+    #[test]
+    fn challenge_expiry() {
+        // Insert a challenge directly with an expired timestamp
+        let nonce = "expired-test-nonce".to_string();
+        let challenge = Challenge {
+            nonce: nonce.clone(),
+            message: "test message".into(),
+            expires_at: now_secs().saturating_sub(10), // 10 seconds in the past
+        };
+        CHALLENGES.lock().unwrap().insert(nonce.clone(), challenge);
+
+        let result = consume_challenge(&nonce);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("expired"), "Expected 'expired' in error: {err_msg}");
+    }
+
+    #[test]
+    fn eip191_roundtrip() {
+        use k256::ecdsa::SigningKey;
+
+        // Generate a test signing key
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        // Derive the expected Ethereum address
+        let pubkey_bytes = verifying_key.to_encoded_point(false);
+        let pubkey_uncompressed = &pubkey_bytes.as_bytes()[1..]; // skip 0x04
+        let address_hash = keccak256(pubkey_uncompressed);
+        let expected_address = format!("0x{}", hex::encode(&address_hash[12..]));
+
+        // Sign a message using EIP-191 personal_sign
+        let message = "test message for signing";
+        let prefixed = format!(
+            "\x19Ethereum Signed Message:\n{}{}",
+            message.len(),
+            message
+        );
+        let digest = keccak256(prefixed.as_bytes());
+
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(&digest)
+            .expect("signing failed");
+
+        // Build the 65-byte signature (r || s || v)
+        let mut sig_bytes = Vec::with_capacity(65);
+        sig_bytes.extend_from_slice(&signature.to_bytes());
+        sig_bytes.push(recovery_id.to_byte() + 27); // EIP-155 style v
+
+        let sig_hex = format!("0x{}", hex::encode(&sig_bytes));
+
+        // Verify
+        let recovered = verify_eip191_signature(message, &sig_hex).unwrap();
+        assert_eq!(recovered, expected_address);
+    }
+
+    #[test]
+    fn token_roundtrip() {
+        use k256::ecdsa::SigningKey;
+
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        // Derive expected address
+        let pubkey_bytes = verifying_key.to_encoded_point(false);
+        let pubkey_uncompressed = &pubkey_bytes.as_bytes()[1..];
+        let address_hash = keccak256(pubkey_uncompressed);
+        let expected_address = format!("0x{}", hex::encode(&address_hash[12..]));
+
+        // Step 1: Create challenge
+        let challenge = create_challenge();
+
+        // Step 2: Sign the challenge message
+        let prefixed = format!(
+            "\x19Ethereum Signed Message:\n{}{}",
+            challenge.message.len(),
+            challenge.message
+        );
+        let digest = keccak256(prefixed.as_bytes());
+
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(&digest)
+            .expect("signing failed");
+
+        let mut sig_bytes = Vec::with_capacity(65);
+        sig_bytes.extend_from_slice(&signature.to_bytes());
+        sig_bytes.push(recovery_id.to_byte() + 27);
+        let sig_hex = format!("0x{}", hex::encode(&sig_bytes));
+
+        // Step 3: Exchange for token
+        let session_token = exchange_signature_for_token(&challenge.nonce, &sig_hex).unwrap();
+        assert_eq!(session_token.address, expected_address);
+        assert!(session_token.token.starts_with("v4.local."));
+        assert!(session_token.expires_at > now_secs());
+
+        // Step 4: Validate the token
+        let claims = validate_session_token(&session_token.token).unwrap();
+        assert_eq!(claims.address, expected_address);
+        assert!(claims.expires_at > now_secs());
+    }
+
+    #[test]
+    fn token_expiry_is_detected() {
+        // Insert a session with an expired timestamp directly
+        let token = "v4.local.fake-expired-token".to_string();
+        let claims = SessionClaims {
+            address: "0xdeadbeef".into(),
+            issued_at: now_secs().saturating_sub(7200), // 2 hours ago
+            expires_at: now_secs().saturating_sub(3600), // 1 hour ago (expired)
+        };
+        SESSIONS.lock().unwrap().insert(token.clone(), claims);
+
+        // Server-side check should detect expiry
+        let result = validate_session_token(&token);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn gc_sessions_cleans_expired() {
+        // Insert an expired challenge
+        let expired_nonce = format!("gc-test-{}", now_secs());
+        CHALLENGES.lock().unwrap().insert(
+            expired_nonce.clone(),
+            Challenge {
+                nonce: expired_nonce.clone(),
+                message: "expired".into(),
+                expires_at: now_secs().saturating_sub(1),
+            },
+        );
+
+        // Insert an expired session
+        let expired_token = format!("gc-session-{}", now_secs());
+        SESSIONS.lock().unwrap().insert(
+            expired_token.clone(),
+            SessionClaims {
+                address: "0x1234".into(),
+                issued_at: now_secs().saturating_sub(7200),
+                expires_at: now_secs().saturating_sub(1),
+            },
+        );
+
+        // Run GC
+        gc_sessions();
+
+        // Expired entries should be gone
+        assert!(!CHALLENGES.lock().unwrap().contains_key(&expired_nonce));
+        assert!(!SESSIONS.lock().unwrap().contains_key(&expired_token));
     }
 
     #[test]

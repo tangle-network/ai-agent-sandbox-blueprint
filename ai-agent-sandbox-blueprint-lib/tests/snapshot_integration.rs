@@ -156,7 +156,6 @@ async fn create_test_sandbox() -> SandboxRecord {
         cpu_cores: 0,
         memory_mb: 0,
         disk_gb: 0,
-        sidecar_token: String::new(),
     };
     create_sidecar(&CreateSandboxParams::from(&request), None)
         .await
@@ -182,7 +181,6 @@ async fn create_test_sandbox_with_destination(dest: &str) -> SandboxRecord {
         cpu_cores: 0,
         memory_mb: 0,
         disk_gb: 0,
-        sidecar_token: String::new(),
     };
     create_sidecar(&CreateSandboxParams::from(&request), None)
         .await
@@ -804,6 +802,13 @@ async fn tiered_gc_cold_to_gone_real() {
         snapshot_destination: None, // operator-managed (not user BYOS3)
         tee_deployment_id: None,
         tee_metadata_json: None,
+        name: String::new(),
+        agent_identifier: String::new(),
+        metadata_json: String::new(),
+        disk_gb: 0,
+        stack: String::new(),
+        owner: String::new(),
+        secrets_configured: false,
     };
 
     sandboxes()
@@ -893,6 +898,13 @@ async fn user_byos3_never_deleted_by_gc() {
         snapshot_destination: Some(user_dest.clone()), // user BYOS3
         tee_deployment_id: None,
         tee_metadata_json: None,
+        name: String::new(),
+        agent_identifier: String::new(),
+        metadata_json: String::new(),
+        disk_gb: 0,
+        stack: String::new(),
+        owner: String::new(),
+        secrets_configured: false,
     };
 
     sandboxes()

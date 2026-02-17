@@ -71,6 +71,13 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 snapshot_destination: None,
                 tee_deployment_id: None,
                 tee_metadata_json: None,
+                name: String::new(),
+                agent_identifier: String::new(),
+                metadata_json: String::new(),
+                disk_gb: 0,
+                stack: String::new(),
+                owner: String::new(),
+                secrets_configured: false,
             },
         )
         .unwrap();
@@ -743,6 +750,13 @@ mod instance_state_tests {
             snapshot_destination: None,
             tee_deployment_id: None,
             tee_metadata_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            secrets_configured: false,
         };
 
         set_instance_sandbox(record).unwrap();
@@ -782,6 +796,13 @@ mod instance_state_tests {
             snapshot_destination: None,
             tee_deployment_id: None,
             tee_metadata_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            secrets_configured: false,
         };
 
         set_instance_sandbox(record).unwrap();
@@ -998,8 +1019,6 @@ mod conversion_tests {
         assert!(params.ssh_enabled);
         assert_eq!(params.cpu_cores, 4);
         assert_eq!(params.memory_mb, 8192);
-        assert_eq!(params.sidecar_token, "my-token");
-
         let tee = params.tee_config.unwrap();
         assert!(tee.required);
         assert!(matches!(tee.tee_type, TeeType::Sgx));

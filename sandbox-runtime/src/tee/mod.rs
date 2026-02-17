@@ -77,12 +77,13 @@ impl TeeDeployParams {
         params: &crate::runtime::CreateSandboxParams,
         container_port: u16,
         ssh_port: u16,
+        token: &str,
     ) -> Self {
         let mut env_vars = vec![
             ("SIDECAR_PORT".to_string(), container_port.to_string()),
             (
                 "SIDECAR_AUTH_TOKEN".to_string(),
-                params.sidecar_token.clone(),
+                token.to_string(),
             ),
         ];
 
@@ -116,7 +117,7 @@ impl TeeDeployParams {
             } else {
                 None
             },
-            sidecar_token: params.sidecar_token.clone(),
+            sidecar_token: token.to_string(),
         }
     }
 }

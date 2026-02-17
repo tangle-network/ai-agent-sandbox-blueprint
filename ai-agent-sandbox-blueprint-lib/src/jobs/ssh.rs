@@ -3,9 +3,8 @@ use serde_json::{Value, json};
 use crate::JsonResponse;
 use crate::SshProvisionRequest;
 use crate::SshRevokeRequest;
-use crate::auth::require_sidecar_token;
 use crate::http::sidecar_post_json;
-use crate::runtime::require_sidecar_auth;
+use crate::runtime::require_sandbox_owner_by_url;
 use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 use crate::util::{normalize_username, shell_escape};
 
@@ -41,23 +40,21 @@ fi"
 }
 
 pub async fn ssh_provision(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<SshProvisionRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
-    let token = require_sidecar_token(&request.sidecar_token)?;
-    require_sidecar_auth(&request.sidecar_url, &token)?;
+    let caller_hex = super::caller_hex(&caller);
+    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
 
     let response = provision_key(
         &request.sidecar_url,
         &request.username,
         &request.public_key,
-        &token,
+        &record.token,
     )
     .await?;
 
-    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(&request.sidecar_url) {
-        crate::runtime::touch_sandbox(&record.id);
-    }
+    crate::runtime::touch_sandbox(&record.id);
 
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),
@@ -80,23 +77,21 @@ pub async fn revoke_key(
 }
 
 pub async fn ssh_revoke(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<SshRevokeRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
-    let token = require_sidecar_token(&request.sidecar_token)?;
-    require_sidecar_auth(&request.sidecar_url, &token)?;
+    let caller_hex = super::caller_hex(&caller);
+    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
 
     let response = revoke_key(
         &request.sidecar_url,
         &request.username,
         &request.public_key,
-        &token,
+        &record.token,
     )
     .await?;
 
-    if let Some(record) = crate::runtime::get_sandbox_by_url_opt(&request.sidecar_url) {
-        crate::runtime::touch_sandbox(&record.id);
-    }
+    crate::runtime::touch_sandbox(&record.id);
 
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),

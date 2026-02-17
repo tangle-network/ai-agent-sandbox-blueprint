@@ -19,11 +19,17 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 anyhow = "1"
+axum = "0.8"
 blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", branch = "main" }
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
 futures = "0.3"
 futures-util = "0.3"
+hex = "0.4"
+k256 = { version = "0.13", features = ["ecdsa"] }
+rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tempfile = "3"
+tiny-keccak = { version = "2", features = ["keccak"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = "0.3"
 wiremock = "0.6"

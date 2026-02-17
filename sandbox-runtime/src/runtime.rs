@@ -12,7 +12,6 @@ use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio::sync::OnceCell as AsyncOnceCell;
 
-use crate::auth::token_from_request;
 use crate::error::{Result, SandboxError};
 use crate::util::{merge_metadata, parse_json_object};
 use crate::{DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SSH_PORT};
@@ -21,6 +20,11 @@ use crate::{DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SS
 ///
 /// Blueprint-specific job handlers convert their ABI types into this struct
 /// before calling `create_sidecar`.
+///
+/// The sidecar auth token is **always generated server-side** and never
+/// included in on-chain calldata. Use the `token_override` parameter on
+/// `create_sidecar` when recreating a container that needs to keep its
+/// existing token.
 #[derive(Clone, Debug, Default)]
 pub struct CreateSandboxParams {
     pub name: String,
@@ -37,10 +41,15 @@ pub struct CreateSandboxParams {
     pub cpu_cores: u64,
     pub memory_mb: u64,
     pub disk_gb: u64,
-    pub sidecar_token: String,
+    /// On-chain caller address (hex string, e.g. "0x1234..."). Set by the job
+    /// handler from the `Caller` extractor so that ownership can be enforced.
+    pub owner: String,
     /// Optional TEE configuration. When set with `required: true`, the runtime
     /// must provision the sandbox inside a trusted execution environment.
     pub tee_config: Option<crate::tee::TeeConfig>,
+    /// When true, the sandbox is created but awaiting phase-2 secret injection
+    /// before it's considered fully operational.
+    pub secrets_pending: bool,
 }
 
 /// Runtime configuration loaded once at startup from environment variables.
@@ -238,6 +247,24 @@ pub struct SandboxRecord {
     /// Opaque backend metadata JSON for TEE sandboxes.
     #[serde(default)]
     pub tee_metadata_json: Option<String>,
+    // ── Creation params preserved for recreation ──────────────────────────
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub agent_identifier: String,
+    #[serde(default)]
+    pub metadata_json: String,
+    #[serde(default)]
+    pub disk_gb: u64,
+    #[serde(default)]
+    pub stack: String,
+    /// On-chain address of the caller who created this sandbox. Used for
+    /// ownership checks — only the owner may stop, resume, or delete a sandbox.
+    #[serde(default)]
+    pub owner: String,
+    /// Whether secrets have been injected via 2-phase secret provisioning.
+    #[serde(default)]
+    pub secrets_configured: bool,
 }
 
 use crate::store::PersistentStore;
@@ -310,6 +337,45 @@ pub fn get_sandbox_by_url_opt(sidecar_url: &str) -> Option<SandboxRecord> {
     })
 }
 
+/// Validate that `caller` owns the sandbox, returning the record on success.
+pub fn require_sandbox_owner(sandbox_id: &str, caller: &str) -> Result<SandboxRecord> {
+    let record = get_sandbox_by_id(sandbox_id)?;
+    if record.owner.is_empty() || record.owner.eq_ignore_ascii_case(caller) {
+        Ok(record)
+    } else {
+        Err(SandboxError::Auth(format!(
+            "Caller {caller} does not own sandbox '{sandbox_id}'"
+        )))
+    }
+}
+
+/// Validate that `caller` owns the sandbox at `sidecar_url` AND the token matches.
+pub fn require_sidecar_owner_auth(sidecar_url: &str, token: &str, caller: &str) -> Result<SandboxRecord> {
+    let record = require_sidecar_auth(sidecar_url, token)?;
+    if record.owner.is_empty() || record.owner.eq_ignore_ascii_case(caller) {
+        Ok(record)
+    } else {
+        Err(SandboxError::Auth(format!(
+            "Caller {caller} does not own sandbox at '{sidecar_url}'"
+        )))
+    }
+}
+
+/// Validate that `caller` owns the sandbox at `sidecar_url` (no token required).
+///
+/// Used by job handlers where the on-chain `Caller` extractor provides auth and
+/// the sidecar token is looked up from the stored `SandboxRecord`.
+pub fn require_sandbox_owner_by_url(sidecar_url: &str, caller: &str) -> Result<SandboxRecord> {
+    let record = get_sandbox_by_url(sidecar_url)?;
+    if record.owner.is_empty() || record.owner.eq_ignore_ascii_case(caller) {
+        Ok(record)
+    } else {
+        Err(SandboxError::Auth(format!(
+            "Caller {caller} does not own sandbox at '{sidecar_url}'"
+        )))
+    }
+}
+
 /// Validate sidecar token using constant-time comparison to prevent timing attacks.
 pub fn require_sidecar_auth(sidecar_url: &str, token: &str) -> Result<SandboxRecord> {
     let record = get_sandbox_by_url(sidecar_url)?;
@@ -337,9 +403,23 @@ async fn ensure_image_pulled(builder: &DockerBuilder, image: &str) -> Result<()>
     Ok(())
 }
 
+/// Create a new sandbox container.
+///
+/// `token_override`: when `Some`, uses the given token instead of generating
+/// a new one. Used by `recreate_sidecar_with_env` to preserve the original
+/// token across container re-creation.
 pub async fn create_sidecar(
     request: &CreateSandboxParams,
     tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
+    create_sidecar_with_token(request, tee, None).await
+}
+
+/// Internal: create sidecar with optional token override.
+async fn create_sidecar_with_token(
+    request: &CreateSandboxParams,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+    token_override: Option<&str>,
 ) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
     // Route to TEE backend if TEE is required.
     if let Some(config) = &request.tee_config {
@@ -347,26 +427,31 @@ pub async fn create_sidecar(
             let backend = tee.ok_or_else(|| {
                 SandboxError::Validation("TEE required but no backend configured".into())
             })?;
-            return create_sidecar_tee(request, backend).await;
+            return create_sidecar_tee(request, backend, token_override).await;
         }
     }
     // Default Docker path.
-    create_sidecar_docker(request).await.map(|r| (r, None))
+    create_sidecar_docker(request, token_override).await.map(|r| (r, None))
 }
 
 async fn create_sidecar_tee(
     request: &CreateSandboxParams,
     backend: &dyn crate::tee::TeeBackend,
+    token_override: Option<&str>,
 ) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
     let config = SidecarRuntimeConfig::load();
     let sandbox_id = next_sandbox_id();
-    let token = token_from_request(&request.sidecar_token);
+    let token = match token_override {
+        Some(t) if !t.trim().is_empty() => t.to_string(),
+        _ => crate::auth::generate_token(),
+    };
 
     let tee_params = crate::tee::TeeDeployParams::from_sandbox_params(
         &sandbox_id,
         request,
         config.container_port,
         config.ssh_port,
+        &token,
     );
 
     let deployment = backend.deploy(&tee_params).await?;
@@ -399,6 +484,13 @@ async fn create_sidecar_tee(
         snapshot_destination: None,
         tee_deployment_id: Some(deployment.deployment_id),
         tee_metadata_json: Some(deployment.metadata_json),
+        name: request.name.clone(),
+        agent_identifier: request.agent_identifier.clone(),
+        metadata_json: request.metadata_json.clone(),
+        disk_gb: request.disk_gb,
+        stack: request.stack.clone(),
+        owner: request.owner.clone(),
+        secrets_configured: false,
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
@@ -407,23 +499,22 @@ async fn create_sidecar_tee(
     Ok((record, Some(deployment.attestation)))
 }
 
-async fn create_sidecar_docker(request: &CreateSandboxParams) -> Result<SandboxRecord> {
-    let config = SidecarRuntimeConfig::load();
-    let builder = docker_builder().await?;
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared Docker helpers — used by create, snapshot-resume, and S3-restore paths
+// ─────────────────────────────────────────────────────────────────────────────
 
-    ensure_image_pulled(builder, &config.image).await?;
-
-    let sandbox_id = next_sandbox_id();
-    let token = token_from_request(&request.sidecar_token);
-    let container_name = format!("sidecar-{sandbox_id}");
-
-    let mut env_vars = Vec::new();
-    env_vars.push(format!("SIDECAR_PORT={}", config.container_port));
-    env_vars.push(format!("SIDECAR_AUTH_TOKEN={token}"));
-
-    if !request.env_json.trim().is_empty() {
-        let env_map = parse_json_object(&request.env_json, "env_json")?;
-        if let Some(Value::Object(map)) = env_map {
+/// Build the `Vec<String>` of `KEY=VALUE` env vars for a Docker container.
+fn build_env_vars(
+    env_json: &str,
+    token: &str,
+    container_port: u16,
+) -> Result<Vec<String>> {
+    let mut env_vars = vec![
+        format!("SIDECAR_PORT={container_port}"),
+        format!("SIDECAR_AUTH_TOKEN={token}"),
+    ];
+    if !env_json.trim().is_empty() {
+        if let Some(Value::Object(map)) = parse_json_object(env_json, "env_json")? {
             for (key, value) in map {
                 let val = match value {
                     Value::String(v) => v,
@@ -435,7 +526,18 @@ async fn create_sidecar_docker(request: &CreateSandboxParams) -> Result<SandboxR
             }
         }
     }
+    Ok(env_vars)
+}
 
+/// Build the Docker container config override with port bindings, exposed ports,
+/// and resource constraints (CPU, memory).
+fn build_docker_config(
+    config: &SidecarRuntimeConfig,
+    ssh_enabled: bool,
+    cpu_cores: u64,
+    memory_mb: u64,
+    labels: Option<HashMap<String, String>>,
+) -> BollardConfig<String> {
     let mut port_bindings = PortMap::new();
     port_bindings.insert(
         format!("{}/tcp", config.container_port),
@@ -444,8 +546,7 @@ async fn create_sidecar_docker(request: &CreateSandboxParams) -> Result<SandboxR
             host_port: None,
         }]),
     );
-
-    if request.ssh_enabled {
+    if ssh_enabled {
         port_bindings.insert(
             format!("{}/tcp", config.ssh_port),
             Some(vec![PortBinding {
@@ -457,9 +558,46 @@ async fn create_sidecar_docker(request: &CreateSandboxParams) -> Result<SandboxR
 
     let mut exposed_ports = HashMap::new();
     exposed_ports.insert(format!("{}/tcp", config.container_port), HashMap::new());
-    if request.ssh_enabled {
+    if ssh_enabled {
         exposed_ports.insert(format!("{}/tcp", config.ssh_port), HashMap::new());
     }
+
+    let mut host_config = HostConfig {
+        port_bindings: Some(port_bindings),
+        ..Default::default()
+    };
+    if cpu_cores > 0 {
+        host_config.nano_cpus = Some((cpu_cores as i64) * 1_000_000_000);
+    }
+    if memory_mb > 0 {
+        host_config.memory = Some((memory_mb as i64) * 1024 * 1024);
+    }
+
+    BollardConfig {
+        exposed_ports: Some(exposed_ports),
+        host_config: Some(host_config),
+        labels,
+        ..Default::default()
+    }
+}
+
+async fn create_sidecar_docker(
+    request: &CreateSandboxParams,
+    token_override: Option<&str>,
+) -> Result<SandboxRecord> {
+    let config = SidecarRuntimeConfig::load();
+    let builder = docker_builder().await?;
+
+    ensure_image_pulled(builder, &config.image).await?;
+
+    let sandbox_id = next_sandbox_id();
+    let token = match token_override {
+        Some(t) if !t.trim().is_empty() => t.to_string(),
+        _ => crate::auth::generate_token(),
+    };
+    let container_name = format!("sidecar-{sandbox_id}");
+
+    let env_vars = build_env_vars(&request.env_json, &token, config.container_port)?;
 
     let metadata = parse_json_object(&request.metadata_json, "metadata_json")?;
     // Extract snapshot_destination before metadata is consumed by merge/labels
@@ -478,28 +616,13 @@ async fn create_sidecar_docker(request: &CreateSandboxParams) -> Result<SandboxR
         _ => None,
     };
 
-    // Build resource constraints from request
-    let mut host_config = HostConfig {
-        port_bindings: Some(port_bindings),
-        ..Default::default()
-    };
-
-    if request.cpu_cores > 0 {
-        // Docker expects NanoCPUs (1 core = 1_000_000_000 nanoCPUs)
-        host_config.nano_cpus = Some((request.cpu_cores as i64) * 1_000_000_000);
-    }
-
-    if request.memory_mb > 0 {
-        // Docker expects bytes
-        host_config.memory = Some((request.memory_mb as i64) * 1024 * 1024);
-    }
-
-    let override_config = BollardConfig {
-        exposed_ports: Some(exposed_ports),
-        host_config: Some(host_config),
+    let override_config = build_docker_config(
+        &config,
+        request.ssh_enabled,
+        request.cpu_cores,
+        request.memory_mb,
         labels,
-        ..Default::default()
-    };
+    );
 
     let mut container = Container::new(builder.client(), config.image.clone())
         .with_name(container_name)
@@ -554,6 +677,13 @@ async fn create_sidecar_docker(request: &CreateSandboxParams) -> Result<SandboxR
         snapshot_destination,
         tee_deployment_id: None,
         tee_metadata_json: None,
+        name: request.name.clone(),
+        agent_identifier: request.agent_identifier.clone(),
+        metadata_json: request.metadata_json.clone(),
+        disk_gb: request.disk_gb,
+        stack: request.stack.clone(),
+        owner: request.owner.clone(),
+        secrets_configured: false,
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
@@ -685,8 +815,8 @@ pub async fn delete_sidecar(
 ///
 /// Stops and removes the old container, creates a new one with the
 /// provided `new_env_json`, and updates the persistent record.
-/// All other settings (CPU, memory, lifetime, token, etc.) are preserved
-/// from the existing record.
+/// All other settings (image, CPU, memory, lifetime, token, agent identifier,
+/// metadata, etc.) are faithfully preserved from the existing record.
 ///
 /// Returns the new [`SandboxRecord`] for the recreated container.
 pub async fn recreate_sidecar_with_env(
@@ -703,33 +833,36 @@ pub async fn recreate_sidecar_with_env(
     delete_sidecar(&old, tee).await?;
     sandboxes()?.remove(sandbox_id)?;
 
-    // Rebuild creation params from the old record + new env
+    // Rebuild creation params faithfully from the stored record + new env
     let image = if old.original_image.is_empty() {
         env::var("SIDECAR_IMAGE").unwrap_or_else(|_| DEFAULT_SIDECAR_IMAGE.to_string())
     } else {
         old.original_image.clone()
     };
 
+    let old_token = old.token.clone();
     let params = CreateSandboxParams {
-        name: sandbox_id.to_string(), // reuse sandbox id as name seed
+        name: old.name.clone(),
         image,
-        stack: String::new(),
-        agent_identifier: String::new(),
+        stack: old.stack.clone(),
+        agent_identifier: old.agent_identifier.clone(),
         env_json: new_env_json.to_string(),
-        metadata_json: String::new(),
+        metadata_json: old.metadata_json.clone(),
         ssh_enabled: old.ssh_port.is_some(),
-        ssh_public_key: String::new(),
+        ssh_public_key: String::new(), // SSH keys are one-time setup, not stored
         web_terminal_enabled: false,
         max_lifetime_seconds: old.max_lifetime_seconds,
         idle_timeout_seconds: old.idle_timeout_seconds,
         cpu_cores: old.cpu_cores,
         memory_mb: old.memory_mb,
-        disk_gb: 10,
-        sidecar_token: old.token.clone(), // preserve the existing token
+        disk_gb: if old.disk_gb > 0 { old.disk_gb } else { 10 },
+        owner: old.owner.clone(),
         tee_config: None,
+        secrets_pending: false,
     };
 
-    let (new_record, _attestation) = create_sidecar(&params, tee).await?;
+    // Preserve the original token so existing workflows/references keep working.
+    let (new_record, _attestation) = create_sidecar_with_token(&params, tee, Some(&old_token)).await?;
     Ok(new_record)
 }
 
@@ -793,68 +926,11 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .as_deref()
         .ok_or_else(|| SandboxError::Docker("No snapshot image available".into()))?;
 
-    let mut env_vars = Vec::new();
-    env_vars.push(format!("SIDECAR_PORT={}", config.container_port));
-    env_vars.push(format!("SIDECAR_AUTH_TOKEN={}", record.token));
-
-    if !record.env_json.trim().is_empty() {
-        if let Ok(Some(Value::Object(map))) =
-            crate::util::parse_json_object(&record.env_json, "env_json")
-        {
-            for (key, value) in map {
-                let val = match value {
-                    Value::String(v) => v,
-                    Value::Number(v) => v.to_string(),
-                    Value::Bool(v) => v.to_string(),
-                    _ => continue,
-                };
-                env_vars.push(format!("{key}={val}"));
-            }
-        }
-    }
-
-    let mut port_bindings = PortMap::new();
-    port_bindings.insert(
-        format!("{}/tcp", config.container_port),
-        Some(vec![PortBinding {
-            host_ip: Some("0.0.0.0".to_string()),
-            host_port: None,
-        }]),
-    );
     let ssh_enabled = record.ssh_port.is_some();
-    if ssh_enabled {
-        port_bindings.insert(
-            format!("{}/tcp", config.ssh_port),
-            Some(vec![PortBinding {
-                host_ip: Some("0.0.0.0".to_string()),
-                host_port: None,
-            }]),
-        );
-    }
-
-    let mut exposed_ports = HashMap::new();
-    exposed_ports.insert(format!("{}/tcp", config.container_port), HashMap::new());
-    if ssh_enabled {
-        exposed_ports.insert(format!("{}/tcp", config.ssh_port), HashMap::new());
-    }
-
-    let mut host_config = HostConfig {
-        port_bindings: Some(port_bindings),
-        ..Default::default()
-    };
-    if record.cpu_cores > 0 {
-        host_config.nano_cpus = Some((record.cpu_cores as i64) * 1_000_000_000);
-    }
-    if record.memory_mb > 0 {
-        host_config.memory = Some((record.memory_mb as i64) * 1024 * 1024);
-    }
-
-    let override_config = BollardConfig {
-        exposed_ports: Some(exposed_ports),
-        host_config: Some(host_config),
-        labels: None,
-        ..Default::default()
-    };
+    let env_vars = build_env_vars(&record.env_json, &record.token, config.container_port)?;
+    let override_config = build_docker_config(
+        &config, ssh_enabled, record.cpu_cores, record.memory_mb, None,
+    );
 
     let container_name = format!("sidecar-{}-warm", record.id);
     let mut container = Container::new(builder.client(), image_id.to_string())
@@ -914,68 +990,11 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
 
     ensure_image_pulled(builder, image).await?;
 
-    let mut env_vars = Vec::new();
-    env_vars.push(format!("SIDECAR_PORT={}", config.container_port));
-    env_vars.push(format!("SIDECAR_AUTH_TOKEN={}", record.token));
-
-    if !record.env_json.trim().is_empty() {
-        if let Ok(Some(Value::Object(map))) =
-            crate::util::parse_json_object(&record.env_json, "env_json")
-        {
-            for (key, value) in map {
-                let val = match value {
-                    Value::String(v) => v,
-                    Value::Number(v) => v.to_string(),
-                    Value::Bool(v) => v.to_string(),
-                    _ => continue,
-                };
-                env_vars.push(format!("{key}={val}"));
-            }
-        }
-    }
-
-    let mut port_bindings = PortMap::new();
-    port_bindings.insert(
-        format!("{}/tcp", config.container_port),
-        Some(vec![PortBinding {
-            host_ip: Some("0.0.0.0".to_string()),
-            host_port: None,
-        }]),
-    );
     let ssh_enabled = record.ssh_port.is_some();
-    if ssh_enabled {
-        port_bindings.insert(
-            format!("{}/tcp", config.ssh_port),
-            Some(vec![PortBinding {
-                host_ip: Some("0.0.0.0".to_string()),
-                host_port: None,
-            }]),
-        );
-    }
-
-    let mut exposed_ports = HashMap::new();
-    exposed_ports.insert(format!("{}/tcp", config.container_port), HashMap::new());
-    if ssh_enabled {
-        exposed_ports.insert(format!("{}/tcp", config.ssh_port), HashMap::new());
-    }
-
-    let mut host_config = HostConfig {
-        port_bindings: Some(port_bindings),
-        ..Default::default()
-    };
-    if record.cpu_cores > 0 {
-        host_config.nano_cpus = Some((record.cpu_cores as i64) * 1_000_000_000);
-    }
-    if record.memory_mb > 0 {
-        host_config.memory = Some((record.memory_mb as i64) * 1024 * 1024);
-    }
-
-    let override_config = BollardConfig {
-        exposed_ports: Some(exposed_ports),
-        host_config: Some(host_config),
-        labels: None,
-        ..Default::default()
-    };
+    let env_vars = build_env_vars(&record.env_json, &record.token, config.container_port)?;
+    let override_config = build_docker_config(
+        &config, ssh_enabled, record.cpu_cores, record.memory_mb, None,
+    );
 
     let container_name = format!("sidecar-{}-cold", record.id);
     let mut container = Container::new(builder.client(), image.to_string())

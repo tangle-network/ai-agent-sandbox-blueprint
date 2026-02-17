@@ -246,8 +246,9 @@ impl From<&ProvisionRequest> for CreateSandboxParams {
             cpu_cores: r.cpu_cores,
             memory_mb: r.memory_mb,
             disk_gb: r.disk_gb,
-            sidecar_token: r.sidecar_token.to_string(),
+            owner: String::new(), // Set by the job handler from Caller extractor
             tee_config,
+            secrets_pending: false,
         }
     }
 }
