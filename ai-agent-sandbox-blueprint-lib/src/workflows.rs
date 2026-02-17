@@ -7,14 +7,10 @@ use std::str::FromStr;
 
 use crate::SandboxTaskRequest;
 use crate::auth::require_sidecar_token;
+use crate::jobs::exec::run_task_request_with_profile;
 use crate::runtime::require_sidecar_auth;
 use crate::store::PersistentStore;
-// Re-export now_ts from sandbox-runtime so existing callers of
-// `workflows::now_ts` keep working.
-pub use crate::util::now_ts;
-
-// Re-export so callers that import from workflows still work.
-pub use crate::jobs::exec::run_task_request;
+use crate::util::now_ts;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowEntry {
@@ -51,6 +47,14 @@ pub struct WorkflowTaskSpec {
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub sidecar_token: Option<String>,
+    /// Legacy: plain system prompt string. Superseded by `backend_profile_json`.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    /// Full agent profile JSON (serialized). When set, takes priority over
+    /// `system_prompt`. Contains `resources.instructions`, `permission`,
+    /// `memory`, etc.
+    #[serde(default)]
+    pub backend_profile_json: Option<String>,
 }
 
 static WORKFLOWS: once_cell::sync::OnceCell<PersistentStore<WorkflowEntry>> =
@@ -117,7 +121,20 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
         sidecar_token: token,
     };
 
-    let response = run_task_request(&request).await?;
+    // Resolve backend profile: prefer backend_profile_json, fall back to
+    // legacy system_prompt wrapped as a profile.
+    let backend_profile: Option<Value> = spec
+        .backend_profile_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .or_else(|| {
+            spec.system_prompt
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|sp| json!({ "systemPrompt": sp }))
+        });
+
+    let response = run_task_request_with_profile(&request, backend_profile.as_ref()).await?;
     let now = now_ts();
     let next_run_at = resolve_next_run(&entry.trigger_type, &entry.trigger_config, Some(now))?;
 

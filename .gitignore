@@ -39,3 +39,8 @@ dependencies/
 # Runtime state (test artifacts)
 blueprint-state/
 **/blueprint-state/
+
+# UI build artifacts
+ui/build/
+ui/.react-router/
+ui/node_modules/

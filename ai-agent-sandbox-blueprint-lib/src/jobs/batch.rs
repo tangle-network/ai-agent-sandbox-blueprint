@@ -10,7 +10,7 @@ use crate::JsonResponse;
 use crate::auth::require_sidecar_token;
 use crate::runtime::{create_sidecar, require_sidecar_auth};
 use crate::tangle::extract::{Caller, TangleArg, TangleResult};
-use crate::workflows::run_task_request;
+use crate::jobs::exec::run_task_request;
 
 /// Maximum number of concurrent operations in parallel batch execution.
 const MAX_BATCH_CONCURRENCY: usize = 10;

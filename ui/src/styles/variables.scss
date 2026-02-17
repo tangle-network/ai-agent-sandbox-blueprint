@@ -1,0 +1,193 @@
+/*
+ * TANGLE CLOUD — CSS Variables
+ * Infrastructure-grade dark-first design.
+ */
+
+/* Dark Theme (Default) */
+:root,
+:root[data-theme='dark'] {
+  --cloud-elements-borderColor: rgba(240, 240, 245, 0.06);
+  --cloud-elements-borderColorActive: theme('colors.violet.400');
+
+  --cloud-elements-bg-depth-1: #0A0A0F;
+  --cloud-elements-bg-depth-2: #12121A;
+  --cloud-elements-bg-depth-3: #1A1A25;
+  --cloud-elements-bg-depth-4: #22222E;
+
+  --cloud-elements-textPrimary: #F0F0F5;
+  --cloud-elements-textSecondary: #8A8A9E;
+  --cloud-elements-textTertiary: #5A5A6E;
+
+  --cloud-elements-button-primary-background: rgba(142, 89, 255, 0.14);
+  --cloud-elements-button-primary-backgroundHover: rgba(142, 89, 255, 0.24);
+  --cloud-elements-button-primary-text: #A87BFF;
+
+  --cloud-elements-button-secondary-background: rgba(240, 240, 245, 0.06);
+  --cloud-elements-button-secondary-backgroundHover: rgba(240, 240, 245, 0.10);
+  --cloud-elements-button-secondary-text: #F0F0F5;
+
+  --cloud-elements-button-danger-background: rgba(255, 59, 92, 0.12);
+  --cloud-elements-button-danger-backgroundHover: rgba(255, 59, 92, 0.20);
+  --cloud-elements-button-danger-text: #FF3B5C;
+
+  --cloud-elements-icon-success: #38B2AC;
+  --cloud-elements-icon-error: #FF4D6A;
+  --cloud-elements-icon-warning: #FFB800;
+  --cloud-elements-icon-primary: #F0F0F5;
+  --cloud-elements-icon-secondary: #5A5A6E;
+
+  --cloud-elements-dividerColor: rgba(240, 240, 245, 0.06);
+  --cloud-elements-item-backgroundHover: rgba(240, 240, 245, 0.03);
+  --cloud-elements-item-backgroundActive: rgba(240, 240, 245, 0.06);
+  --cloud-elements-focus: #8E59FF;
+
+  /* Status colors */
+  --status-running: #38B2AC;
+  --status-stopped: #FFB800;
+  --status-warm: #FF8A4C;
+  --status-cold: #4AABFF;
+  --status-error: #FF3B5C;
+  --status-deleted: #5A5A6E;
+
+  /* shadcn/ui CSS Variables */
+  --background: 240 30% 4%;
+  --foreground: 240 10% 95%;
+  --card: 240 25% 7%;
+  --card-foreground: 240 10% 95%;
+  --popover: 240 25% 7%;
+  --popover-foreground: 240 10% 95%;
+  --primary: 263 100% 68%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 15% 14%;
+  --secondary-foreground: 240 10% 95%;
+  --muted: 240 15% 14%;
+  --muted-foreground: 240 10% 55%;
+  --accent: 240 15% 14%;
+  --accent-foreground: 240 10% 95%;
+  --destructive: 348 100% 61%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 240 10% 16%;
+  --input: 240 10% 16%;
+  --ring: 263 100% 68%;
+  --radius: 0.625rem;
+
+  /* Glass morphism tokens */
+  --glass-bg: rgba(18, 18, 26, 0.60);
+  --glass-bg-strong: rgba(18, 18, 26, 0.80);
+  --glass-border: rgba(240, 240, 245, 0.06);
+  --glass-border-hover: rgba(240, 240, 245, 0.12);
+  --glass-blur: 16px;
+
+  /* Gradient mesh */
+  --mesh-teal: rgba(56, 178, 172, 0.04);
+  --mesh-violet: rgba(139, 92, 246, 0.04);
+  --mesh-blue: rgba(0, 180, 255, 0.03);
+}
+
+/* Light Theme */
+:root[data-theme='light'] {
+  --cloud-elements-borderColor: rgba(10, 10, 15, 0.10);
+  --cloud-elements-borderColorActive: #7C3AED;
+
+  --cloud-elements-bg-depth-1: #F8F8FC;
+  --cloud-elements-bg-depth-2: #EEEFF5;
+  --cloud-elements-bg-depth-3: #E2E3EB;
+  --cloud-elements-bg-depth-4: #D4D5DF;
+
+  --cloud-elements-textPrimary: #0E0E16;
+  --cloud-elements-textSecondary: #44445A;
+  --cloud-elements-textTertiary: #6B6B82;
+
+  --cloud-elements-button-primary-background: rgba(124, 58, 237, 0.10);
+  --cloud-elements-button-primary-backgroundHover: rgba(124, 58, 237, 0.18);
+  --cloud-elements-button-primary-text: #6D28D9;
+
+  --cloud-elements-button-secondary-background: rgba(10, 10, 15, 0.06);
+  --cloud-elements-button-secondary-backgroundHover: rgba(10, 10, 15, 0.10);
+  --cloud-elements-button-secondary-text: #0E0E16;
+
+  --cloud-elements-button-danger-background: rgba(200, 30, 52, 0.08);
+  --cloud-elements-button-danger-backgroundHover: rgba(200, 30, 52, 0.14);
+  --cloud-elements-button-danger-text: #A01628;
+
+  --cloud-elements-icon-success: #2C7A7B;
+  --cloud-elements-icon-error: #C81E34;
+  --cloud-elements-icon-warning: #B88000;
+  --cloud-elements-icon-primary: #0E0E16;
+  --cloud-elements-icon-secondary: #6B6B82;
+
+  --cloud-elements-dividerColor: rgba(10, 10, 15, 0.08);
+  --cloud-elements-item-backgroundHover: rgba(10, 10, 15, 0.04);
+  --cloud-elements-item-backgroundActive: rgba(10, 10, 15, 0.07);
+  --cloud-elements-focus: #7C3AED;
+
+  --status-running: #2C7A7B;
+  --status-stopped: #B88000;
+  --status-warm: #C06628;
+  --status-cold: #006B99;
+  --status-error: #C81E34;
+  --status-deleted: #6B6B82;
+
+  --background: 240 20% 97%;
+  --foreground: 240 30% 5%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 30% 5%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 30% 5%;
+  --primary: 263 84% 52%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 10% 92%;
+  --secondary-foreground: 240 30% 5%;
+  --muted: 240 10% 92%;
+  --muted-foreground: 240 10% 35%;
+  --accent: 240 10% 92%;
+  --accent-foreground: 240 30% 5%;
+  --destructive: 348 85% 42%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 240 10% 88%;
+  --input: 240 10% 88%;
+  --ring: 263 100% 68%;
+
+  --glass-bg: rgba(255, 255, 255, 0.75);
+  --glass-bg-strong: rgba(255, 255, 255, 0.90);
+  --glass-border: rgba(10, 10, 15, 0.08);
+  --glass-border-hover: rgba(10, 10, 15, 0.15);
+  --glass-blur: 16px;
+
+  --mesh-teal: rgba(44, 122, 123, 0.03);
+  --mesh-violet: rgba(100, 60, 200, 0.03);
+  --mesh-blue: rgba(0, 100, 180, 0.02);
+}
+
+:root {
+  --header-height: 64px;
+}
+
+@media (max-width: 767px) {
+  :root {
+    --header-height: 56px;
+  }
+}
+
+/* Focus Indicators */
+*:focus-visible {
+  outline: 2px solid var(--cloud-elements-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--cloud-elements-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(142, 89, 255, 0.15);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--cloud-elements-focus);
+  outline-offset: 1px;
+}

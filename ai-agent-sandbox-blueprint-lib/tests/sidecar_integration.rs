@@ -684,7 +684,7 @@ mod workflow_tests {
 
     #[test]
     fn resolve_next_run_cron_returns_future_timestamp() {
-        let now = ai_agent_sandbox_blueprint_lib::workflows::now_ts();
+        let now = ai_agent_sandbox_blueprint_lib::util::now_ts();
         let result = resolve_next_run("cron", "0 * * * * *", Some(now)).unwrap();
         assert!(result.is_some());
         let next = result.unwrap();

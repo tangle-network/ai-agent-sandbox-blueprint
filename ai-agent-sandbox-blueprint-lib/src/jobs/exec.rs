@@ -113,13 +113,18 @@ pub async fn sandbox_exec(
 // ---------------------------------------------------------------------------
 
 /// Build the common `/agents/run` payload used by both prompt and task requests.
-fn build_agent_payload(
+///
+/// When `backend_profile` is provided, it is set as `backend.profile` so the
+/// sidecar agent session uses it as persistent context. The profile can contain
+/// `systemPrompt`, `resources.instructions`, `permission`, `memory`, etc.
+pub fn build_agent_payload(
     message: &str,
     session_id: &str,
     model: &str,
     context_json: &str,
     timeout_ms: u64,
     extra_metadata: Option<Map<String, Value>>,
+    backend_profile: Option<&Value>,
 ) -> Result<Map<String, Value>, String> {
     let mut payload = Map::new();
     payload.insert(
@@ -135,8 +140,19 @@ fn build_agent_payload(
         );
     }
 
+    let mut backend = Map::new();
     if !model.is_empty() {
-        payload.insert("backend".to_string(), json!({ "model": model }));
+        backend.insert("model".to_string(), Value::String(model.to_string()));
+    }
+    if let Some(profile) = backend_profile {
+        if let Some(obj) = profile.as_object() {
+            if !obj.is_empty() {
+                backend.insert("profile".to_string(), profile.clone());
+            }
+        }
+    }
+    if !backend.is_empty() {
+        payload.insert("backend".to_string(), Value::Object(backend));
     }
 
     let mut metadata = Map::new();
@@ -160,6 +176,12 @@ fn build_agent_payload(
     }
 
     Ok(payload)
+}
+
+/// Convert a plain system prompt string into a profile object with
+/// `{"systemPrompt": "..."}`. Useful for backward compatibility.
+pub fn system_prompt_to_profile(sp: &str) -> Value {
+    json!({ "systemPrompt": sp })
 }
 
 /// Parse the common agent response fields from the sidecar JSON.
@@ -265,6 +287,7 @@ pub async fn run_prompt_request(
         &request.context_json,
         request.timeout_ms,
         None,
+        None,
     )?;
 
     let resp = call_agent(
@@ -305,6 +328,32 @@ pub async fn sandbox_prompt(
 
 /// Run a task request against a sidecar. Callable from tests.
 pub async fn run_task_request(request: &SandboxTaskRequest) -> Result<SandboxTaskResponse, String> {
+    run_task_request_with_profile(request, None).await
+}
+
+/// Run a task request with an optional system prompt that persists across the
+/// sidecar agent session via `backend.profile.systemPrompt`.
+///
+/// This is a backward-compatible wrapper around `run_task_request_with_profile`.
+pub async fn run_task_request_with_system_prompt(
+    request: &SandboxTaskRequest,
+    system_prompt: Option<&str>,
+) -> Result<SandboxTaskResponse, String> {
+    let profile = system_prompt
+        .filter(|s| !s.is_empty())
+        .map(system_prompt_to_profile);
+    run_task_request_with_profile(request, profile.as_ref()).await
+}
+
+/// Run a task request with an optional full agent profile.
+///
+/// The profile is a JSON object set as `backend.profile` in the sidecar
+/// `/agents/run` payload. It can contain `systemPrompt`, `resources.instructions`,
+/// `permission`, `memory`, and other sidecar profile fields.
+pub async fn run_task_request_with_profile(
+    request: &SandboxTaskRequest,
+    backend_profile: Option<&Value>,
+) -> Result<SandboxTaskResponse, String> {
     let mut extra = Map::new();
     if request.max_turns > 0 {
         extra.insert("maxTurns".to_string(), json!(request.max_turns));
@@ -318,6 +367,7 @@ pub async fn run_task_request(request: &SandboxTaskRequest) -> Result<SandboxTas
         &request.context_json,
         request.timeout_ms,
         if extra.is_empty() { None } else { Some(extra) },
+        backend_profile,
     )?;
 
     let resp = call_agent(
@@ -352,4 +402,108 @@ pub async fn sandbox_task(
 
     let response = run_task_request(&request).await?;
     Ok(TangleResult(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_agent_payload_with_system_prompt() {
+        let profile = system_prompt_to_profile("You are a trading expert.");
+        let payload = build_agent_payload(
+            "hello",
+            "sess-1",
+            "claude-haiku",
+            "",
+            0,
+            None,
+            Some(&profile),
+        )
+        .unwrap();
+
+        let backend = payload.get("backend").unwrap().as_object().unwrap();
+        assert_eq!(backend["model"], "claude-haiku");
+        let p = backend["profile"].as_object().unwrap();
+        assert_eq!(p["systemPrompt"], "You are a trading expert.");
+    }
+
+    #[test]
+    fn test_build_agent_payload_without_profile() {
+        let payload = build_agent_payload(
+            "hello",
+            "sess-1",
+            "claude-haiku",
+            "",
+            0,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let backend = payload.get("backend").unwrap().as_object().unwrap();
+        assert_eq!(backend["model"], "claude-haiku");
+        assert!(backend.get("profile").is_none());
+    }
+
+    #[test]
+    fn test_build_agent_payload_empty_profile_ignored() {
+        let empty = json!({});
+        let payload = build_agent_payload(
+            "hello",
+            "",
+            "",
+            "",
+            0,
+            None,
+            Some(&empty),
+        )
+        .unwrap();
+
+        // No backend at all since model is empty and profile is empty
+        assert!(payload.get("backend").is_none());
+    }
+
+    #[test]
+    fn test_build_agent_payload_full_profile() {
+        let profile = json!({
+            "name": "trading-dex",
+            "resources": {
+                "instructions": {
+                    "content": "You have a persistent workspace.",
+                    "name": "trading-instructions.md"
+                }
+            },
+            "permission": {
+                "bash": "allow",
+                "edit": "allow"
+            },
+            "memory": { "enabled": true }
+        });
+        let payload = build_agent_payload(
+            "trade now",
+            "sess-2",
+            "claude-sonnet",
+            "",
+            0,
+            None,
+            Some(&profile),
+        )
+        .unwrap();
+
+        let backend = payload.get("backend").unwrap().as_object().unwrap();
+        let p = backend["profile"].as_object().unwrap();
+        assert!(p.get("systemPrompt").is_none(), "Full profile should not have systemPrompt");
+        assert!(p.get("resources").is_some());
+        assert_eq!(p["permission"]["bash"], "allow");
+        assert_eq!(p["memory"]["enabled"], true);
+    }
+
+    #[test]
+    fn test_system_prompt_to_profile() {
+        let profile = system_prompt_to_profile("You are helpful.");
+        let obj = profile.as_object().unwrap();
+        assert_eq!(obj["systemPrompt"], "You are helpful.");
+        assert_eq!(obj.len(), 1);
+    }
 }

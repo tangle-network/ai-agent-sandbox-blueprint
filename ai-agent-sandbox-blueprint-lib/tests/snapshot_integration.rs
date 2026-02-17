@@ -369,7 +369,7 @@ async fn commit_and_warm_resume_real() {
     sandboxes()
         .unwrap()
         .update(&record.id, |r| {
-            r.container_removed_at = Some(ai_agent_sandbox_blueprint_lib::workflows::now_ts());
+            r.container_removed_at = Some(ai_agent_sandbox_blueprint_lib::util::now_ts());
         })
         .unwrap();
 
@@ -478,7 +478,7 @@ async fn s3_snapshot_upload_and_cold_resume_real() {
     sandboxes()
         .unwrap()
         .update(&record.id, |r| {
-            let now = ai_agent_sandbox_blueprint_lib::workflows::now_ts();
+            let now = ai_agent_sandbox_blueprint_lib::util::now_ts();
             r.container_removed_at = Some(now);
             r.image_removed_at = Some(now);
             r.snapshot_image_id = None;
@@ -557,7 +557,7 @@ async fn resume_no_snapshot_fails_real() {
     sandboxes()
         .unwrap()
         .update(&record.id, |r| {
-            r.container_removed_at = Some(ai_agent_sandbox_blueprint_lib::workflows::now_ts());
+            r.container_removed_at = Some(ai_agent_sandbox_blueprint_lib::util::now_ts());
             r.snapshot_image_id = None;
             r.snapshot_s3_url = None;
             r.snapshot_destination = None;
@@ -613,7 +613,7 @@ async fn tiered_gc_hot_to_warm_real() {
         .unwrap();
 
     // Set stopped_at in the past to exceed hot retention (which is 0 for tests)
-    let past = ai_agent_sandbox_blueprint_lib::workflows::now_ts() - 10;
+    let past = ai_agent_sandbox_blueprint_lib::util::now_ts() - 10;
     sandboxes()
         .unwrap()
         .update(&record.id, |r| {
@@ -696,7 +696,7 @@ async fn tiered_gc_warm_to_cold_real() {
         .await
         .expect("delete should succeed");
 
-    let past = ai_agent_sandbox_blueprint_lib::workflows::now_ts() - 10;
+    let past = ai_agent_sandbox_blueprint_lib::util::now_ts() - 10;
     sandboxes()
         .unwrap()
         .update(&record.id, |r| {
@@ -779,7 +779,7 @@ async fn tiered_gc_cold_to_gone_real() {
         "object should exist after upload"
     );
 
-    let past = ai_agent_sandbox_blueprint_lib::workflows::now_ts() - 100;
+    let past = ai_agent_sandbox_blueprint_lib::util::now_ts() - 100;
     let record = SandboxRecord {
         id: sandbox_id.clone(),
         container_id: "dead-container-id".to_string(),
@@ -868,7 +868,7 @@ async fn user_byos3_never_deleted_by_gc() {
         "MinIO put should succeed"
     );
 
-    let past = ai_agent_sandbox_blueprint_lib::workflows::now_ts() - 100;
+    let past = ai_agent_sandbox_blueprint_lib::util::now_ts() - 100;
     let record = SandboxRecord {
         id: sandbox_id.clone(),
         container_id: "dead-container-id".to_string(),
@@ -1089,7 +1089,7 @@ async fn full_lifecycle_all_tiers() {
     let image_id = commit_container(&current)
         .await
         .expect("commit should succeed");
-    let past = ai_agent_sandbox_blueprint_lib::workflows::now_ts() - 10;
+    let past = ai_agent_sandbox_blueprint_lib::util::now_ts() - 10;
     sandboxes()
         .unwrap()
         .update(&record.id, |r| {
@@ -1145,7 +1145,7 @@ async fn full_lifecycle_all_tiers() {
     let _ = remove_snapshot_image(&image_id).await;
     let _ = remove_snapshot_image(&format!("sandbox-snapshot/{}:latest", record.id)).await;
 
-    let now = ai_agent_sandbox_blueprint_lib::workflows::now_ts();
+    let now = ai_agent_sandbox_blueprint_lib::util::now_ts();
     sandboxes()
         .unwrap()
         .update(&record.id, |r| {
@@ -1193,7 +1193,7 @@ async fn full_lifecycle_all_tiers() {
     delete_sidecar(&after_cold, None)
         .await
         .expect("delete should succeed");
-    let past = ai_agent_sandbox_blueprint_lib::workflows::now_ts() - 10;
+    let past = ai_agent_sandbox_blueprint_lib::util::now_ts() - 10;
     // Re-add the S3 URL since cold resume cleared it from the record.
     // The object still exists in MinIO — we need the URL for GC to find and delete it.
     let s3_dest_for_gc = s3_dest.clone();
