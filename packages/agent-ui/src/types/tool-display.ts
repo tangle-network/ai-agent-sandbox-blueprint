@@ -12,6 +12,12 @@ export type DisplayVariant =
   | 'default';
 
 /**
+ * Custom renderer for tool details. Return a ReactNode to override the
+ * default ExpandedToolDetail, or null to fall back to the built-in renderer.
+ */
+export type CustomToolRenderer = (part: import('./parts').ToolPart) => import('react').ReactNode | null;
+
+/**
  * Visual metadata for a tool invocation — computed from the tool name,
  * input, and output by `getToolDisplayMetadata()`.
  */

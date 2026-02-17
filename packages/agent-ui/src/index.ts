@@ -22,7 +22,7 @@ export type {
   MessageRun,
   MessageUser,
 } from './types/run';
-export type { ToolDisplayMetadata, DisplayVariant } from './types/tool-display';
+export type { ToolDisplayMetadata, DisplayVariant, CustomToolRenderer } from './types/tool-display';
 export type { AgentBranding } from './types/branding';
 
 // Stores
@@ -35,6 +35,8 @@ export { useRunGroups } from './hooks/useRunGroups';
 export type { UseRunGroupsOptions } from './hooks/useRunGroups';
 export { useRunCollapseState } from './hooks/useRunCollapseState';
 export { useAutoScroll } from './hooks/useAutoScroll';
+export { useSessionStream } from './hooks/useSessionStream';
+export type { SessionInfo, UseSessionStreamOptions, UseSessionStreamResult } from './hooks/useSessionStream';
 
 // Utils
 export { cn } from './utils/cn';

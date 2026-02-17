@@ -5,6 +5,7 @@ import { formatDuration } from '~/utils/format';
 import type { Run, ToolCategory } from '~/types/run';
 import type { SessionPart, ToolPart, ReasoningPart } from '~/types/parts';
 import type { AgentBranding } from '~/types/branding';
+import type { CustomToolRenderer } from '~/types/tool-display';
 import { TOOL_CATEGORY_ICONS } from '~/utils/toolDisplay';
 import { InlineToolItem } from './InlineToolItem';
 import { InlineThinkingItem } from './InlineThinkingItem';
@@ -34,6 +35,7 @@ export interface RunGroupProps {
   collapsed: boolean;
   onToggle: () => void;
   branding?: AgentBranding;
+  renderToolDetail?: CustomToolRenderer;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +68,7 @@ function CategoryBadges({ categories }: { categories: Set<ToolCategory> }) {
  * Shows a summary header with stats and renders tool/thinking/text parts.
  */
 export const RunGroup = memo(
-  ({ run, partMap, collapsed, onToggle, branding = DEFAULT_BRANDING }: RunGroupProps) => {
+  ({ run, partMap, collapsed, onToggle, branding = DEFAULT_BRANDING, renderToolDetail }: RunGroupProps) => {
     // Flatten all parts from all messages in this run
     const allParts = useMemo(() => {
       const parts: Array<{ part: SessionPart; msgId: string; index: number }> = [];
@@ -150,7 +152,7 @@ export const RunGroup = memo(
               const key = `${msgId}-${index}`;
 
               if (part.type === 'tool') {
-                return <InlineToolItem key={key} part={part as ToolPart} />;
+                return <InlineToolItem key={key} part={part as ToolPart} renderToolDetail={renderToolDetail} />;
               }
 
               if (part.type === 'reasoning') {

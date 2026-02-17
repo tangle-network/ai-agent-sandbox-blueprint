@@ -1,0 +1,53 @@
+# docker-compose.local.yml — Full local stack for manual testing.
+#
+# Usage:
+#   docker compose -f docker-compose.local.yml up --build
+#
+# Services:
+#   - anvil:    Local Ethereum chain with deterministic accounts
+#   - operator: Blueprint operator binary with operator API
+#
+# After startup:
+#   - Anvil RPC:      http://localhost:8545
+#   - Operator API:   http://localhost:9090
+#
+# Note: The operator needs access to the Docker socket to spawn sidecar
+# containers. On Linux, this is /var/run/docker.sock.
+
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    command: ["anvil", "--block-time", "2", "--host", "0.0.0.0", "--port", "8545"]
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  operator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      anvil:
+        condition: service_healthy
+    environment:
+      HTTP_RPC_ENDPOINT: http://anvil:8545
+      WS_RPC_ENDPOINT: ws://anvil:8545
+      BLUEPRINT_ID: "0"
+      SERVICE_ID: "0"
+      OPERATOR_API_PORT: "9090"
+      SIDECAR_IMAGE: tangle-sidecar:local
+      SIDECAR_PULL_IMAGE: "false"
+      SIDECAR_PUBLIC_HOST: "host.docker.internal"
+      REQUEST_TIMEOUT_SECS: "60"
+      SESSION_AUTH_SECRET: dev-secret-key-do-not-use-in-production
+      RUST_LOG: info
+    ports:
+      - "9090:9090"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

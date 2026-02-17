@@ -3,6 +3,7 @@ import { cn } from '~/utils/cn';
 import type { SessionMessage } from '~/types/message';
 import type { SessionPart } from '~/types/parts';
 import type { AgentBranding } from '~/types/branding';
+import type { CustomToolRenderer } from '~/types/tool-display';
 import { useRunGroups } from '~/hooks/useRunGroups';
 import { useRunCollapseState } from '~/hooks/useRunCollapseState';
 import { useAutoScroll } from '~/hooks/useAutoScroll';
@@ -18,6 +19,8 @@ export interface ChatContainerProps {
   className?: string;
   /** Hide the input area (useful for read-only views). */
   hideInput?: boolean;
+  /** Custom renderer for tool details. Return ReactNode to override, null to use default. */
+  renderToolDetail?: CustomToolRenderer;
 }
 
 /**
@@ -34,6 +37,7 @@ export const ChatContainer = memo(
     placeholder = 'Type a message...',
     className,
     hideInput = false,
+    renderToolDetail,
   }: ChatContainerProps) => {
     const [inputValue, setInputValue] = useState('');
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -87,6 +91,7 @@ export const ChatContainer = memo(
               isCollapsed={isCollapsed}
               onToggleCollapse={toggleCollapse}
               branding={branding}
+              renderToolDetail={renderToolDetail}
             />
           )}
         </div>

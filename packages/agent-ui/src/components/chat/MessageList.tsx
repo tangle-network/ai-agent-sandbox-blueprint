@@ -3,6 +3,7 @@ import type { GroupedMessage } from '~/types/run';
 import type { SessionPart } from '~/types/parts';
 import type { Run } from '~/types/run';
 import type { AgentBranding } from '~/types/branding';
+import type { CustomToolRenderer } from '~/types/tool-display';
 import { RunGroup } from '../run/RunGroup';
 import { UserMessage } from './UserMessage';
 
@@ -12,6 +13,7 @@ export interface MessageListProps {
   isCollapsed: (runId: string) => boolean;
   onToggleCollapse: (runId: string) => void;
   branding?: AgentBranding;
+  renderToolDetail?: CustomToolRenderer;
 }
 
 /**
@@ -19,7 +21,7 @@ export interface MessageListProps {
  * This is the main render list for the chat view.
  */
 export const MessageList = memo(
-  ({ groups, partMap, isCollapsed, onToggleCollapse, branding }: MessageListProps) => {
+  ({ groups, partMap, isCollapsed, onToggleCollapse, branding, renderToolDetail }: MessageListProps) => {
     return (
       <div className="space-y-3">
         {groups.map((group) => {
@@ -41,6 +43,7 @@ export const MessageList = memo(
               collapsed={isCollapsed(group.run.id)}
               onToggle={() => onToggleCollapse(group.run.id)}
               branding={branding}
+              renderToolDetail={renderToolDetail}
             />
           );
         })}

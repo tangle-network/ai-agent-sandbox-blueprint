@@ -4,10 +4,12 @@ import { cn } from '~/utils/cn';
 import { getToolDisplayMetadata, getToolErrorText } from '~/utils/toolDisplay';
 import { formatDuration } from '~/utils/format';
 import type { ToolPart } from '~/types/parts';
+import type { CustomToolRenderer } from '~/types/tool-display';
 import { ExpandedToolDetail } from './ExpandedToolDetail';
 
 export interface InlineToolItemProps {
   part: ToolPart;
+  renderToolDetail?: CustomToolRenderer;
 }
 
 /** Live timer that updates every 100ms while a tool is running. */
@@ -31,7 +33,7 @@ function StreamingTimer({ startTime }: { startTime: number }) {
  * Shows icon, title, description, duration, and status indicator.
  * Expands on click to show ExpandedToolDetail.
  */
-export const InlineToolItem = memo(({ part }: InlineToolItemProps) => {
+export const InlineToolItem = memo(({ part, renderToolDetail }: InlineToolItemProps) => {
   const [open, setOpen] = useState(false);
   const meta = getToolDisplayMetadata(part);
   const { status } = part.state;
@@ -102,7 +104,7 @@ export const InlineToolItem = memo(({ part }: InlineToolItemProps) => {
 
       <Collapsible.Content className="overflow-hidden data-[state=open]:animate-slideDown data-[state=closed]:animate-slideUp">
         <div className="ml-6 mt-1 mb-2">
-          <ExpandedToolDetail part={part} />
+          {renderToolDetail?.(part) ?? <ExpandedToolDetail part={part} />}
         </div>
       </Collapsible.Content>
     </Collapsible.Root>
