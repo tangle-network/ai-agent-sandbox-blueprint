@@ -95,7 +95,7 @@ pub fn create_challenge() -> Challenge {
 
     CHALLENGES
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(nonce, challenge.clone());
 
     challenge
@@ -103,7 +103,7 @@ pub fn create_challenge() -> Challenge {
 
 /// Consume and validate a challenge nonce. Returns the challenge message if valid.
 fn consume_challenge(nonce: &str) -> Result<String> {
-    let mut map = CHALLENGES.lock().unwrap();
+    let mut map = CHALLENGES.lock().unwrap_or_else(|e| e.into_inner());
     let challenge = map
         .remove(nonce)
         .ok_or_else(|| SandboxError::Auth("Challenge not found or already consumed".into()))?;
@@ -253,7 +253,7 @@ pub fn exchange_signature_for_token(
     .map_err(|e| SandboxError::Auth(format!("Failed to encrypt PASETO token: {e}")))?;
 
     // Store session for server-side validation
-    SESSIONS.lock().unwrap().insert(token.clone(), claims);
+    SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).insert(token.clone(), claims);
 
     Ok(SessionToken {
         token,
@@ -266,7 +266,7 @@ pub fn exchange_signature_for_token(
 pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
     // First try server-side session store (faster)
     {
-        let sessions = SESSIONS.lock().unwrap();
+        let sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(claims) = sessions.get(token) {
             if now_secs() <= claims.expires_at {
                 return Ok(claims.clone());
@@ -330,8 +330,8 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
 /// Remove expired challenges and sessions.
 pub fn gc_sessions() {
     let now = now_secs();
-    CHALLENGES.lock().unwrap().retain(|_, c| c.expires_at > now);
-    SESSIONS.lock().unwrap().retain(|_, s| s.expires_at > now);
+    CHALLENGES.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, c| c.expires_at > now);
+    SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, s| s.expires_at > now);
 }
 
 /// Extract a Bearer token from an Authorization header value.

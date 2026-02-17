@@ -3,7 +3,9 @@
 //! Stores atomic counters that can be read by the QoS integration in the
 //! binary crate and pushed as on-chain metrics via `add_on_chain_metric()`.
 
+use std::fmt::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 /// Global metrics tracker using atomic counters.
 ///
@@ -256,6 +258,31 @@ impl OnChainMetrics {
             ),
         ]
     }
+
+    /// Render all metrics in Prometheus text exposition format.
+    pub fn render_prometheus(&self) -> String {
+        let mut out = String::with_capacity(2048);
+        for (name, value) in self.snapshot() {
+            let prom_name = format!("sandbox_{name}");
+            let mtype = if name.starts_with("active_")
+                || name.starts_with("allocated_")
+                || name.starts_with("peak_")
+            {
+                "gauge"
+            } else {
+                "counter"
+            };
+            let _ = writeln!(out, "# TYPE {prom_name} {mtype}");
+            let _ = writeln!(out, "{prom_name} {value}");
+        }
+        out
+    }
+}
+
+/// Seconds since the process started (for health endpoint).
+pub fn uptime_secs() -> u64 {
+    static START: once_cell::sync::Lazy<Instant> = once_cell::sync::Lazy::new(Instant::now);
+    START.elapsed().as_secs()
 }
 
 /// RAII guard that decrements `active_sessions` when dropped.

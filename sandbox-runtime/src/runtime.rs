@@ -47,9 +47,9 @@ pub struct CreateSandboxParams {
     /// Optional TEE configuration. When set with `required: true`, the runtime
     /// must provision the sandbox inside a trusted execution environment.
     pub tee_config: Option<crate::tee::TeeConfig>,
-    /// When true, the sandbox is created but awaiting phase-2 secret injection
-    /// before it's considered fully operational.
-    pub secrets_pending: bool,
+    /// User-injected secrets (phase 2 of two-phase provisioning).
+    /// Empty on initial creation; populated when recreating with secrets.
+    pub user_env_json: String,
 }
 
 /// Runtime configuration loaded once at startup from environment variables.
@@ -237,8 +237,12 @@ pub struct SandboxRecord {
     pub image_removed_at: Option<u64>,
     #[serde(default)]
     pub original_image: String,
+    /// Base environment variables set at creation time (immutable).
+    #[serde(default, alias = "env_json")]
+    pub base_env_json: String,
+    /// User-injected secrets via two-phase provisioning (mutable).
     #[serde(default)]
-    pub env_json: String,
+    pub user_env_json: String,
     #[serde(default)]
     pub snapshot_destination: Option<String>,
     /// Backend-specific deployment ID for TEE sandboxes (e.g. Phala app_id).
@@ -262,9 +266,19 @@ pub struct SandboxRecord {
     /// ownership checks — only the owner may stop, resume, or delete a sandbox.
     #[serde(default)]
     pub owner: String,
-    /// Whether secrets have been injected via 2-phase secret provisioning.
-    #[serde(default)]
-    pub secrets_configured: bool,
+}
+
+impl SandboxRecord {
+    /// Whether the user has injected secrets via two-phase provisioning.
+    pub fn has_user_secrets(&self) -> bool {
+        let s = self.user_env_json.trim();
+        !s.is_empty() && s != "{}"
+    }
+
+    /// Merge base + user env into a single JSON string for container creation.
+    pub fn effective_env_json(&self) -> String {
+        merge_env_json(&self.base_env_json, &self.user_env_json)
+    }
 }
 
 use crate::store::PersistentStore;
@@ -480,7 +494,8 @@ async fn create_sidecar_tee(
         container_removed_at: None,
         image_removed_at: None,
         original_image: request.image.clone(),
-        env_json: request.env_json.clone(),
+        base_env_json: request.env_json.clone(),
+        user_env_json: String::new(),
         snapshot_destination: None,
         tee_deployment_id: Some(deployment.deployment_id),
         tee_metadata_json: Some(deployment.metadata_json),
@@ -490,7 +505,6 @@ async fn create_sidecar_tee(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
-        secrets_configured: false,
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
@@ -502,6 +516,23 @@ async fn create_sidecar_tee(
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared Docker helpers — used by create, snapshot-resume, and S3-restore paths
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Merge base and user env JSON strings into a single JSON object string.
+/// User values override base values when keys collide.
+pub fn merge_env_json(base: &str, user: &str) -> String {
+    let user_trimmed = user.trim();
+    if user_trimmed.is_empty() || user_trimmed == "{}" {
+        return base.to_string();
+    }
+    let mut map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(base).unwrap_or_default();
+    if let Ok(user_map) =
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(user)
+    {
+        map.extend(user_map);
+    }
+    serde_json::to_string(&map).unwrap_or_default()
+}
 
 /// Build the `Vec<String>` of `KEY=VALUE` env vars for a Docker container.
 fn build_env_vars(
@@ -597,7 +628,8 @@ async fn create_sidecar_docker(
     };
     let container_name = format!("sidecar-{sandbox_id}");
 
-    let env_vars = build_env_vars(&request.env_json, &token, config.container_port)?;
+    let effective_env = merge_env_json(&request.env_json, &request.user_env_json);
+    let env_vars = build_env_vars(&effective_env, &token, config.container_port)?;
 
     let metadata = parse_json_object(&request.metadata_json, "metadata_json")?;
     // Extract snapshot_destination before metadata is consumed by merge/labels
@@ -673,7 +705,8 @@ async fn create_sidecar_docker(
         container_removed_at: None,
         image_removed_at: None,
         original_image: config.image.clone(),
-        env_json: request.env_json.clone(),
+        base_env_json: request.env_json.clone(),
+        user_env_json: request.user_env_json.clone(),
         snapshot_destination,
         tee_deployment_id: None,
         tee_metadata_json: None,
@@ -683,7 +716,6 @@ async fn create_sidecar_docker(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
-        secrets_configured: false,
     };
 
     sandboxes()?.insert(sandbox_id, record.clone())?;
@@ -811,17 +843,19 @@ pub async fn delete_sidecar(
     delete_sidecar_docker(record).await
 }
 
-/// Recreate a sidecar container with updated environment variables.
+/// Recreate a sidecar container with updated user environment variables.
 ///
 /// Stops and removes the old container, creates a new one with the
-/// provided `new_env_json`, and updates the persistent record.
+/// base env preserved and the provided `user_env_json` merged on top.
 /// All other settings (image, CPU, memory, lifetime, token, agent identifier,
 /// metadata, etc.) are faithfully preserved from the existing record.
+///
+/// Pass an empty string to clear user secrets (base env only).
 ///
 /// Returns the new [`SandboxRecord`] for the recreated container.
 pub async fn recreate_sidecar_with_env(
     sandbox_id: &str,
-    new_env_json: &str,
+    user_env_json: &str,
     tee: Option<&dyn crate::tee::TeeBackend>,
 ) -> Result<SandboxRecord> {
     let old = get_sandbox_by_id(sandbox_id)?;
@@ -833,7 +867,7 @@ pub async fn recreate_sidecar_with_env(
     delete_sidecar(&old, tee).await?;
     sandboxes()?.remove(sandbox_id)?;
 
-    // Rebuild creation params faithfully from the stored record + new env
+    // Rebuild creation params faithfully from the stored record
     let image = if old.original_image.is_empty() {
         env::var("SIDECAR_IMAGE").unwrap_or_else(|_| DEFAULT_SIDECAR_IMAGE.to_string())
     } else {
@@ -846,10 +880,11 @@ pub async fn recreate_sidecar_with_env(
         image,
         stack: old.stack.clone(),
         agent_identifier: old.agent_identifier.clone(),
-        env_json: new_env_json.to_string(),
+        env_json: old.base_env_json.clone(),
+        user_env_json: user_env_json.to_string(),
         metadata_json: old.metadata_json.clone(),
         ssh_enabled: old.ssh_port.is_some(),
-        ssh_public_key: String::new(), // SSH keys are one-time setup, not stored
+        ssh_public_key: String::new(),
         web_terminal_enabled: false,
         max_lifetime_seconds: old.max_lifetime_seconds,
         idle_timeout_seconds: old.idle_timeout_seconds,
@@ -858,7 +893,6 @@ pub async fn recreate_sidecar_with_env(
         disk_gb: if old.disk_gb > 0 { old.disk_gb } else { 10 },
         owner: old.owner.clone(),
         tee_config: None,
-        secrets_pending: false,
     };
 
     // Preserve the original token so existing workflows/references keep working.
@@ -927,7 +961,8 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .ok_or_else(|| SandboxError::Docker("No snapshot image available".into()))?;
 
     let ssh_enabled = record.ssh_port.is_some();
-    let env_vars = build_env_vars(&record.env_json, &record.token, config.container_port)?;
+    let effective_env = record.effective_env_json();
+    let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
     let override_config = build_docker_config(
         &config, ssh_enabled, record.cpu_cores, record.memory_mb, None,
     );
@@ -991,7 +1026,8 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     ensure_image_pulled(builder, image).await?;
 
     let ssh_enabled = record.ssh_port.is_some();
-    let env_vars = build_env_vars(&record.env_json, &record.token, config.container_port)?;
+    let effective_env = record.effective_env_json();
+    let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
     let override_config = build_docker_config(
         &config, ssh_enabled, record.cpu_cores, record.memory_mb, None,
     );

@@ -67,7 +67,8 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 container_removed_at: None,
                 image_removed_at: None,
                 original_image: String::new(),
-                env_json: String::new(),
+                base_env_json: String::new(),
+                user_env_json: String::new(),
                 snapshot_destination: None,
                 tee_deployment_id: None,
                 tee_metadata_json: None,
@@ -77,7 +78,6 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 disk_gb: 0,
                 stack: String::new(),
                 owner: String::new(),
-                secrets_configured: false,
             },
         )
         .unwrap();
@@ -746,7 +746,8 @@ mod instance_state_tests {
             container_removed_at: None,
             image_removed_at: None,
             original_image: "test:latest".to_string(),
-            env_json: String::new(),
+            base_env_json: String::new(),
+            user_env_json: String::new(),
             snapshot_destination: None,
             tee_deployment_id: None,
             tee_metadata_json: None,
@@ -756,7 +757,6 @@ mod instance_state_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
-            secrets_configured: false,
         };
 
         set_instance_sandbox(record).unwrap();
@@ -792,7 +792,8 @@ mod instance_state_tests {
             container_removed_at: None,
             image_removed_at: None,
             original_image: String::new(),
-            env_json: String::new(),
+            base_env_json: String::new(),
+            user_env_json: String::new(),
             snapshot_destination: None,
             tee_deployment_id: None,
             tee_metadata_json: None,
@@ -802,7 +803,6 @@ mod instance_state_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
-            secrets_configured: false,
         };
 
         set_instance_sandbox(record).unwrap();

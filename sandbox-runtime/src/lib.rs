@@ -10,6 +10,7 @@ pub mod http;
 pub mod metrics;
 pub mod operator_api;
 pub mod provision_progress;
+pub mod rate_limit;
 pub mod reaper;
 pub mod runtime;
 pub mod secret_provisioning;

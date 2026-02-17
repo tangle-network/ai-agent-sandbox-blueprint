@@ -81,7 +81,8 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 container_removed_at: None,
                 image_removed_at: None,
                 original_image: String::new(),
-                env_json: String::new(),
+                base_env_json: String::new(),
+                user_env_json: String::new(),
                 snapshot_destination: None,
                 tee_deployment_id: None,
                 tee_metadata_json: None,
@@ -91,7 +92,6 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 disk_gb: 0,
                 stack: String::new(),
                 owner: String::new(),
-                secrets_configured: false,
             },
         )
         .unwrap();
@@ -1191,7 +1191,7 @@ mod docker {
             !record.original_image.is_empty(),
             "original_image should be set"
         );
-        assert_eq!(record.env_json, r#"{"MY_VAR":"hello"}"#);
+        assert_eq!(record.base_env_json, r#"{"MY_VAR":"hello"}"#);
         assert_eq!(
             record.snapshot_destination.as_deref(),
             Some("s3://user-bucket/my-snap.tar.gz")
@@ -1204,7 +1204,7 @@ mod docker {
         // Verify persisted record matches
         let stored = get_sandbox_by_id(&record.id).unwrap();
         assert_eq!(stored.original_image, record.original_image);
-        assert_eq!(stored.env_json, record.env_json);
+        assert_eq!(stored.base_env_json, record.base_env_json);
         assert_eq!(stored.snapshot_destination, record.snapshot_destination);
 
         delete_sidecar(&record, None).await.unwrap();

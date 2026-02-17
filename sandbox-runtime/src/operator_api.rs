@@ -13,9 +13,12 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use axum::middleware;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::metrics;
 use crate::provision_progress;
+use crate::rate_limit;
 use crate::runtime::{SandboxRecord, SandboxState, sandboxes};
 use crate::secret_provisioning;
 use crate::session_auth::{self, SessionAuth};
@@ -90,7 +93,10 @@ async fn get_provision(
     Path(call_id): Path<u64>,
 ) -> impl IntoResponse {
     match provision_progress::get_provision(call_id) {
-        Ok(Some(status)) => (StatusCode::OK, Json(serde_json::to_value(status).unwrap())).into_response(),
+        Ok(Some(status)) => match serde_json::to_value(status) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
         Ok(None) => api_error(StatusCode::NOT_FOUND, "Provision not found").into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -115,12 +121,18 @@ struct SessionRequest {
 
 async fn create_challenge() -> impl IntoResponse {
     let challenge = session_auth::create_challenge();
-    (StatusCode::OK, Json(serde_json::to_value(challenge).unwrap()))
+    match serde_json::to_value(challenge) {
+        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn create_session(Json(req): Json<SessionRequest>) -> impl IntoResponse {
     match session_auth::exchange_signature_for_token(&req.nonce, &req.signature) {
-        Ok(token) => (StatusCode::OK, Json(serde_json::to_value(token).unwrap())).into_response(),
+        Ok(token) => match serde_json::to_value(token) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
         Err(e) => api_error(StatusCode::UNAUTHORIZED, e.to_string()).into_response(),
     }
 }
@@ -184,6 +196,32 @@ async fn wipe_secrets(
 }
 
 // ---------------------------------------------------------------------------
+// Health & metrics endpoints (unauthenticated)
+// ---------------------------------------------------------------------------
+
+async fn health() -> impl IntoResponse {
+    let m = metrics::metrics();
+    let active = m.active_sandboxes.load(std::sync::atomic::Ordering::Relaxed);
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "uptime_secs": metrics::uptime_secs(),
+            "active_sandboxes": active,
+        })),
+    )
+}
+
+async fn prometheus_metrics() -> impl IntoResponse {
+    let body = metrics::metrics().render_prometheus();
+    (
+        StatusCode::OK,
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        body,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Auth middleware helper (legacy — prefer `SessionAuth` extractor)
 // ---------------------------------------------------------------------------
 
@@ -208,27 +246,36 @@ pub fn extract_session_from_headers(headers: &HeaderMap) -> Result<session_auth:
 // Router builder
 // ---------------------------------------------------------------------------
 
-/// Build the operator API router with all endpoints and CORS support.
+/// Build the operator API router with all endpoints, CORS, and rate limiting.
 pub fn operator_api_router() -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    Router::new()
-        // Sandbox management
+    // Read endpoints: 120 req/min per IP
+    let read_routes = Router::new()
         .route("/api/sandboxes", get(list_sandboxes))
-        // Secret provisioning (2-phase)
+        .route("/api/provisions", get(list_provisions))
+        .route("/api/provisions/{call_id}", get(get_provision))
+        .layer(middleware::from_fn(rate_limit::read_rate_limit));
+
+    // Write endpoints: 30 req/min per IP
+    let write_routes = Router::new()
         .route(
             "/api/sandboxes/{sandbox_id}/secrets",
             post(inject_secrets).delete(wipe_secrets),
         )
-        // Provision progress
-        .route("/api/provisions", get(list_provisions))
-        .route("/api/provisions/{call_id}", get(get_provision))
-        // Session auth
         .route("/api/auth/challenge", post(create_challenge))
         .route("/api/auth/session", post(create_session))
+        .layer(middleware::from_fn(rate_limit::write_rate_limit));
+
+    Router::new()
+        // Health & metrics (unauthenticated, no rate limiting)
+        .route("/health", get(health))
+        .route("/metrics", get(prometheus_metrics))
+        .merge(read_routes)
+        .merge(write_routes)
         .layer(cors)
 }
 
@@ -456,6 +503,52 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response.into_body()).await;
+        assert_eq!(json["status"], "ok");
+        assert!(json["uptime_secs"].is_number());
+        assert!(json["active_sandboxes"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("text/plain"));
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = std::str::from_utf8(&bytes).unwrap();
+        assert!(body.contains("sandbox_total_jobs"));
+        assert!(body.contains("sandbox_active_sandboxes"));
     }
 
     #[tokio::test]

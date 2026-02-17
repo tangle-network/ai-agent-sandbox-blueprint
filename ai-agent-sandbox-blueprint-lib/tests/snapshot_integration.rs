@@ -798,7 +798,8 @@ async fn tiered_gc_cold_to_gone_real() {
         container_removed_at: Some(past - 100),
         image_removed_at: Some(past),
         original_image: sidecar_image(),
-        env_json: String::new(),
+        base_env_json: String::new(),
+        user_env_json: String::new(),
         snapshot_destination: None, // operator-managed (not user BYOS3)
         tee_deployment_id: None,
         tee_metadata_json: None,
@@ -808,7 +809,6 @@ async fn tiered_gc_cold_to_gone_real() {
         disk_gb: 0,
         stack: String::new(),
         owner: String::new(),
-        secrets_configured: false,
     };
 
     sandboxes()
@@ -894,7 +894,8 @@ async fn user_byos3_never_deleted_by_gc() {
         container_removed_at: Some(past - 100),
         image_removed_at: Some(past),
         original_image: sidecar_image(),
-        env_json: String::new(),
+        base_env_json: String::new(),
+        user_env_json: String::new(),
         snapshot_destination: Some(user_dest.clone()), // user BYOS3
         tee_deployment_id: None,
         tee_metadata_json: None,
@@ -904,7 +905,6 @@ async fn user_byos3_never_deleted_by_gc() {
         disk_gb: 0,
         stack: String::new(),
         owner: String::new(),
-        secrets_configured: false,
     };
 
     sandboxes()

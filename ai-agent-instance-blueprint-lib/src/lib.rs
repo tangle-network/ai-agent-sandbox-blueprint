@@ -248,7 +248,7 @@ impl From<&ProvisionRequest> for CreateSandboxParams {
             disk_gb: r.disk_gb,
             owner: String::new(), // Set by the job handler from Caller extractor
             tee_config,
-            secrets_pending: false,
+            user_env_json: String::new(),
         }
     }
 }
