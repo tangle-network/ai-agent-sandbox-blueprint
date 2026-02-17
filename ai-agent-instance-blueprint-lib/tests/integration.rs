@@ -697,10 +697,16 @@ mod helper_tests {
 
 mod instance_state_tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serialize instance-state tests — they all share a single `INSTANCE_STORE`
+    /// singleton keyed by `"instance"`, so parallel execution causes races.
+    static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn instance_store_initializes() {
         init();
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = instance_store();
         assert!(store.is_ok());
     }
@@ -708,7 +714,7 @@ mod instance_state_tests {
     #[test]
     fn get_instance_sandbox_returns_none_when_empty() {
         init();
-        // Clear any existing instance sandbox first.
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = clear_instance_sandbox();
         let result = get_instance_sandbox().unwrap();
         assert!(result.is_none());
@@ -717,6 +723,7 @@ mod instance_state_tests {
     #[test]
     fn require_instance_sandbox_errors_when_empty() {
         init();
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = clear_instance_sandbox();
         let result = require_instance_sandbox();
         assert!(result.is_err());
@@ -726,6 +733,7 @@ mod instance_state_tests {
     #[test]
     fn set_and_get_instance_sandbox() {
         init();
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let record = SandboxRecord {
             id: "test-instance".to_string(),
             container_id: "ctr-test".to_string(),
@@ -772,6 +780,7 @@ mod instance_state_tests {
     #[test]
     fn clear_instance_sandbox_removes_record() {
         init();
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let record = SandboxRecord {
             id: "to-clear".to_string(),
             container_id: "ctr-clear".to_string(),
