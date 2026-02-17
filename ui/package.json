@@ -10,6 +10,7 @@
     "typecheck": "react-router typegen && tsc --noEmit"
   },
   "dependencies": {
+    "@tangle/agent-ui": "workspace:*",
     "@nanostores/react": "^0.7.2",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-separator": "^1.1.8",

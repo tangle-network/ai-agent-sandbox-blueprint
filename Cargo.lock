@@ -106,9 +106,11 @@ name = "ai-agent-sandbox-blueprint-bin"
 version = "0.1.0"
 dependencies = [
  "ai-agent-sandbox-blueprint-lib",
+ "axum",
  "blueprint-producers-extra",
  "blueprint-qos",
  "blueprint-sdk",
+ "sandbox-runtime",
  "tokio",
  "tracing-subscriber 0.3.22",
 ]
@@ -1885,6 +1887,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1903,6 +1906,7 @@ dependencies = [
  "sync_wrapper 1.0.2",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -2184,7 +2188,7 @@ dependencies = [
  "jsonwebtoken",
  "k256",
  "once_cell",
- "pasetors",
+ "pasetors 0.7.7",
  "pem 1.1.1",
  "prost",
  "protobuf-src",
@@ -6896,6 +6900,23 @@ dependencies = [
 
 [[package]]
 name = "pasetors"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b36d47c66f2230dd1b7143d9afb2b4891879020210eddf2ccb624e529b96dba"
+dependencies = [
+ "ct-codecs",
+ "ed25519-compact",
+ "getrandom 0.2.17",
+ "orion",
+ "regex",
+ "serde_json",
+ "subtle",
+ "time",
+ "zeroize",
+]
+
+[[package]]
+name = "pasetors"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03e1ed71dcdf863d9f66d9de86de714db38aedc2fcabc1a60207d1fde603e2d5"
@@ -8151,18 +8172,24 @@ name = "sandbox-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "blueprint-sdk",
  "chrono",
  "docktopus",
  "hex",
+ "k256",
  "once_cell",
+ "pasetors 0.6.8",
  "phala-tee-deploy-rs",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "subtle",
+ "time",
+ "tiny-keccak",
  "tokio",
+ "tower-http",
  "uuid 1.20.0",
 ]
 
@@ -9421,6 +9448,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",

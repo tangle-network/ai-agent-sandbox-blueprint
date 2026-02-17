@@ -22,6 +22,16 @@ subtle = "2"
 tokio = { version = "1", default-features = false, features = ["sync", "rt", "time"] }
 uuid = { version = "1", features = ["v4"] }
 
+# Session auth (EIP-191 + PASETO v4)
+k256 = { version = "0.13", features = ["ecdsa"] }
+pasetors = "0.6"
+tiny-keccak = { version = "2", features = ["keccak"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
+
+# Operator API
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+
 [features]
 default = []
 tee-phala = ["dep:phala-tee-deploy-rs"]

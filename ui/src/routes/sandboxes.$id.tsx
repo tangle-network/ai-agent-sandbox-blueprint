@@ -1,42 +1,81 @@
-import { useParams, useNavigate, Link } from 'react-router';
-import { useState, useCallback } from 'react';
+import { useParams, Link } from 'react-router';
+import { useState, useCallback, useMemo } from 'react';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '~/components/motion/AnimatedPage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card';
 import { Button } from '~/components/ui/button';
-import { Badge } from '~/components/ui/badge';
-import { Input } from '~/components/ui/input';
 import { StatusBadge } from '~/components/shared/StatusBadge';
-import { sandboxListStore, updateSandboxStatus, removeSandbox, getSandbox } from '~/lib/stores/sandboxes';
+import { sandboxListStore, updateSandboxStatus, getSandbox } from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
-import { encodeSandboxId, encodeSnapshot, encodeExec, encodePrompt, encodeTask } from '~/lib/contracts/encoding';
+import { encodeSandboxId, encodeSnapshot } from '~/lib/contracts/encoding';
 import { JOB_IDS } from '~/lib/types/sandbox';
-import { Identicon } from '~/components/shared/Identicon';
+import { ChatContainer, type AgentBranding } from '@tangle/agent-ui';
+import { useSandboxChat } from '~/lib/hooks/useSandboxChat';
+import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '~/lib/utils';
 
 type ActionTab = 'overview' | 'terminal' | 'prompt' | 'task' | 'ssh';
 
+// Branding presets for each tab's chat container
+const TERMINAL_BRANDING: AgentBranding = {
+  label: 'Terminal',
+  accentClass: 'text-green-400',
+  bgClass: 'bg-green-500/5',
+  containerBgClass: 'bg-neutral-950/60',
+  borderClass: 'border-green-500/20',
+  iconClass: 'i-ph:terminal-window',
+  textClass: 'text-green-400',
+};
+
+const PROMPT_BRANDING: AgentBranding = {
+  label: 'Agent',
+  accentClass: 'text-violet-400',
+  bgClass: 'bg-violet-500/5',
+  containerBgClass: 'bg-neutral-950/60',
+  borderClass: 'border-violet-500/20',
+  iconClass: 'i-ph:robot',
+  textClass: 'text-violet-400',
+};
+
+const TASK_BRANDING: AgentBranding = {
+  label: 'Task Agent',
+  accentClass: 'text-amber-400',
+  bgClass: 'bg-amber-500/5',
+  containerBgClass: 'bg-neutral-950/60',
+  borderClass: 'border-amber-500/20',
+  iconClass: 'i-ph:lightning',
+  textClass: 'text-amber-400',
+};
+
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const decodedId = id ? decodeURIComponent(id) : '';
-  const sandbox = getSandbox(decodedId);
-  const sandboxes = useStore(sandboxListStore); // reactive
+  const sandboxes = useStore(sandboxListStore);
   const sb = sandboxes.find((s) => s.id === decodedId);
 
   const { data: isActive } = useSandboxActive(decodedId);
   const { data: operator } = useSandboxOperator(decodedId);
-  const { submitJob, status: txStatus, txHash, reset: resetTx } = useSubmitJob();
+  const { submitJob, status: txStatus, txHash } = useSubmitJob();
 
   const [tab, setTab] = useState<ActionTab>('overview');
-  const [command, setCommand] = useState('');
-  const [prompt, setPrompt] = useState('');
-  const [taskText, setTaskText] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [snapshotTier, setSnapshotTier] = useState('hot');
 
   const serviceId = BigInt(sb?.serviceId ?? '1');
+
+  // Create sandbox client for direct API access (when sidecar URL is known)
+  const client: SandboxClient | null = useMemo(() => {
+    if (!sb?.sidecarUrl) return null;
+    // Token would come from the provision response; for now use empty
+    // In production this is fetched from the operator API or stored locally
+    return createDirectClient(sb.sidecarUrl, '');
+  }, [sb?.sidecarUrl]);
+
+  // Chat hooks for each tab
+  const terminalChat = useSandboxChat({ client, mode: 'terminal' });
+  const promptChat = useSandboxChat({ client, mode: 'prompt', systemPrompt });
+  const taskChat = useSandboxChat({ client, mode: 'task', systemPrompt });
 
   const handleStop = useCallback(async () => {
     const hash = await submitJob({
@@ -76,39 +115,6 @@ export default function SandboxDetail() {
       label: `Snapshot: ${decodedId} (${snapshotTier})`,
     });
   }, [decodedId, serviceId, snapshotTier, submitJob]);
-
-  const handleExec = useCallback(async () => {
-    if (!command) return;
-    await submitJob({
-      serviceId,
-      jobId: JOB_IDS.EXEC,
-      args: encodeExec(decodedId, command),
-      label: `Exec: ${command}`,
-    });
-    setCommand('');
-  }, [decodedId, serviceId, command, submitJob]);
-
-  const handlePrompt = useCallback(async () => {
-    if (!prompt) return;
-    await submitJob({
-      serviceId,
-      jobId: JOB_IDS.PROMPT,
-      args: encodePrompt(decodedId, prompt, systemPrompt || undefined),
-      label: `Prompt: ${prompt.slice(0, 40)}...`,
-    });
-    setPrompt('');
-  }, [decodedId, serviceId, prompt, systemPrompt, submitJob]);
-
-  const handleTask = useCallback(async () => {
-    if (!taskText) return;
-    await submitJob({
-      serviceId,
-      jobId: JOB_IDS.TASK,
-      args: encodeTask(decodedId, taskText, systemPrompt || undefined),
-      label: `Task: ${taskText.slice(0, 40)}...`,
-    });
-    setTaskText('');
-  }, [decodedId, serviceId, taskText, systemPrompt, submitJob]);
 
   if (!sb) {
     return (
@@ -261,105 +267,108 @@ export default function SandboxDetail() {
         </div>
       )}
 
+      {/* Terminal Tab — ChatContainer with command execution */}
       {tab === 'terminal' && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Execute Command</CardTitle>
-            <CardDescription>Run a shell command inside the sandbox</CardDescription>
+        <Card className="overflow-hidden">
+          <CardHeader className="pb-0">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <div className="i-ph:terminal-window text-green-400" />
+              Terminal
+            </CardTitle>
+            <CardDescription>Execute shell commands inside the sandbox</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-2">
-              <Input
-                value={command}
-                onChange={(e) => setCommand(e.target.value)}
+          <CardContent className="p-0">
+            <div className="h-[500px]">
+              <ChatContainer
+                messages={terminalChat.messages}
+                partMap={terminalChat.partMap}
+                isStreaming={terminalChat.isStreaming}
+                onSend={terminalChat.send}
+                branding={TERMINAL_BRANDING}
                 placeholder="ls -la /workspace"
-                onKeyDown={(e) => e.key === 'Enter' && handleExec()}
-                className="font-data"
               />
-              <Button onClick={handleExec} disabled={!command || txStatus === 'pending'}>
-                <div className="i-ph:play text-sm" />
-                Run
-              </Button>
             </div>
-            <TxStatusIndicator status={txStatus} hash={txHash} />
           </CardContent>
         </Card>
       )}
 
+      {/* Prompt Tab — ChatContainer with agent prompting */}
       {tab === 'prompt' && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">AI Prompt</CardTitle>
-            <CardDescription>Send a prompt to the sandbox agent (20x base rate)</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <label className="block text-xs font-display text-cloud-elements-textTertiary mb-1">System Prompt (optional)</label>
-              <textarea
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="You are a helpful coding assistant."
-                rows={2}
-                className="flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-display text-cloud-elements-textTertiary mb-1">Prompt</label>
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="What files are in the workspace?"
-                rows={3}
-                className="flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-              />
-            </div>
-            <div className="flex justify-end">
-              <Button onClick={handlePrompt} disabled={!prompt || txStatus === 'pending'}>
-                <div className="i-ph:robot text-sm" />
-                Send Prompt
-              </Button>
-            </div>
-            <TxStatusIndicator status={txStatus} hash={txHash} />
-          </CardContent>
-        </Card>
+        <div className="space-y-4">
+          {/* System prompt config */}
+          <Card>
+            <CardContent className="p-3">
+              <details className="group">
+                <summary className="cursor-pointer text-xs font-display text-cloud-elements-textTertiary hover:text-cloud-elements-textSecondary transition-colors flex items-center gap-1.5">
+                  <div className="i-ph:gear text-sm" />
+                  System Prompt
+                  {systemPrompt && <span className="text-violet-400 ml-1">(set)</span>}
+                </summary>
+                <textarea
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="You are a helpful coding assistant."
+                  rows={2}
+                  className="mt-2 flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
+                />
+              </details>
+            </CardContent>
+          </Card>
+
+          <Card className="overflow-hidden">
+            <CardContent className="p-0">
+              <div className="h-[500px]">
+                <ChatContainer
+                  messages={promptChat.messages}
+                  partMap={promptChat.partMap}
+                  isStreaming={promptChat.isStreaming}
+                  onSend={promptChat.send}
+                  branding={PROMPT_BRANDING}
+                  placeholder="What files are in the workspace?"
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
 
+      {/* Task Tab — ChatContainer for autonomous tasks */}
       {tab === 'task' && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Autonomous Task</CardTitle>
-            <CardDescription>Submit an agent task for autonomous completion (250x base rate)</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <label className="block text-xs font-display text-cloud-elements-textTertiary mb-1">System Prompt (optional)</label>
-              <textarea
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="You are an expert developer."
-                rows={2}
-                className="flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-display text-cloud-elements-textTertiary mb-1">Task Description</label>
-              <textarea
-                value={taskText}
-                onChange={(e) => setTaskText(e.target.value)}
-                placeholder="Build a REST API with Express.js that has CRUD endpoints for users..."
-                rows={5}
-                className="flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-              />
-            </div>
-            <div className="flex justify-end">
-              <Button onClick={handleTask} disabled={!taskText || txStatus === 'pending'}>
-                <div className="i-ph:lightning text-sm" />
-                Submit Task
-              </Button>
-            </div>
-            <TxStatusIndicator status={txStatus} hash={txHash} />
-          </CardContent>
-        </Card>
+        <div className="space-y-4">
+          <Card>
+            <CardContent className="p-3">
+              <details className="group">
+                <summary className="cursor-pointer text-xs font-display text-cloud-elements-textTertiary hover:text-cloud-elements-textSecondary transition-colors flex items-center gap-1.5">
+                  <div className="i-ph:gear text-sm" />
+                  System Prompt
+                  {systemPrompt && <span className="text-amber-400 ml-1">(set)</span>}
+                </summary>
+                <textarea
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="You are an expert developer."
+                  rows={2}
+                  className="mt-2 flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
+                />
+              </details>
+            </CardContent>
+          </Card>
+
+          <Card className="overflow-hidden">
+            <CardContent className="p-0">
+              <div className="h-[500px]">
+                <ChatContainer
+                  messages={taskChat.messages}
+                  partMap={taskChat.partMap}
+                  isStreaming={taskChat.isStreaming}
+                  onSend={taskChat.send}
+                  branding={TASK_BRANDING}
+                  placeholder="Build a REST API with Express.js..."
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {tab === 'ssh' && (
@@ -390,35 +399,6 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
       <span className={cn('text-cloud-elements-textPrimary truncate text-right', mono && 'font-data text-xs')}>
         {value}
       </span>
-    </div>
-  );
-}
-
-function TxStatusIndicator({ status, hash }: { status: string; hash?: `0x${string}` }) {
-  if (status === 'idle') return null;
-  return (
-    <div className={cn(
-      'glass-card rounded-lg p-3',
-      status === 'confirmed' && 'border-teal-500/30',
-      status === 'failed' && 'border-crimson-500/30',
-    )}>
-      <div className="flex items-center gap-2">
-        {status === 'signing' && <div className="i-ph:circle-fill text-xs text-amber-400 animate-pulse" />}
-        {status === 'pending' && <div className="i-ph:circle-fill text-xs text-blue-400 animate-pulse" />}
-        {status === 'confirmed' && <div className="i-ph:check-circle-fill text-xs text-teal-400" />}
-        {status === 'failed' && <div className="i-ph:x-circle-fill text-xs text-crimson-400" />}
-        <span className="text-xs text-cloud-elements-textSecondary">
-          {status === 'signing' && 'Signing...'}
-          {status === 'pending' && 'Confirming...'}
-          {status === 'confirmed' && 'Confirmed'}
-          {status === 'failed' && 'Failed'}
-        </span>
-        {hash && (
-          <span className="text-xs font-data text-cloud-elements-textTertiary truncate max-w-[200px] ml-auto">
-            {hash}
-          </span>
-        )}
-      </div>
     </div>
   );
 }

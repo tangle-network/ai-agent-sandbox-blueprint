@@ -44,3 +44,8 @@ blueprint-state/
 ui/build/
 ui/.react-router/
 ui/node_modules/
+
+# Monorepo workspace (pnpm hoisted)
+node_modules/
+packages/*/node_modules/
+packages/*/dist/

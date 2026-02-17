@@ -15,7 +15,8 @@ import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { useAvailableCapacity } from '~/lib/hooks/useSandboxReads';
 import { encodeSandboxCreate } from '~/lib/contracts/encoding';
 import { JOB_IDS, PRICING_TIERS, type SandboxCreateParams } from '~/lib/types/sandbox';
-import { addSandbox } from '~/lib/stores/sandboxes';
+import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
+import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
 import { cn } from '~/lib/utils';
 
 type WizardStep = 'configure' | 'deploy';
@@ -34,6 +35,7 @@ export default function CreateSandbox() {
 
   const [step, setStep] = useState<WizardStep>('configure');
   const [showInfra, setShowInfra] = useState(false);
+  const [provisionCallId, setProvisionCallId] = useState<number | null>(null);
 
   // Sandbox config fields
   const [name, setName] = useState('');
@@ -358,6 +360,16 @@ export default function CreateSandbox() {
                     </div>
                   </div>
                 </div>
+              )}
+
+              {/* Provision Progress — visible after TX confirmed */}
+              {txStatus === 'confirmed' && provisionCallId && (
+                <ProvisionProgress
+                  callId={provisionCallId}
+                  onReady={(sandboxId) => {
+                    updateSandboxStatus(name, 'running', { sidecarUrl: undefined });
+                  }}
+                />
               )}
 
               {!address && (

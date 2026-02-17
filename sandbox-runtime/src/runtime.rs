@@ -681,6 +681,58 @@ pub async fn delete_sidecar(
     delete_sidecar_docker(record).await
 }
 
+/// Recreate a sidecar container with updated environment variables.
+///
+/// Stops and removes the old container, creates a new one with the
+/// provided `new_env_json`, and updates the persistent record.
+/// All other settings (CPU, memory, lifetime, token, etc.) are preserved
+/// from the existing record.
+///
+/// Returns the new [`SandboxRecord`] for the recreated container.
+pub async fn recreate_sidecar_with_env(
+    sandbox_id: &str,
+    new_env_json: &str,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<SandboxRecord> {
+    let old = get_sandbox_by_id(sandbox_id)?;
+
+    // Stop if running, then delete
+    if old.state == SandboxState::Running {
+        let _ = stop_sidecar(&old).await;
+    }
+    delete_sidecar(&old, tee).await?;
+    sandboxes()?.remove(sandbox_id)?;
+
+    // Rebuild creation params from the old record + new env
+    let image = if old.original_image.is_empty() {
+        env::var("SIDECAR_IMAGE").unwrap_or_else(|_| DEFAULT_SIDECAR_IMAGE.to_string())
+    } else {
+        old.original_image.clone()
+    };
+
+    let params = CreateSandboxParams {
+        name: sandbox_id.to_string(), // reuse sandbox id as name seed
+        image,
+        stack: String::new(),
+        agent_identifier: String::new(),
+        env_json: new_env_json.to_string(),
+        metadata_json: String::new(),
+        ssh_enabled: old.ssh_port.is_some(),
+        ssh_public_key: String::new(),
+        web_terminal_enabled: false,
+        max_lifetime_seconds: old.max_lifetime_seconds,
+        idle_timeout_seconds: old.idle_timeout_seconds,
+        cpu_cores: old.cpu_cores,
+        memory_mb: old.memory_mb,
+        disk_gb: 10,
+        sidecar_token: old.token.clone(), // preserve the existing token
+        tee_config: None,
+    };
+
+    let (new_record, _attestation) = create_sidecar(&params, tee).await?;
+    Ok(new_record)
+}
+
 async fn delete_sidecar_docker(record: &SandboxRecord) -> Result<()> {
     let builder = docker_builder().await?;
     let container = Container::from_id(builder.client(), &record.container_id)

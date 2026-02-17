@@ -143,6 +143,25 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         }
     }
 
+    // Spawn operator API server (provision progress, sandbox listing, session auth)
+    {
+        let api_port: u16 = std::env::var("OPERATOR_API_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(9090);
+
+        let router = sandbox_runtime::operator_api::operator_api_router();
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], api_port));
+        info!("Starting operator API on {addr}");
+
+        tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            if let Err(e) = axum::serve(listener, router).await {
+                error!("Operator API error: {e}");
+            }
+        });
+    }
+
     // Load configuration from environment variables
     let env = BlueprintEnvironment::load()?;
 
