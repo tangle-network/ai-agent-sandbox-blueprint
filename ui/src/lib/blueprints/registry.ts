@@ -13,7 +13,7 @@ import type { Address } from 'viem';
 
 // ── Types ──
 
-export type JobCategory = 'lifecycle' | 'execution' | 'batch' | 'workflow' | 'ssh';
+export type JobCategory = 'lifecycle' | 'execution' | 'batch' | 'workflow' | 'ssh' | 'management';
 
 export interface JobFieldDef {
   name: string;
@@ -24,6 +24,18 @@ export interface JobFieldDef {
   defaultValue?: string | number | boolean;
   options?: { label: string; value: string }[];
   helperText?: string;
+  /** Solidity ABI type for encoding (e.g. 'string', 'uint64', 'bool', 'uint8') */
+  abiType?: string;
+  /** ABI param name if different from `name` (e.g. 'agent_identifier' vs 'agentIdentifier') */
+  abiParam?: string;
+  /** Field is included in ABI encoding but never shown in form (e.g. sidecar_token) */
+  internal?: boolean;
+}
+
+/** ABI param injected from runtime context, not user input (e.g. sidecar_url, sandbox_id) */
+export interface AbiContextParam {
+  abiName: string;
+  abiType: string;
 }
 
 export interface JobDefinition {
@@ -34,12 +46,16 @@ export interface JobDefinition {
   category: JobCategory;
   icon: string;
   pricingMultiplier: number;
-  /** Fields the user needs to fill for this job, beyond the sandbox ID */
+  /** Fields the user needs to fill for this job */
   fields: JobFieldDef[];
   /** Whether this job requires an existing sandbox to target */
   requiresSandbox: boolean;
   /** Optional warning shown before submission */
   warning?: string;
+  /** ABI params prepended from runtime context (e.g. sidecar_url for sandbox jobs) */
+  contextParams?: AbiContextParam[];
+  /** Override for jobs with complex ABI encoding (e.g. nested structs) */
+  customEncoder?: (values: Record<string, unknown>, context?: Record<string, unknown>) => `0x${string}`;
 }
 
 export interface BlueprintDefinition {
