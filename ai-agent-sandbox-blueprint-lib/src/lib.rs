@@ -11,8 +11,9 @@ pub mod workflows;
 pub use sandbox_runtime::{
     CreateSandboxParams, DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE,
     DEFAULT_SIDECAR_SSH_PORT, DEFAULT_TIMEOUT_SECS, SandboxError, SandboxRecord, SandboxState,
+    TeeConfig, TeeType,
 };
-pub use sandbox_runtime::{auth, error, http, metrics, reaper, runtime, store, util};
+pub use sandbox_runtime::{auth, error, http, metrics, reaper, runtime, store, tee, util};
 
 use blueprint_sdk::Job;
 use blueprint_sdk::Router;
@@ -97,6 +98,10 @@ sol! {
         uint64 cpu_cores;
         uint64 memory_mb;
         uint64 disk_gb;
+        /// TEE required flag. When true, sandbox is created inside a TEE.
+        bool tee_required;
+        /// TEE type preference: 0=None (operator chooses), 1=Tdx, 2=Nitro, 3=Sev.
+        uint8 tee_type;
     }
 
     /// Sandbox identifier request.
@@ -264,6 +269,20 @@ sol! {
 /// Convert an ABI `SandboxCreateRequest` into runtime-level `CreateSandboxParams`.
 impl From<&SandboxCreateRequest> for CreateSandboxParams {
     fn from(r: &SandboxCreateRequest) -> Self {
+        let tee_config = if r.tee_required {
+            Some(TeeConfig {
+                required: true,
+                tee_type: match r.tee_type {
+                    1 => TeeType::Tdx,
+                    2 => TeeType::Nitro,
+                    3 => TeeType::Sev,
+                    _ => TeeType::None,
+                },
+            })
+        } else {
+            None
+        };
+
         Self {
             name: r.name.to_string(),
             image: r.image.to_string(),
@@ -280,7 +299,7 @@ impl From<&SandboxCreateRequest> for CreateSandboxParams {
             memory_mb: r.memory_mb,
             disk_gb: r.disk_gb,
             owner: String::new(), // Set by the job handler from Caller extractor
-            tee_config: None,
+            tee_config,
             user_env_json: String::new(),
         }
     }
@@ -308,6 +327,26 @@ pub fn batches() -> error::Result<&'static store::PersistentStore<BatchRecord>> 
 
 pub fn next_batch_id() -> String {
     format!("batch-{}", uuid::Uuid::new_v4())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Optional TEE backend (configured at startup when TEE_BACKEND is set)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static TEE_BACKEND: once_cell::sync::OnceCell<
+    std::sync::Arc<dyn sandbox_runtime::tee::TeeBackend>,
+> = once_cell::sync::OnceCell::new();
+
+/// Initialize the optional TEE backend. Call once at startup if `TEE_BACKEND` is set.
+pub fn init_tee_backend(backend: std::sync::Arc<dyn sandbox_runtime::tee::TeeBackend>) {
+    TEE_BACKEND
+        .set(backend)
+        .unwrap_or_else(|_| panic!("TEE backend already initialized"));
+}
+
+/// Get the TEE backend, if configured. Returns `None` for non-TEE operators.
+pub fn tee_backend() -> Option<&'static std::sync::Arc<dyn sandbox_runtime::tee::TeeBackend>> {
+    TEE_BACKEND.get()
 }
 
 /// Extract agent response fields from the sidecar `/agents/run` response.

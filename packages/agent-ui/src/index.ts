@@ -77,3 +77,17 @@ export { MessageList } from './components/chat/MessageList';
 export type { MessageListProps } from './components/chat/MessageList';
 export { UserMessage } from './components/chat/UserMessage';
 export type { UserMessageProps } from './components/chat/UserMessage';
+
+// Sidecar — PTY session
+export { usePtySession } from './hooks/usePtySession';
+export type { UsePtySessionOptions, UsePtySessionReturn } from './hooks/usePtySession';
+
+// Sidecar — Auth (generic, no wallet dependency)
+export { useSidecarAuth } from './hooks/useSidecarAuth';
+export type { UseSidecarAuthOptions, SidecarAuth } from './hooks/useSidecarAuth';
+
+// Sidecar — Session CRUD (requires @tanstack/react-query peer)
+export { useSessions, useCreateSession, useDeleteSession, useRenameSession } from './hooks/useSessionCrud';
+
+// Sidecar — Types
+export type { Session } from './types/sidecar';

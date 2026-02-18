@@ -70,6 +70,8 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_gb: 20,
+            tee_required: false,
+            tee_type: 0,
         }
         .abi_encode();
 

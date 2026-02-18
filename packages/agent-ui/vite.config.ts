@@ -8,16 +8,18 @@ export default defineConfig({
   plugins: [
     react(),
     UnoCSS(),
-    dts({ rollupTypes: true }),
+    dts(),
   ],
   resolve: {
     alias: { '~': resolve(__dirname, 'src') },
   },
   build: {
     lib: {
-      entry: resolve(__dirname, 'src/index.ts'),
+      entry: {
+        index: resolve(__dirname, 'src/index.ts'),
+        terminal: resolve(__dirname, 'src/terminal.ts'),
+      },
       formats: ['es'],
-      fileName: 'index',
     },
     rollupOptions: {
       external: [
@@ -28,6 +30,10 @@ export default defineConfig({
         '@nanostores/react',
         '@radix-ui/react-collapsible',
         'framer-motion',
+        '@tanstack/react-query',
+        '@xterm/xterm',
+        '@xterm/addon-fit',
+        '@xterm/addon-web-links',
       ],
     },
   },

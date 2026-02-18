@@ -40,7 +40,8 @@ pub async fn sandbox_create(
         None,
     );
 
-    let (record, _attestation) = create_sidecar(&params, None).await.map_err(|e| {
+    let tee = crate::tee_backend().map(|b| b.as_ref());
+    let (record, attestation) = create_sidecar(&params, tee).await.map_err(|e| {
         let _ = provision_progress::update_provision(
             call_id,
             ProvisionPhase::Failed,
@@ -83,11 +84,29 @@ pub async fn sandbox_create(
         Some(record.id.clone()),
     );
 
+    // If TEE was used, serialize attestation and derive the public key.
+    let tee_attestation_json = attestation
+        .as_ref()
+        .map(|att| serde_json::to_string(att).unwrap_or_default())
+        .unwrap_or_default();
+
+    let tee_public_key_json =
+        if let (Some(dep_id), Some(backend)) = (&record.tee_deployment_id, crate::tee_backend()) {
+            match backend.derive_public_key(dep_id).await {
+                Ok(pk) => serde_json::to_string(&pk).unwrap_or_default(),
+                Err(_) => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
     let response = json!({
         "sandboxId": record.id,
         "sidecarUrl": record.sidecar_url,
         "token": record.token,
         "sshPort": record.ssh_port,
+        "teeAttestationJson": tee_attestation_json,
+        "teePublicKeyJson": tee_public_key_json,
     });
 
     Ok(TangleResult(SandboxCreateOutput {
@@ -102,7 +121,8 @@ pub async fn sandbox_delete(
 ) -> Result<TangleResult<JsonResponse>, String> {
     let caller_hex = super::caller_hex(&caller);
     let record = require_sandbox_owner(&request.sandbox_id, &caller_hex)?;
-    delete_sidecar(&record, None).await?;
+    let tee = crate::tee_backend().map(|b| b.as_ref());
+    delete_sidecar(&record, tee).await?;
 
     let sandbox_id = request.sandbox_id.to_string();
     sandboxes()

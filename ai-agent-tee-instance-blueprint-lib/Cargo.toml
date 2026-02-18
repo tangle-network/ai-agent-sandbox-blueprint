@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 ai-agent-instance-blueprint-lib = { path = "../ai-agent-instance-blueprint-lib" }
-sandbox-runtime = { path = "../sandbox-runtime", features = ["tee-phala"] }
+sandbox-runtime = { path = "../sandbox-runtime", features = ["tee-all"] }
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tracing", "macros", "tangle", "local-store"] }
 once_cell = "1"
 

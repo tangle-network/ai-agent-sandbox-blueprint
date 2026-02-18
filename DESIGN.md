@@ -3,40 +3,49 @@
 ## Summary
 
 This blueprint is a sidecar-only model. Operators provide compute by running sidecar containers
-locally via Docktopus (Docker). The blueprint runtime provisions containers, returns a per-sandbox
-bearer token, and proxies write-only job calls to the sidecar API. No centralized orchestrator is
-required or used.
+locally via Docker or inside Trusted Execution Environments (TEE). The blueprint runtime provisions
+containers, returns a per-sandbox bearer token, and proxies write-only job calls to the sidecar API.
+No centralized orchestrator is required or used.
+
+When `TEE_BACKEND` is configured, sandboxes requesting `tee_required: true` are deployed inside
+hardware-backed enclaves (Intel TDX, AWS Nitro, AMD SEV-SNP) with attestation and sealed secret
+support. Non-TEE requests continue through the standard Docker path.
 
 The sidecar container runs as a non-root user with `/home/agent` as the primary workspace directory.
 
 ## Architecture
 
 ```
-┌─────────────┐     JobSubmitted      ┌──────────────────┐
-│   Tangle    │ ───────────────────── │  Blueprint Runner │
-│  (on-chain) │ ◄─────────────────── │  (Rust binary)    │
-└─────────────┘     JobResult         │                   │
-                                      │  ┌─────────────┐  │
-                                      │  │   Router     │  │
-                                      │  │  (18 jobs)   │  │
-                                      │  └──────┬──────┘  │
-                                      │         │         │
-                                      │  ┌──────┴──────┐  │
-                                      │  │  Runtime    │  │
-                                      │  │  (Docker)   │  │
-                                      │  └──────┬──────┘  │
-                                      │         │         │
-                                      │  ┌──────┴──────┐  │
-                                      │  │  Reaper/GC  │  │
-                                      │  │  Workflows  │  │
-                                      │  │  Metrics    │  │
-                                      │  └─────────────┘  │
-                                      └──────────┬────────┘
-                                                 │ Docker API
-                                      ┌──────────┴────────┐
-                                      │  Sidecar Containers │
-                                      │  (per-sandbox)      │
-                                      └─────────────────────┘
+┌─────────────┐     JobSubmitted      ┌───────────────────────┐
+│   Tangle    │ ───────────────────── │  Blueprint Runner      │
+│  (on-chain) │ ◄─────────────────── │  (Rust binary)         │
+└─────────────┘     JobResult         │                        │
+                                      │  ┌──────────────────┐  │
+                                      │  │     Router       │  │
+                                      │  │    (18 jobs)     │  │
+                                      │  └────────┬─────────┘  │
+                                      │           │            │
+                                      │  ┌────────┴─────────┐  │
+                                      │  │     Runtime      │  │
+                                      │  │  (Docker / TEE)  │  │
+                                      │  └──┬───────────┬───┘  │
+                                      │     │           │      │
+                                      │  ┌──┴──┐   ┌────┴───┐  │
+                                      │  │Reap │   │Operator│  │
+                                      │  │GC   │   │  API   │  │
+                                      │  │Work │   │(secrets│  │
+                                      │  │Metr │   │ + TEE) │  │
+                                      │  └─────┘   └────────┘  │
+                                      └─────┬───────────┬──────┘
+                                            │           │
+                                     Docker API    Cloud API
+                                            │      (optional)
+                                      ┌─────┴─────┐  ┌─────┴──────┐
+                                      │  Docker    │  │ TEE Enclave│
+                                      │ Containers │  │  (Phala,   │
+                                      │(per-sandbox│  │ AWS, GCP,  │
+                                      │            │  │ Azure)     │
+                                      └────────────┘  └────────────┘
 ```
 
 ## Module Structure
@@ -44,16 +53,22 @@ The sidecar container runs as a non-root user with `/home/agent` as the primary 
 | Module | Purpose |
 |--------|---------|
 | `lib.rs` | Public API surface, job routing, ABI type definitions |
-| `runtime.rs` | Docker container lifecycle, sandbox state machine, config |
+| `runtime.rs` | Docker/TEE container lifecycle, sandbox state machine, config |
 | `reaper.rs` | Idle/lifetime enforcement, tiered garbage collection |
 | `workflows.rs` | Cron-scheduled workflow execution engine |
 | `metrics.rs` | Atomic counters for on-chain QoS reporting |
 | `http.rs` | Sidecar HTTP client helpers (auth, JSON posting) |
 | `auth.rs` | Token generation and validation |
-| `error.rs` | `SandboxError` enum (Auth, Docker, Http, Validation, NotFound, Storage) |
+| `session_auth.rs` | EIP-191 challenge/response + PASETO session tokens |
+| `rate_limit.rs` | Per-IP sliding-window rate limiting for operator API |
+| `error.rs` | `SandboxError` enum (Auth, Docker, Http, Validation, NotFound, Storage, CloudProvider) |
 | `store.rs` | Persistent storage bridge (LocalDatabase) |
 | `util.rs` | JSON parsing, shell escaping, snapshot command builder |
+| `operator_api.rs` | Axum REST API for sandbox listing, provision progress, secrets, sealed secrets |
+| `secret_provisioning.rs` | 2-phase plaintext secret injection (recreate container with merged env) |
+| `provision_progress.rs` | Track sandbox provision phases (ImagePull → ContainerCreate → Ready) |
 | `jobs/` | Job handler implementations (sandbox, exec, batch, ssh, workflow) |
+| `tee/` | TEE backends, attestation, sealed secrets (see TEE Architecture below) |
 
 ## Feature Map
 
@@ -115,6 +130,104 @@ Jobs:
 Jobs:
 - `JOB_SSH_PROVISION` (40)
 - `JOB_SSH_REVOKE` (41)
+
+## TEE Architecture
+
+When `TEE_BACKEND` is set at startup, the operator initializes a TEE backend and sandboxes with
+`tee_required: true` are deployed inside trusted execution environments instead of plain Docker.
+The TEE integration is fully optional — without `TEE_BACKEND`, the blueprint operates exactly as
+before.
+
+### TEE Module Structure
+
+```
+tee/
+├── mod.rs               TeeBackend trait, TeeConfig, TeeType, AttestationReport, shared helpers
+├── backend_factory.rs   Runtime backend selection via TEE_BACKEND env var
+├── sealed_secrets.rs    TeePublicKey, SealedSecret, SealedSecretResult types
+├── sealed_secrets_api.rs  Operator API endpoints for public key + sealed secret injection
+├── phala.rs             Phala dstack backend (TDX CVMs via dstack API)
+├── aws_nitro.rs         AWS Nitro Enclaves backend (EC2 + Nitro enclave)
+├── gcp.rs               GCP Confidential Space backend (Confidential VMs)
+├── azure.rs             Azure Confidential VM + SKR backend (DCasv5 VMs)
+└── direct.rs            Operator-managed TEE hardware (local Docker with attestation proxy)
+```
+
+Each backend is feature-gated: `tee-phala`, `tee-aws-nitro`, `tee-gcp`, `tee-azure`, `tee-direct`.
+Use `tee-all` to enable all backends.
+
+### TeeBackend Trait
+
+All backends implement the async `TeeBackend` trait:
+
+```rust
+trait TeeBackend: Send + Sync {
+    async fn deploy(&self, params: &TeeDeployParams) -> Result<TeeDeployment>;
+    async fn attestation(&self, deployment_id: &str) -> Result<AttestationReport>;
+    async fn stop(&self, deployment_id: &str) -> Result<()>;
+    async fn destroy(&self, deployment_id: &str) -> Result<()>;
+    fn tee_type(&self) -> TeeType;
+    // Optional sealed secrets support:
+    async fn derive_public_key(&self, deployment_id: &str) -> Result<TeePublicKey>;
+    async fn inject_sealed_secrets(&self, deployment_id: &str, sealed: &SealedSecret) -> Result<SealedSecretResult>;
+}
+```
+
+### 2-Phase Provisioning (TEE + Non-TEE)
+
+Secret provisioning follows the same 2-phase pattern for both TEE and non-TEE sandboxes:
+
+**Phase 1 — On-chain (`JOB_SANDBOX_CREATE`):**
+```
+Client → Tangle → Operator
+                     │
+                     ├─ tee_required=false → Docker container
+                     └─ tee_required=true  → TEE deployment (Phala CVM, AWS Nitro, GCP, Azure, etc.)
+                     │
+                     ▼
+              SandboxCreateOutput {
+                  sandboxId, json: {
+                      sandboxId, sidecarUrl, token, sshPort,
+                      teeAttestationJson,   // empty if non-TEE
+                      teePublicKeyJson      // empty if non-TEE
+                  }
+              }
+```
+
+**Phase 2 — Off-chain (operator API):**
+
+For non-TEE sandboxes:
+```
+Client → POST /api/sandboxes/{id}/secrets → operator recreates container with merged env vars
+```
+
+For TEE sandboxes:
+```
+Client:
+  1. Verify teeAttestationJson (enclave measurement matches expected code)
+  2. Encrypt secrets to the TEE public key from teePublicKeyJson
+  3. POST /api/sandboxes/{id}/tee/sealed-secrets → operator forwards opaque blob to TEE
+  4. Only the TEE can decrypt inside the enclave
+```
+
+### Sealed Secrets API
+
+Registered conditionally when a TEE backend is configured (`operator_api_router_with_tee`):
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/sandboxes/{id}/tee/public-key` | Session (EIP-191) | Fetch TEE-bound public key with attestation |
+| `POST` | `/api/sandboxes/{id}/tee/sealed-secrets` | Session (EIP-191) | Inject encrypted secrets (operator cannot decrypt) |
+
+### Supported Backends
+
+| Backend | `TEE_BACKEND` value | TEE Type | Feature | Description |
+|---------|---------------------|----------|---------|-------------|
+| Phala dstack | `phala` | TDX | `tee-phala` | Intel TDX CVMs via Phala dstack API |
+| AWS Nitro | `nitro` / `aws` | Nitro | `tee-aws-nitro` | EC2 instances with Nitro Enclaves |
+| GCP Confidential Space | `gcp` | Sev | `tee-gcp` | AMD SEV-SNP Confidential VMs |
+| Azure SKR | `azure` | Sev | `tee-azure` | DCasv5 Confidential VMs + Secure Key Release |
+| Direct | `direct` | (configurable) | `tee-direct` | Operator-managed hardware with local attestation |
 
 ## Sandbox State Machine
 
@@ -264,24 +377,27 @@ struct SandboxCreateRequest {
     uint64 cpu_cores;
     uint64 memory_mb;
     uint64 disk_gb;
-    string sidecar_token;           // optional: if empty, operator generates one
+    bool tee_required;              // deploy inside TEE when true
+    uint8 tee_type;                 // 0=None (operator chooses), 1=Tdx, 2=Nitro, 3=Sev
 }
 
 struct SandboxCreateOutput {
     string sandboxId;               // used by contract for sandbox→operator mapping
-    string json;                    // full JSON response
+    string json;                    // full JSON response (includes teeAttestationJson, teePublicKeyJson if TEE)
 }
 
 struct SandboxIdRequest {
     string sandbox_id;
 }
 
+// Auth note: sidecar tokens are stored server-side and looked up from the sandbox record.
+// They never appear in on-chain calldata. Secrets are injected via the operator API.
+
 struct SandboxSnapshotRequest {
     string sidecar_url;
     string destination;
     bool include_workspace;
     bool include_state;
-    string sidecar_token;
 }
 
 struct SandboxExecRequest {
@@ -290,7 +406,6 @@ struct SandboxExecRequest {
     string cwd;
     string env_json;
     uint64 timeout_ms;
-    string sidecar_token;
 }
 
 struct SandboxPromptRequest {
@@ -300,7 +415,6 @@ struct SandboxPromptRequest {
     string model;
     string context_json;
     uint64 timeout_ms;
-    string sidecar_token;
 }
 
 struct SandboxTaskRequest {
@@ -311,7 +425,6 @@ struct SandboxTaskRequest {
     string model;
     string context_json;
     uint64 timeout_ms;
-    string sidecar_token;
 }
 
 struct BatchCreateRequest {
@@ -323,7 +436,6 @@ struct BatchCreateRequest {
 
 struct BatchTaskRequest {
     string[] sidecar_urls;
-    string[] sidecar_tokens;
     string prompt;
     string session_id;
     uint64 max_turns;
@@ -336,7 +448,6 @@ struct BatchTaskRequest {
 
 struct BatchExecRequest {
     string[] sidecar_urls;
-    string[] sidecar_tokens;
     string command;
     string cwd;
     string env_json;
@@ -364,14 +475,12 @@ struct SshProvisionRequest {
     string sidecar_url;
     string username;
     string public_key;
-    string sidecar_token;
 }
 
 struct SshRevokeRequest {
     string sidecar_url;
     string username;
     string public_key;
-    string sidecar_token;
 }
 ```
 
@@ -431,6 +540,66 @@ struct SshRevokeRequest {
 | `SERVICE_ID` | (required) | Tangle service ID for heartbeat |
 | `BLUEPRINT_ID` | (required) | Blueprint ID for heartbeat |
 | `OPERATOR_MAX_CAPACITY` | (none) | Advertised max sandbox capacity (registration) |
+
+### TEE (optional, requires TEE backend feature)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TEE_BACKEND` | (none) | Backend to use: `phala`, `nitro`/`aws`, `gcp`, `azure`, `direct` |
+
+#### Phala (`tee-phala` feature)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PHALA_API_KEY` | (required) | Phala dstack API key |
+| `PHALA_API_ENDPOINT` | (Phala default) | Custom dstack API endpoint |
+
+#### AWS Nitro (`tee-aws-nitro` feature)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AWS_REGION` | (required) | AWS region for Nitro Enclave instances |
+| `AWS_NITRO_SUBNET_ID` | (required) | VPC subnet for enclave instances |
+| `AWS_NITRO_SECURITY_GROUP_ID` | (required) | Security group allowing sidecar traffic |
+| `AWS_NITRO_AMI_ID` | (required) | AMI with Nitro Enclave support |
+| `AWS_NITRO_INSTANCE_TYPE` | `c5.xlarge` | EC2 instance type (must support enclaves) |
+| `AWS_NITRO_KMS_KEY_ID` | (none) | KMS key for enclave-bound key policy |
+| `AWS_NITRO_IAM_INSTANCE_PROFILE` | (none) | IAM profile for EC2 instances |
+
+#### GCP Confidential Space (`tee-gcp` feature)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GCP_PROJECT_ID` | (required) | GCP project for Confidential VMs |
+| `GCP_ZONE` | (required) | Compute zone for VM placement |
+| `GCP_CONFIDENTIAL_SPACE_IMAGE` | (required) | Confidential Space base image |
+| `GCP_MACHINE_TYPE` | `n2d-standard-4` | AMD SEV-SNP capable machine type |
+| `GCP_SERVICE_ACCOUNT_EMAIL` | (none) | Service account for VMs |
+| `GCP_NETWORK` | (none) | VPC network |
+| `GCP_SUBNET` | (none) | VPC subnet |
+| `GCP_KMS_KEY_RESOURCE` | (none) | Cloud KMS key for sealed secrets |
+
+#### Azure SKR (`tee-azure` feature)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AZURE_SUBSCRIPTION_ID` | (required) | Azure subscription |
+| `AZURE_RESOURCE_GROUP` | (required) | Resource group for Confidential VMs |
+| `AZURE_LOCATION` | (required) | Azure region |
+| `AZURE_VM_IMAGE` | (required) | VM image URN or ID |
+| `AZURE_VM_SIZE` | `Standard_DC4as_v5` | DCasv5-series VM size |
+| `AZURE_SUBNET_ID` | (required) | VNet subnet resource ID |
+| `AZURE_KEY_VAULT_URL` | (none) | Key Vault URL for Secure Key Release |
+| `AZURE_MAA_ENDPOINT` | (none) | Microsoft Azure Attestation endpoint |
+| `AZURE_TENANT_ID` | (required) | Azure AD tenant |
+| `AZURE_CLIENT_ID` | (required) | Service principal client ID |
+| `AZURE_CLIENT_SECRET` | (required) | Service principal secret |
+
+#### Direct (`tee-direct` feature)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TEE_DIRECT_TYPE` | (required) | Hardware TEE type: `tdx`, `sev`, or `nitro` |
 
 ## Output Model
 

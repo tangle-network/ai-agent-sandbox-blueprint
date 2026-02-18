@@ -1021,7 +1021,7 @@ mod conversion_tests {
             disk_gb: 50,
             sidecar_token: "my-token".to_string(),
             tee_required: true,
-            tee_type: 1, // Sgx
+            tee_type: 1, // Tdx
         };
 
         let params = CreateSandboxParams::from(&request);
@@ -1034,7 +1034,7 @@ mod conversion_tests {
         assert_eq!(params.memory_mb, 8192);
         let tee = params.tee_config.unwrap();
         assert!(tee.required);
-        assert!(matches!(tee.tee_type, TeeType::Sgx));
+        assert!(matches!(tee.tee_type, TeeType::Tdx));
     }
 
     #[test]
@@ -1067,7 +1067,7 @@ mod conversion_tests {
     fn provision_request_tee_types() {
         for (tee_type_id, expected) in [
             (0u8, TeeType::None),
-            (1, TeeType::Sgx),
+            (1, TeeType::Tdx),
             (2, TeeType::Nitro),
             (3, TeeType::Sev),
             (99, TeeType::None), // unknown falls back to None

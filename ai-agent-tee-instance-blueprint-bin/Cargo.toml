@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 ai-agent-tee-instance-blueprint-lib = { path = "../ai-agent-tee-instance-blueprint-lib" }
-sandbox-runtime = { path = "../sandbox-runtime", features = ["tee-phala"] }
+sandbox-runtime = { path = "../sandbox-runtime", features = ["tee-all"] }
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tangle"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

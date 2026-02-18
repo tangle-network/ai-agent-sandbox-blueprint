@@ -80,7 +80,7 @@ sol! {
         string sidecar_token;
         /// TEE required flag.
         bool tee_required;
-        /// TEE type: 0=None, 1=Sgx, 2=Nitro, 3=Sev.
+        /// TEE type: 0=None, 1=Tdx, 2=Nitro, 3=Sev.
         uint8 tee_type;
     }
 
@@ -224,7 +224,7 @@ impl From<&ProvisionRequest> for CreateSandboxParams {
             Some(TeeConfig {
                 required: true,
                 tee_type: match r.tee_type {
-                    1 => TeeType::Sgx,
+                    1 => TeeType::Tdx,
                     2 => TeeType::Nitro,
                     3 => TeeType::Sev,
                     _ => TeeType::None,

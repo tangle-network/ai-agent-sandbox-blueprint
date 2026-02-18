@@ -15,6 +15,12 @@ hex = "0.4"
 once_cell = "1"
 phala-tee-deploy-rs = { version = "0.2.0", optional = true }
 rand = "0.8"
+
+# Cloud TEE backends (optional, gated by features)
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
+aws-sdk-ec2 = { version = "1", optional = true }
+gcp_auth = { version = "0.12", optional = true }
+base64 = { version = "0.22", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -44,3 +50,7 @@ default = []
 test-utils = []
 tee-phala = ["dep:phala-tee-deploy-rs"]
 tee-direct = []
+tee-aws-nitro = ["dep:aws-config", "dep:aws-sdk-ec2", "dep:base64"]
+tee-gcp = ["dep:gcp_auth", "dep:base64"]
+tee-azure = ["dep:base64"]
+tee-all = ["tee-phala", "tee-direct", "tee-aws-nitro", "tee-gcp", "tee-azure"]

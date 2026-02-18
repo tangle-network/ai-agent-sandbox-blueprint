@@ -64,7 +64,7 @@ mod tests {
             algorithm: "x25519-hkdf-sha256".to_string(),
             public_key_bytes: vec![1, 2, 3, 4],
             attestation: AttestationReport {
-                tee_type: TeeType::Sgx,
+                tee_type: TeeType::Tdx,
                 evidence: vec![10, 20],
                 measurement: vec![30, 40],
                 timestamp: 1234567890,

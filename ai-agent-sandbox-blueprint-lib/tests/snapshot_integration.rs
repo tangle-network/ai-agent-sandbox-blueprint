@@ -156,6 +156,8 @@ async fn create_test_sandbox() -> SandboxRecord {
         cpu_cores: 0,
         memory_mb: 0,
         disk_gb: 0,
+        tee_required: false,
+        tee_type: 0,
     };
     create_sidecar(&CreateSandboxParams::from(&request), None)
         .await
@@ -181,6 +183,8 @@ async fn create_test_sandbox_with_destination(dest: &str) -> SandboxRecord {
         cpu_cores: 0,
         memory_mb: 0,
         disk_gb: 0,
+        tee_required: false,
+        tee_type: 0,
     };
     create_sidecar(&CreateSandboxParams::from(&request), None)
         .await

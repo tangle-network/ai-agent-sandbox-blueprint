@@ -54,7 +54,7 @@ pub async fn provision_core(
     } else if request.tee_required {
         json!({
             "tee_type": match request.tee_type {
-                1 => "sgx",
+                1 => "tdx",
                 2 => "nitro",
                 3 => "sev",
                 _ => "none",

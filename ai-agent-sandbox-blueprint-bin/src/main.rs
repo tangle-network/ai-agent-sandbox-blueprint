@@ -143,14 +143,28 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         }
     }
 
-    // Spawn operator API server (provision progress, sandbox listing, session auth)
+    // Optionally initialize TEE backend (when TEE_BACKEND env var is set)
+    let tee_backend: Option<std::sync::Arc<dyn sandbox_runtime::tee::TeeBackend>> =
+        if std::env::var("TEE_BACKEND").is_ok() {
+            let backend = sandbox_runtime::tee::backend_factory::backend_from_env()
+                .map_err(|e| blueprint_sdk::Error::Other(format!("TEE backend init: {e}")))?;
+            let backend_type = format!("{:?}", backend.tee_type());
+            ai_agent_sandbox_blueprint_lib::init_tee_backend(backend.clone());
+            info!("TEE backend initialized (type: {backend_type})");
+            Some(backend)
+        } else {
+            None
+        };
+
+    // Spawn operator API server (provision progress, sandbox listing, session auth,
+    // and sealed secrets endpoints when TEE backend is configured)
     {
         let api_port: u16 = std::env::var("OPERATOR_API_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(9090);
 
-        let router = sandbox_runtime::operator_api::operator_api_router();
+        let router = sandbox_runtime::operator_api::operator_api_router_with_tee(tee_backend);
         let addr = std::net::SocketAddr::from(([0, 0, 0, 0], api_port));
         info!("Starting operator API on {addr}");
 

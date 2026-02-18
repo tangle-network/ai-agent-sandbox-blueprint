@@ -30,9 +30,10 @@ pub async fn batch_create(
 
     let mut params = CreateSandboxParams::from(&request.template_request);
     params.owner = super::caller_hex(&caller);
+    let tee = crate::tee_backend().map(|b| b.as_ref());
     let mut sandboxes_out = Vec::with_capacity(request.count as usize);
     for _ in 0..request.count {
-        let (record, _) = create_sidecar(&params, None).await?;
+        let (record, _) = create_sidecar(&params, tee).await?;
         sandboxes_out.push(json!({
             "sandboxId": record.id,
             "sidecarUrl": record.sidecar_url,

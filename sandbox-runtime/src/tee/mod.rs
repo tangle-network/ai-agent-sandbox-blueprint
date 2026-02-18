@@ -10,6 +10,16 @@ pub mod phala;
 #[cfg(feature = "tee-direct")]
 pub mod direct;
 
+#[cfg(feature = "tee-aws-nitro")]
+pub mod aws_nitro;
+
+#[cfg(feature = "tee-gcp")]
+pub mod gcp;
+
+#[cfg(feature = "tee-azure")]
+pub mod azure;
+
+pub mod backend_factory;
 pub mod sealed_secrets;
 pub mod sealed_secrets_api;
 
@@ -19,11 +29,11 @@ pub enum TeeType {
     /// No TEE — standard Docker container (default).
     #[default]
     None,
-    /// Intel SGX via Gramine or similar shim.
-    Sgx,
+    /// Intel TDX — VM-level isolation (Phala dstack, GCP C3, Azure DCesv5).
+    Tdx,
     /// AWS Nitro Enclaves.
     Nitro,
-    /// AMD SEV-SNP confidential VMs.
+    /// AMD SEV-SNP confidential VMs (Azure DCasv5, GCP N2D).
     Sev,
 }
 
@@ -45,9 +55,9 @@ pub struct TeeConfig {
 pub struct AttestationReport {
     /// The TEE backend that produced this report.
     pub tee_type: TeeType,
-    /// Raw attestation evidence (SGX quote, Nitro attestation document, etc.).
+    /// Raw attestation evidence (TDX report, Nitro attestation document, etc.).
     pub evidence: Vec<u8>,
-    /// Enclave measurement (MRENCLAVE for SGX, PCR values for Nitro, etc.).
+    /// Enclave measurement (MRTD for TDX, PCR values for Nitro, etc.).
     pub measurement: Vec<u8>,
     /// Unix timestamp when the attestation was generated.
     pub timestamp: u64,
@@ -142,7 +152,7 @@ pub struct TeeDeployment {
 
 /// Async trait for TEE backend implementations.
 ///
-/// Each backend (Phala dstack, operator-managed SGX/TDX/SEV hardware, etc.)
+/// Each backend (Phala dstack, operator-managed TDX/SEV hardware, cloud TEE, etc.)
 /// implements this trait to handle the full lifecycle of a TEE deployment.
 #[async_trait::async_trait]
 pub trait TeeBackend: Send + Sync {
@@ -197,4 +207,100 @@ pub trait TeeBackend: Send + Sync {
             self.tee_type()
         )))
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared helpers for cloud TEE backends
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Look up the sidecar URL and auth token for a TEE deployment by its deployment ID.
+///
+/// Scans the sandbox store for a record whose `tee_deployment_id` matches.
+pub(crate) fn sidecar_info_for_deployment(
+    deployment_id: &str,
+) -> crate::error::Result<(String, String)> {
+    let store = crate::runtime::sandboxes()?;
+    let record = store
+        .find(|r| r.tee_deployment_id.as_deref() == Some(deployment_id))?
+        .ok_or_else(|| {
+            crate::error::SandboxError::NotFound(format!(
+                "No sandbox found for TEE deployment '{deployment_id}'"
+            ))
+        })?;
+    Ok((record.sidecar_url.clone(), record.token.clone()))
+}
+
+/// Fetch fresh attestation from a running sidecar's `/tee/attestation` endpoint.
+pub(crate) async fn fetch_sidecar_attestation(
+    sidecar_url: &str,
+    token: &str,
+) -> crate::error::Result<AttestationReport> {
+    let url = crate::http::build_url(sidecar_url, "/tee/attestation")?;
+    let headers = crate::http::auth_headers(token)?;
+    let (_status, body) =
+        crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
+    serde_json::from_str(&body).map_err(|e| {
+        crate::error::SandboxError::Http(format!("Invalid attestation response: {e}"))
+    })
+}
+
+/// Poll a sidecar's `/health` endpoint until it responds successfully.
+pub(crate) async fn wait_for_sidecar_health(
+    sidecar_url: &str,
+    token: &str,
+    timeout: std::time::Duration,
+) -> crate::error::Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            return Err(crate::error::SandboxError::CloudProvider(
+                "Sidecar health check timed out".into(),
+            ));
+        }
+        if let (Ok(url), Ok(headers)) = (
+            crate::http::build_url(sidecar_url, "/health"),
+            crate::http::auth_headers(token),
+        ) {
+            if crate::http::send_json(reqwest::Method::GET, url, None, headers)
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+}
+
+/// Derive a TEE-bound public key by proxying to the sidecar.
+pub(crate) async fn sidecar_derive_public_key(
+    deployment_id: &str,
+) -> crate::error::Result<sealed_secrets::TeePublicKey> {
+    let (sidecar_url, token) = sidecar_info_for_deployment(deployment_id)?;
+    let url = crate::http::build_url(&sidecar_url, "/tee/public-key")?;
+    let headers = crate::http::auth_headers(&token)?;
+    let (_status, body) =
+        crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
+    serde_json::from_str(&body).map_err(|e| {
+        crate::error::SandboxError::Http(format!("Invalid TeePublicKey response: {e}"))
+    })
+}
+
+/// Inject sealed secrets by proxying to the sidecar.
+pub(crate) async fn sidecar_inject_sealed_secrets(
+    deployment_id: &str,
+    sealed: &sealed_secrets::SealedSecret,
+) -> crate::error::Result<sealed_secrets::SealedSecretResult> {
+    let (sidecar_url, token) = sidecar_info_for_deployment(deployment_id)?;
+    let payload = serde_json::to_value(sealed).map_err(|e| {
+        crate::error::SandboxError::Validation(format!(
+            "Failed to serialize sealed secret: {e}"
+        ))
+    })?;
+    let resp =
+        crate::http::sidecar_post_json(&sidecar_url, "/tee/sealed-secrets", &token, payload)
+            .await?;
+    serde_json::from_value(resp).map_err(|e| {
+        crate::error::SandboxError::Http(format!("Invalid SealedSecretResult response: {e}"))
+    })
 }

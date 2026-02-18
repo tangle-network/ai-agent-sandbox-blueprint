@@ -15,6 +15,8 @@ pub enum SandboxError {
     NotFound(String),
     /// Internal storage/state error.
     Storage(String),
+    /// Cloud provider API error (AWS, GCP, Azure).
+    CloudProvider(String),
 }
 
 impl fmt::Display for SandboxError {
@@ -26,6 +28,7 @@ impl fmt::Display for SandboxError {
             SandboxError::Validation(msg) => write!(f, "validation error: {msg}"),
             SandboxError::NotFound(msg) => write!(f, "not found: {msg}"),
             SandboxError::Storage(msg) => write!(f, "storage error: {msg}"),
+            SandboxError::CloudProvider(msg) => write!(f, "cloud provider error: {msg}"),
         }
     }
 }

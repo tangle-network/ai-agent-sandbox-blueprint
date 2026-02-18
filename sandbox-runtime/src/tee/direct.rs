@@ -1,19 +1,18 @@
 //! Direct TEE backend skeleton for operators running their own TEE hardware.
 //!
-//! This backend is for operators who run Docker with SGX device passthrough,
-//! TDX/SEV confidential VMs, or Gramine shielded containers on their own
-//! infrastructure — as opposed to deploying to a managed service like Phala.
+//! This backend is for operators who run TDX/SEV confidential VMs on their own
+//! infrastructure — as opposed to deploying to a managed cloud service.
 //!
 //! # What operators need to implement
 //!
-//! 1. **Container launch with TEE isolation** — e.g. `docker run --device /dev/sgx_enclave`
-//!    or launching inside a TDX/SEV VM with appropriate kernel and firmware support.
+//! 1. **Container launch with TEE isolation** — launching inside a TDX/SEV VM
+//!    with appropriate kernel and firmware support.
 //!
-//! 2. **Local attestation service** — an endpoint that can produce SGX quotes,
-//!    TDX reports, or SEV attestation reports for running containers.
+//! 2. **Local attestation service** — an endpoint that can produce TDX reports
+//!    or SEV attestation reports for running containers.
 //!
-//! 3. **Measurement extraction** — reading MRENCLAVE/MRSIGNER (SGX), MRTD (TDX),
-//!    or launch digest (SEV-SNP) from the running enclave.
+//! 3. **Measurement extraction** — reading MRTD (TDX) or launch digest (SEV-SNP)
+//!    from the running confidential VM.
 //!
 //! All methods currently return `unimplemented!()` — fill them in based on
 //! your hardware and attestation infrastructure.
@@ -21,7 +20,7 @@
 use super::{AttestationReport, TeeBackend, TeeDeployParams, TeeDeployment, TeeType};
 use crate::error::Result;
 
-/// TEE backend for operators running their own TEE hardware (SGX, TDX, SEV-SNP).
+/// TEE backend for operators running their own TEE hardware (TDX, SEV-SNP).
 pub struct DirectTeeBackend {
     /// Which TEE technology this operator provides.
     pub tee_type: TeeType,

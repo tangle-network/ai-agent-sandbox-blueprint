@@ -101,7 +101,7 @@ impl TeeBackend for PhalaBackend {
             })?;
 
         let attestation = AttestationReport {
-            tee_type: TeeType::Sgx,
+            tee_type: TeeType::Tdx,
             evidence: serde_json::to_vec(&att_resp.tcb_info).unwrap_or_default(),
             measurement: serde_json::to_vec(&att_resp.app_certificates).unwrap_or_default(),
             timestamp: crate::util::now_ts(),
@@ -143,7 +143,7 @@ impl TeeBackend for PhalaBackend {
             .map_err(|e| SandboxError::Docker(format!("Phala attestation fetch failed: {e}")))?;
 
         Ok(AttestationReport {
-            tee_type: TeeType::Sgx,
+            tee_type: TeeType::Tdx,
             evidence: serde_json::to_vec(&att_resp.tcb_info).unwrap_or_default(),
             measurement: serde_json::to_vec(&att_resp.app_certificates).unwrap_or_default(),
             timestamp: crate::util::now_ts(),
@@ -169,20 +169,13 @@ impl TeeBackend for PhalaBackend {
     }
 
     fn tee_type(&self) -> TeeType {
-        TeeType::Sgx
+        TeeType::Tdx
     }
 
     // ── Sealed secrets ──────────────────────────────────────────────────────
 
     async fn derive_public_key(&self, deployment_id: &str) -> Result<TeePublicKey> {
-        let (sidecar_url, token) = sidecar_info_for_deployment(deployment_id)?;
-        let url = crate::http::build_url(&sidecar_url, "/tee/public-key")?;
-        let headers = crate::http::auth_headers(&token)?;
-        let (_status, body) =
-            crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
-        serde_json::from_str(&body).map_err(|e| {
-            SandboxError::Http(format!("Invalid TeePublicKey response: {e}"))
-        })
+        super::sidecar_derive_public_key(deployment_id).await
     }
 
     async fn inject_sealed_secrets(
@@ -190,30 +183,6 @@ impl TeeBackend for PhalaBackend {
         deployment_id: &str,
         sealed: &SealedSecret,
     ) -> Result<SealedSecretResult> {
-        let (sidecar_url, token) = sidecar_info_for_deployment(deployment_id)?;
-        let payload = serde_json::to_value(sealed).map_err(|e| {
-            SandboxError::Validation(format!("Failed to serialize sealed secret: {e}"))
-        })?;
-        let resp =
-            crate::http::sidecar_post_json(&sidecar_url, "/tee/sealed-secrets", &token, payload)
-                .await?;
-        serde_json::from_value(resp).map_err(|e| {
-            SandboxError::Http(format!("Invalid SealedSecretResult response: {e}"))
-        })
+        super::sidecar_inject_sealed_secrets(deployment_id, sealed).await
     }
-}
-
-/// Look up the sidecar URL and auth token for a TEE deployment by its deployment ID.
-///
-/// Scans the sandbox store for a record whose `tee_deployment_id` matches.
-fn sidecar_info_for_deployment(deployment_id: &str) -> Result<(String, String)> {
-    let store = crate::runtime::sandboxes()?;
-    let record = store
-        .find(|r| r.tee_deployment_id.as_deref() == Some(deployment_id))?
-        .ok_or_else(|| {
-            SandboxError::NotFound(format!(
-                "No sandbox found for TEE deployment '{deployment_id}'"
-            ))
-        })?;
-    Ok((record.sidecar_url.clone(), record.token.clone()))
 }

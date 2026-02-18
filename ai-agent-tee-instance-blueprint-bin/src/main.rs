@@ -1,9 +1,8 @@
 //! Blueprint runner for ai-agent-tee-instance-blueprint.
 //!
-//! TEE-backed variant: requires PHALA_API_KEY, constructs PhalaBackend,
-//! and routes provision/deprovision through the TEE backend.
-
-use std::sync::Arc;
+//! TEE-backed variant: reads `TEE_BACKEND` env var to select the backend,
+//! then routes provision/deprovision through it. Supports Phala, AWS Nitro,
+//! GCP Confidential Space, Azure SKR, and direct operator hardware.
 
 use ai_agent_tee_instance_blueprint_lib::{init_tee_backend, tee_router};
 use blueprint_sdk::contexts::tangle::TangleClientContext;
@@ -12,7 +11,6 @@ use blueprint_sdk::runner::config::BlueprintEnvironment;
 use blueprint_sdk::runner::tangle::config::TangleConfig;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 use blueprint_sdk::{error, info};
-use sandbox_runtime::tee::phala::PhalaBackend;
 
 #[tokio::main]
 #[allow(clippy::result_large_err)]
@@ -20,14 +18,11 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
 
     // ── TEE backend ──────────────────────────────────────────────────────
-    let api_key = std::env::var("PHALA_API_KEY")
-        .map_err(|_| blueprint_sdk::Error::Other("PHALA_API_KEY env var required".into()))?;
-    let api_endpoint = std::env::var("PHALA_API_ENDPOINT").ok();
-
-    let backend = PhalaBackend::new(&api_key, api_endpoint)
-        .map_err(|e| blueprint_sdk::Error::Other(format!("Failed to create PhalaBackend: {e}")))?;
-    init_tee_backend(Arc::new(backend));
-    info!("Phala TEE backend initialized");
+    let backend = sandbox_runtime::tee::backend_factory::backend_from_env()
+        .map_err(|e| blueprint_sdk::Error::Other(format!("Failed to create TEE backend: {e}")))?;
+    let backend_type = format!("{:?}", backend.tee_type());
+    init_tee_backend(backend);
+    info!("TEE backend initialized (type: {backend_type})");
 
     // ── Tangle setup ─────────────────────────────────────────────────────
     let env = BlueprintEnvironment::load()?;

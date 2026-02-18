@@ -1,5 +1,5 @@
 import { useParams, Link } from 'react-router';
-import { useState, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useState, useCallback, useMemo } from 'react';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '~/components/motion/AnimatedPage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card';
@@ -12,22 +12,17 @@ import { encodeSandboxId, encodeSnapshot } from '~/lib/contracts/encoding';
 import { JOB_IDS } from '~/lib/types/sandbox';
 import { ChatContainer, type AgentBranding } from '@tangle/agent-ui';
 import { useSandboxChat } from '~/lib/hooks/useSandboxChat';
+import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '~/lib/utils';
+
+const TerminalView = lazy(() =>
+  import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView }))
+);
 
 type ActionTab = 'overview' | 'terminal' | 'prompt' | 'task' | 'ssh';
 
 // Branding presets for each tab's chat container
-const TERMINAL_BRANDING: AgentBranding = {
-  label: 'Terminal',
-  accentClass: 'text-green-400',
-  bgClass: 'bg-green-500/5',
-  containerBgClass: 'bg-neutral-950/60',
-  borderClass: 'border-green-500/20',
-  iconClass: 'i-ph:terminal-window',
-  textClass: 'text-green-400',
-};
-
 const PROMPT_BRANDING: AgentBranding = {
   label: 'Agent',
   accentClass: 'text-violet-400',
@@ -72,8 +67,11 @@ export default function SandboxDetail() {
     return createDirectClient(sb.sidecarUrl, '');
   }, [sb?.sidecarUrl]);
 
-  // Chat hooks for each tab
-  const terminalChat = useSandboxChat({ client, mode: 'terminal' });
+  // Sidecar auth for PTY terminal
+  const sidecarUrl = sb?.sidecarUrl ?? '';
+  const { token: sidecarToken, isAuthenticated: isSidecarAuthed, authenticate: sidecarAuth, isAuthenticating } = useWagmiSidecarAuth(decodedId, sidecarUrl);
+
+  // Chat hooks for prompt/task tabs
   const promptChat = useSandboxChat({ client, mode: 'prompt', systemPrompt });
   const taskChat = useSandboxChat({ client, mode: 'task', systemPrompt });
 
@@ -267,28 +265,42 @@ export default function SandboxDetail() {
         </div>
       )}
 
-      {/* Terminal Tab — ChatContainer with command execution */}
+      {/* Terminal Tab — real PTY via sidecar */}
       {tab === 'terminal' && (
         <Card className="overflow-hidden">
-          <CardHeader className="pb-0">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <div className="i-ph:terminal-window text-green-400" />
-              Terminal
-            </CardTitle>
-            <CardDescription>Execute shell commands inside the sandbox</CardDescription>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="h-[500px]">
-              <ChatContainer
-                messages={terminalChat.messages}
-                partMap={terminalChat.partMap}
-                isStreaming={terminalChat.isStreaming}
-                onSend={terminalChat.send}
-                branding={TERMINAL_BRANDING}
-                placeholder="ls -la /workspace"
-              />
-            </div>
-          </CardContent>
+          {!isSidecarAuthed ? (
+            <CardContent className="py-16 text-center">
+              <div className="i-ph:terminal-window text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
+              <p className="text-sm text-cloud-elements-textSecondary mb-4">
+                Authenticate to access the sandbox terminal
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => sidecarAuth()}
+                disabled={isAuthenticating || !sidecarUrl}
+              >
+                {isAuthenticating ? 'Signing...' : 'Connect Terminal'}
+              </Button>
+            </CardContent>
+          ) : (
+            <CardContent className="p-0">
+              <div className="h-[500px]">
+                <Suspense fallback={
+                  <div className="flex items-center justify-center h-full bg-neutral-950">
+                    <span className="text-sm text-neutral-500">Loading terminal...</span>
+                  </div>
+                }>
+                  <TerminalView
+                    apiUrl={sidecarUrl}
+                    token={sidecarToken!}
+                    title="Sandbox Terminal"
+                    subtitle="Connected to sidecar PTY session"
+                  />
+                </Suspense>
+              </div>
+            </CardContent>
+          )}
         </Card>
       )}
 
