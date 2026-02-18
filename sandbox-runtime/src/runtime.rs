@@ -1137,3 +1137,152 @@ fn extract_host_port(
         .parse::<u16>()
         .map_err(|_| SandboxError::Docker(format!("Invalid host port for {key}")))
 }
+
+#[cfg(test)]
+mod tee_tests {
+    use super::*;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn init() {
+        INIT.call_once(|| {
+            let dir = std::env::temp_dir().join(format!(
+                "runtime-tee-test-{}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).ok();
+            unsafe {
+                std::env::set_var("BLUEPRINT_STATE_DIR", dir.to_str().unwrap());
+                std::env::set_var("SIDECAR_IMAGE", "test:latest");
+                std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
+            }
+        });
+    }
+
+    fn tee_required_params() -> CreateSandboxParams {
+        CreateSandboxParams {
+            name: "tee-test".into(),
+            image: "test:latest".into(),
+            tee_config: Some(crate::tee::TeeConfig {
+                required: true,
+                tee_type: crate::tee::TeeType::Tdx,
+            }),
+            owner: "0xabcdef".into(),
+            cpu_cores: 2,
+            memory_mb: 4096,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn create_sidecar_tee_required_no_backend() {
+        init();
+        let params = tee_required_params();
+        let result = create_sidecar(&params, None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("TEE required but no backend configured"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_sidecar_tee_success() {
+        init();
+        let mock = crate::tee::mock::MockTeeBackend::new(crate::tee::TeeType::Tdx);
+        let params = tee_required_params();
+
+        let (record, attestation) = create_sidecar(&params, Some(&mock)).await.unwrap();
+
+        // Record should have TEE fields
+        assert!(record.tee_deployment_id.is_some());
+        assert!(record.container_id.starts_with("tee-"));
+        assert!(record.sidecar_url.starts_with("http://mock-tee:"));
+        assert!(record.tee_metadata_json.is_some());
+        assert!(record.tee_config.is_some());
+        assert_eq!(record.owner, "0xabcdef");
+        assert_eq!(record.cpu_cores, 2);
+        assert_eq!(record.memory_mb, 4096);
+
+        // Attestation should be present
+        let att = attestation.unwrap();
+        assert_eq!(att.tee_type, crate::tee::TeeType::Tdx);
+
+        // Mock should have been called
+        assert_eq!(
+            mock.deploy_count.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn create_sidecar_tee_stores_record() {
+        init();
+        let mock = crate::tee::mock::MockTeeBackend::new(crate::tee::TeeType::Nitro);
+        let params = tee_required_params();
+
+        let (record, _) = create_sidecar(&params, Some(&mock)).await.unwrap();
+
+        // Verify the record is in the store
+        let stored = sandboxes()
+            .unwrap()
+            .get(&record.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.id, record.id);
+        assert_eq!(stored.tee_deployment_id, record.tee_deployment_id);
+        assert!(stored.container_id.starts_with("tee-"));
+    }
+
+    #[tokio::test]
+    async fn create_sidecar_tee_deploy_failure() {
+        init();
+        let mock =
+            crate::tee::mock::MockTeeBackend::failing(crate::tee::TeeType::Tdx);
+        let params = tee_required_params();
+
+        let result = create_sidecar(&params, Some(&mock)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Mock deploy failure"));
+    }
+
+    #[tokio::test]
+    async fn delete_sidecar_tee_calls_destroy() {
+        init();
+        let mock = crate::tee::mock::MockTeeBackend::new(crate::tee::TeeType::Tdx);
+
+        // First create a TEE sandbox
+        let params = tee_required_params();
+        let (record, _) = create_sidecar(&params, Some(&mock)).await.unwrap();
+
+        // Now delete it
+        delete_sidecar(&record, Some(&mock)).await.unwrap();
+        assert_eq!(
+            mock.destroy_count.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn create_sidecar_non_tee_skips_mock() {
+        init();
+        let mock = crate::tee::mock::MockTeeBackend::new(crate::tee::TeeType::Tdx);
+        let params = CreateSandboxParams {
+            name: "docker-test".into(),
+            image: "test:latest".into(),
+            tee_config: None, // no TEE
+            ..Default::default()
+        };
+
+        // This will try Docker (and fail since no Docker in tests), but
+        // the mock's deploy should NOT be called.
+        let _ = create_sidecar(&params, Some(&mock)).await;
+        assert_eq!(
+            mock.deploy_count.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "Mock deploy should not be called for non-TEE requests"
+        );
+    }
+}

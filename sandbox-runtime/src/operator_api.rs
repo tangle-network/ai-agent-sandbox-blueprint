@@ -603,4 +603,260 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().contains_key("access-control-allow-origin"));
     }
+
+    // ── TEE sealed secrets API tests ──────────────────────────────────────
+
+    fn tee_app() -> Router {
+        let mock = std::sync::Arc::new(
+            crate::tee::mock::MockTeeBackend::new(crate::tee::TeeType::Tdx),
+        );
+        operator_api_router_with_tee(Some(mock))
+    }
+
+    /// Insert a sandbox record with TEE fields into the store.
+    fn insert_tee_sandbox(id: &str, deployment_id: &str, owner: &str) {
+        init();
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes};
+        sandboxes()
+            .unwrap()
+            .insert(
+                id.to_string(),
+                SandboxRecord {
+                    id: id.to_string(),
+                    container_id: format!("tee-{deployment_id}"),
+                    sidecar_url: "http://mock-tee:8080".into(),
+                    sidecar_port: 8080,
+                    ssh_port: None,
+                    token: "test-token".into(),
+                    created_at: 1_700_000_000,
+                    cpu_cores: 2,
+                    memory_mb: 4096,
+                    state: SandboxState::Running,
+                    idle_timeout_seconds: 1800,
+                    max_lifetime_seconds: 86400,
+                    last_activity_at: 1_700_000_000,
+                    stopped_at: None,
+                    snapshot_image_id: None,
+                    snapshot_s3_url: None,
+                    container_removed_at: None,
+                    image_removed_at: None,
+                    original_image: "test:latest".into(),
+                    base_env_json: "{}".into(),
+                    user_env_json: String::new(),
+                    snapshot_destination: None,
+                    tee_deployment_id: Some(deployment_id.to_string()),
+                    tee_metadata_json: Some(r#"{"backend":"mock"}"#.into()),
+                    name: "tee-sandbox".into(),
+                    agent_identifier: String::new(),
+                    metadata_json: "{}".into(),
+                    disk_gb: 50,
+                    stack: String::new(),
+                    owner: owner.to_string(),
+                    tee_config: Some(crate::tee::TeeConfig {
+                        required: true,
+                        tee_type: crate::tee::TeeType::Tdx,
+                    }),
+                },
+            )
+            .unwrap();
+    }
+
+    /// Insert a non-TEE sandbox into the store.
+    fn insert_plain_sandbox(id: &str, owner: &str) {
+        init();
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes};
+        sandboxes()
+            .unwrap()
+            .insert(
+                id.to_string(),
+                SandboxRecord {
+                    id: id.to_string(),
+                    container_id: format!("ctr-{id}"),
+                    sidecar_url: "http://localhost:9999".into(),
+                    sidecar_port: 9999,
+                    ssh_port: None,
+                    token: "plain-token".into(),
+                    created_at: 1_700_000_000,
+                    cpu_cores: 1,
+                    memory_mb: 1024,
+                    state: SandboxState::Running,
+                    idle_timeout_seconds: 1800,
+                    max_lifetime_seconds: 86400,
+                    last_activity_at: 1_700_000_000,
+                    stopped_at: None,
+                    snapshot_image_id: None,
+                    snapshot_s3_url: None,
+                    container_removed_at: None,
+                    image_removed_at: None,
+                    original_image: "test:latest".into(),
+                    base_env_json: "{}".into(),
+                    user_env_json: String::new(),
+                    snapshot_destination: None,
+                    tee_deployment_id: None,
+                    tee_metadata_json: None,
+                    name: "plain-sandbox".into(),
+                    agent_identifier: String::new(),
+                    metadata_json: "{}".into(),
+                    disk_gb: 10,
+                    stack: String::new(),
+                    owner: owner.to_string(),
+                    tee_config: None,
+                },
+            )
+            .unwrap();
+    }
+
+    // Use a distinct owner for TEE tests so sandbox inserts don't pollute
+    // the test_list_sandboxes_empty assertion (which uses a different address).
+    const TEE_TEST_OWNER: &str = "0xTEE0000000000000000000000000000000000001";
+
+    #[tokio::test]
+    async fn test_tee_public_key_success() {
+        insert_tee_sandbox("tee-pk-1", "deploy-pk-1", TEE_TEST_OWNER);
+        let auth = format!(
+            "Bearer {}",
+            session_auth::create_test_token(TEE_TEST_OWNER)
+        );
+
+        let response = tee_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/tee-pk-1/tee/public-key")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response.into_body()).await;
+        assert_eq!(json["sandbox_id"], "tee-pk-1");
+        assert_eq!(json["public_key"]["algorithm"], "x25519-hkdf-sha256");
+        assert!(json["public_key"]["attestation"]["tee_type"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_tee_public_key_not_tee_sandbox() {
+        insert_plain_sandbox("plain-pk-1", TEE_TEST_OWNER);
+        let auth = format!(
+            "Bearer {}",
+            session_auth::create_test_token(TEE_TEST_OWNER)
+        );
+
+        let response = tee_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/plain-pk-1/tee/public-key")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_tee_public_key_nonexistent_sandbox() {
+        init();
+        let auth = format!(
+            "Bearer {}",
+            session_auth::create_test_token(
+                "0x1234567890abcdef1234567890abcdef12345678"
+            )
+        );
+
+        let response = tee_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/nonexistent/tee/public-key")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // validate_secret_access returns FORBIDDEN for nonexistent sandboxes
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_tee_public_key_no_auth() {
+        let response = tee_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/any/tee/public-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_tee_sealed_secrets_success() {
+        insert_tee_sandbox("tee-ss-1", "deploy-ss-1", TEE_TEST_OWNER);
+        let auth = format!(
+            "Bearer {}",
+            session_auth::create_test_token(TEE_TEST_OWNER)
+        );
+
+        let body = serde_json::json!({
+            "sealed_secret": {
+                "algorithm": "x25519-xsalsa20-poly1305",
+                "ciphertext": [0xDE, 0xAD],
+                "nonce": [0xBE, 0xEF]
+            }
+        });
+
+        let response = tee_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/tee-ss-1/tee/sealed-secrets")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response.into_body()).await;
+        assert_eq!(json["sandbox_id"], "tee-ss-1");
+        assert_eq!(json["success"], true);
+        assert_eq!(json["secrets_count"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_tee_routes_absent_without_backend() {
+        init();
+        let auth = format!(
+            "Bearer {}",
+            session_auth::create_test_token(
+                "0x1234567890abcdef1234567890abcdef12345678"
+            )
+        );
+
+        // Use app() which has no TEE backend
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/any/tee/public-key")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Route should not exist → 404
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

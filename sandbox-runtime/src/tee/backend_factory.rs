@@ -125,3 +125,100 @@ fn require_env(name: &str) -> Result<String> {
         SandboxError::Validation(format!("{name} environment variable is required"))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Extract error message from a Result, panicking if Ok.
+    fn expect_err(result: Result<Arc<dyn TeeBackend>>) -> String {
+        match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected Err, got Ok"),
+        }
+    }
+
+    /// Save and restore TEE_BACKEND env var around a test closure.
+    fn with_env(key: &str, val: Option<&str>, f: impl FnOnce()) {
+        let prev = std::env::var(key).ok();
+        match val {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    #[test]
+    fn missing_tee_backend_env() {
+        with_env("TEE_BACKEND", None, || {
+            let err = expect_err(backend_from_env());
+            assert!(
+                err.contains("TEE_BACKEND environment variable is required"),
+                "unexpected: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn unknown_backend_name() {
+        with_env("TEE_BACKEND", Some("banana"), || {
+            let err = expect_err(backend_from_env());
+            assert!(
+                err.contains("Unknown TEE_BACKEND 'banana'"),
+                "unexpected: {err}"
+            );
+        });
+    }
+
+    // Feature-disabled tests — these only compile when the feature is OFF,
+    // which is the default `cargo test` configuration.
+
+    #[cfg(not(feature = "tee-phala"))]
+    #[test]
+    fn phala_feature_disabled() {
+        with_env("TEE_BACKEND", Some("phala"), || {
+            let err = expect_err(backend_from_env());
+            assert!(err.contains("tee-phala"), "unexpected: {err}");
+        });
+    }
+
+    #[cfg(not(feature = "tee-aws-nitro"))]
+    #[test]
+    fn nitro_feature_disabled() {
+        with_env("TEE_BACKEND", Some("nitro"), || {
+            let err = expect_err(backend_from_env());
+            assert!(err.contains("tee-aws-nitro"), "unexpected: {err}");
+        });
+    }
+
+    #[cfg(not(feature = "tee-gcp"))]
+    #[test]
+    fn gcp_feature_disabled() {
+        with_env("TEE_BACKEND", Some("gcp"), || {
+            let err = expect_err(backend_from_env());
+            assert!(err.contains("tee-gcp"), "unexpected: {err}");
+        });
+    }
+
+    #[cfg(not(feature = "tee-azure"))]
+    #[test]
+    fn azure_feature_disabled() {
+        with_env("TEE_BACKEND", Some("azure"), || {
+            let err = expect_err(backend_from_env());
+            assert!(err.contains("tee-azure"), "unexpected: {err}");
+        });
+    }
+
+    #[cfg(not(feature = "tee-direct"))]
+    #[test]
+    fn direct_feature_disabled() {
+        with_env("TEE_BACKEND", Some("direct"), || {
+            let err = expect_err(backend_from_env());
+            assert!(err.contains("tee-direct"), "unexpected: {err}");
+        });
+    }
+}

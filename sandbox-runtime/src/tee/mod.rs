@@ -304,3 +304,340 @@ pub(crate) async fn sidecar_inject_sealed_secrets(
         crate::error::SandboxError::Http(format!("Invalid SealedSecretResult response: {e}"))
     })
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mock backend for tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod mock {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// A configurable mock TEE backend for tests.
+    ///
+    /// Tracks call counts via atomics. By default all operations succeed and
+    /// sealed secrets are supported. Use `failing()` to create a mock that
+    /// returns errors for all operations.
+    pub struct MockTeeBackend {
+        pub tee_type: TeeType,
+        pub deploy_count: AtomicUsize,
+        pub stop_count: AtomicUsize,
+        pub destroy_count: AtomicUsize,
+        pub attestation_count: AtomicUsize,
+        pub derive_pk_count: AtomicUsize,
+        pub inject_secrets_count: AtomicUsize,
+        pub should_fail: AtomicBool,
+        pub support_sealed_secrets: AtomicBool,
+    }
+
+    impl MockTeeBackend {
+        pub fn new(tee_type: TeeType) -> Self {
+            Self {
+                tee_type,
+                deploy_count: AtomicUsize::new(0),
+                stop_count: AtomicUsize::new(0),
+                destroy_count: AtomicUsize::new(0),
+                attestation_count: AtomicUsize::new(0),
+                derive_pk_count: AtomicUsize::new(0),
+                inject_secrets_count: AtomicUsize::new(0),
+                should_fail: AtomicBool::new(false),
+                support_sealed_secrets: AtomicBool::new(true),
+            }
+        }
+
+        pub fn failing(tee_type: TeeType) -> Self {
+            let mock = Self::new(tee_type);
+            mock.should_fail.store(true, Ordering::Relaxed);
+            mock
+        }
+
+        fn dummy_attestation(&self) -> AttestationReport {
+            AttestationReport {
+                tee_type: self.tee_type.clone(),
+                evidence: vec![0xDE, 0xAD],
+                measurement: vec![0xBE, 0xEF],
+                timestamp: 1_700_000_000,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TeeBackend for MockTeeBackend {
+        async fn deploy(
+            &self,
+            params: &TeeDeployParams,
+        ) -> crate::error::Result<TeeDeployment> {
+            self.deploy_count.fetch_add(1, Ordering::Relaxed);
+            if self.should_fail.load(Ordering::Relaxed) {
+                return Err(crate::error::SandboxError::CloudProvider(
+                    "Mock deploy failure".into(),
+                ));
+            }
+            Ok(TeeDeployment {
+                deployment_id: format!("mock-deploy-{}", params.sandbox_id),
+                sidecar_url: format!("http://mock-tee:{}", params.http_port),
+                ssh_port: params.ssh_port,
+                attestation: self.dummy_attestation(),
+                metadata_json: r#"{"backend":"mock"}"#.to_string(),
+            })
+        }
+
+        async fn attestation(
+            &self,
+            _deployment_id: &str,
+        ) -> crate::error::Result<AttestationReport> {
+            self.attestation_count.fetch_add(1, Ordering::Relaxed);
+            if self.should_fail.load(Ordering::Relaxed) {
+                return Err(crate::error::SandboxError::CloudProvider(
+                    "Mock attestation failure".into(),
+                ));
+            }
+            Ok(self.dummy_attestation())
+        }
+
+        async fn stop(&self, _deployment_id: &str) -> crate::error::Result<()> {
+            self.stop_count.fetch_add(1, Ordering::Relaxed);
+            if self.should_fail.load(Ordering::Relaxed) {
+                return Err(crate::error::SandboxError::CloudProvider(
+                    "Mock stop failure".into(),
+                ));
+            }
+            Ok(())
+        }
+
+        async fn destroy(&self, _deployment_id: &str) -> crate::error::Result<()> {
+            self.destroy_count.fetch_add(1, Ordering::Relaxed);
+            if self.should_fail.load(Ordering::Relaxed) {
+                return Err(crate::error::SandboxError::CloudProvider(
+                    "Mock destroy failure".into(),
+                ));
+            }
+            Ok(())
+        }
+
+        fn tee_type(&self) -> TeeType {
+            self.tee_type.clone()
+        }
+
+        async fn derive_public_key(
+            &self,
+            _deployment_id: &str,
+        ) -> crate::error::Result<sealed_secrets::TeePublicKey> {
+            self.derive_pk_count.fetch_add(1, Ordering::Relaxed);
+            if !self.support_sealed_secrets.load(Ordering::Relaxed) {
+                return Err(crate::error::SandboxError::Validation(
+                    "Sealed secrets not supported by mock".into(),
+                ));
+            }
+            Ok(sealed_secrets::TeePublicKey {
+                algorithm: "x25519-hkdf-sha256".to_string(),
+                public_key_bytes: vec![1, 2, 3, 4, 5, 6, 7, 8],
+                attestation: self.dummy_attestation(),
+            })
+        }
+
+        async fn inject_sealed_secrets(
+            &self,
+            _deployment_id: &str,
+            _sealed: &sealed_secrets::SealedSecret,
+        ) -> crate::error::Result<sealed_secrets::SealedSecretResult> {
+            self.inject_secrets_count.fetch_add(1, Ordering::Relaxed);
+            if !self.support_sealed_secrets.load(Ordering::Relaxed) {
+                return Err(crate::error::SandboxError::Validation(
+                    "Sealed secrets not supported by mock".into(),
+                ));
+            }
+            Ok(sealed_secrets::SealedSecretResult {
+                success: true,
+                secrets_count: 3,
+                error: None,
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn tee_type_serialization_roundtrip() {
+        for variant in [TeeType::None, TeeType::Tdx, TeeType::Nitro, TeeType::Sev] {
+            let json = serde_json::to_string(&variant).unwrap();
+            let decoded: TeeType = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, variant);
+        }
+    }
+
+    #[test]
+    fn attestation_report_serialization() {
+        let report = AttestationReport {
+            tee_type: TeeType::Tdx,
+            evidence: vec![0xDE, 0xAD, 0xBE, 0xEF],
+            measurement: vec![0x01, 0x02, 0x03],
+            timestamp: 1_700_000_000,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let decoded: AttestationReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.tee_type, TeeType::Tdx);
+        assert_eq!(decoded.evidence, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(decoded.measurement, vec![0x01, 0x02, 0x03]);
+        assert_eq!(decoded.timestamp, 1_700_000_000);
+    }
+
+    #[test]
+    fn tee_deploy_params_from_sandbox_params() {
+        let params = crate::runtime::CreateSandboxParams {
+            name: "test".into(),
+            image: "my-image:latest".into(),
+            env_json: r#"{"API_KEY":"secret","COUNT":42,"VERBOSE":true}"#.into(),
+            ssh_enabled: true,
+            cpu_cores: 4,
+            memory_mb: 8192,
+            disk_gb: 100,
+            ..Default::default()
+        };
+
+        let deploy = TeeDeployParams::from_sandbox_params("sb-1", &params, 8080, 2222, "tok-abc");
+
+        assert_eq!(deploy.sandbox_id, "sb-1");
+        assert_eq!(deploy.image, "my-image:latest");
+        assert_eq!(deploy.http_port, 8080);
+        assert_eq!(deploy.ssh_port, Some(2222));
+        assert_eq!(deploy.sidecar_token, "tok-abc");
+        assert_eq!(deploy.cpu_cores, 4);
+        assert_eq!(deploy.memory_mb, 8192);
+        assert_eq!(deploy.disk_gb, 100);
+
+        // Check env vars: SIDECAR_PORT + SIDECAR_AUTH_TOKEN + 3 from env_json
+        assert_eq!(deploy.env_vars.len(), 5);
+        assert!(deploy.env_vars.contains(&("SIDECAR_PORT".into(), "8080".into())));
+        assert!(deploy.env_vars.contains(&("SIDECAR_AUTH_TOKEN".into(), "tok-abc".into())));
+        assert!(deploy.env_vars.contains(&("API_KEY".into(), "secret".into())));
+        assert!(deploy.env_vars.contains(&("COUNT".into(), "42".into())));
+        assert!(deploy.env_vars.contains(&("VERBOSE".into(), "true".into())));
+    }
+
+    #[test]
+    fn tee_deploy_params_ssh_disabled() {
+        let params = crate::runtime::CreateSandboxParams {
+            ssh_enabled: false,
+            ..Default::default()
+        };
+        let deploy = TeeDeployParams::from_sandbox_params("sb-2", &params, 8080, 2222, "tok");
+        assert_eq!(deploy.ssh_port, None);
+    }
+
+    #[test]
+    fn tee_deploy_params_skips_nested_objects() {
+        let params = crate::runtime::CreateSandboxParams {
+            env_json: r#"{"SIMPLE":"val","NESTED":{"a":1},"ARR":[1,2]}"#.into(),
+            ..Default::default()
+        };
+        let deploy = TeeDeployParams::from_sandbox_params("sb-3", &params, 8080, 22, "t");
+        // Only SIDECAR_PORT + SIDECAR_AUTH_TOKEN + SIMPLE (nested/array skipped)
+        assert_eq!(deploy.env_vars.len(), 3);
+        assert!(deploy.env_vars.contains(&("SIMPLE".into(), "val".into())));
+    }
+
+    #[tokio::test]
+    async fn mock_backend_deploy_and_lifecycle() {
+        let mock = mock::MockTeeBackend::new(TeeType::Tdx);
+
+        let params = TeeDeployParams {
+            sandbox_id: "sb-test".into(),
+            image: "test:latest".into(),
+            env_vars: vec![],
+            cpu_cores: 2,
+            memory_mb: 4096,
+            disk_gb: 50,
+            http_port: 8080,
+            ssh_port: Some(2222),
+            sidecar_token: "tok".into(),
+        };
+
+        // Deploy
+        let deployment = mock.deploy(&params).await.unwrap();
+        assert_eq!(deployment.deployment_id, "mock-deploy-sb-test");
+        assert_eq!(deployment.sidecar_url, "http://mock-tee:8080");
+        assert_eq!(deployment.ssh_port, Some(2222));
+        assert_eq!(deployment.attestation.tee_type, TeeType::Tdx);
+        assert_eq!(mock.deploy_count.load(Ordering::Relaxed), 1);
+
+        // Attestation
+        let att = mock.attestation("mock-deploy-sb-test").await.unwrap();
+        assert_eq!(att.tee_type, TeeType::Tdx);
+        assert_eq!(mock.attestation_count.load(Ordering::Relaxed), 1);
+
+        // Stop
+        mock.stop("mock-deploy-sb-test").await.unwrap();
+        assert_eq!(mock.stop_count.load(Ordering::Relaxed), 1);
+
+        // Destroy
+        mock.destroy("mock-deploy-sb-test").await.unwrap();
+        assert_eq!(mock.destroy_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn mock_backend_failing_mode() {
+        let mock = mock::MockTeeBackend::failing(TeeType::Nitro);
+
+        let params = TeeDeployParams {
+            sandbox_id: "sb-fail".into(),
+            image: "test:latest".into(),
+            env_vars: vec![],
+            cpu_cores: 1,
+            memory_mb: 1024,
+            disk_gb: 10,
+            http_port: 8080,
+            ssh_port: None,
+            sidecar_token: "tok".into(),
+        };
+
+        assert!(mock.deploy(&params).await.is_err());
+        assert!(mock.attestation("x").await.is_err());
+        assert!(mock.stop("x").await.is_err());
+        assert!(mock.destroy("x").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn mock_backend_sealed_secrets_supported() {
+        let mock = mock::MockTeeBackend::new(TeeType::Tdx);
+
+        let pk = mock.derive_public_key("dep-1").await.unwrap();
+        assert_eq!(pk.algorithm, "x25519-hkdf-sha256");
+        assert_eq!(mock.derive_pk_count.load(Ordering::Relaxed), 1);
+
+        let sealed = sealed_secrets::SealedSecret {
+            algorithm: "x25519-xsalsa20-poly1305".into(),
+            ciphertext: vec![0xAA],
+            nonce: vec![0xBB],
+        };
+        let result = mock.inject_sealed_secrets("dep-1", &sealed).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.secrets_count, 3);
+        assert_eq!(mock.inject_secrets_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn mock_backend_sealed_secrets_unsupported() {
+        let mock = mock::MockTeeBackend::new(TeeType::Tdx);
+        mock.support_sealed_secrets
+            .store(false, Ordering::Relaxed);
+
+        assert!(mock.derive_public_key("dep-1").await.is_err());
+        assert!(mock
+            .inject_sealed_secrets(
+                "dep-1",
+                &sealed_secrets::SealedSecret {
+                    algorithm: "test".into(),
+                    ciphertext: vec![],
+                    nonce: vec![],
+                }
+            )
+            .await
+            .is_err());
+    }
+}
