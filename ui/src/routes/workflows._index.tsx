@@ -7,7 +7,8 @@ import { Input } from '~/components/ui/input';
 import { Select } from '~/components/ui/select';
 import { useWorkflowIds, useWorkflowBatch } from '~/lib/hooks/useSandboxReads';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
-import { encodeWorkflowCreate, encodeWorkflowControl } from '~/lib/contracts/encoding';
+import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
+import { getJobById } from '~/lib/blueprints';
 import { JOB_IDS } from '~/lib/types/sandbox';
 import { cn } from '~/lib/utils';
 
@@ -28,10 +29,12 @@ export default function Workflows() {
 
   const handleCreate = useCallback(async () => {
     if (!name) return;
+    const job = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.WORKFLOW_CREATE);
+    if (!job) return;
     await submitJob({
       serviceId: BigInt(serviceId),
       jobId: JOB_IDS.WORKFLOW_CREATE,
-      args: encodeWorkflowCreate(name, workflowJson, triggerType, triggerConfig, sandboxConfigJson),
+      args: encodeJobArgs(job, { name, workflowJson, triggerType, triggerConfig, sandboxConfigJson }),
       label: `Create Workflow: ${name}`,
     });
     setShowCreate(false);
@@ -41,19 +44,23 @@ export default function Workflows() {
   }, [name, workflowJson, triggerType, triggerConfig, sandboxConfigJson, serviceId, submitJob]);
 
   const handleTrigger = useCallback(async (wfId: bigint) => {
+    const job = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.WORKFLOW_TRIGGER);
+    if (!job) return;
     await submitJob({
       serviceId: BigInt(serviceId),
       jobId: JOB_IDS.WORKFLOW_TRIGGER,
-      args: encodeWorkflowControl(wfId),
+      args: encodeJobArgs(job, { workflowId: wfId }),
       label: `Trigger Workflow #${wfId}`,
     });
   }, [serviceId, submitJob]);
 
   const handleCancel = useCallback(async (wfId: bigint) => {
+    const job = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.WORKFLOW_CANCEL);
+    if (!job) return;
     await submitJob({
       serviceId: BigInt(serviceId),
       jobId: JOB_IDS.WORKFLOW_CANCEL,
-      args: encodeWorkflowControl(wfId),
+      args: encodeJobArgs(job, { workflowId: wfId }),
       label: `Cancel Workflow #${wfId}`,
     });
   }, [serviceId, submitJob]);

@@ -45,6 +45,10 @@ export function updateInstanceStatus(id: string, status: LocalInstance['status']
   );
 }
 
+export function getInstance(id: string): LocalInstance | undefined {
+  return instanceListStore.get().find((s) => s.id === id);
+}
+
 export function removeInstance(id: string) {
   instanceListStore.set(instanceListStore.get().filter((s) => s.id !== id));
 }

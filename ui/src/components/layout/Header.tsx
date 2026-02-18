@@ -9,8 +9,9 @@ import { cn } from '~/lib/utils';
 const navItems = [
   { label: 'Dashboard', href: '/' },
   { label: 'Sandboxes', href: '/sandboxes' },
-  { label: 'Create', href: '/create' },
+  { label: 'Instances', href: '/instances' },
   { label: 'Workflows', href: '/workflows' },
+  { label: 'Create', href: '/create' },
 ];
 
 export function Header() {

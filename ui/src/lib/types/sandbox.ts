@@ -21,23 +21,6 @@ export interface Sandbox {
   metadata?: Record<string, string>;
 }
 
-export interface SandboxCreateParams {
-  name: string;
-  image: string;
-  stack: string;
-  agentIdentifier: string;
-  envJson: string;
-  metadataJson: string;
-  sshEnabled: boolean;
-  sshPublicKey: string;
-  webTerminalEnabled: boolean;
-  maxLifetimeSeconds: number;
-  idleTimeoutSeconds: number;
-  cpuCores: number;
-  memoryMb: number;
-  diskGb: number;
-}
-
 export interface SandboxSnapshot {
   id: string;
   sandboxId: string;

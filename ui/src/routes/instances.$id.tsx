@@ -8,9 +8,8 @@ import { StatusBadge } from '~/components/shared/StatusBadge';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
-import { getBlueprint, getJobById } from '~/lib/blueprints/registry';
+import { getBlueprint, getJobById } from '~/lib/blueprints';
 import { INSTANCE_JOB_IDS } from '~/lib/types/instance';
-import '~/lib/blueprints'; // auto-register
 import { ChatContainer, type AgentBranding } from '@tangle/agent-ui';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
@@ -191,9 +190,10 @@ export default function InstanceDetail() {
               <Suspense fallback={<div className="p-6 text-sm text-cloud-elements-textTertiary">Loading terminal...</div>}>
                 <div className="h-[500px]">
                   <TerminalView
-                    sidecarUrl={sidecarUrl}
-                    token={sidecarToken ?? ''}
-                    theme={{ background: 'transparent' }}
+                    apiUrl={sidecarUrl}
+                    token={sidecarToken!}
+                    title="Instance Terminal"
+                    subtitle="Connected to sidecar PTY session"
                   />
                 </div>
               </Suspense>
@@ -217,8 +217,9 @@ export default function InstanceDetail() {
           <CardContent className="p-0 h-[600px]">
             <ChatContainer
               messages={promptChat.messages}
+              partMap={promptChat.partMap}
               isStreaming={promptChat.isStreaming}
-              onSendMessage={promptChat.sendMessage}
+              onSend={promptChat.send}
               branding={PROMPT_BRANDING}
               placeholder="Send a prompt to the agent..."
             />
@@ -232,8 +233,9 @@ export default function InstanceDetail() {
           <CardContent className="p-0 h-[600px]">
             <ChatContainer
               messages={taskChat.messages}
+              partMap={taskChat.partMap}
               isStreaming={taskChat.isStreaming}
-              onSendMessage={taskChat.sendMessage}
+              onSend={taskChat.send}
               branding={TASK_BRANDING}
               placeholder="Describe a task for the agent..."
             />
