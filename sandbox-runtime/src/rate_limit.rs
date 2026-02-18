@@ -125,6 +125,9 @@ static READ_LIMITER: once_cell::sync::Lazy<RateLimiter> =
 static WRITE_LIMITER: once_cell::sync::Lazy<RateLimiter> =
     once_cell::sync::Lazy::new(|| RateLimiter::new(RateLimitConfig::new(30, 60)));
 
+static AUTH_LIMITER: once_cell::sync::Lazy<RateLimiter> =
+    once_cell::sync::Lazy::new(|| RateLimiter::new(RateLimitConfig::new(10, 60)));
+
 /// Access the read-tier (120 req/min) limiter.
 pub fn read_limiter() -> &'static RateLimiter {
     &READ_LIMITER
@@ -133,6 +136,11 @@ pub fn read_limiter() -> &'static RateLimiter {
 /// Access the write-tier (30 req/min) limiter.
 pub fn write_limiter() -> &'static RateLimiter {
     &WRITE_LIMITER
+}
+
+/// Access the auth-tier (10 req/min) limiter.
+pub fn auth_limiter() -> &'static RateLimiter {
+    &AUTH_LIMITER
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +184,22 @@ pub async fn read_rate_limit(request: Request, next: Next) -> Response {
 pub async fn write_rate_limit(request: Request, next: Next) -> Response {
     if let Some(ip) = extract_client_ip(&request) {
         if !write_limiter().check(ip) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", "60")],
+                "Rate limit exceeded",
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
+}
+
+/// Rate-limiting middleware for auth endpoints.
+/// Allows 10 requests per minute per IP to prevent brute-force attacks.
+pub async fn auth_rate_limit(request: Request, next: Next) -> Response {
+    if let Some(ip) = extract_client_ip(&request) {
+        if !auth_limiter().check(ip) {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [("retry-after", "60")],

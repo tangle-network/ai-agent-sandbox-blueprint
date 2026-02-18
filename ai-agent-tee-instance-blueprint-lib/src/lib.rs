@@ -107,9 +107,9 @@ static TEE_BACKEND: OnceCell<Arc<dyn TeeBackend>> = OnceCell::new();
 
 /// Initialize the global TEE backend. Call once at startup.
 pub fn init_tee_backend(backend: Arc<dyn TeeBackend>) {
-    TEE_BACKEND
-        .set(backend)
-        .unwrap_or_else(|_| panic!("TEE backend already initialized"));
+    if TEE_BACKEND.set(backend).is_err() {
+        tracing::warn!("TEE backend already initialized, ignoring duplicate init");
+    }
 }
 
 /// Get the global TEE backend. Panics if not yet initialized.

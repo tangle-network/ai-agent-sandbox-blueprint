@@ -60,17 +60,15 @@ export default function SandboxDetail() {
 
   const serviceId = BigInt(sb?.serviceId ?? '1');
 
-  // Create sandbox client for direct API access (when sidecar URL is known)
-  const client: SandboxClient | null = useMemo(() => {
-    if (!sb?.sidecarUrl) return null;
-    // Token would come from the provision response; for now use empty
-    // In production this is fetched from the operator API or stored locally
-    return createDirectClient(sb.sidecarUrl, '');
-  }, [sb?.sidecarUrl]);
-
-  // Sidecar auth for PTY terminal
+  // Sidecar auth for PTY terminal and API access
   const sidecarUrl = sb?.sidecarUrl ?? '';
   const { token: sidecarToken, isAuthenticated: isSidecarAuthed, authenticate: sidecarAuth, isAuthenticating } = useWagmiSidecarAuth(decodedId, sidecarUrl);
+
+  // Create sandbox client for direct API access (uses authenticated sidecar token)
+  const client: SandboxClient | null = useMemo(() => {
+    if (!sb?.sidecarUrl || !sidecarToken) return null;
+    return createDirectClient(sb.sidecarUrl, sidecarToken);
+  }, [sb?.sidecarUrl, sidecarToken]);
 
   // Chat hooks for prompt/task tabs
   const promptChat = useSandboxChat({ client, mode: 'prompt', systemPrompt });

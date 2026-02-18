@@ -14,7 +14,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use axum::middleware;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::metrics;
 use crate::provision_progress;
@@ -243,6 +243,49 @@ pub fn extract_session_from_headers(headers: &HeaderMap) -> Result<session_auth:
 }
 
 // ---------------------------------------------------------------------------
+// CORS
+// ---------------------------------------------------------------------------
+
+/// Build CORS layer from `CORS_ALLOWED_ORIGINS` env var.
+///
+/// - If the env var is set, parse comma-separated origins and whitelist them.
+/// - If unset or `"*"`, allow any origin (development mode).
+fn build_cors_layer() -> CorsLayer {
+    use axum::http::{header, Method};
+
+    let allowed_methods = vec![
+        Method::GET,
+        Method::POST,
+        Method::DELETE,
+        Method::OPTIONS,
+    ];
+    let allowed_headers = vec![
+        header::AUTHORIZATION,
+        header::CONTENT_TYPE,
+        header::ACCEPT,
+    ];
+
+    let origins_env = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
+
+    if origins_env.is_empty() || origins_env == "*" {
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::any())
+            .allow_methods(allowed_methods)
+            .allow_headers(allowed_headers)
+    } else {
+        let origins: Vec<_> = origins_env
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(origins))
+            .allow_methods(allowed_methods)
+            .allow_headers(allowed_headers)
+            .allow_credentials(true)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Router builder
 // ---------------------------------------------------------------------------
 
@@ -264,10 +307,7 @@ pub fn operator_api_router() -> Router {
 pub fn operator_api_router_with_tee(
     tee: Option<std::sync::Arc<dyn crate::tee::TeeBackend>>,
 ) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = build_cors_layer();
 
     // Read endpoints: 120 req/min per IP
     let read_routes = Router::new()
@@ -282,16 +322,21 @@ pub fn operator_api_router_with_tee(
             "/api/sandboxes/{sandbox_id}/secrets",
             post(inject_secrets).delete(wipe_secrets),
         )
+        .layer(middleware::from_fn(rate_limit::write_rate_limit));
+
+    // Auth endpoints: 10 req/min per IP (stricter to prevent brute-force)
+    let auth_routes = Router::new()
         .route("/api/auth/challenge", post(create_challenge))
         .route("/api/auth/session", post(create_session))
-        .layer(middleware::from_fn(rate_limit::write_rate_limit));
+        .layer(middleware::from_fn(rate_limit::auth_rate_limit));
 
     let mut router = Router::new()
         // Health & metrics (unauthenticated, no rate limiting)
         .route("/health", get(health))
         .route("/metrics", get(prometheus_metrics))
         .merge(read_routes)
-        .merge(write_routes);
+        .merge(write_routes)
+        .merge(auth_routes);
 
     // TEE sealed secrets endpoints (only when backend is configured)
     if let Some(backend) = tee {

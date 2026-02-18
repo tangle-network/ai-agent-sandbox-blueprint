@@ -339,9 +339,9 @@ static TEE_BACKEND: once_cell::sync::OnceCell<
 
 /// Initialize the optional TEE backend. Call once at startup if `TEE_BACKEND` is set.
 pub fn init_tee_backend(backend: std::sync::Arc<dyn sandbox_runtime::tee::TeeBackend>) {
-    TEE_BACKEND
-        .set(backend)
-        .unwrap_or_else(|_| panic!("TEE backend already initialized"));
+    if TEE_BACKEND.set(backend).is_err() {
+        tracing::warn!("TEE backend already initialized, ignoring duplicate init");
+    }
 }
 
 /// Get the TEE backend, if configured. Returns `None` for non-TEE operators.
