@@ -139,6 +139,7 @@ dependencies = [
  "tempfile",
  "tiny-keccak",
  "tokio",
+ "tracing",
  "tracing-subscriber 0.3.22",
  "uuid 1.20.0",
  "wiremock",
@@ -164,6 +165,7 @@ dependencies = [
  "once_cell",
  "sandbox-runtime",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -8291,6 +8293,7 @@ dependencies = [
  "docktopus",
  "gcp_auth",
  "hex",
+ "hkdf",
  "http-body-util",
  "hyper 1.8.1",
  "k256",
@@ -8301,6 +8304,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "subtle",
  "tempfile",
  "time",

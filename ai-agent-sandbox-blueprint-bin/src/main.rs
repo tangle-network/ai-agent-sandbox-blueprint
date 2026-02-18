@@ -7,7 +7,7 @@ use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
 use blueprint_sdk::runner::tangle::config::TangleConfig;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
-use blueprint_sdk::{error, info};
+use blueprint_sdk::{error, info, warn};
 
 #[cfg(feature = "qos")]
 use blueprint_qos::QoSServiceBuilder;
@@ -156,27 +156,8 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             None
         };
 
-    // Spawn operator API server (provision progress, sandbox listing, session auth,
-    // and sealed secrets endpoints when TEE backend is configured)
-    {
-        let api_port: u16 = std::env::var("OPERATOR_API_PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(9090);
-
-        let router = sandbox_runtime::operator_api::operator_api_router_with_tee(tee_backend);
-        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], api_port));
-        info!("Starting operator API on {addr}");
-
-        tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-            if let Err(e) = axum::serve(listener, router).await {
-                error!("Operator API error: {e}");
-            }
-        });
-    }
-
-    // Load configuration from environment variables
+    // Load configuration from environment variables (before API startup so we can
+    // use the BPM bridge to determine binding address)
     let env = BlueprintEnvironment::load()?;
 
     // Connect to the Tangle network
@@ -194,6 +175,103 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .ok_or_else(|| blueprint_sdk::Error::Other("SERVICE_ID missing".into()))?;
 
     info!("Starting ai-agent-sandbox-blueprint blueprint for service {service_id}");
+
+    // Connect to the Blueprint Manager bridge. The BPM injects BRIDGE_SOCKET_PATH
+    // when it spawns us. If the bridge is unavailable, behaviour depends on
+    // ALLOW_STANDALONE: when true (dev only), bind 0.0.0.0 directly; when false
+    // (the default for production), refuse to start.
+    let allow_standalone = std::env::var("ALLOW_STANDALONE")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+
+    let bridge = match env.bridge().await {
+        Ok(b) => {
+            match b.ping().await {
+                Ok(()) => {
+                    info!("Connected to Blueprint Manager bridge");
+                    Some(b)
+                }
+                Err(e) => {
+                    if allow_standalone {
+                        warn!("Bridge ping failed ({e}), ALLOW_STANDALONE=true — running without proxy");
+                        None
+                    } else {
+                        return Err(blueprint_sdk::Error::Other(
+                            format!("BPM bridge ping failed: {e}. Set ALLOW_STANDALONE=true for dev mode."),
+                        ));
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            if allow_standalone {
+                warn!("No BPM bridge ({e}), ALLOW_STANDALONE=true — running without proxy");
+                None
+            } else {
+                return Err(blueprint_sdk::Error::Other(
+                    format!("BPM bridge unavailable: {e}. Set ALLOW_STANDALONE=true for dev mode."),
+                ));
+            }
+        }
+    };
+
+    // Determine operator API port and binding address.
+    // Behind BPM: request allocated port, bind 127.0.0.1 (only proxy can reach us).
+    // Standalone: bind 0.0.0.0 on configured port (dev mode only).
+    let preferred_port: u16 = std::env::var("OPERATOR_API_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9090);
+
+    let (api_port, bind_addr) = if let Some(ref b) = bridge {
+        let port = b.request_port(Some(preferred_port)).await.map_err(|e| {
+            blueprint_sdk::Error::Other(format!("BPM port allocation failed: {e}"))
+        })?;
+        info!("BPM allocated port {port} for operator API");
+        (port, [127, 0, 0, 1u8])
+    } else {
+        (preferred_port, [0, 0, 0, 0u8])
+    };
+
+    // Register with BPM proxy BEFORE starting the API server. This ensures the
+    // proxy knows about us before any traffic can arrive, eliminating the race
+    // window where the server is live but unregistered.
+    if let Some(ref b) = bridge {
+        let upstream_url = format!("http://127.0.0.1:{api_port}");
+        let api_key_prefix = format!("svc{service_id}");
+
+        b.register_blueprint_service_proxy(
+            service_id,
+            Some(api_key_prefix.as_str()),
+            &upstream_url,
+            &[], // owners managed by BPM based on on-chain service registrants
+            None, // TLS terminated by BPM proxy
+        )
+        .await
+        .map_err(|e| {
+            blueprint_sdk::Error::Other(format!(
+                "BPM proxy registration failed: {e}. Cannot start without proxy."
+            ))
+        })?;
+
+        info!(
+            "Registered operator API with BPM proxy (service={service_id}, upstream={upstream_url})"
+        );
+    }
+
+    // NOW start the API server — after registration is complete.
+    {
+        let router = sandbox_runtime::operator_api::operator_api_router_with_tee(tee_backend);
+        let addr = std::net::SocketAddr::from((bind_addr, api_port));
+        info!("Starting operator API on {addr}");
+
+        tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            if let Err(e) = axum::serve(listener, router).await {
+                error!("Operator API error: {e}");
+            }
+        });
+    }
 
     if let Err(err) = bootstrap_workflows_from_chain(&tangle_client, service_id).await {
         error!("Failed to load workflows from chain: {err}");
@@ -253,13 +331,21 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .map_err(|err| blueprint_sdk::Error::Other(format!("Invalid workflow cron: {err}")))?;
 
     // Build and run the blueprint
+    let shutdown_bridge = bridge.clone();
     let result = BlueprintRunner::builder(tangle_config, env)
         .router(router())
         .producer(tangle_producer)
         .producer(workflow_cron)
         .consumer(tangle_consumer)
-        .with_shutdown_handler(async {
+        .with_shutdown_handler(async move {
             info!("Shutting down ai-agent-sandbox-blueprint blueprint");
+            if let Some(b) = shutdown_bridge {
+                if let Err(e) = b.unregister_blueprint_service_proxy(service_id).await {
+                    error!("Failed to unregister from BPM proxy: {e}");
+                } else {
+                    info!("Unregistered from BPM proxy");
+                }
+            }
         })
         .run()
         .await;

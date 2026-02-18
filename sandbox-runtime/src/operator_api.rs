@@ -200,15 +200,9 @@ async fn wipe_secrets(
 // ---------------------------------------------------------------------------
 
 async fn health() -> impl IntoResponse {
-    let m = metrics::metrics();
-    let active = m.active_sandboxes.load(std::sync::atomic::Ordering::Relaxed);
     (
         StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "ok",
-            "uptime_secs": metrics::uptime_secs(),
-            "active_sandboxes": active,
-        })),
+        Json(serde_json::json!({ "status": "ok" })),
     )
 }
 
@@ -248,8 +242,9 @@ pub fn extract_session_from_headers(headers: &HeaderMap) -> Result<session_auth:
 
 /// Build CORS layer from `CORS_ALLOWED_ORIGINS` env var.
 ///
-/// - If the env var is set, parse comma-separated origins and whitelist them.
-/// - If unset or `"*"`, allow any origin (development mode).
+/// - `"none"` → CORS disabled (use when behind BPM proxy that handles CORS).
+/// - Comma-separated origins → strict whitelist with credentials.
+/// - Unset or `"*"` → allow any origin (development mode only).
 fn build_cors_layer() -> CorsLayer {
     use axum::http::{header, Method};
 
@@ -266,6 +261,16 @@ fn build_cors_layer() -> CorsLayer {
     ];
 
     let origins_env = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
+
+    // Behind BPM proxy: disable CORS entirely (proxy handles it).
+    if origins_env.eq_ignore_ascii_case("none") {
+        return CorsLayer::new()
+            .allow_origin(AllowOrigin::exact(
+                "http://localhost".parse().expect("valid origin"),
+            ))
+            .allow_methods(allowed_methods)
+            .allow_headers(allowed_headers);
+    }
 
     if origins_env.is_empty() || origins_env == "*" {
         CorsLayer::new()
@@ -330,10 +335,14 @@ pub fn operator_api_router_with_tee(
         .route("/api/auth/session", post(create_session))
         .layer(middleware::from_fn(rate_limit::auth_rate_limit));
 
-    let mut router = Router::new()
-        // Health & metrics (unauthenticated, no rate limiting)
+    // Health & metrics: rate-limited but unauthenticated (liveness probes need them)
+    let infra_routes = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(prometheus_metrics))
+        .layer(middleware::from_fn(rate_limit::read_rate_limit));
+
+    let mut router = Router::new()
+        .merge(infra_routes)
         .merge(read_routes)
         .merge(write_routes)
         .merge(auth_routes);
@@ -599,8 +608,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response.into_body()).await;
         assert_eq!(json["status"], "ok");
-        assert!(json["uptime_secs"].is_number());
-        assert!(json["active_sandboxes"].is_number());
     }
 
     #[tokio::test]

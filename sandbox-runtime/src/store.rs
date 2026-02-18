@@ -13,10 +13,24 @@ impl From<StoreError> for SandboxError {
 
 /// Resolve the state directory from `BLUEPRINT_STATE_DIR` env var,
 /// defaulting to `./blueprint-state`.
+///
+/// Creates the directory with restrictive permissions (0o700) if it doesn't exist.
 pub fn state_dir() -> PathBuf {
-    std::env::var("BLUEPRINT_STATE_DIR")
+    let dir = std::env::var("BLUEPRINT_STATE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("blueprint-state"))
+        .unwrap_or_else(|_| PathBuf::from("blueprint-state"));
+
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir).ok();
+        // Restrict directory permissions: only owner can read/write/traverse.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+        }
+    }
+
+    dir
 }
 
 /// Convenience wrapper that bridges `LocalDatabase` to our `SandboxError` types.
