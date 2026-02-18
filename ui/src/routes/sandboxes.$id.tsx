@@ -8,8 +8,10 @@ import { StatusBadge } from '~/components/shared/StatusBadge';
 import { sandboxListStore, updateSandboxStatus, getSandbox } from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
-import { encodeSandboxId, encodeSnapshot } from '~/lib/contracts/encoding';
+import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
+import { getJobById } from '~/lib/blueprints';
 import { JOB_IDS } from '~/lib/types/sandbox';
+import '~/lib/blueprints'; // auto-register
 import { ChatContainer, type AgentBranding } from '@tangle/agent-ui';
 import { useSandboxChat } from '~/lib/hooks/useSandboxChat';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
@@ -55,7 +57,6 @@ export default function SandboxDetail() {
 
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
-  const [snapshotTier, setSnapshotTier] = useState('hot');
 
   const serviceId = BigInt(sb?.serviceId ?? '1');
 
@@ -75,44 +76,60 @@ export default function SandboxDetail() {
   const promptChat = useSandboxChat({ client, mode: 'prompt', systemPrompt });
   const taskChat = useSandboxChat({ client, mode: 'task', systemPrompt });
 
+  const bpId = 'ai-agent-sandbox-blueprint';
+
+  const encodeCtxJob = useCallback(
+    (jobId: number, ctx: Record<string, unknown>, formValues: Record<string, unknown> = {}) => {
+      const job = getJobById(bpId, jobId);
+      if (!job) throw new Error(`Job ${jobId} not found`);
+      return encodeJobArgs(job, formValues, ctx);
+    },
+    [],
+  );
+
   const handleStop = useCallback(async () => {
     const hash = await submitJob({
       serviceId,
       jobId: JOB_IDS.SANDBOX_STOP,
-      args: encodeSandboxId(decodedId),
+      args: encodeCtxJob(JOB_IDS.SANDBOX_STOP, { sandbox_id: decodedId }),
       label: `Stop: ${decodedId}`,
     });
     if (hash) updateSandboxStatus(decodedId, 'stopped');
-  }, [decodedId, serviceId, submitJob]);
+  }, [decodedId, serviceId, submitJob, encodeCtxJob]);
 
   const handleResume = useCallback(async () => {
     const hash = await submitJob({
       serviceId,
       jobId: JOB_IDS.SANDBOX_RESUME,
-      args: encodeSandboxId(decodedId),
+      args: encodeCtxJob(JOB_IDS.SANDBOX_RESUME, { sandbox_id: decodedId }),
       label: `Resume: ${decodedId}`,
     });
     if (hash) updateSandboxStatus(decodedId, 'running');
-  }, [decodedId, serviceId, submitJob]);
+  }, [decodedId, serviceId, submitJob, encodeCtxJob]);
 
   const handleDelete = useCallback(async () => {
     const hash = await submitJob({
       serviceId,
       jobId: JOB_IDS.SANDBOX_DELETE,
-      args: encodeSandboxId(decodedId),
+      args: encodeCtxJob(JOB_IDS.SANDBOX_DELETE, { sandbox_id: decodedId }),
       label: `Delete: ${decodedId}`,
     });
     if (hash) updateSandboxStatus(decodedId, 'gone');
-  }, [decodedId, serviceId, submitJob]);
+  }, [decodedId, serviceId, submitJob, encodeCtxJob]);
 
   const handleSnapshot = useCallback(async () => {
+    const sidecarCtx = { sidecar_url: sb?.sidecarUrl ?? '' };
     await submitJob({
       serviceId,
       jobId: JOB_IDS.SANDBOX_SNAPSHOT,
-      args: encodeSnapshot(decodedId, snapshotTier),
-      label: `Snapshot: ${decodedId} (${snapshotTier})`,
+      args: encodeCtxJob(JOB_IDS.SANDBOX_SNAPSHOT, sidecarCtx, {
+        destination: '',
+        includeWorkspace: true,
+        includeState: true,
+      }),
+      label: `Snapshot: ${decodedId}`,
     });
-  }, [decodedId, serviceId, snapshotTier, submitJob]);
+  }, [decodedId, serviceId, sb?.sidecarUrl, submitJob, encodeCtxJob]);
 
   if (!sb) {
     return (

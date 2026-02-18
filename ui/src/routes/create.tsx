@@ -1,98 +1,105 @@
-import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router';
+import { useState, useCallback, useMemo } from 'react';
+import { useNavigate, useSearchParams } from 'react-router';
 import { useAccount } from 'wagmi';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '~/components/motion/AnimatedPage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card';
 import { Button } from '~/components/ui/button';
-import { Input } from '~/components/ui/input';
 import { Badge } from '~/components/ui/badge';
-import { Select } from '~/components/ui/select';
 import { InfrastructureModal, InfraBar } from '~/components/shared/InfrastructureModal';
 import { infraStore } from '~/lib/stores/infra';
-import '~/lib/blueprints/sandbox-blueprint'; // auto-register
+import { BlueprintJobForm, type FormSection } from '~/components/forms/BlueprintJobForm';
+import { FormSummary } from '~/components/forms/FormSummary';
+import { useJobForm } from '~/lib/hooks/useJobForm';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { useAvailableCapacity } from '~/lib/hooks/useSandboxReads';
-import { encodeSandboxCreate } from '~/lib/contracts/encoding';
-import { JOB_IDS, PRICING_TIERS, type SandboxCreateParams } from '~/lib/types/sandbox';
-import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
+import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
+import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition } from '~/lib/blueprints';
+import { addSandbox } from '~/lib/stores/sandboxes';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
 import { cn } from '~/lib/utils';
 
-type WizardStep = 'configure' | 'deploy';
+// ── Form sections for provision/create jobs (organized layout) ──
 
-const steps: { key: WizardStep; label: string; icon: string }[] = [
+const PROVISION_SECTIONS: FormSection[] = [
+  { label: 'Identity', fields: ['name', 'agentIdentifier'] },
+  { label: 'Image & Stack', fields: ['image', 'stack'] },
+  { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
+  { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
+  { label: 'Features', fields: ['sshEnabled', 'sshPublicKey', 'webTerminalEnabled'] },
+  { label: 'Advanced Options', fields: ['envJson', 'metadataJson', 'teeRequired', 'teeType'], collapsed: true },
+];
+
+// ── Wizard Steps ──
+
+type WizardStep = 'blueprint' | 'configure' | 'deploy';
+
+const STEPS: { key: WizardStep; label: string; icon: string }[] = [
+  { key: 'blueprint', label: 'Blueprint', icon: 'i-ph:cube' },
   { key: 'configure', label: 'Configure', icon: 'i-ph:gear' },
   { key: 'deploy', label: 'Deploy', icon: 'i-ph:lightning' },
 ];
 
-export default function CreateSandbox() {
+export default function CreatePage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { address } = useAccount();
   const infra = useStore(infraStore);
   const { submitJob, status: txStatus, error: txError, txHash, reset: resetTx } = useSubmitJob();
   const { data: capacity } = useAvailableCapacity();
 
-  const [step, setStep] = useState<WizardStep>('configure');
+  // Pre-select from query params
+  const preselectedId = searchParams.get('blueprint');
+  const preselected = preselectedId ? getBlueprint(preselectedId) : undefined;
+
+  const [selectedBlueprint, setSelectedBlueprint] = useState<BlueprintDefinition | undefined>(preselected);
+  const [step, setStep] = useState<WizardStep>(preselected ? 'configure' : 'blueprint');
   const [showInfra, setShowInfra] = useState(false);
   const [provisionCallId, setProvisionCallId] = useState<number | null>(null);
 
-  // Sandbox config fields
-  const [name, setName] = useState('');
-  const [image, setImage] = useState('ubuntu:22.04');
-  const [stack, setStack] = useState('default');
-  const [agentIdentifier, setAgentIdentifier] = useState('');
-  const [cpuCores, setCpuCores] = useState(2);
-  const [memoryMb, setMemoryMb] = useState(2048);
-  const [diskGb, setDiskGb] = useState(10);
-  const [maxLifetime, setMaxLifetime] = useState(86400);
-  const [idleTimeout, setIdleTimeout] = useState(3600);
-  const [sshEnabled, setSshEnabled] = useState(false);
-  const [sshPublicKey, setSshPublicKey] = useState('');
-  const [webTerminalEnabled, setWebTerminalEnabled] = useState(true);
-  const [envJson, setEnvJson] = useState('{}');
-  const [metadataJson, setMetadataJson] = useState('{}');
+  // The create/provision job is always job 0 for all blueprints
+  const createJob = useMemo<JobDefinition | null>(
+    () => selectedBlueprint?.jobs.find((j) => j.id === 0) ?? null,
+    [selectedBlueprint],
+  );
 
-  const currentIdx = steps.findIndex((s) => s.key === step);
-  const canDeploy = !!name && !!infra.serviceId;
-  const pricingTier = PRICING_TIERS[JOB_IDS.SANDBOX_CREATE];
+  const { values, errors, onChange, validate, reset: resetForm } = useJobForm(createJob);
+
+  const currentIdx = STEPS.findIndex((s) => s.key === step);
+  const canDeploy = createJob && values.name && infra.serviceId;
+
+  const isSandbox = selectedBlueprint?.id === 'ai-agent-sandbox-blueprint';
+  const entityLabel = isSandbox ? 'Sandbox' : 'Instance';
+
+  // ── Handlers ──
+
+  const handleSelectBlueprint = useCallback((bp: BlueprintDefinition) => {
+    setSelectedBlueprint(bp);
+    resetForm();
+    resetTx();
+    setStep('configure');
+  }, [resetForm, resetTx]);
 
   const handleDeploy = useCallback(async () => {
-    if (!name) return;
+    if (!createJob || !validate()) return;
 
-    const params: SandboxCreateParams = {
-      name,
-      image,
-      stack,
-      agentIdentifier: agentIdentifier || name,
-      envJson,
-      metadataJson,
-      sshEnabled,
-      sshPublicKey,
-      webTerminalEnabled,
-      maxLifetimeSeconds: maxLifetime,
-      idleTimeoutSeconds: idleTimeout,
-      cpuCores,
-      memoryMb,
-      diskGb,
-    };
-
-    const args = encodeSandboxCreate(params);
+    const args = encodeJobArgs(createJob, values);
+    const name = String(values.name || '');
     const hash = await submitJob({
       serviceId: BigInt(infra.serviceId || '0'),
-      jobId: JOB_IDS.SANDBOX_CREATE,
+      jobId: createJob.id,
       args,
-      label: `Create Sandbox: ${name}`,
+      label: `${createJob.label}: ${name}`,
     });
 
-    if (hash) {
+    if (hash && isSandbox) {
       addSandbox({
         id: name,
         name,
-        image,
-        cpuCores,
-        memoryMb,
-        diskGb,
+        image: String(values.image || ''),
+        cpuCores: Number(values.cpuCores) || 2,
+        memoryMb: Number(values.memoryMb) || 2048,
+        diskGb: Number(values.diskGb) || 10,
         createdAt: Date.now(),
         blueprintId: infra.blueprintId,
         serviceId: infra.serviceId,
@@ -100,22 +107,32 @@ export default function CreateSandbox() {
         txHash: hash,
       });
     }
-  }, [name, image, stack, agentIdentifier, envJson, metadataJson, sshEnabled, sshPublicKey, webTerminalEnabled, maxLifetime, idleTimeout, cpuCores, memoryMb, diskGb, infra, submitJob]);
+  }, [createJob, values, infra, submitJob, validate, isSandbox]);
 
   return (
     <AnimatedPage className="mx-auto max-w-3xl px-4 sm:px-6 py-8">
       <div className="mb-6">
-        <h1 className="text-2xl font-display font-bold text-cloud-elements-textPrimary">Create Sandbox</h1>
-        <p className="text-sm text-cloud-elements-textSecondary mt-1">Provision a new AI agent sandbox on Tangle Network</p>
+        <h1 className="text-2xl font-display font-bold text-cloud-elements-textPrimary">
+          Create {selectedBlueprint ? entityLabel : 'Resource'}
+        </h1>
+        <p className="text-sm text-cloud-elements-textSecondary mt-1">
+          {selectedBlueprint
+            ? selectedBlueprint.description
+            : 'Select a blueprint to provision a new AI agent resource on Tangle Network'}
+        </p>
       </div>
 
-      {/* Infrastructure bar — auto-defaults from env, modal to change */}
-      <InfraBar onOpenModal={() => setShowInfra(true)} />
-      <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} />
+      {/* Infrastructure bar (shown after blueprint selection) */}
+      {step !== 'blueprint' && (
+        <>
+          <InfraBar onOpenModal={() => setShowInfra(true)} />
+          <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} />
+        </>
+      )}
 
       {/* Step Indicator */}
       <div className="flex items-center gap-2 mb-8">
-        {steps.map((s, i) => (
+        {STEPS.map((s, i) => (
           <div key={s.key} className="flex items-center gap-2 flex-1">
             <button
               onClick={() => i <= currentIdx && setStep(s.key)}
@@ -132,178 +149,58 @@ export default function CreateSandbox() {
               <span className="hidden sm:inline">{s.label}</span>
               <span className="sm:hidden">{i + 1}</span>
             </button>
-            {i < steps.length - 1 && <div className="w-4 h-px bg-cloud-elements-dividerColor shrink-0" />}
+            {i < STEPS.length - 1 && <div className="w-4 h-px bg-cloud-elements-dividerColor shrink-0" />}
           </div>
         ))}
       </div>
 
-      {/* Step 1: Configure */}
-      {step === 'configure' && (
+      {/* Step 1: Blueprint Selection */}
+      {step === 'blueprint' && <BlueprintSelector onSelect={handleSelectBlueprint} />}
+
+      {/* Step 2: Configure */}
+      {step === 'configure' && createJob && (
         <div className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Sandbox Configuration</CardTitle>
-              <CardDescription>Configure your sandbox resources and settings</CardDescription>
+              <CardTitle className="flex items-center gap-2">
+                <div className={`${selectedBlueprint?.icon} text-lg`} />
+                {entityLabel} Configuration
+              </CardTitle>
+              <CardDescription>Configure your {entityLabel.toLowerCase()} resources and settings</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
-              {/* Identity */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Name *</label>
-                  <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-agent-sandbox" />
-                </div>
-                <div>
-                  <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Agent ID</label>
-                  <Input value={agentIdentifier} onChange={(e) => setAgentIdentifier(e.target.value)} placeholder={name || 'agent-1'} />
-                </div>
-              </div>
-
-              {/* Image / Stack */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Docker Image</label>
-                  <Input value={image} onChange={(e) => setImage(e.target.value)} placeholder="ubuntu:22.04" />
-                </div>
-                <div>
-                  <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Stack</label>
-                  <Select
-                    value={stack}
-                    onChange={(e) => setStack(e.target.value)}
-                    options={[
-                      { label: 'Default', value: 'default' },
-                      { label: 'Python', value: 'python' },
-                      { label: 'Node.js', value: 'nodejs' },
-                      { label: 'Rust', value: 'rust' },
-                    ]}
-                  />
-                </div>
-              </div>
-
-              {/* Resources */}
-              <div>
-                <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-3">Resources</label>
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-xs text-cloud-elements-textTertiary mb-1">CPU Cores</label>
-                    <Input type="number" value={cpuCores} onChange={(e) => setCpuCores(Number(e.target.value))} min={1} max={16} />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-cloud-elements-textTertiary mb-1">Memory (MB)</label>
-                    <Input type="number" value={memoryMb} onChange={(e) => setMemoryMb(Number(e.target.value))} min={256} max={32768} step={256} />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-cloud-elements-textTertiary mb-1">Disk (GB)</label>
-                    <Input type="number" value={diskGb} onChange={(e) => setDiskGb(Number(e.target.value))} min={1} max={100} />
-                  </div>
-                </div>
-              </div>
-
-              {/* Timeouts */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Max Lifetime (s)</label>
-                  <Input type="number" value={maxLifetime} onChange={(e) => setMaxLifetime(Number(e.target.value))} min={0} />
-                  <p className="text-xs text-cloud-elements-textTertiary mt-1">0 = unlimited</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Idle Timeout (s)</label>
-                  <Input type="number" value={idleTimeout} onChange={(e) => setIdleTimeout(Number(e.target.value))} min={0} />
-                </div>
-              </div>
-
-              {/* Toggles */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setWebTerminalEnabled(!webTerminalEnabled)}
-                    className={cn('relative w-11 h-6 rounded-full transition-colors', webTerminalEnabled ? 'bg-violet-600' : 'bg-cloud-elements-background-depth-4')}
-                  >
-                    <span className={cn('absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform', webTerminalEnabled && 'translate-x-5')} />
-                  </button>
-                  <span className="text-sm font-display text-cloud-elements-textSecondary">Web Terminal</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setSshEnabled(!sshEnabled)}
-                    className={cn('relative w-11 h-6 rounded-full transition-colors', sshEnabled ? 'bg-violet-600' : 'bg-cloud-elements-background-depth-4')}
-                  >
-                    <span className={cn('absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform', sshEnabled && 'translate-x-5')} />
-                  </button>
-                  <span className="text-sm font-display text-cloud-elements-textSecondary">Enable SSH</span>
-                </div>
-              </div>
-
-              {sshEnabled && (
-                <div>
-                  <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">SSH Public Key</label>
-                  <textarea
-                    value={sshPublicKey}
-                    onChange={(e) => setSshPublicKey(e.target.value)}
-                    placeholder="ssh-ed25519 AAAA..."
-                    className="flex min-h-[80px] w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-                  />
-                </div>
-              )}
-
-              {/* Advanced */}
-              <details className="group">
-                <summary className="cursor-pointer text-sm font-display font-medium text-cloud-elements-textTertiary hover:text-cloud-elements-textSecondary transition-colors">
-                  Advanced Options
-                </summary>
-                <div className="mt-4 space-y-4">
-                  <div>
-                    <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Environment (JSON)</label>
-                    <textarea
-                      value={envJson}
-                      onChange={(e) => setEnvJson(e.target.value)}
-                      placeholder='{}'
-                      rows={3}
-                      className="flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Metadata (JSON)</label>
-                    <textarea
-                      value={metadataJson}
-                      onChange={(e) => setMetadataJson(e.target.value)}
-                      placeholder='{}'
-                      rows={3}
-                      className="flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-                    />
-                  </div>
-                </div>
-              </details>
+            <CardContent>
+              <BlueprintJobForm
+                job={createJob}
+                values={values}
+                onChange={onChange}
+                errors={errors}
+                sections={PROVISION_SECTIONS}
+              />
             </CardContent>
           </Card>
-          <div className="flex justify-end">
+          <div className="flex justify-between">
+            <Button variant="secondary" onClick={() => setStep('blueprint')}>Back</Button>
             <Button onClick={() => setStep('deploy')} disabled={!canDeploy}>Continue</Button>
           </div>
         </div>
       )}
 
-      {/* Step 2: Deploy */}
-      {step === 'deploy' && (
+      {/* Step 3: Review & Deploy */}
+      {step === 'deploy' && createJob && (
         <div className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle>Review & Deploy</CardTitle>
-              <CardDescription>Confirm your sandbox configuration and submit the on-chain transaction</CardDescription>
+              <CardDescription>Confirm your configuration and submit the on-chain transaction</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* Config Summary */}
+              {/* Summary */}
               <div className="glass-card rounded-lg p-4 space-y-2.5">
-                <SummaryRow label="Blueprint" value={`#${infra.blueprintId}`} />
+                <SummaryRow label="Blueprint" value={selectedBlueprint?.name ?? `#${infra.blueprintId}`} />
                 <SummaryRow label="Service" value={`#${infra.serviceId}`} />
                 <div className="border-t border-cloud-elements-dividerColor my-2" />
-                <SummaryRow label="Name" value={name} />
-                <SummaryRow label="Image" value={image} mono />
-                <SummaryRow label="Stack" value={stack} />
-                <SummaryRow label="Resources" value={`${cpuCores} CPU · ${memoryMb} MB · ${diskGb} GB`} />
-                <SummaryRow label="Max Lifetime" value={maxLifetime === 0 ? 'Unlimited' : `${maxLifetime}s`} />
-                <SummaryRow label="Idle Timeout" value={`${idleTimeout}s`} />
-                <SummaryRow label="SSH" value={sshEnabled ? 'Enabled' : 'Disabled'} />
-                <SummaryRow label="Web Terminal" value={webTerminalEnabled ? 'Enabled' : 'Disabled'} />
               </div>
+              <FormSummary job={createJob} values={values} />
 
               {/* Pricing */}
               <div className="glass-card rounded-lg p-4">
@@ -311,14 +208,14 @@ export default function CreateSandbox() {
                   <div>
                     <p className="text-sm font-display font-medium text-cloud-elements-textSecondary">Estimated Cost</p>
                     <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
-                      {pricingTier?.multiplier ?? 50}x base rate
+                      {createJob.pricingMultiplier}x base rate
                     </p>
                   </div>
-                  <Badge variant="accent">{pricingTier?.label ?? 'Create Sandbox'}</Badge>
+                  <Badge variant="accent">{createJob.label}</Badge>
                 </div>
               </div>
 
-              {/* Capacity info */}
+              {/* Capacity */}
               {capacity !== undefined && (
                 <div className="glass-card rounded-lg p-3">
                   <div className="flex items-center gap-2">
@@ -346,7 +243,7 @@ export default function CreateSandbox() {
                       <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
                         {txStatus === 'signing' && 'Waiting for wallet signature...'}
                         {txStatus === 'pending' && 'Transaction submitted — waiting for confirmation...'}
-                        {txStatus === 'confirmed' && 'Sandbox creation submitted!'}
+                        {txStatus === 'confirmed' && `${entityLabel} creation submitted!`}
                         {txStatus === 'failed' && 'Transaction failed'}
                       </p>
                       {txHash && (
@@ -354,22 +251,15 @@ export default function CreateSandbox() {
                           TX: {txHash}
                         </p>
                       )}
-                      {txError && (
-                        <p className="text-xs text-crimson-400 mt-0.5">{txError}</p>
-                      )}
+                      {txError && <p className="text-xs text-crimson-400 mt-0.5">{txError}</p>}
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Provision Progress — visible after TX confirmed */}
+              {/* Provision Progress */}
               {txStatus === 'confirmed' && provisionCallId && (
-                <ProvisionProgress
-                  callId={provisionCallId}
-                  onReady={(sandboxId) => {
-                    updateSandboxStatus(name, 'running', { sidecarUrl: undefined });
-                  }}
-                />
+                <ProvisionProgress callId={provisionCallId} onReady={() => {}} />
               )}
 
               {!address && (
@@ -387,7 +277,7 @@ export default function CreateSandbox() {
             {txStatus === 'confirmed' ? (
               <Button variant="success" onClick={() => navigate('/sandboxes')}>
                 <div className="i-ph:check-bold text-base" />
-                View Sandboxes
+                View {entityLabel}s
               </Button>
             ) : (
               <Button
@@ -403,7 +293,7 @@ export default function CreateSandbox() {
                 ) : (
                   <>
                     <div className="i-ph:lightning text-base" />
-                    Deploy Sandbox
+                    Deploy {entityLabel}
                   </>
                 )}
               </Button>
@@ -414,6 +304,64 @@ export default function CreateSandbox() {
     </AnimatedPage>
   );
 }
+
+// ── Blueprint Selector ──
+
+function BlueprintSelector({ onSelect }: { onSelect: (bp: BlueprintDefinition) => void }) {
+  const blueprints = getAllBlueprints();
+
+  const colorMap: Record<string, string> = {
+    teal: 'border-teal-500/20 hover:border-teal-500/40',
+    blue: 'border-blue-500/20 hover:border-blue-500/40',
+    violet: 'border-violet-500/20 hover:border-violet-500/40',
+  };
+
+  const iconColorMap: Record<string, string> = {
+    teal: 'text-teal-400',
+    blue: 'text-blue-400',
+    violet: 'text-violet-400',
+  };
+
+  return (
+    <div className="grid gap-4">
+      {blueprints.map((bp) => (
+        <button
+          key={bp.id}
+          onClick={() => onSelect(bp)}
+          className={cn(
+            'glass-card rounded-xl p-6 text-left transition-all border-2 cursor-pointer',
+            'hover:bg-cloud-elements-item-backgroundHover',
+            colorMap[bp.color] ?? 'border-cloud-elements-borderColor hover:border-cloud-elements-borderColorActive',
+          )}
+        >
+          <div className="flex items-start gap-4">
+            <div className={cn('text-3xl', iconColorMap[bp.color] ?? 'text-cloud-elements-textTertiary', bp.icon)} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <h3 className="text-lg font-display font-semibold text-cloud-elements-textPrimary">{bp.name}</h3>
+                <Badge variant="secondary">v{bp.version}</Badge>
+              </div>
+              <p className="text-sm text-cloud-elements-textSecondary mb-3">{bp.description}</p>
+              <div className="flex items-center gap-4 text-xs text-cloud-elements-textTertiary">
+                <span className="flex items-center gap-1">
+                  <div className="i-ph:briefcase text-sm" />
+                  {bp.jobs.length} jobs
+                </span>
+                <span className="flex items-center gap-1">
+                  <div className="i-ph:folder text-sm" />
+                  {bp.categories.length} categories
+                </span>
+              </div>
+            </div>
+            <div className="i-ph:arrow-right text-lg text-cloud-elements-textTertiary" />
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Summary Row ──
 
 function SummaryRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
