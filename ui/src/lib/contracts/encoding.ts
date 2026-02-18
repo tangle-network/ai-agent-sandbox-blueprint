@@ -1,187 +1,19 @@
-import { encodeAbiParameters, decodeAbiParameters, type Address } from 'viem';
-import type { SandboxCreateParams } from '~/lib/types/sandbox';
+import { decodeAbiParameters } from 'viem';
 
 /**
- * Encoding helpers for Tangle blueprint job arguments.
- * Each job expects ABI-encoded bytes as its input. These helpers
- * produce the encoded `args` param for `submitJob(serviceId, job, args)`.
+ * ABI encoding/decoding helpers for Tangle blueprint jobs.
+ *
+ * For ENCODING, use the generic encoder from './generic-encoder':
+ *   import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
+ *
+ * The per-job encoder functions below are DEPRECATED and only kept
+ * for backwards compatibility with pages not yet migrated.
  */
 
-// ── Sandbox Lifecycle ──
+// Re-export the generic encoder for convenience
+export { encodeJobArgs } from './generic-encoder';
 
-export function encodeSandboxCreate(params: SandboxCreateParams): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'name', type: 'string' },
-      { name: 'image', type: 'string' },
-      { name: 'stack', type: 'string' },
-      { name: 'agentIdentifier', type: 'string' },
-      { name: 'envJson', type: 'string' },
-      { name: 'metadataJson', type: 'string' },
-      { name: 'sshEnabled', type: 'bool' },
-      { name: 'sshPublicKey', type: 'string' },
-      { name: 'webTerminalEnabled', type: 'bool' },
-      { name: 'maxLifetimeSeconds', type: 'uint64' },
-      { name: 'idleTimeoutSeconds', type: 'uint64' },
-      { name: 'cpuCores', type: 'uint32' },
-      { name: 'memoryMb', type: 'uint32' },
-      { name: 'diskGb', type: 'uint32' },
-    ],
-    [
-      params.name,
-      params.image,
-      params.stack,
-      params.agentIdentifier,
-      params.envJson,
-      params.metadataJson,
-      params.sshEnabled,
-      params.sshPublicKey,
-      params.webTerminalEnabled,
-      BigInt(params.maxLifetimeSeconds),
-      BigInt(params.idleTimeoutSeconds),
-      params.cpuCores,
-      params.memoryMb,
-      params.diskGb,
-    ],
-  );
-}
-
-export function encodeSandboxId(sandboxId: string): `0x${string}` {
-  return encodeAbiParameters([{ name: 'sandboxId', type: 'string' }], [sandboxId]);
-}
-
-export function encodeSnapshot(sandboxId: string, tier: string, destination?: string): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'sandboxId', type: 'string' },
-      { name: 'tier', type: 'string' },
-      { name: 'destination', type: 'string' },
-    ],
-    [sandboxId, tier, destination ?? ''],
-  );
-}
-
-// ── Execution ──
-
-export function encodeExec(sandboxId: string, command: string, args: string[] = []): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'sandboxId', type: 'string' },
-      { name: 'command', type: 'string' },
-      { name: 'args', type: 'string[]' },
-    ],
-    [sandboxId, command, args],
-  );
-}
-
-export function encodePrompt(sandboxId: string, prompt: string, systemPrompt?: string): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'sandboxId', type: 'string' },
-      { name: 'prompt', type: 'string' },
-      { name: 'systemPrompt', type: 'string' },
-    ],
-    [sandboxId, prompt, systemPrompt ?? ''],
-  );
-}
-
-export function encodeTask(sandboxId: string, task: string, systemPrompt?: string): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'sandboxId', type: 'string' },
-      { name: 'task', type: 'string' },
-      { name: 'systemPrompt', type: 'string' },
-    ],
-    [sandboxId, task, systemPrompt ?? ''],
-  );
-}
-
-// ── Batch Operations ──
-
-export function encodeBatchCreate(count: number, configJson: string): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'count', type: 'uint32' },
-      { name: 'configJson', type: 'string' },
-    ],
-    [count, configJson],
-  );
-}
-
-export function encodeBatchExec(sandboxIds: string[], command: string, args: string[] = []): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'sandboxIds', type: 'string[]' },
-      { name: 'command', type: 'string' },
-      { name: 'args', type: 'string[]' },
-    ],
-    [sandboxIds, command, args],
-  );
-}
-
-export function encodeBatchTask(sandboxIds: string[], task: string, systemPrompt?: string): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'sandboxIds', type: 'string[]' },
-      { name: 'task', type: 'string' },
-      { name: 'systemPrompt', type: 'string' },
-    ],
-    [sandboxIds, task, systemPrompt ?? ''],
-  );
-}
-
-export function encodeBatchCollect(batchId: string): `0x${string}` {
-  return encodeAbiParameters([{ name: 'batchId', type: 'string' }], [batchId]);
-}
-
-// ── Workflows ──
-
-export function encodeWorkflowCreate(
-  name: string,
-  workflowJson: string,
-  triggerType: string,
-  triggerConfig: string,
-  sandboxConfigJson: string,
-): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'name', type: 'string' },
-      { name: 'workflowJson', type: 'string' },
-      { name: 'triggerType', type: 'string' },
-      { name: 'triggerConfig', type: 'string' },
-      { name: 'sandboxConfigJson', type: 'string' },
-    ],
-    [name, workflowJson, triggerType, triggerConfig, sandboxConfigJson],
-  );
-}
-
-export function encodeWorkflowControl(workflowId: bigint): `0x${string}` {
-  return encodeAbiParameters([{ name: 'workflowId', type: 'uint64' }], [workflowId]);
-}
-
-// ── SSH ──
-
-export function encodeSshProvision(sandboxId: string, publicKey: string): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'sandboxId', type: 'string' },
-      { name: 'publicKey', type: 'string' },
-    ],
-    [sandboxId, publicKey],
-  );
-}
-
-export function encodeSshRevoke(sandboxId: string, publicKey: string): `0x${string}` {
-  return encodeAbiParameters(
-    [
-      { name: 'sandboxId', type: 'string' },
-      { name: 'publicKey', type: 'string' },
-    ],
-    [sandboxId, publicKey],
-  );
-}
-
-// ── Result Decoding ──
+// ── Result Decoding (still needed) ──
 
 export function decodeJobResult(data: `0x${string}`): { success: boolean; output: string } {
   try {
@@ -211,4 +43,35 @@ export function decodeSandboxCreateResult(data: `0x${string}`): { sandboxId: str
   } catch {
     return { sandboxId: '', sidecarUrl: '' };
   }
+}
+
+// ── Deprecated Per-Job Encoders ──
+// These are kept only for workflows._index.tsx backward compat.
+// Workflow ABIs happen to be correct; other job ABIs were stale.
+
+import { encodeAbiParameters } from 'viem';
+
+/** @deprecated Use encodeJobArgs with workflow_create job definition */
+export function encodeWorkflowCreate(
+  name: string,
+  workflowJson: string,
+  triggerType: string,
+  triggerConfig: string,
+  sandboxConfigJson: string,
+): `0x${string}` {
+  return encodeAbiParameters(
+    [
+      { name: 'name', type: 'string' },
+      { name: 'workflow_json', type: 'string' },
+      { name: 'trigger_type', type: 'string' },
+      { name: 'trigger_config', type: 'string' },
+      { name: 'sandbox_config_json', type: 'string' },
+    ],
+    [name, workflowJson, triggerType, triggerConfig, sandboxConfigJson],
+  );
+}
+
+/** @deprecated Use encodeJobArgs with workflow_trigger/cancel job definition */
+export function encodeWorkflowControl(workflowId: bigint): `0x${string}` {
+  return encodeAbiParameters([{ name: 'workflow_id', type: 'uint64' }], [workflowId]);
 }
