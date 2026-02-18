@@ -16,6 +16,7 @@ import { useAvailableCapacity } from '~/lib/hooks/useSandboxReads';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition } from '~/lib/blueprints';
 import { addSandbox } from '~/lib/stores/sandboxes';
+import { addInstance } from '~/lib/stores/instances';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
 import { cn } from '~/lib/utils';
 
@@ -92,8 +93,8 @@ export default function CreatePage() {
       label: `${createJob.label}: ${name}`,
     });
 
-    if (hash && isSandbox) {
-      addSandbox({
+    if (hash) {
+      const common = {
         id: name,
         name,
         image: String(values.image || ''),
@@ -103,11 +104,19 @@ export default function CreatePage() {
         createdAt: Date.now(),
         blueprintId: infra.blueprintId,
         serviceId: infra.serviceId,
-        status: 'creating',
+        status: 'creating' as const,
         txHash: hash,
-      });
+      };
+      if (isSandbox) {
+        addSandbox(common);
+      } else {
+        addInstance({
+          ...common,
+          teeEnabled: selectedBlueprint?.id === 'ai-agent-tee-instance-blueprint',
+        });
+      }
     }
-  }, [createJob, values, infra, submitJob, validate, isSandbox]);
+  }, [createJob, values, infra, submitJob, validate, isSandbox, selectedBlueprint]);
 
   return (
     <AnimatedPage className="mx-auto max-w-3xl px-4 sm:px-6 py-8">
@@ -275,7 +284,7 @@ export default function CreatePage() {
           <div className="flex justify-between">
             <Button variant="secondary" onClick={() => { setStep('configure'); resetTx(); }}>Back</Button>
             {txStatus === 'confirmed' ? (
-              <Button variant="success" onClick={() => navigate('/sandboxes')}>
+              <Button variant="success" onClick={() => navigate(isSandbox ? '/sandboxes' : '/instances')}>
                 <div className="i-ph:check-bold text-base" />
                 View {entityLabel}s
               </Button>
