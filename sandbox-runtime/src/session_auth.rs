@@ -183,13 +183,18 @@ fn keccak256(data: &[u8]) -> [u8; 32] {
 // Session token (PASETO v4.local)
 // ---------------------------------------------------------------------------
 
+/// Domain-specific salt for HKDF key derivation. This separates our key domain
+/// from any other use of the same secret material.
+const HKDF_SALT: &[u8] = b"tangle-sandbox-blueprint-paseto-v4";
+/// HKDF info parameter for the PASETO symmetric key derivation.
+const HKDF_INFO: &[u8] = b"session-auth-symmetric-key-v1";
+
 /// Symmetric key for PASETO tokens. Derived once from `SESSION_AUTH_SECRET` env var
-/// or a random key generated at startup.
+/// using HKDF-SHA256 (extract-then-expand), or a random key generated at startup.
 static SYMMETRIC_KEY: Lazy<pasetors::keys::SymmetricKey<pasetors::version4::V4>> = Lazy::new(|| {
     let key_bytes = match std::env::var("SESSION_AUTH_SECRET") {
         Ok(secret) => {
-            let hash = keccak256(secret.as_bytes());
-            hash
+            derive_symmetric_key(secret.as_bytes())
         }
         Err(_) => {
             let mut bytes = [0u8; 32];
@@ -200,6 +205,22 @@ static SYMMETRIC_KEY: Lazy<pasetors::keys::SymmetricKey<pasetors::version4::V4>>
     pasetors::keys::SymmetricKey::<pasetors::version4::V4>::from(&key_bytes)
         .expect("Failed to create PASETO symmetric key")
 });
+
+/// Derive a 32-byte symmetric key from input keying material using HKDF-SHA256.
+///
+/// Uses a domain-specific salt and info parameter to ensure the derived key is
+/// unique to this application's PASETO token encryption, even if the same secret
+/// is reused elsewhere.
+fn derive_symmetric_key(ikm: &[u8]) -> [u8; 32] {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), ikm);
+    let mut key = [0u8; 32];
+    hk.expand(HKDF_INFO, &mut key)
+        .expect("HKDF-SHA256 expand to 32 bytes cannot fail");
+    key
+}
 
 /// Verify a challenge signature and issue a PASETO session token.
 pub fn exchange_signature_for_token(
@@ -609,6 +630,29 @@ mod tests {
         assert_eq!(
             hex::encode(hash),
             "1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8"
+        );
+    }
+
+    #[test]
+    fn hkdf_key_derivation_is_deterministic() {
+        let key1 = derive_symmetric_key(b"test-secret-material");
+        let key2 = derive_symmetric_key(b"test-secret-material");
+        assert_eq!(key1, key2, "Same input must produce same key");
+
+        // Different input produces different key
+        let key3 = derive_symmetric_key(b"different-secret");
+        assert_ne!(key1, key3, "Different input must produce different key");
+    }
+
+    #[test]
+    fn hkdf_key_differs_from_raw_hash() {
+        // Ensure HKDF output is NOT the same as a raw SHA-256 or Keccak hash
+        let input = b"test-secret-for-comparison";
+        let hkdf_key = derive_symmetric_key(input);
+        let keccak_hash = keccak256(input);
+        assert_ne!(
+            hkdf_key, keccak_hash,
+            "HKDF output must differ from raw Keccak256"
         );
     }
 }
