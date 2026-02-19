@@ -7,11 +7,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/com
 import { Button } from '~/components/ui/button';
 import { Badge } from '~/components/ui/badge';
 import { InfrastructureModal, InfraBar } from '~/components/shared/InfrastructureModal';
+import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { infraStore } from '~/lib/stores/infra';
 import { BlueprintJobForm, type FormSection } from '~/components/forms/BlueprintJobForm';
 import { FormSummary } from '~/components/forms/FormSummary';
 import { useJobForm } from '~/lib/hooks/useJobForm';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
+import { useJobPrice } from '~/lib/hooks/useJobPrice';
+import { formatCost } from '~/lib/hooks/useQuotes';
 import { useAvailableCapacity } from '~/lib/hooks/useSandboxReads';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition } from '~/lib/blueprints';
@@ -72,6 +75,23 @@ export default function CreatePage() {
   const isSandbox = selectedBlueprint?.id === 'ai-agent-sandbox-blueprint';
   const entityLabel = isSandbox ? 'Sandbox' : 'Instance';
 
+  // Per-job RFQ: fetch price from operator for the provision/create job
+  const operatorRpcUrl = infra.serviceInfo?.operators?.[0]?.rpcAddress;
+  const blueprintId = BigInt(infra.blueprintId || '0');
+  const serviceIdBig = BigInt(infra.serviceId || '0');
+  const { quote: provisionQuote, isLoading: priceLoading, formattedPrice: provisionPriceFormatted } = useJobPrice(
+    operatorRpcUrl,
+    serviceIdBig,
+    createJob?.id ?? 0,
+    blueprintId,
+    step === 'deploy' && !!operatorRpcUrl && serviceIdBig > 0n && !!createJob,
+  );
+
+  // Fallback price from multiplier
+  const provisionEstimate = BigInt(createJob?.pricingMultiplier ?? 50) * 1_000_000_000_000_000n;
+  const provisionValue = provisionQuote?.price ?? provisionEstimate;
+  const hasProvisionRfq = !!provisionQuote;
+
   // ── Handlers ──
 
   const handleSelectBlueprint = useCallback((bp: BlueprintDefinition) => {
@@ -91,6 +111,7 @@ export default function CreatePage() {
       jobId: createJob.id,
       args,
       label: `${createJob.label}: ${name}`,
+      value: provisionValue,
     });
 
     if (hash) {
@@ -212,16 +233,44 @@ export default function CreatePage() {
               <FormSummary job={createJob} values={values} />
 
               {/* Pricing */}
-              <div className="glass-card rounded-lg p-4">
+              <div className="glass-card rounded-lg p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-display font-medium text-cloud-elements-textSecondary">Estimated Cost</p>
+                    <p className="text-sm font-display font-medium text-cloud-elements-textSecondary">
+                      {entityLabel} Cost
+                    </p>
                     <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
                       {createJob.pricingMultiplier}x base rate
                     </p>
                   </div>
-                  <Badge variant="accent">{createJob.label}</Badge>
+                  <JobPriceBadge jobIndex={createJob.id} pricingMultiplier={createJob.pricingMultiplier} />
                 </div>
+                {/* Per-job price breakdown for common operations */}
+                {selectedBlueprint && (
+                  <div className="border-t border-cloud-elements-dividerColor pt-3 space-y-1.5">
+                    <p className="text-xs font-display text-cloud-elements-textTertiary mb-2">
+                      Per-job pricing (after {entityLabel.toLowerCase()} is live)
+                    </p>
+                    {selectedBlueprint.jobs
+                      .filter((j) => j.id !== createJob.id)
+                      .slice(0, 6)
+                      .map((j) => (
+                        <div key={j.id} className="flex items-center justify-between">
+                          <span className="text-xs text-cloud-elements-textSecondary">{j.label}</span>
+                          <JobPriceBadge
+                            jobIndex={j.id}
+                            pricingMultiplier={j.pricingMultiplier}
+                            compact
+                          />
+                        </div>
+                      ))}
+                    {selectedBlueprint.jobs.length > 7 && (
+                      <p className="text-xs text-cloud-elements-textTertiary pt-1">
+                        +{selectedBlueprint.jobs.length - 7} more jobs...
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Capacity */}
@@ -292,17 +341,19 @@ export default function CreatePage() {
               <Button
                 size="lg"
                 onClick={handleDeploy}
-                disabled={!address || txStatus === 'signing' || txStatus === 'pending'}
+                disabled={!address || txStatus === 'signing' || txStatus === 'pending' || priceLoading}
               >
                 {(txStatus === 'signing' || txStatus === 'pending') ? (
                   <>
                     <div className="i-ph:circle-fill text-sm animate-pulse" />
                     Deploying...
                   </>
+                ) : priceLoading ? (
+                  'Loading price...'
                 ) : (
                   <>
                     <div className="i-ph:lightning text-base" />
-                    Deploy {entityLabel}
+                    Deploy {entityLabel} ({hasProvisionRfq ? provisionPriceFormatted : `~${formatCost(provisionEstimate)}`})
                   </>
                 )}
               </Button>
@@ -359,6 +410,10 @@ function BlueprintSelector({ onSelect }: { onSelect: (bp: BlueprintDefinition) =
                 <span className="flex items-center gap-1">
                   <div className="i-ph:folder text-sm" />
                   {bp.categories.length} categories
+                </span>
+                <span className="flex items-center gap-1">
+                  <div className="i-ph:tag text-sm" />
+                  {bp.jobs[0]?.pricingMultiplier}x&ndash;{Math.max(...bp.jobs.map((j) => j.pricingMultiplier))}x
                 </span>
               </div>
             </div>

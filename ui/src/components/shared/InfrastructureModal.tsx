@@ -60,6 +60,14 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
     if (!serviceId) return;
     const info = await validate(BigInt(serviceId), address);
     if (info?.active) {
+      // Build operator info with RPC addresses from the discovered operators
+      const operatorInfos = info.operators
+        .map((addr) => {
+          const discovered = operators.find((op) => op.address === addr);
+          return { address: addr, rpcAddress: discovered?.rpcAddress ?? '' };
+        })
+        .filter((op) => op.rpcAddress);
+
       updateInfra({
         serviceId,
         blueprintId,
@@ -70,6 +78,7 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
           owner: info.owner,
           blueprintId: String(info.blueprintId),
           permitted: info.permitted,
+          operators: operatorInfos,
         },
       });
     }

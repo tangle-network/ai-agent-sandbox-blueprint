@@ -1,0 +1,75 @@
+# ─── AI Agent Sandbox Blueprint: Service Creation Pricing ───
+#
+# Resource-based pricing used by the pricing engine's GetPrice RFQ endpoint.
+# When a user requests a new service, operators quote a total_cost_rate (USD)
+# based on the resources requested. The pricing engine multiplies each
+# resource count by its price_per_unit_rate and sums them.
+#
+# Operators can override any section by defining [blueprint.<id>] sections
+# below. The [default] section is the fallback for all blueprint IDs.
+#
+# Formula:
+#   total_cost_rate = sum( resource.count * resource.price_per_unit_rate )
+#
+# Units:
+#   price_per_unit_rate = USD per unit per 30-day billing period
+#   count              = requested amount (cores, MB, GB, etc.)
+#
+
+# ─── Default (all blueprints) ───────────────────────────────────────────────
+[default]
+resources = [
+  # Compute
+  { kind = "CPU",              count = 1,     price_per_unit_rate = 0.0450 },   # $0.045/core/month (~Fly.io parity)
+  { kind = "MemoryMB",         count = 1024,  price_per_unit_rate = 0.0060 },   # $6.14/GB/month
+  { kind = "StorageMB",        count = 10240, price_per_unit_rate = 0.0001 },   # $0.10/GB/month (SSD)
+  { kind = "GPU",              count = 1,     price_per_unit_rate = 0.0000 },   # reserved — 0 until GPU sandboxes ship
+  # Network
+  { kind = "NetworkEgressMB",  count = 1024,  price_per_unit_rate = 0.0000 },   # free tier (first 10GB)
+  { kind = "NetworkIngressMB", count = 1024,  price_per_unit_rate = 0.0000 },   # always free
+  # AI-specific (unique to sandbox blueprint — not in trading blueprint)
+  { kind = "InferenceCall",    count = 1,     price_per_unit_rate = 0.0200 },   # $0.02/call (mid-tier model avg)
+  { kind = "AgentTurn",        count = 1,     price_per_unit_rate = 0.0350 },   # $0.035/turn (7-turn task ≈ $0.25)
+]
+
+# ─── Sandbox Blueprint overrides ────────────────────────────────────────────
+# Multi-sandbox provisioning — heavier resource usage, slight premium
+[blueprint.sandbox]
+resources = [
+  { kind = "CPU",              count = 1,     price_per_unit_rate = 0.0500 },
+  { kind = "MemoryMB",         count = 1024,  price_per_unit_rate = 0.0065 },
+  { kind = "StorageMB",        count = 10240, price_per_unit_rate = 0.0001 },
+  { kind = "GPU",              count = 1,     price_per_unit_rate = 0.0000 },
+  { kind = "NetworkEgressMB",  count = 1024,  price_per_unit_rate = 0.0000 },
+  { kind = "NetworkIngressMB", count = 1024,  price_per_unit_rate = 0.0000 },
+  { kind = "InferenceCall",    count = 1,     price_per_unit_rate = 0.0200 },
+  { kind = "AgentTurn",        count = 1,     price_per_unit_rate = 0.0350 },
+]
+
+# ─── Instance Blueprint overrides ───────────────────────────────────────────
+# Single-instance subscription — identical to default (reference pricing)
+[blueprint.instance]
+resources = [
+  { kind = "CPU",              count = 1,     price_per_unit_rate = 0.0450 },
+  { kind = "MemoryMB",         count = 1024,  price_per_unit_rate = 0.0060 },
+  { kind = "StorageMB",        count = 10240, price_per_unit_rate = 0.0001 },
+  { kind = "GPU",              count = 1,     price_per_unit_rate = 0.0000 },
+  { kind = "NetworkEgressMB",  count = 1024,  price_per_unit_rate = 0.0000 },
+  { kind = "NetworkIngressMB", count = 1024,  price_per_unit_rate = 0.0000 },
+  { kind = "InferenceCall",    count = 1,     price_per_unit_rate = 0.0200 },
+  { kind = "AgentTurn",        count = 1,     price_per_unit_rate = 0.0350 },
+]
+
+# ─── TEE Instance Blueprint overrides ───────────────────────────────────────
+# TEE containers carry 2-3x overhead: attestation, sealed memory, slower I/O
+[blueprint.tee_instance]
+resources = [
+  { kind = "CPU",              count = 1,     price_per_unit_rate = 0.1200 },   # ~2.5x standard (TDX/SEV overhead)
+  { kind = "MemoryMB",         count = 1024,  price_per_unit_rate = 0.0150 },   # ~2.5x (encrypted memory pages)
+  { kind = "StorageMB",        count = 10240, price_per_unit_rate = 0.0003 },   # ~3x (sealed storage)
+  { kind = "GPU",              count = 1,     price_per_unit_rate = 0.0000 },
+  { kind = "NetworkEgressMB",  count = 1024,  price_per_unit_rate = 0.0001 },   # TLS overhead
+  { kind = "NetworkIngressMB", count = 1024,  price_per_unit_rate = 0.0000 },
+  { kind = "InferenceCall",    count = 1,     price_per_unit_rate = 0.0250 },   # attestation verification per call
+  { kind = "AgentTurn",        count = 1,     price_per_unit_rate = 0.0450 },   # sealed context overhead
+]

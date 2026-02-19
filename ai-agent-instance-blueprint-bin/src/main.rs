@@ -50,6 +50,58 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         });
     }
 
+    // Spawn escrow watchdog + subscription billing keeper.
+    // Only active when TANGLE_CONTRACT_ADDRESS is set (billing feature enabled at build time).
+    #[cfg(feature = "billing")]
+    {
+        let blueprint_id: u64 = std::env::var("BLUEPRINT_ID")
+            .or_else(|_| std::env::var("TANGLE_BLUEPRINT_ID"))
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        if let Some(watchdog_config) =
+            ai_agent_instance_blueprint_lib::billing::EscrowWatchdogConfig::from_env(
+                service_id, blueprint_id,
+            )
+        {
+            // Escrow watchdog: auto-deprovision when escrow is exhausted.
+            let tangle_contract = watchdog_config.tangle_contract;
+            ai_agent_instance_blueprint_lib::billing::spawn_watchdog(watchdog_config);
+            info!("Escrow watchdog started for service {service_id}");
+
+            // Subscription billing keeper: calls billSubscriptionBatch on-chain.
+            let keystore = std::sync::Arc::new(env.keystore());
+            let rpc_endpoint = env.http_rpc_endpoint.to_string();
+
+            let billing_check_secs: u64 = std::env::var("BILLING_CHECK_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(60);
+            let billing_rescan_secs: u64 = std::env::var("BILLING_RESCAN_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300);
+
+            use blueprint_tangle_extra::services::{
+                BackgroundKeeper, KeeperConfig, SubscriptionBillingKeeper,
+            };
+
+            let keeper_config = KeeperConfig::new(rpc_endpoint, keystore)
+                .with_tangle_contract(tangle_contract)
+                .with_billing_interval(std::time::Duration::from_secs(billing_check_secs))
+                .with_billing_rescan_interval(std::time::Duration::from_secs(billing_rescan_secs));
+
+            let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+            let _billing_handle =
+                SubscriptionBillingKeeper::start(keeper_config, shutdown_rx);
+            // shutdown_tx is kept alive by leaking — the keeper stops when the process exits.
+            std::mem::forget(shutdown_tx);
+
+            info!("Subscription billing keeper started for service {service_id}");
+        }
+    }
+
     let tangle_producer = TangleProducer::new(tangle_client.clone(), service_id);
     let tangle_consumer = TangleConsumer::new(tangle_client);
 

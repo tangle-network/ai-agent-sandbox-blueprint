@@ -10,7 +10,7 @@ import { Footer } from '~/components/layout/Footer';
 
 const inlineThemeCode = `
   (function() {
-    var theme = localStorage.getItem('sandbox_cloud_theme');
+    var theme = localStorage.getItem('bp_theme') || localStorage.getItem('sandbox_cloud_theme');
     if (!theme) {
       theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }

@@ -1,5 +1,6 @@
 import { icons as phIcons } from '@iconify-json/ph';
 import { defineConfig, presetIcons, transformerDirectives } from 'unocss';
+import { bpThemeTokens } from '@tangle/blueprint-ui/preset';
 import { presetAnimations } from 'unocss-preset-animations';
 import { presetWind4 } from 'unocss/preset-wind4';
 
@@ -156,6 +157,11 @@ const SHADCN_COLORS = {
 } as const;
 
 export default defineConfig({
+  content: {
+    pipeline: {
+      include: [/\.(tsx?|jsx?)$/, '../../blueprint-ui/src/**/*.{ts,tsx}'],
+    },
+  },
   shortcuts: {
     'cloud-ease': 'ease-[cubic-bezier(0.4,0,0.2,1)]',
     'transition-theme': 'transition-[background-color,border-color,color] duration-150 cloud-ease',
@@ -208,6 +214,7 @@ export default defineConfig({
     colors: {
       ...COLOR_PRIMITIVES,
       ...SHADCN_COLORS,
+      bp: bpThemeTokens('cloud'),
       cloud: {
         elements: {
           borderColor: 'var(--cloud-elements-borderColor)',

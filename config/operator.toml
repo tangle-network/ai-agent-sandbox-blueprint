@@ -1,0 +1,66 @@
+# ─── AI Agent Sandbox Blueprint: Operator Pricing Engine Configuration ───
+#
+# Configuration for the pricing-engine gRPC sidecar that handles:
+#   - GetPrice   RFQ: service creation quotes (resource-based)
+#   - GetJobPrice RFQ: per-job quotes (flat or dynamic)
+#   - EIP-712 quote signing with operator keypair
+#   - Optional REST/JSON fallback at /pricing/quote and /pricing/job-quote
+#
+# This file is loaded by the pricing engine at startup. Operators should
+# adjust paths and ports to match their deployment environment.
+#
+
+# ─── Storage ────────────────────────────────────────────────────────────────
+# Path for benchmark cache and pricing state (RocksDB)
+database_path = "data/pricing-engine"
+
+# ─── Benchmark (optional) ──────────────────────────────────────────────────
+# CPU/IO benchmarks to calibrate dynamic pricing to actual hardware performance.
+# Results are cached in database_path and refreshed at benchmark_interval.
+benchmark_enabled       = false
+benchmark_duration      = 60     # seconds per benchmark run
+benchmark_interval      = 3600   # seconds between re-benchmarks (1 hour)
+
+# ─── Keystore ──────────────────────────────────────────────────────────────
+# Path to the operator's keystore directory. Used for EIP-712 quote signing.
+# The pricing engine reads the operator's private key from here to sign quotes
+# that are verified on-chain by createServiceFromQuotes() and submitJobFromQuote().
+keystore_path = "data/keystore"
+
+# ─── gRPC Server ───────────────────────────────────────────────────────────
+# The pricing engine runs a gRPC server implementing the PricingEngine service:
+#   rpc GetPrice(GetPriceRequest) returns (GetPriceResponse)
+#   rpc GetJobPrice(GetJobPriceRequest) returns (GetJobPriceResponse)
+rpc_bind_address    = "0.0.0.0"
+rpc_port            = 50051
+rpc_timeout         = 30         # seconds per RPC call
+rpc_max_connections = 256
+
+# ─── REST/JSON Fallback ───────────────────────────────────────────────────
+# Optional HTTP endpoints for browsers without gRPC-Web support.
+# The UI's useQuotes and useJobPrice hooks try these first.
+#   POST /pricing/quote      → GetPrice equivalent
+#   POST /pricing/job-quote  → GetJobPrice equivalent
+rest_enabled    = true
+rest_port       = 9944          # same as operator API port (muxed)
+
+# ─── Quote Settings ───────────────────────────────────────────────────────
+# How long a signed quote remains valid. After expiry, the on-chain contract
+# will reject it. 300s (5min) is generous for UI round-trips.
+quote_validity_duration_secs = 300
+
+# ─── PoW Challenge ─────────────────────────────────────────────────────────
+# Proof-of-work difficulty for rate-limiting RFQ requests.
+# 20 = ~1M hashes to solve ≈ 200-500ms on modern browsers.
+# Lower for devnets, raise for mainnet if spam is observed.
+pow_difficulty = 20
+
+# ─── Pricing Source ────────────────────────────────────────────────────────
+# Which pricing config files to load.
+# Relative paths are resolved from the operator's working directory.
+default_pricing_config = "config/default_pricing.toml"
+job_pricing_config     = "config/job_pricing.toml"
+
+# ─── Logging ───────────────────────────────────────────────────────────────
+# Pricing engine log level (trace, debug, info, warn, error)
+log_level = "info"

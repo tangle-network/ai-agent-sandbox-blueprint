@@ -8,6 +8,8 @@
 //! Exec/prompt/task jobs are instance-scoped: no sidecar URLs or tokens in
 //! the request — the operator looks them up automatically.
 
+#[cfg(feature = "billing")]
+pub mod billing;
 pub mod jobs;
 
 // Re-export sandbox-runtime modules.

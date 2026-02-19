@@ -55,11 +55,11 @@ const SANDBOX_JOBS: JobDefinition[] = [
       { name: 'sshEnabled', label: 'Enable SSH', type: 'boolean', defaultValue: false, abiType: 'bool', abiParam: 'ssh_enabled' },
       { name: 'sshPublicKey', label: 'SSH Public Key', type: 'textarea', placeholder: 'ssh-ed25519 AAAA...', helperText: 'Required if SSH is enabled', abiType: 'string', abiParam: 'ssh_public_key' },
       { name: 'webTerminalEnabled', label: 'Web Terminal', type: 'boolean', defaultValue: true, abiType: 'bool', abiParam: 'web_terminal_enabled' },
-      { name: 'maxLifetimeSeconds', label: 'Max Lifetime (s)', type: 'number', defaultValue: 86400, helperText: '0 = unlimited', abiType: 'uint64', abiParam: 'max_lifetime_seconds' },
-      { name: 'idleTimeoutSeconds', label: 'Idle Timeout (s)', type: 'number', defaultValue: 3600, abiType: 'uint64', abiParam: 'idle_timeout_seconds' },
-      { name: 'cpuCores', label: 'CPU Cores', type: 'number', defaultValue: 2, abiType: 'uint64', abiParam: 'cpu_cores' },
-      { name: 'memoryMb', label: 'Memory (MB)', type: 'number', defaultValue: 2048, abiType: 'uint64', abiParam: 'memory_mb' },
-      { name: 'diskGb', label: 'Disk (GB)', type: 'number', defaultValue: 10, abiType: 'uint64', abiParam: 'disk_gb' },
+      { name: 'maxLifetimeSeconds', label: 'Max Lifetime (s)', type: 'number', defaultValue: 86400, min: 0, helperText: '0 = unlimited', abiType: 'uint64', abiParam: 'max_lifetime_seconds' },
+      { name: 'idleTimeoutSeconds', label: 'Idle Timeout (s)', type: 'number', defaultValue: 3600, min: 0, abiType: 'uint64', abiParam: 'idle_timeout_seconds' },
+      { name: 'cpuCores', label: 'CPU Cores', type: 'number', defaultValue: 2, min: 1, abiType: 'uint64', abiParam: 'cpu_cores' },
+      { name: 'memoryMb', label: 'Memory (MB)', type: 'number', defaultValue: 2048, min: 1, abiType: 'uint64', abiParam: 'memory_mb' },
+      { name: 'diskGb', label: 'Disk (GB)', type: 'number', defaultValue: 10, min: 1, abiType: 'uint64', abiParam: 'disk_gb' },
       { name: 'teeRequired', label: 'TEE Required', type: 'boolean', defaultValue: false, abiType: 'bool', abiParam: 'tee_required' },
       { name: 'teeType', label: 'TEE Type', type: 'select', defaultValue: '0', abiType: 'uint8', abiParam: 'tee_type', options: TEE_TYPE_OPTIONS },
     ],
@@ -138,7 +138,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
       { name: 'command', label: 'Command', type: 'text', placeholder: 'ls -la', required: true, abiType: 'string' },
       { name: 'cwd', label: 'Working Directory', type: 'text', placeholder: '/workspace', abiType: 'string' },
       { name: 'envJson', label: 'Environment (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'env_json' },
-      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 30000, abiType: 'uint64', abiParam: 'timeout_ms' },
+      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 30000, min: 0, abiType: 'uint64', abiParam: 'timeout_ms' },
     ],
   },
   {
@@ -157,7 +157,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
       { name: 'sessionId', label: 'Session ID', type: 'text', placeholder: 'auto-generated if empty', abiType: 'string', abiParam: 'session_id' },
       { name: 'model', label: 'Model', type: 'text', placeholder: 'default', abiType: 'string' },
       { name: 'contextJson', label: 'Context (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'context_json' },
-      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 60000, abiType: 'uint64', abiParam: 'timeout_ms' },
+      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 60000, min: 0, abiType: 'uint64', abiParam: 'timeout_ms' },
     ],
   },
   {
@@ -174,10 +174,10 @@ const SANDBOX_JOBS: JobDefinition[] = [
     fields: [
       { name: 'prompt', label: 'Task Prompt', type: 'textarea', placeholder: 'Build a REST API with Express...', required: true, abiType: 'string' },
       { name: 'sessionId', label: 'Session ID', type: 'text', placeholder: 'auto-generated if empty', abiType: 'string', abiParam: 'session_id' },
-      { name: 'maxTurns', label: 'Max Turns', type: 'number', defaultValue: 10, abiType: 'uint64', abiParam: 'max_turns' },
+      { name: 'maxTurns', label: 'Max Turns', type: 'number', defaultValue: 10, min: 1, abiType: 'uint64', abiParam: 'max_turns' },
       { name: 'model', label: 'Model', type: 'text', placeholder: 'default', abiType: 'string' },
       { name: 'contextJson', label: 'Context (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'context_json' },
-      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 300000, abiType: 'uint64', abiParam: 'timeout_ms' },
+      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 300000, min: 0, abiType: 'uint64', abiParam: 'timeout_ms' },
     ],
   },
 
@@ -194,7 +194,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
     pricingMultiplier: 100,
     requiresSandbox: false,
     fields: [
-      { name: 'count', label: 'Count', type: 'number', required: true, defaultValue: 3, helperText: 'Number of sandboxes to create', abiType: 'uint32' },
+      { name: 'count', label: 'Count', type: 'number', required: true, defaultValue: 3, min: 1, helperText: 'Number of sandboxes to create', abiType: 'uint32' },
       { name: 'configJson', label: 'Template Config (JSON)', type: 'json', required: true, placeholder: '{"name":"batch","image":"ubuntu:22.04","stack":"default","agent_identifier":"","env_json":"{}","metadata_json":"{}","ssh_enabled":false,"ssh_public_key":"","web_terminal_enabled":true,"max_lifetime_seconds":86400,"idle_timeout_seconds":3600,"cpu_cores":2,"memory_mb":2048,"disk_gb":10,"tee_required":false,"tee_type":0}', abiType: 'string', abiParam: 'config_json' },
       { name: 'operators', label: 'Operators', type: 'textarea', placeholder: '0xabc...\n0xdef...', helperText: 'One address per line', abiType: 'address[]' },
       { name: 'distribution', label: 'Distribution', type: 'select', defaultValue: 'round_robin', abiType: 'string', options: [
@@ -265,10 +265,10 @@ const SANDBOX_JOBS: JobDefinition[] = [
       { name: 'sidecarUrls', label: 'Sidecar URLs', type: 'textarea', required: true, placeholder: 'http://sidecar-1:3000\nhttp://sidecar-2:3000', helperText: 'One URL per line', abiType: 'string[]', abiParam: 'sidecar_urls' },
       { name: 'prompt', label: 'Task Prompt', type: 'textarea', required: true, abiType: 'string' },
       { name: 'sessionId', label: 'Session ID', type: 'text', abiType: 'string', abiParam: 'session_id' },
-      { name: 'maxTurns', label: 'Max Turns', type: 'number', defaultValue: 10, abiType: 'uint64', abiParam: 'max_turns' },
+      { name: 'maxTurns', label: 'Max Turns', type: 'number', defaultValue: 10, min: 1, abiType: 'uint64', abiParam: 'max_turns' },
       { name: 'model', label: 'Model', type: 'text', placeholder: 'default', abiType: 'string' },
       { name: 'contextJson', label: 'Context (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'context_json' },
-      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 300000, abiType: 'uint64', abiParam: 'timeout_ms' },
+      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 300000, min: 0, abiType: 'uint64', abiParam: 'timeout_ms' },
       { name: 'parallel', label: 'Parallel Execution', type: 'boolean', defaultValue: true, abiType: 'bool' },
       { name: 'aggregation', label: 'Aggregation Strategy', type: 'select', defaultValue: 'collect', abiType: 'string', options: [
         { label: 'Collect All', value: 'collect' },
@@ -291,7 +291,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
       { name: 'command', label: 'Command', type: 'text', required: true, abiType: 'string' },
       { name: 'cwd', label: 'Working Directory', type: 'text', placeholder: '/workspace', abiType: 'string' },
       { name: 'envJson', label: 'Environment (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'env_json' },
-      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 30000, abiType: 'uint64', abiParam: 'timeout_ms' },
+      { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 30000, min: 0, abiType: 'uint64', abiParam: 'timeout_ms' },
       { name: 'parallel', label: 'Parallel Execution', type: 'boolean', defaultValue: true, abiType: 'bool' },
     ],
   },
@@ -344,7 +344,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
     pricingMultiplier: 5,
     requiresSandbox: false,
     fields: [
-      { name: 'workflowId', label: 'Workflow ID', type: 'number', required: true, abiType: 'uint64', abiParam: 'workflow_id' },
+      { name: 'workflowId', label: 'Workflow ID', type: 'number', required: true, min: 0, abiType: 'uint64', abiParam: 'workflow_id' },
     ],
   },
   {
@@ -358,7 +358,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
     pricingMultiplier: 1,
     requiresSandbox: false,
     fields: [
-      { name: 'workflowId', label: 'Workflow ID', type: 'number', required: true, abiType: 'uint64', abiParam: 'workflow_id' },
+      { name: 'workflowId', label: 'Workflow ID', type: 'number', required: true, min: 0, abiType: 'uint64', abiParam: 'workflow_id' },
     ],
   },
 

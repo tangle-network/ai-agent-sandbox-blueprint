@@ -1,0 +1,307 @@
+# ─── AI Agent Sandbox Blueprint: Per-Job Pricing ───
+#
+# Configures the GetJobPrice RFQ endpoint. When a user requests a quote for a
+# specific job, the pricing engine looks up the job by (blueprint, job_index)
+# and returns a signed price.
+#
+# Pricing modes:
+#   "flat"    — fixed price in wei per invocation
+#   "dynamic" — price computed from job inputs (resource params, duration, etc.)
+#   "free"    — no charge (internal/cleanup operations)
+#
+# Price units: wei (1 TNT = 1e18 wei). Use the conversion table:
+#   0.001 TNT  = 1_000_000_000_000_000      (1e15)
+#   0.01  TNT  = 10_000_000_000_000_000     (1e16)
+#   0.05  TNT  = 50_000_000_000_000_000     (1e16 * 5)
+#   0.25  TNT  = 250_000_000_000_000_000    (25e16)
+#   1.0   TNT  = 1_000_000_000_000_000_000  (1e18)
+#
+# The multiplier field matches the on-chain getDefaultJobRates() multiplier.
+# Operators can override any price here to quote differently from on-chain defaults.
+#
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SANDBOX BLUEPRINT — ai-agent-sandbox-blueprint (17 jobs)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[sandbox]
+
+# ── Lifecycle ──────────────────────────────────────────────────────────────────
+
+[sandbox.jobs.0]
+name       = "SANDBOX_CREATE"
+mode       = "dynamic"
+multiplier = 50
+base_price = "50000000000000000"       # 0.05 TNT base (at 0.001 TNT base rate)
+description = """
+Dynamic pricing based on requested resources:
+  price = base_price + (cpu_cores * cpu_rate) + (memory_mb / 1024 * mem_gb_rate) + (disk_gb * disk_rate)
+Includes 10-minute prepaid runtime window.
+"""
+
+[sandbox.jobs.0.dynamic]
+cpu_rate_per_core  = "5000000000000000"    # 0.005 TNT/core
+mem_rate_per_gb    = "3000000000000000"    # 0.003 TNT/GB
+disk_rate_per_gb   = "1000000000000000"    # 0.001 TNT/GB
+# Example: 2 CPU, 2GB RAM, 10GB disk = 0.05 + 0.01 + 0.006 + 0.01 = 0.076 TNT
+
+[sandbox.jobs.1]
+name       = "SANDBOX_STOP"
+mode       = "flat"
+multiplier = 1
+price      = "1000000000000000"        # 0.001 TNT
+
+[sandbox.jobs.2]
+name       = "SANDBOX_RESUME"
+mode       = "flat"
+multiplier = 1
+price      = "1000000000000000"        # 0.001 TNT
+
+[sandbox.jobs.3]
+name       = "SANDBOX_DELETE"
+mode       = "flat"
+multiplier = 1
+price      = "1000000000000000"        # 0.001 TNT
+
+[sandbox.jobs.4]
+name       = "SANDBOX_SNAPSHOT"
+mode       = "flat"
+multiplier = 5
+price      = "5000000000000000"        # 0.005 TNT
+
+# ── Execution ──────────────────────────────────────────────────────────────────
+
+[sandbox.jobs.10]
+name       = "EXEC"
+mode       = "flat"
+multiplier = 1
+price      = "1000000000000000"        # 0.001 TNT
+
+[sandbox.jobs.11]
+name       = "PROMPT"
+mode       = "flat"
+multiplier = 20
+price      = "20000000000000000"       # 0.02 TNT
+description = "Single LLM inference. Price covers mid-tier model (GPT-4o, Claude Sonnet)."
+
+[sandbox.jobs.12]
+name       = "TASK"
+mode       = "dynamic"
+multiplier = 250
+base_price = "250000000000000000"      # 0.25 TNT base
+description = """
+Multi-turn AI agent task. Dynamic pricing based on max_turns:
+  price = base_price + (max_turns * per_turn_rate)
+"""
+
+[sandbox.jobs.12.dynamic]
+per_turn_rate = "15000000000000000"    # 0.015 TNT/turn (covers inference + compute)
+# Example: 10-turn task = 0.25 + 0.15 = 0.40 TNT
+
+# ── Batch ──────────────────────────────────────────────────────────────────────
+
+[sandbox.jobs.20]
+name       = "BATCH_CREATE"
+mode       = "dynamic"
+multiplier = 100
+base_price = "100000000000000000"      # 0.1 TNT base
+description = "Batch sandbox creation. Dynamic: base + (count * per_sandbox_rate)"
+
+[sandbox.jobs.20.dynamic]
+per_sandbox_rate = "40000000000000000" # 0.04 TNT/sandbox (volume discount vs single create)
+
+[sandbox.jobs.21]
+name       = "BATCH_TASK"
+mode       = "dynamic"
+multiplier = 500
+base_price = "500000000000000000"      # 0.5 TNT base
+description = "Batch agent tasks. Dynamic: base + (sandbox_count * per_sandbox_rate)"
+
+[sandbox.jobs.21.dynamic]
+per_sandbox_rate = "200000000000000000" # 0.2 TNT/sandbox (volume discount vs single task)
+
+[sandbox.jobs.22]
+name       = "BATCH_EXEC"
+mode       = "flat"
+multiplier = 50
+price      = "50000000000000000"       # 0.05 TNT
+
+[sandbox.jobs.23]
+name       = "BATCH_COLLECT"
+mode       = "free"
+multiplier = 1
+price      = "0"
+description = "Result collection — no compute cost, just state read."
+
+# ── Workflows ──────────────────────────────────────────────────────────────────
+
+[sandbox.jobs.30]
+name       = "WORKFLOW_CREATE"
+mode       = "flat"
+multiplier = 2
+price      = "2000000000000000"        # 0.002 TNT
+
+[sandbox.jobs.31]
+name       = "WORKFLOW_TRIGGER"
+mode       = "flat"
+multiplier = 5
+price      = "5000000000000000"        # 0.005 TNT
+
+[sandbox.jobs.32]
+name       = "WORKFLOW_CANCEL"
+mode       = "free"
+multiplier = 1
+price      = "0"
+description = "Workflow deactivation — free to encourage cleanup."
+
+# ── SSH ────────────────────────────────────────────────────────────────────────
+
+[sandbox.jobs.40]
+name       = "SSH_PROVISION"
+mode       = "flat"
+multiplier = 2
+price      = "2000000000000000"        # 0.002 TNT
+
+[sandbox.jobs.41]
+name       = "SSH_REVOKE"
+mode       = "free"
+multiplier = 1
+price      = "0"
+description = "SSH key revocation — free to encourage security hygiene."
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  INSTANCE BLUEPRINT — ai-agent-instance-blueprint (8 jobs)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[instance]
+
+[instance.jobs.0]
+name       = "PROVISION"
+mode       = "dynamic"
+multiplier = 50
+base_price = "50000000000000000"       # 0.05 TNT base
+description = """
+Instance provisioning with dynamic resource pricing:
+  price = base_price + (cpu_cores * cpu_rate) + (memory_mb / 1024 * mem_gb_rate)
+"""
+
+[instance.jobs.0.dynamic]
+cpu_rate_per_core = "5000000000000000"
+mem_rate_per_gb   = "3000000000000000"
+disk_rate_per_gb  = "1000000000000000"
+
+[instance.jobs.1]
+name       = "EXEC"
+mode       = "flat"
+multiplier = 1
+price      = "1000000000000000"        # 0.001 TNT
+
+[instance.jobs.2]
+name       = "PROMPT"
+mode       = "flat"
+multiplier = 20
+price      = "20000000000000000"       # 0.02 TNT
+
+[instance.jobs.3]
+name       = "TASK"
+mode       = "dynamic"
+multiplier = 250
+base_price = "250000000000000000"      # 0.25 TNT base
+
+[instance.jobs.3.dynamic]
+per_turn_rate = "15000000000000000"    # 0.015 TNT/turn
+
+[instance.jobs.4]
+name       = "SSH_PROVISION"
+mode       = "flat"
+multiplier = 2
+price      = "2000000000000000"        # 0.002 TNT
+
+[instance.jobs.5]
+name       = "SSH_REVOKE"
+mode       = "free"
+multiplier = 1
+price      = "0"
+
+[instance.jobs.6]
+name       = "SNAPSHOT"
+mode       = "flat"
+multiplier = 5
+price      = "5000000000000000"        # 0.005 TNT
+
+[instance.jobs.7]
+name       = "DEPROVISION"
+mode       = "free"
+multiplier = 1
+price      = "0"
+description = "Deprovision is free — releases operator resources."
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TEE INSTANCE BLUEPRINT — ai-agent-tee-instance-blueprint (8 jobs)
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEE instances carry 2-4x pricing overhead for hardware isolation, attestation,
+# encrypted memory, and sealed storage.
+
+[tee_instance]
+
+[tee_instance.jobs.0]
+name       = "PROVISION"
+mode       = "dynamic"
+multiplier = 100
+base_price = "100000000000000000"      # 0.1 TNT base (2x standard instance)
+description = """
+TEE instance provisioning. Higher base for attestation + enclave setup.
+  price = base_price + (cpu_cores * cpu_rate) + (memory_mb / 1024 * mem_gb_rate)
+"""
+
+[tee_instance.jobs.0.dynamic]
+cpu_rate_per_core = "12000000000000000"   # 0.012 TNT/core (2.4x standard)
+mem_rate_per_gb   = "8000000000000000"    # 0.008 TNT/GB (2.7x — encrypted pages)
+disk_rate_per_gb  = "3000000000000000"    # 0.003 TNT/GB (3x — sealed storage)
+
+[tee_instance.jobs.1]
+name       = "EXEC"
+mode       = "flat"
+multiplier = 2
+price      = "2000000000000000"        # 0.002 TNT (2x standard — enclave entry/exit)
+
+[tee_instance.jobs.2]
+name       = "PROMPT"
+mode       = "flat"
+multiplier = 25
+price      = "25000000000000000"       # 0.025 TNT (attestation verification per call)
+
+[tee_instance.jobs.3]
+name       = "TASK"
+mode       = "dynamic"
+multiplier = 300
+base_price = "300000000000000000"      # 0.3 TNT base (sealed context overhead)
+
+[tee_instance.jobs.3.dynamic]
+per_turn_rate = "20000000000000000"    # 0.02 TNT/turn (sealed inference)
+
+[tee_instance.jobs.4]
+name       = "SSH_PROVISION"
+mode       = "flat"
+multiplier = 2
+price      = "2000000000000000"        # 0.002 TNT
+
+[tee_instance.jobs.5]
+name       = "SSH_REVOKE"
+mode       = "free"
+multiplier = 1
+price      = "0"
+
+[tee_instance.jobs.6]
+name       = "SNAPSHOT"
+mode       = "flat"
+multiplier = 5
+price      = "5000000000000000"        # 0.005 TNT
+
+[tee_instance.jobs.7]
+name       = "DEPROVISION"
+mode       = "free"
+multiplier = 2
+price      = "2000000000000000"        # 0.002 TNT (enclave teardown + attestation log)

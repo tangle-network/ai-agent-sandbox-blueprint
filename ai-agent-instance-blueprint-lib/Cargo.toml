@@ -6,17 +6,24 @@ authors.workspace = true
 description = "AI Agent Instance Blueprint — subscription-based 1:1 sandbox per service instance"
 license.workspace = true
 
+[features]
+billing = ["dep:reqwest"]
+
 [dependencies]
 sandbox-runtime = { path = "../sandbox-runtime" }
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tracing", "macros", "tangle", "local-store"] }
 once_cell = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", default-features = false, features = ["sync", "rt"] }
 
 [dev-dependencies]
 anyhow = "1"
+blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", branch = "main" }
+hex = "0.4"
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
+once_cell = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -74,6 +74,7 @@ contract AgentTeeInstanceBlueprint is BlueprintServiceManagerBase {
     event OperatorProvisioned(uint64 indexed serviceId, address indexed operator, string sandboxId, string sidecarUrl);
     event OperatorDeprovisioned(uint64 indexed serviceId, address indexed operator);
     event TeeAttestationStored(uint64 indexed serviceId, address indexed operator, bytes32 attestationHash);
+    event ServiceTerminationReceived(uint64 indexed serviceId, address indexed owner);
     event OperatorResultSubmitted(
         uint64 indexed serviceId,
         uint64 indexed jobCallId,
@@ -148,6 +149,19 @@ contract AgentTeeInstanceBlueprint is BlueprintServiceManagerBase {
         paymentAmount;
 
         require(operators.length >= 1, "At least 1 operator required");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SERVICE TERMINATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Called by Tangle when the service owner terminates the service.
+    ///         Emits an event so off-chain operators can detect termination and deprovision.
+    function onServiceTermination(
+        uint64 serviceId,
+        address owner
+    ) external override onlyFromTangle {
+        emit ServiceTerminationReceived(serviceId, owner);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

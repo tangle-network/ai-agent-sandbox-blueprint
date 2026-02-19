@@ -41,5 +41,23 @@ export default defineConfig({
     alias: {
       events: 'events',
     },
+    dedupe: [
+      '@nanostores/react',
+      '@radix-ui/react-dialog',
+      '@radix-ui/react-separator',
+      '@radix-ui/react-slot',
+      '@radix-ui/react-tabs',
+      '@tangle/agent-ui',
+      'blo',
+      'class-variance-authority',
+      'clsx',
+      'framer-motion',
+      'nanostores',
+      'react',
+      'react-dom',
+      'tailwind-merge',
+      'viem',
+      'wagmi',
+    ],
   },
 });

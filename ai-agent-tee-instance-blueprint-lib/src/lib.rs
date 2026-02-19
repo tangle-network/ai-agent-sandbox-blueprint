@@ -8,6 +8,8 @@
 //! they can provide TEE execution. The on-chain contract enforces higher pricing
 //! (CVM costs) and attestation requirements.
 
+#[cfg(feature = "billing")]
+pub use ai_agent_instance_blueprint_lib::billing;
 pub mod jobs;
 
 // Re-export from base instance blueprint — explicit to avoid leaking the base

@@ -5,11 +5,12 @@ import { AnimatedPage } from '~/components/motion/AnimatedPage';
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card';
 import { Button } from '~/components/ui/button';
 import { StatusBadge } from '~/components/shared/StatusBadge';
+import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { getBlueprint, getJobById } from '~/lib/blueprints';
-import { INSTANCE_JOB_IDS } from '~/lib/types/instance';
+import { INSTANCE_JOB_IDS, INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
 import { ChatContainer, type AgentBranding } from '@tangle/agent-ui';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
@@ -68,11 +69,21 @@ export default function InstanceDetail() {
   const promptChat = useSandboxChat({ client, mode: 'prompt', systemPrompt });
   const taskChat = useSandboxChat({ client, mode: 'task', systemPrompt });
 
+  /** Compute job value from pricing tier (base rate = 0.001 TNT = 1e15 wei) */
+  const jobValue = (jobId: number): bigint =>
+    BigInt(INSTANCE_PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
+
   const handleDeprovision = useCallback(async () => {
     const job = getJobById(bpId, INSTANCE_JOB_IDS.DEPROVISION);
     if (!job) return;
     const args = encodeJobArgs(job, { json: '{}' });
-    const hash = await submitJob({ serviceId, jobId: INSTANCE_JOB_IDS.DEPROVISION, args, label: 'Deprovision Instance' });
+    const hash = await submitJob({
+      serviceId,
+      jobId: INSTANCE_JOB_IDS.DEPROVISION,
+      args,
+      label: 'Deprovision Instance',
+      value: jobValue(INSTANCE_JOB_IDS.DEPROVISION),
+    });
     if (hash) updateInstanceStatus(decodedId, 'gone');
   }, [bpId, serviceId, decodedId, submitJob]);
 
@@ -125,6 +136,7 @@ export default function InstanceDetail() {
         <Button variant="destructive" size="sm" onClick={handleDeprovision} disabled={txStatus !== 'idle'}>
           <div className="i-ph:trash text-sm" />
           Deprovision
+          <JobPriceBadge jobIndex={INSTANCE_JOB_IDS.DEPROVISION} pricingMultiplier={INSTANCE_PRICING_TIERS[INSTANCE_JOB_IDS.DEPROVISION]?.multiplier ?? 1} compact />
         </Button>
       </div>
 

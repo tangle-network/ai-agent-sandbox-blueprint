@@ -215,6 +215,78 @@ describe('useJobForm validate', () => {
   });
 });
 
+// ── Numeric bounds validation ──
+
+describe('useJobForm numeric bounds', () => {
+  it('fails when number is below min', () => {
+    const job = makeJob({
+      fields: [makeField({ name: 'cpu', type: 'number', label: 'CPU Cores', min: 1, defaultValue: 2 })],
+    });
+    const { result } = renderHook(() => useJobForm(job));
+    act(() => result.current.onChange('cpu', -1));
+    let valid = true;
+    act(() => { valid = result.current.validate(); });
+    expect(valid).toBe(false);
+    expect(result.current.errors.cpu).toContain('at least 1');
+  });
+
+  it('fails when number exceeds max', () => {
+    const job = makeJob({
+      fields: [makeField({ name: 'count', type: 'number', label: 'Count', max: 100, defaultValue: 3 })],
+    });
+    const { result } = renderHook(() => useJobForm(job));
+    act(() => result.current.onChange('count', 200));
+    let valid = true;
+    act(() => { valid = result.current.validate(); });
+    expect(valid).toBe(false);
+    expect(result.current.errors.count).toContain('at most 100');
+  });
+
+  it('passes when number is within min/max range', () => {
+    const job = makeJob({
+      fields: [makeField({ name: 'timeout', type: 'number', label: 'Timeout', min: 0, max: 600000, defaultValue: 30000 })],
+    });
+    const { result } = renderHook(() => useJobForm(job));
+    let valid = false;
+    act(() => { valid = result.current.validate(); });
+    expect(valid).toBe(true);
+    expect(result.current.errors).toEqual({});
+  });
+
+  it('allows zero when min is 0', () => {
+    const job = makeJob({
+      fields: [makeField({ name: 'timeout', type: 'number', label: 'Timeout', min: 0, defaultValue: 30000 })],
+    });
+    const { result } = renderHook(() => useJobForm(job));
+    act(() => result.current.onChange('timeout', 0));
+    let valid = false;
+    act(() => { valid = result.current.validate(); });
+    expect(valid).toBe(true);
+  });
+
+  it('validates real sandbox cpu field rejects 0', () => {
+    const job = getJobById('ai-agent-sandbox-blueprint', 0)!;
+    const { result } = renderHook(() => useJobForm(job));
+    act(() => result.current.onChange('cpuCores', 0));
+    let valid = true;
+    act(() => { valid = result.current.validate(); });
+    expect(valid).toBe(false);
+    expect(result.current.errors.cpuCores).toContain('at least 1');
+  });
+
+  it('validates real sandbox timeout allows 0', () => {
+    const job = getJobById('ai-agent-sandbox-blueprint', 10)!; // exec
+    const { result } = renderHook(() => useJobForm(job));
+    act(() => {
+      result.current.onChange('command', 'ls'); // fill required field
+      result.current.onChange('timeoutMs', 0);
+    });
+    let valid = false;
+    act(() => { valid = result.current.validate(); });
+    expect(valid).toBe(true);
+  });
+});
+
 // ── Reset ──
 
 describe('useJobForm reset', () => {

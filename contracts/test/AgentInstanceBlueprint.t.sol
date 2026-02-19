@@ -454,6 +454,60 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // SERVICE TERMINATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onServiceTerminationEmitsEvent() public {
+        _provisionOperator(operator1);
+
+        vm.expectEmit(true, true, false, false);
+        emit AgentInstanceBlueprint.ServiceTerminationReceived(testServiceId, blueprintOwner);
+
+        vm.prank(tangleCore);
+        instance.onServiceTermination(testServiceId, blueprintOwner);
+    }
+
+    function test_onServiceTerminationOnlyTangle() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        instance.onServiceTermination(testServiceId, blueprintOwner);
+    }
+
+    function test_fullLifecycleWithTermination() public {
+        // 1. Provision two operators
+        _provisionOperator(operator1);
+        _provisionOperator(operator2);
+        assertEq(instance.getOperatorCount(testServiceId), 2);
+
+        // 2. Run exec job
+        simulateJobCall(testServiceId, instance.JOB_EXEC(), 1000, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_EXEC(), 1000, operator1, bytes(""), encodeJsonOutputs('{"stdout":"ok"}')
+        );
+
+        // 3. Termination signal from Tangle
+        vm.prank(tangleCore);
+        instance.onServiceTermination(testServiceId, blueprintOwner);
+
+        // 4. Deprovision both operators
+        uint64 callId1 = 1001;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId1, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId1, operator1, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        uint64 callId2 = 1002;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId2, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId2, operator2, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        // 5. Verify cleanup
+        assertEq(instance.getOperatorCount(testServiceId), 0);
+        assertFalse(instance.isProvisioned(testServiceId));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // EDGE CASE: Job result from non-provisioned operator
     // ═══════════════════════════════════════════════════════════════════════════
 

@@ -6,6 +6,9 @@ authors.workspace = true
 description = "AI Agent TEE Instance Blueprint — TEE-backed 1:1 sandbox per service instance"
 license.workspace = true
 
+[features]
+billing = ["ai-agent-instance-blueprint-lib/billing"]
+
 [dependencies]
 ai-agent-instance-blueprint-lib = { path = "../ai-agent-instance-blueprint-lib" }
 sandbox-runtime = { path = "../sandbox-runtime", features = ["tee-all"] }

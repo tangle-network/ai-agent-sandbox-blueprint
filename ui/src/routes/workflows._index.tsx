@@ -9,7 +9,7 @@ import { useWorkflowIds, useWorkflowBatch } from '~/lib/hooks/useSandboxReads';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { getJobById } from '~/lib/blueprints';
-import { JOB_IDS } from '~/lib/types/sandbox';
+import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
 import { cn } from '~/lib/utils';
 
 export default function Workflows() {
@@ -27,6 +27,10 @@ export default function Workflows() {
   const [sandboxConfigJson, setSandboxConfigJson] = useState('{}');
   const [serviceId, setServiceId] = useState('1');
 
+  /** Compute job value from pricing tier (base rate = 0.001 TNT = 1e15 wei) */
+  const jobValue = (jobId: number): bigint =>
+    BigInt(PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
+
   const handleCreate = useCallback(async () => {
     if (!name) return;
     const job = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.WORKFLOW_CREATE);
@@ -36,6 +40,7 @@ export default function Workflows() {
       jobId: JOB_IDS.WORKFLOW_CREATE,
       args: encodeJobArgs(job, { name, workflowJson, triggerType, triggerConfig, sandboxConfigJson }),
       label: `Create Workflow: ${name}`,
+      value: jobValue(JOB_IDS.WORKFLOW_CREATE),
     });
     setShowCreate(false);
     setName('');
@@ -51,6 +56,7 @@ export default function Workflows() {
       jobId: JOB_IDS.WORKFLOW_TRIGGER,
       args: encodeJobArgs(job, { workflowId: wfId }),
       label: `Trigger Workflow #${wfId}`,
+      value: jobValue(JOB_IDS.WORKFLOW_TRIGGER),
     });
   }, [serviceId, submitJob]);
 
@@ -62,6 +68,7 @@ export default function Workflows() {
       jobId: JOB_IDS.WORKFLOW_CANCEL,
       args: encodeJobArgs(job, { workflowId: wfId }),
       label: `Cancel Workflow #${wfId}`,
+      value: jobValue(JOB_IDS.WORKFLOW_CANCEL),
     });
   }, [serviceId, submitJob]);
 

@@ -1,77 +1,38 @@
-import { defineChain } from 'viem';
-import { mainnet } from 'viem/chains';
-import type { Address, Chain } from 'viem';
+/**
+ * Re-exports chain utilities from @tangle/blueprint-ui and configures
+ * sandbox-specific network addresses at module load time.
+ */
+import type { Address } from 'viem';
+import {
+  tangleLocal,
+  tangleTestnet,
+  tangleMainnet,
+  rpcUrl,
+  configureNetworks,
+  getNetworks,
+  type CoreAddresses,
+} from '@tangle/blueprint-ui';
 
-function resolveRpcUrl(): string {
-  const configured = import.meta.env.VITE_RPC_URL ?? 'http://localhost:8545';
-  if (typeof window === 'undefined') return configured;
-  try {
-    const rpc = new URL(configured);
-    const isLocalRpc = rpc.hostname === '127.0.0.1' || rpc.hostname === 'localhost';
-    const pageHost = window.location.hostname;
-    const isLocalPage = pageHost === '127.0.0.1' || pageHost === 'localhost';
-    if (isLocalRpc && !isLocalPage) {
-      rpc.hostname = pageHost;
-      return rpc.toString().replace(/\/$/, '');
-    }
-  } catch {
-    // malformed
-  }
-  return configured;
+export {
+  tangleLocal,
+  tangleTestnet,
+  tangleMainnet,
+  rpcUrl,
+  allTangleChains,
+  mainnet,
+  resolveRpcUrl,
+  configureNetworks,
+  getNetworks,
+} from '@tangle/blueprint-ui';
+export type { CoreAddresses, NetworkConfig } from '@tangle/blueprint-ui';
+
+/** Sandbox-specific addresses — extends CoreAddresses with sandboxBlueprint. */
+export interface SandboxAddresses extends CoreAddresses {
+  sandboxBlueprint: Address;
 }
 
-export const rpcUrl = resolveRpcUrl();
-
-export const tangleLocal = defineChain({
-  id: Number(import.meta.env.VITE_CHAIN_ID ?? 31337),
-  name: 'Tangle Local',
-  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-  rpcUrls: { default: { http: [rpcUrl] } },
-  blockExplorers: { default: { name: 'Explorer', url: '' } },
-  contracts: { multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' } },
-});
-
-export const tangleTestnet = defineChain({
-  id: 3799,
-  name: 'Tangle Testnet',
-  nativeCurrency: { name: 'Tangle', symbol: 'tTNT', decimals: 18 },
-  rpcUrls: {
-    default: {
-      http: ['https://testnet-rpc.tangle.tools'],
-      webSocket: ['wss://testnet-rpc.tangle.tools'],
-    },
-  },
-  blockExplorers: { default: { name: 'Tangle Explorer', url: 'https://testnet-explorer.tangle.tools' } },
-  contracts: { multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' } },
-});
-
-export const tangleMainnet = defineChain({
-  id: 5845,
-  name: 'Tangle',
-  nativeCurrency: { name: 'Tangle', symbol: 'TNT', decimals: 18 },
-  rpcUrls: {
-    default: {
-      http: ['https://rpc.tangle.tools'],
-      webSocket: ['wss://rpc.tangle.tools'],
-    },
-  },
-  blockExplorers: { default: { name: 'Tangle Explorer', url: 'https://explorer.tangle.tools' } },
-  contracts: { multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' } },
-});
-
-export interface NetworkConfig {
-  chain: Chain;
-  rpcUrl: string;
-  label: string;
-  shortLabel: string;
-  addresses: {
-    sandboxBlueprint: Address;
-    jobs: Address;
-    services: Address;
-  };
-}
-
-export const networks: Record<number, NetworkConfig> = {
+// Configure sandbox networks at module load time.
+configureNetworks<SandboxAddresses>({
   [tangleLocal.id]: {
     chain: tangleLocal,
     rpcUrl,
@@ -105,7 +66,7 @@ export const networks: Record<number, NetworkConfig> = {
       services: '0x0000000000000000000000000000000000000000' as Address,
     },
   },
-};
+});
 
-export { mainnet };
-export const allTangleChains = [tangleLocal, tangleTestnet, tangleMainnet] as const;
+/** Backwards-compatible accessor — use getNetworks<SandboxAddresses>() for typed access. */
+export const networks = getNetworks<SandboxAddresses>();

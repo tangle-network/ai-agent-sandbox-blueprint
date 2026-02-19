@@ -5,12 +5,13 @@ import { AnimatedPage } from '~/components/motion/AnimatedPage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card';
 import { Button } from '~/components/ui/button';
 import { StatusBadge } from '~/components/shared/StatusBadge';
+import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { sandboxListStore, updateSandboxStatus, getSandbox } from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { getJobById } from '~/lib/blueprints';
-import { JOB_IDS } from '~/lib/types/sandbox';
+import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
 import '~/lib/blueprints'; // auto-register
 import { ChatContainer, type AgentBranding } from '@tangle/agent-ui';
 import { useSandboxChat } from '~/lib/hooks/useSandboxChat';
@@ -76,6 +77,10 @@ export default function SandboxDetail() {
 
   const bpId = 'ai-agent-sandbox-blueprint';
 
+  /** Compute job value from pricing tier (base rate = 0.001 TNT = 1e15 wei) */
+  const jobValue = (jobId: number): bigint =>
+    BigInt(PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
+
   const encodeCtxJob = useCallback(
     (jobId: number, ctx: Record<string, unknown>, formValues: Record<string, unknown> = {}) => {
       const job = getJobById(bpId, jobId);
@@ -91,6 +96,7 @@ export default function SandboxDetail() {
       jobId: JOB_IDS.SANDBOX_STOP,
       args: encodeCtxJob(JOB_IDS.SANDBOX_STOP, { sandbox_id: decodedId }),
       label: `Stop: ${decodedId}`,
+      value: jobValue(JOB_IDS.SANDBOX_STOP),
     });
     if (hash) updateSandboxStatus(decodedId, 'stopped');
   }, [decodedId, serviceId, submitJob, encodeCtxJob]);
@@ -101,6 +107,7 @@ export default function SandboxDetail() {
       jobId: JOB_IDS.SANDBOX_RESUME,
       args: encodeCtxJob(JOB_IDS.SANDBOX_RESUME, { sandbox_id: decodedId }),
       label: `Resume: ${decodedId}`,
+      value: jobValue(JOB_IDS.SANDBOX_RESUME),
     });
     if (hash) updateSandboxStatus(decodedId, 'running');
   }, [decodedId, serviceId, submitJob, encodeCtxJob]);
@@ -111,6 +118,7 @@ export default function SandboxDetail() {
       jobId: JOB_IDS.SANDBOX_DELETE,
       args: encodeCtxJob(JOB_IDS.SANDBOX_DELETE, { sandbox_id: decodedId }),
       label: `Delete: ${decodedId}`,
+      value: jobValue(JOB_IDS.SANDBOX_DELETE),
     });
     if (hash) updateSandboxStatus(decodedId, 'gone');
   }, [decodedId, serviceId, submitJob, encodeCtxJob]);
@@ -126,6 +134,7 @@ export default function SandboxDetail() {
         includeState: true,
       }),
       label: `Snapshot: ${decodedId}`,
+      value: jobValue(JOB_IDS.SANDBOX_SNAPSHOT),
     });
   }, [decodedId, serviceId, sb?.sidecarUrl, submitJob, encodeCtxJob]);
 
@@ -198,12 +207,14 @@ export default function SandboxDetail() {
             <Button variant="secondary" size="sm" onClick={handleStop}>
               <div className="i-ph:stop text-sm" />
               Stop
+              <JobPriceBadge jobIndex={JOB_IDS.SANDBOX_STOP} pricingMultiplier={PRICING_TIERS[JOB_IDS.SANDBOX_STOP]?.multiplier ?? 1} compact />
             </Button>
           )}
           {isStopped && (
             <Button variant="success" size="sm" onClick={handleResume}>
               <div className="i-ph:play text-sm" />
               Resume
+              <JobPriceBadge jobIndex={JOB_IDS.SANDBOX_RESUME} pricingMultiplier={PRICING_TIERS[JOB_IDS.SANDBOX_RESUME]?.multiplier ?? 1} compact />
             </Button>
           )}
           {!isGone && (
@@ -211,10 +222,12 @@ export default function SandboxDetail() {
               <Button variant="secondary" size="sm" onClick={handleSnapshot}>
                 <div className="i-ph:camera text-sm" />
                 Snapshot
+                <JobPriceBadge jobIndex={JOB_IDS.SANDBOX_SNAPSHOT} pricingMultiplier={PRICING_TIERS[JOB_IDS.SANDBOX_SNAPSHOT]?.multiplier ?? 5} compact />
               </Button>
               <Button variant="destructive" size="sm" onClick={handleDelete}>
                 <div className="i-ph:trash text-sm" />
                 Delete
+                <JobPriceBadge jobIndex={JOB_IDS.SANDBOX_DELETE} pricingMultiplier={PRICING_TIERS[JOB_IDS.SANDBOX_DELETE]?.multiplier ?? 1} compact />
               </Button>
             </>
           )}
