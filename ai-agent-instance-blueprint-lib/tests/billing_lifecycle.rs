@@ -4,7 +4,8 @@
 //! ServiceEscrow and BlueprintConfig structs.
 //!
 //! Tests the EscrowWatchdog struct's tick() method for all state transitions:
-//! sufficient, insufficient, threshold, recovery, RPC errors, and edge cases.
+//! sufficient, insufficient, threshold, recovery, RPC errors, low-balance
+//! warnings, config validation, and edge cases.
 
 #![cfg(feature = "billing")]
 
@@ -61,6 +62,8 @@ fn test_config(rpc_url: &str, max_failures: u32) -> EscrowWatchdogConfig {
         blueprint_id: 7,
         check_interval_secs: 1,
         max_consecutive_failures: max_failures,
+        low_balance_multiplier: 3,
+        deprovision_grace_period_secs: 0, // no delay in tests
     }
 }
 
@@ -118,7 +121,41 @@ async fn mount_rpc_mocks(server: &MockServer, escrow_hex: &str, config_hex: &str
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// check_escrow standalone tests
+// Config validation tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_config_validate_valid() {
+    let config = test_config("http://localhost:8545", 3);
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn test_config_validate_zero_interval() {
+    let mut config = test_config("http://localhost:8545", 3);
+    config.check_interval_secs = 0;
+    let err = config.validate().unwrap_err();
+    assert!(err.contains("check_interval_secs"), "error: {err}");
+}
+
+#[test]
+fn test_config_validate_zero_max_failures() {
+    let mut config = test_config("http://localhost:8545", 3);
+    config.max_consecutive_failures = 0;
+    let err = config.validate().unwrap_err();
+    assert!(err.contains("max_consecutive_failures"), "error: {err}");
+}
+
+#[test]
+fn test_config_validate_empty_rpc() {
+    let mut config = test_config("http://localhost:8545", 3);
+    config.http_rpc_endpoint = String::new();
+    let err = config.validate().unwrap_err();
+    assert!(err.contains("http_rpc_endpoint"), "error: {err}");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// check_escrow standalone tests (now returns EscrowStatus)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -130,9 +167,10 @@ async fn test_check_escrow_sufficient() {
     let balance = U256::from(5_000_000u64);
     mount_rpc_mocks(&server, &encode_escrow(balance), &encode_config(rate)).await;
 
-    let result = billing::check_escrow(&config).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap(), "balance >= rate should be sufficient");
+    let status = billing::check_escrow(&config).await.unwrap();
+    assert!(status.sufficient, "balance >= rate should be sufficient");
+    assert_eq!(status.balance, balance);
+    assert_eq!(status.rate, rate);
 }
 
 #[tokio::test]
@@ -143,9 +181,10 @@ async fn test_check_escrow_exhausted() {
     let rate = U256::from(1_000_000u64);
     mount_rpc_mocks(&server, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
 
-    let result = billing::check_escrow(&config).await;
-    assert!(result.is_ok());
-    assert!(!result.unwrap(), "balance=0 < rate should be insufficient");
+    let status = billing::check_escrow(&config).await.unwrap();
+    assert!(!status.sufficient, "balance=0 < rate should be insufficient");
+    assert_eq!(status.balance, U256::ZERO);
+    assert_eq!(status.rate, rate);
 }
 
 #[tokio::test]
@@ -160,9 +199,9 @@ async fn test_check_escrow_free_service() {
     )
     .await;
 
-    let result = billing::check_escrow(&config).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap(), "rate=0 (free) should always be sufficient");
+    let status = billing::check_escrow(&config).await.unwrap();
+    assert!(status.sufficient, "rate=0 (free) should always be sufficient");
+    assert_eq!(status.rate, U256::ZERO);
 }
 
 #[tokio::test]
@@ -173,10 +212,9 @@ async fn test_check_escrow_exact_balance() {
     let rate = U256::from(1_000_000u64);
     mount_rpc_mocks(&server, &encode_escrow(rate), &encode_config(rate)).await;
 
-    let result = billing::check_escrow(&config).await;
-    assert!(result.is_ok());
+    let status = billing::check_escrow(&config).await.unwrap();
     assert!(
-        result.unwrap(),
+        status.sufficient,
         "balance == rate should be sufficient (>= check)"
     );
 }
@@ -190,10 +228,9 @@ async fn test_check_escrow_one_wei_short() {
     let balance = rate - U256::from(1);
     mount_rpc_mocks(&server, &encode_escrow(balance), &encode_config(rate)).await;
 
-    let result = billing::check_escrow(&config).await;
-    assert!(result.is_ok());
+    let status = billing::check_escrow(&config).await.unwrap();
     assert!(
-        !result.unwrap(),
+        !status.sufficient,
         "balance = rate-1 should be insufficient"
     );
 }
@@ -207,6 +244,8 @@ async fn test_check_escrow_rpc_unreachable() {
         blueprint_id: 7,
         check_interval_secs: 1,
         max_consecutive_failures: 3,
+        low_balance_multiplier: 3,
+        deprovision_grace_period_secs: 0,
     };
 
     let result = billing::check_escrow(&config).await;
@@ -228,6 +267,7 @@ async fn test_tick_sufficient_keeps_counter_zero() {
     let config = test_config(&server.uri(), 3);
 
     let rate = U256::from(100u64);
+    // balance=1000, rate=100 → 10 periods remaining, above low_balance_multiplier(3)
     mount_rpc_mocks(&server, &encode_escrow(U256::from(1000u64)), &encode_config(rate)).await;
 
     let watchdog = EscrowWatchdog::new(config);
@@ -332,6 +372,8 @@ async fn test_tick_rpc_error_does_not_increment() {
         blueprint_id: 7,
         check_interval_secs: 1,
         max_consecutive_failures: 3,
+        low_balance_multiplier: 3,
+        deprovision_grace_period_secs: 0,
     };
 
     let watchdog = EscrowWatchdog::new(config);
@@ -346,43 +388,8 @@ async fn test_tick_rpc_error_does_not_increment() {
 /// sees counter=3 which triggers deprovision.
 #[tokio::test]
 async fn test_tick_rpc_error_between_failures_preserves_counter() {
-    // Phase 1: insufficient x2 against wiremock
-    let server1 = MockServer::start().await;
-    let rate = U256::from(1000u64);
-    mount_rpc_mocks(&server1, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
-
-    let config1 = test_config(&server1.uri(), 5);
-    let watchdog = EscrowWatchdog::new(config1);
-
-    let r1 = watchdog.tick().await;
-    assert_eq!(watchdog.failure_count(), 1);
-    assert!(matches!(r1, WatchdogTickResult::Insufficient { consecutive: 1, .. }));
-
-    let r2 = watchdog.tick().await;
-    assert_eq!(watchdog.failure_count(), 2);
-    assert!(matches!(r2, WatchdogTickResult::Insufficient { consecutive: 2, .. }));
-
-    // Phase 2: RPC error (unreachable port) — counter stays at 2
-    // We can't change the watchdog's config, but we can point to a dead server.
-    // Instead, drop the mock server so it stops accepting connections,
-    // and make a new watchdog sharing the same AtomicU32 would be complex.
-    // Simpler: use a second mock server that returns a 500 error for eth_call.
-    let server2 = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
-        .mount(&server2)
-        .await;
-
-    // We need to re-create the watchdog with the new URL but preserve the counter.
-    // Since EscrowWatchdog owns its AtomicU32, let's test this differently:
-    // We'll verify the sequence with a single mock server that changes behavior.
-    // Actually, the cleanest approach: test the full sequence with one watchdog
-    // by resetting mocks between ticks.
-    drop(server1);
-    drop(server2);
-
-    // Restart: full sequence with one server, resetting mocks between ticks.
     let server = MockServer::start().await;
+    let rate = U256::from(1000u64);
     let config = test_config(&server.uri(), 5);
     let watchdog = EscrowWatchdog::new(config);
 
@@ -425,7 +432,7 @@ async fn test_tick_recovery_resets_counter() {
     watchdog.tick().await;
     assert_eq!(watchdog.failure_count(), 2);
 
-    // Tick 3: sufficient — escrow refunded
+    // Tick 3: sufficient — escrow refunded (balance=5000, rate=1000 → 5 periods, above multiplier=3)
     server.reset().await;
     mount_rpc_mocks(
         &server,
@@ -508,7 +515,7 @@ async fn test_tick_full_mixed_scenario() {
     let config = test_config(&server.uri(), 3);
     let watchdog = EscrowWatchdog::new(config);
 
-    // 1. Sufficient
+    // 1. Sufficient (balance=5000, rate=1000 → 5 periods, above multiplier=3)
     mount_rpc_mocks(&server, &encode_escrow(U256::from(5000u64)), &encode_config(rate)).await;
     assert!(matches!(watchdog.tick().await, WatchdogTickResult::Sufficient { previous_failures: 0 }));
     assert_eq!(watchdog.failure_count(), 0);
@@ -532,7 +539,7 @@ async fn test_tick_full_mixed_scenario() {
     mount_rpc_mocks(&server, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
     assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 2, .. }));
 
-    // 5. Sufficient — recovery (resets counter)
+    // 5. Sufficient — recovery (resets counter, balance=5000 → 5 periods, above multiplier)
     server.reset().await;
     mount_rpc_mocks(&server, &encode_escrow(U256::from(5000u64)), &encode_config(rate)).await;
     assert!(matches!(watchdog.tick().await, WatchdogTickResult::Sufficient { previous_failures: 2 }));
@@ -544,4 +551,195 @@ async fn test_tick_full_mixed_scenario() {
     assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 1, .. }));
     assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 2, .. }));
     assert_eq!(watchdog.tick().await, WatchdogTickResult::DeprovisionRequired { consecutive: 3 });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Low-balance warning tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Balance = 2x rate with multiplier=3 → LowBalance (2 periods < 3 threshold).
+#[tokio::test]
+async fn test_tick_low_balance_warning() {
+    let server = MockServer::start().await;
+    let mut config = test_config(&server.uri(), 3);
+    config.low_balance_multiplier = 3;
+
+    let rate = U256::from(1000u64);
+    let balance = U256::from(2000u64); // 2 periods remaining < 3 multiplier
+    mount_rpc_mocks(&server, &encode_escrow(balance), &encode_config(rate)).await;
+
+    let watchdog = EscrowWatchdog::new(config);
+    let result = watchdog.tick().await;
+
+    assert_eq!(
+        result,
+        WatchdogTickResult::LowBalance {
+            balance,
+            rate,
+            periods_remaining: 2,
+            previous_failures: 0,
+        }
+    );
+    assert_eq!(watchdog.failure_count(), 0, "low balance is still sufficient — counter stays 0");
+}
+
+/// Balance = exactly rate with multiplier=3 → LowBalance (1 period remaining).
+#[tokio::test]
+async fn test_tick_low_balance_exactly_one_period() {
+    let server = MockServer::start().await;
+    let mut config = test_config(&server.uri(), 3);
+    config.low_balance_multiplier = 3;
+
+    let rate = U256::from(1000u64);
+    mount_rpc_mocks(&server, &encode_escrow(rate), &encode_config(rate)).await;
+
+    let watchdog = EscrowWatchdog::new(config);
+    let result = watchdog.tick().await;
+
+    assert_eq!(
+        result,
+        WatchdogTickResult::LowBalance {
+            balance: rate,
+            rate,
+            periods_remaining: 1,
+            previous_failures: 0,
+        }
+    );
+}
+
+/// Balance = 3x rate with multiplier=3 → Sufficient (not low, exactly at threshold).
+#[tokio::test]
+async fn test_tick_balance_at_multiplier_boundary_is_sufficient() {
+    let server = MockServer::start().await;
+    let mut config = test_config(&server.uri(), 3);
+    config.low_balance_multiplier = 3;
+
+    let rate = U256::from(1000u64);
+    let balance = U256::from(3000u64); // exactly 3x rate = multiplier threshold
+    mount_rpc_mocks(&server, &encode_escrow(balance), &encode_config(rate)).await;
+
+    let watchdog = EscrowWatchdog::new(config);
+    let result = watchdog.tick().await;
+
+    // balance(3000) >= rate*multiplier(3000), so NOT low balance
+    assert_eq!(
+        result,
+        WatchdogTickResult::Sufficient {
+            previous_failures: 0
+        }
+    );
+}
+
+/// Low-balance disabled (multiplier=0) → always Sufficient when balance >= rate.
+#[tokio::test]
+async fn test_tick_low_balance_disabled() {
+    let server = MockServer::start().await;
+    let mut config = test_config(&server.uri(), 3);
+    config.low_balance_multiplier = 0;
+
+    let rate = U256::from(1000u64);
+    let balance = U256::from(1001u64); // just above rate, would trigger low-balance if enabled
+    mount_rpc_mocks(&server, &encode_escrow(balance), &encode_config(rate)).await;
+
+    let watchdog = EscrowWatchdog::new(config);
+    let result = watchdog.tick().await;
+
+    assert_eq!(
+        result,
+        WatchdogTickResult::Sufficient {
+            previous_failures: 0
+        }
+    );
+}
+
+/// Low-balance after recovery: previous_failures is preserved in LowBalance result.
+#[tokio::test]
+async fn test_tick_low_balance_after_recovery() {
+    let server = MockServer::start().await;
+    let mut config = test_config(&server.uri(), 5);
+    config.low_balance_multiplier = 3;
+
+    let rate = U256::from(1000u64);
+    let watchdog = EscrowWatchdog::new(config);
+
+    // Tick 1-2: insufficient
+    mount_rpc_mocks(&server, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
+    watchdog.tick().await;
+    watchdog.tick().await;
+    assert_eq!(watchdog.failure_count(), 2);
+
+    // Tick 3: recovery but low balance (balance=1500, rate=1000 → 1 period < 3 multiplier)
+    server.reset().await;
+    mount_rpc_mocks(
+        &server,
+        &encode_escrow(U256::from(1500u64)),
+        &encode_config(rate),
+    )
+    .await;
+    let result = watchdog.tick().await;
+    assert_eq!(
+        result,
+        WatchdogTickResult::LowBalance {
+            balance: U256::from(1500u64),
+            rate,
+            periods_remaining: 1,
+            previous_failures: 2,
+        }
+    );
+    assert_eq!(watchdog.failure_count(), 0, "counter resets even on low balance");
+}
+
+/// Free service (rate=0) → no low-balance warning regardless of multiplier.
+#[tokio::test]
+async fn test_tick_free_service_no_low_balance() {
+    let server = MockServer::start().await;
+    let mut config = test_config(&server.uri(), 3);
+    config.low_balance_multiplier = 10;
+
+    mount_rpc_mocks(
+        &server,
+        &encode_escrow(U256::ZERO),
+        &encode_config(U256::ZERO),
+    )
+    .await;
+
+    let watchdog = EscrowWatchdog::new(config);
+    let result = watchdog.tick().await;
+
+    assert_eq!(
+        result,
+        WatchdogTickResult::Sufficient {
+            previous_failures: 0
+        }
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shutdown test
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// spawn_watchdog exits cleanly when shutdown signal is sent.
+#[tokio::test]
+async fn test_spawn_watchdog_shutdown() {
+    let server = MockServer::start().await;
+    let rate = U256::from(100u64);
+    let balance = U256::from(10000u64);
+    mount_rpc_mocks(&server, &encode_escrow(balance), &encode_config(rate)).await;
+
+    let mut config = test_config(&server.uri(), 3);
+    config.check_interval_secs = 60; // long interval so we test shutdown, not ticking
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+    let handle = billing::spawn_watchdog(config, shutdown_rx);
+
+    // Give it a moment to start
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(!handle.is_finished(), "watchdog should be running");
+
+    // Send shutdown
+    shutdown_tx.send(()).unwrap();
+
+    // Should exit within a reasonable time
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+    assert!(result.is_ok(), "watchdog should exit after shutdown signal");
 }

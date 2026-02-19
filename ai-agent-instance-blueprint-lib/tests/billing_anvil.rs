@@ -213,6 +213,8 @@ fn watchdog_config(
         blueprint_id: LOCAL_BLUEPRINT_ID,
         check_interval_secs: 1,
         max_consecutive_failures: max_failures,
+        low_balance_multiplier: 0, // disable low-balance warnings in Anvil tests
+        deprovision_grace_period_secs: 0,
     }
 }
 
@@ -235,10 +237,10 @@ async fn test_check_escrow_real_rpc() -> Result<()> {
     let rpc_url = harness.http_endpoint().as_str();
     let config = watchdog_config(rpc_url, harness.tangle_contract, 3);
 
-    let result = billing::check_escrow(&config)
+    let status = billing::check_escrow(&config)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    eprintln!("check_escrow result: sufficient={result}");
+    eprintln!("check_escrow result: sufficient={}, balance={}, rate={}", status.sufficient, status.balance, status.rate);
     Ok(())
 }
 
@@ -280,7 +282,7 @@ async fn test_check_escrow_matches_raw_reads() -> Result<()> {
     );
 
     let config = watchdog_config(rpc_url, harness.tangle_contract, 3);
-    let result = billing::check_escrow(&config)
+    let status = billing::check_escrow(&config)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
 
@@ -290,7 +292,9 @@ async fn test_check_escrow_matches_raw_reads() -> Result<()> {
         escrow.balance >= bp_config.subscriptionRate
     };
 
-    assert_eq!(result, expected, "check_escrow should match raw comparison");
+    assert_eq!(status.sufficient, expected, "check_escrow should match raw comparison");
+    assert_eq!(status.balance, escrow.balance, "balance should match raw read");
+    assert_eq!(status.rate, bp_config.subscriptionRate, "rate should match raw read");
     Ok(())
 }
 
@@ -383,14 +387,15 @@ async fn test_check_escrow_insufficient_real_rpc() -> Result<()> {
     mine_block(&provider).await?;
 
     let config = watchdog_config(rpc_url, harness.tangle_contract, 3);
-    let result = billing::check_escrow(&config)
+    let status = billing::check_escrow(&config)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
 
     assert!(
-        !result,
+        !status.sufficient,
         "check_escrow should return false when balance=0 and rate>0"
     );
+    assert_eq!(status.balance, U256::ZERO);
     eprintln!("Confirmed: check_escrow returns false for depleted escrow on real RPC");
     Ok(())
 }
@@ -432,14 +437,16 @@ async fn test_check_escrow_sufficient_after_storage_set() -> Result<()> {
     mine_block(&provider).await?;
 
     let config = watchdog_config(rpc_url, harness.tangle_contract, 3);
-    let result = billing::check_escrow(&config)
+    let status = billing::check_escrow(&config)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
 
     assert!(
-        result,
+        status.sufficient,
         "check_escrow should return true when balance(10 ETH) >= rate(1 ETH)"
     );
+    assert_eq!(status.balance, one_eth * U256::from(10));
+    assert_eq!(status.rate, one_eth);
     Ok(())
 }
 

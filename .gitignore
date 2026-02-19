@@ -28,6 +28,8 @@ docs/
 
 # Dotenv file
 .env
+.env.local
+ui/.env.local
 
 # Generated blueprint files
 blueprint.json
@@ -39,6 +41,9 @@ dependencies/
 # Runtime state (test artifacts)
 blueprint-state/
 **/blueprint-state/
+
+# Deploy script data (keystores, state)
+scripts/data/
 
 # UI build artifacts
 ui/build/

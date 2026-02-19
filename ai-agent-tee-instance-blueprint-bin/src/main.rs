@@ -61,7 +61,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
     // Spawn escrow watchdog + subscription billing keeper.
     #[cfg(feature = "billing")]
-    {
+    let billing_shutdown_tx: Option<tokio::sync::broadcast::Sender<()>> = {
         let blueprint_id: u64 = std::env::var("BLUEPRINT_ID")
             .or_else(|_| std::env::var("TANGLE_BLUEPRINT_ID"))
             .ok()
@@ -73,40 +73,53 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                 service_id, blueprint_id,
             )
         {
-            let tangle_contract = watchdog_config.tangle_contract;
-            ai_agent_tee_instance_blueprint_lib::billing::spawn_watchdog(watchdog_config);
-            info!("Escrow watchdog started for service {service_id}");
+            if let Err(e) = watchdog_config.validate() {
+                error!("Escrow watchdog config invalid: {e}");
+                None
+            } else {
+                let (shutdown_tx, watchdog_rx) = tokio::sync::broadcast::channel::<()>(1);
 
-            // Subscription billing keeper: calls billSubscriptionBatch on-chain.
-            let keystore = std::sync::Arc::new(env.keystore());
-            let rpc_endpoint = env.http_rpc_endpoint.to_string();
+                let tangle_contract = watchdog_config.tangle_contract;
+                ai_agent_tee_instance_blueprint_lib::billing::spawn_watchdog(
+                    watchdog_config, watchdog_rx,
+                );
+                info!("Escrow watchdog started for service {service_id}");
 
-            let billing_check_secs: u64 = std::env::var("BILLING_CHECK_INTERVAL_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(60);
-            let billing_rescan_secs: u64 = std::env::var("BILLING_RESCAN_INTERVAL_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(300);
+                // Subscription billing keeper: calls billSubscriptionBatch on-chain.
+                let keystore = std::sync::Arc::new(env.keystore());
+                let rpc_endpoint = env.http_rpc_endpoint.to_string();
 
-            use blueprint_tangle_extra::services::{
-                BackgroundKeeper, KeeperConfig, SubscriptionBillingKeeper,
-            };
+                let billing_check_secs: u64 = std::env::var("BILLING_CHECK_INTERVAL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(60);
+                let billing_rescan_secs: u64 = std::env::var("BILLING_RESCAN_INTERVAL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(300);
 
-            let keeper_config = KeeperConfig::new(rpc_endpoint, keystore)
-                .with_tangle_contract(tangle_contract)
-                .with_billing_interval(std::time::Duration::from_secs(billing_check_secs))
-                .with_billing_rescan_interval(std::time::Duration::from_secs(billing_rescan_secs));
+                use blueprint_tangle_extra::services::{
+                    BackgroundKeeper, KeeperConfig, SubscriptionBillingKeeper,
+                };
 
-            let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-            let _billing_handle =
-                SubscriptionBillingKeeper::start(keeper_config, shutdown_rx);
-            std::mem::forget(shutdown_tx);
+                let keeper_config = KeeperConfig::new(rpc_endpoint, keystore)
+                    .with_tangle_contract(tangle_contract)
+                    .with_billing_interval(std::time::Duration::from_secs(billing_check_secs))
+                    .with_billing_rescan_interval(std::time::Duration::from_secs(
+                        billing_rescan_secs,
+                    ));
 
-            info!("Subscription billing keeper started for service {service_id}");
+                let billing_rx = shutdown_tx.subscribe();
+                let _billing_handle =
+                    SubscriptionBillingKeeper::start(keeper_config, billing_rx);
+
+                info!("Subscription billing keeper started for service {service_id}");
+                Some(shutdown_tx)
+            }
+        } else {
+            None
         }
-    }
+    };
 
     let tangle_producer = TangleProducer::new(tangle_client.clone(), service_id);
     let tangle_consumer = TangleConsumer::new(tangle_client);
@@ -117,8 +130,21 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .router(tee_router())
         .producer(tangle_producer)
         .consumer(tangle_consumer)
-        .with_shutdown_handler(async {
+        .with_shutdown_handler(async move {
             info!("Shutting down ai-agent-tee-instance-blueprint");
+
+            #[cfg(feature = "billing")]
+            if let Some(tx) = billing_shutdown_tx {
+                let _ = tx.send(());
+                info!("Billing shutdown signal sent");
+            }
+
+            // Deprovision sandbox + TEE deployment so they don't outlive the service.
+            let tee = ai_agent_tee_instance_blueprint_lib::tee_backend();
+            match ai_agent_tee_instance_blueprint_lib::deprovision_core(Some(tee.as_ref())).await {
+                Ok((_, id)) => info!("Shutdown: deprovisioned sandbox {id}"),
+                Err(e) => info!("Shutdown: no sandbox to deprovision ({e})"),
+            }
         })
         .run()
         .await;
