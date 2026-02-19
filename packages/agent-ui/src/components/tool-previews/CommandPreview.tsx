@@ -44,19 +44,19 @@ export const CommandPreview = memo(({ part }: CommandPreviewProps) => {
   const errorText = part.state.error;
 
   return (
-    <div className="rounded-lg overflow-hidden border border-neutral-700/50">
+    <div className="rounded-lg overflow-hidden border border-neutral-200/50 dark:border-neutral-700/50">
       {/* Command header */}
       <button
         onClick={() => setExpanded((e) => !e)}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-neutral-800/80 hover:bg-neutral-800 transition-colors text-left"
+        className="w-full flex items-center gap-2 px-3 py-2 bg-neutral-100/80 dark:bg-neutral-800/80 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-left"
       >
         <div className="i-ph:terminal-window w-3.5 h-3.5 text-neutral-400 shrink-0" />
-        <code className="text-xs font-mono text-neutral-200 truncate flex-1">{command}</code>
+        <code className="text-xs font-mono text-neutral-800 dark:text-neutral-200 truncate flex-1">{command}</code>
         {output && (
           <span
             className={cn(
               'text-xs font-mono px-1.5 py-0.5 rounded',
-              isError ? 'bg-red-900/50 text-red-400' : 'bg-green-900/50 text-green-400',
+              isError ? 'bg-red-100/50 dark:bg-red-900/50 text-red-500 dark:text-red-400' : 'bg-green-100/50 dark:bg-green-900/50 text-green-600 dark:text-green-400',
             )}
           >
             {output.exitCode}
@@ -64,7 +64,7 @@ export const CommandPreview = memo(({ part }: CommandPreviewProps) => {
         )}
         <div
           className={cn(
-            'w-3 h-3 text-neutral-500 transition-transform',
+            'w-3 h-3 text-neutral-400 dark:text-neutral-500 transition-transform',
             expanded ? 'i-ph:caret-down' : 'i-ph:caret-right',
           )}
         />
@@ -72,24 +72,24 @@ export const CommandPreview = memo(({ part }: CommandPreviewProps) => {
 
       {/* Output body */}
       {expanded && (
-        <div className="max-h-80 overflow-y-auto bg-neutral-900/60">
+        <div className="max-h-80 overflow-y-auto bg-neutral-50/60 dark:bg-neutral-900/60">
           {output?.stdout && (
-            <pre className="p-3 text-xs font-mono text-neutral-300 whitespace-pre-wrap break-all">
+            <pre className="p-3 text-xs font-mono text-neutral-600 dark:text-neutral-300 whitespace-pre-wrap break-all">
               {output.stdout}
             </pre>
           )}
           {output?.stderr && (
-            <pre className="p-3 text-xs font-mono text-red-400/80 whitespace-pre-wrap break-all border-t border-neutral-700/30">
+            <pre className="p-3 text-xs font-mono text-red-500/80 dark:text-red-400/80 whitespace-pre-wrap break-all border-t border-neutral-200/30 dark:border-neutral-700/30">
               {output.stderr}
             </pre>
           )}
           {errorText && (
-            <pre className="p-3 text-xs font-mono text-red-400 whitespace-pre-wrap break-all">
+            <pre className="p-3 text-xs font-mono text-red-500 dark:text-red-400 whitespace-pre-wrap break-all">
               {errorText}
             </pre>
           )}
           {part.state.status === 'running' && (
-            <div className="p-3 flex items-center gap-2 text-xs text-neutral-500">
+            <div className="p-3 flex items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
               <div className="i-ph:circle-notch w-3 h-3 animate-spin" />
               Running...
             </div>

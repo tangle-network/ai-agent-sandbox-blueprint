@@ -40,11 +40,11 @@ export const WriteFilePreview = memo(({ part }: WriteFilePreviewProps) => {
   const language = getLanguageFromPath(write.path);
 
   return (
-    <div className="rounded-lg overflow-hidden border border-neutral-700/50">
-      <div className="flex items-center gap-2 px-3 py-2 bg-neutral-800/80">
+    <div className="rounded-lg overflow-hidden border border-neutral-200/50 dark:border-neutral-700/50">
+      <div className="flex items-center gap-2 px-3 py-2 bg-neutral-100/80 dark:bg-neutral-800/80">
         <div className="i-ph:note-pencil w-3.5 h-3.5 text-neutral-400 shrink-0" />
-        <span className="text-xs font-mono text-neutral-300 truncate flex-1">{write.path}</span>
-        <span className="text-xs text-neutral-500">
+        <span className="text-xs font-mono text-neutral-600 dark:text-neutral-300 truncate flex-1">{write.path}</span>
+        <span className="text-xs text-neutral-400 dark:text-neutral-500">
           +{lineCount} line{lineCount !== 1 ? 's' : ''}
         </span>
       </div>

@@ -22,7 +22,7 @@ function StreamingTimer({ startTime }: { startTime: number }) {
   }, [startTime]);
 
   return (
-    <span className="text-xs font-mono text-neutral-500 tabular-nums">
+    <span className="text-xs font-mono text-neutral-400 dark:text-neutral-500 tabular-nums">
       {formatDuration(elapsed)}
     </span>
   );
@@ -55,25 +55,25 @@ export const InlineToolItem = memo(({ part, renderToolDetail }: InlineToolItemPr
           className={cn(
             'w-full flex items-center gap-2 px-3 py-1.5 text-left',
             'rounded-md transition-colors text-xs',
-            'hover:bg-neutral-800/60',
-            open && 'bg-neutral-800/40',
+            'hover:bg-neutral-100/60 dark:hover:bg-neutral-800/60',
+            open && 'bg-neutral-100/40 dark:bg-neutral-800/40',
           )}
         >
           {/* Status / Icon */}
           <div
             className={cn(
               'w-4 h-4 shrink-0',
-              isRunning && 'i-ph:circle-notch animate-spin text-blue-400',
-              isComplete && 'i-ph:check-circle text-green-400',
-              isError && 'i-ph:warning-circle text-red-400',
-              !isRunning && !isComplete && !isError && `${meta.iconClass} text-neutral-400`,
+              isRunning && 'i-ph:circle-notch animate-spin text-blue-500 dark:text-blue-400',
+              isComplete && 'i-ph:check-circle text-green-500 dark:text-green-400',
+              isError && 'i-ph:warning-circle text-red-500 dark:text-red-400',
+              !isRunning && !isComplete && !isError && `${meta.iconClass} text-neutral-400 dark:text-neutral-400`,
             )}
           />
 
           {/* Title + description */}
-          <span className="font-medium text-neutral-200 shrink-0">{meta.title}</span>
+          <span className="font-medium text-neutral-800 dark:text-neutral-200 shrink-0">{meta.title}</span>
           {meta.description && (
-            <span className="text-neutral-500 truncate flex-1 font-mono">
+            <span className="text-neutral-400 dark:text-neutral-500 truncate flex-1 font-mono">
               {meta.description}
             </span>
           )}
@@ -82,20 +82,20 @@ export const InlineToolItem = memo(({ part, renderToolDetail }: InlineToolItemPr
           {/* Duration or streaming timer */}
           {isRunning && startTime && <StreamingTimer startTime={startTime} />}
           {!isRunning && durationMs != null && (
-            <span className="text-xs font-mono text-neutral-500 tabular-nums">
+            <span className="text-xs font-mono text-neutral-400 dark:text-neutral-500 tabular-nums">
               {formatDuration(durationMs)}
             </span>
           )}
 
           {/* Error indicator */}
           {errorText && (
-            <span className="text-xs text-red-400 truncate max-w-32">{errorText}</span>
+            <span className="text-xs text-red-500 dark:text-red-400 truncate max-w-32">{errorText}</span>
           )}
 
           {/* Caret */}
           <div
             className={cn(
-              'w-3 h-3 text-neutral-500 transition-transform shrink-0',
+              'w-3 h-3 text-neutral-400 dark:text-neutral-500 transition-transform shrink-0',
               open ? 'i-ph:caret-down' : 'i-ph:caret-right',
             )}
           />

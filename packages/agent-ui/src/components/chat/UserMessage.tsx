@@ -22,8 +22,8 @@ export const UserMessage = memo(({ message, parts }: UserMessageProps) => {
 
   return (
     <div className="flex justify-end">
-      <div className="max-w-[85%] rounded-2xl rounded-br-md px-4 py-2.5 bg-blue-600/20 border border-blue-500/20">
-        <div className="text-sm text-neutral-100">
+      <div className="max-w-[85%] rounded-2xl rounded-br-md px-4 py-2.5 bg-blue-600/10 dark:bg-blue-600/20 border border-blue-500/15 dark:border-blue-500/20">
+        <div className="text-sm text-neutral-900 dark:text-neutral-100">
           <Markdown>{textContent}</Markdown>
         </div>
       </div>

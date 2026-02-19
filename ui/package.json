@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "react-router dev --host 0.0.0.0",
+    "dev": "react-router dev --host 0.0.0.0 --port 1338",
     "build": "react-router build",
     "preview": "vite preview --port 4173",
     "typecheck": "react-router typegen && tsc --noEmit",
@@ -56,6 +56,7 @@
     "@testing-library/react": "^16.3.2",
     "@types/react": "18.3.1",
     "@types/react-dom": "18.3.1",
+    "happy-dom": "^20.6.3",
     "jsdom": "^28.1.0",
     "sass-embedded": "^1.97.2",
     "typescript": "^5.5.2",

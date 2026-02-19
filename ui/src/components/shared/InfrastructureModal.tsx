@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useStore } from '@nanostores/react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import {
@@ -82,7 +82,7 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
         },
       });
     }
-  }, [serviceId, blueprintId, address, validate]);
+  }, [serviceId, blueprintId, address, validate, operators]);
 
   // Handle Create Service from quotes
   const handleCreateFromQuotes = useCallback(async () => {
@@ -163,12 +163,17 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
     }
   };
 
-  // Auto-verify on open if we have a service ID
+  // Auto-verify on open if we have a service ID (ref guard prevents infinite loop)
+  const hasAutoVerified = useRef(false);
   useEffect(() => {
-    if (open && serviceId && mode === 'existing' && !serviceInfo) {
+    if (open && serviceId && mode === 'existing' && !serviceInfo && !hasAutoVerified.current) {
+      hasAutoVerified.current = true;
       handleVerify();
     }
-  }, [open]);
+    if (!open) {
+      hasAutoVerified.current = false;
+    }
+  }, [open, serviceId, mode, serviceInfo, handleVerify]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

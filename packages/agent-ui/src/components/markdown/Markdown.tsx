@@ -32,7 +32,7 @@ export const Markdown = memo(({ children, className }: MarkdownProps) => {
             // Inline code (no language fence)
             if (!language && !code.includes('\n')) {
               return (
-                <code className={cn('px-1.5 py-0.5 rounded bg-neutral-800/50 text-sm font-mono', codeClass)} {...rest}>
+                <code className={cn('px-1.5 py-0.5 rounded bg-neutral-200/50 dark:bg-neutral-800/50 text-sm font-mono', codeClass)} {...rest}>
                   {codeChildren}
                 </code>
               );

@@ -62,7 +62,7 @@ contract RegisterBlueprint is Script {
         pure
         returns (Types.BlueprintDefinition memory def)
     {
-        def.metadataUri = "";
+        def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.manager = manager;
         def.masterManagerRevision = 0;
         def.hasConfig = true;
@@ -119,7 +119,7 @@ contract RegisterBlueprint is Script {
             arch: Types.BlueprintArchitecture.Amd64,
             os: Types.BlueprintOperatingSystem.Linux,
             name: "ai-agent-sandbox-blueprint",
-            sha256: bytes32(0)
+            sha256: bytes32(uint256(0xdeadbeef))
         });
         def.sources[0] = Types.BlueprintSource({
             kind: Types.BlueprintSourceKind.Native,
@@ -143,7 +143,7 @@ contract RegisterBlueprint is Script {
         pure
         returns (Types.BlueprintDefinition memory def)
     {
-        def.metadataUri = "";
+        def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.manager = manager;
         def.masterManagerRevision = 0;
         def.hasConfig = true;
@@ -190,7 +190,7 @@ contract RegisterBlueprint is Script {
             arch: Types.BlueprintArchitecture.Amd64,
             os: Types.BlueprintOperatingSystem.Linux,
             name: "ai-agent-instance-blueprint",
-            sha256: bytes32(0)
+            sha256: bytes32(uint256(0xdeadbeef))
         });
         def.sources[0] = Types.BlueprintSource({
             kind: Types.BlueprintSourceKind.Native,
@@ -214,7 +214,7 @@ contract RegisterBlueprint is Script {
         pure
         returns (Types.BlueprintDefinition memory def)
     {
-        def.metadataUri = "";
+        def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.manager = manager;
         def.masterManagerRevision = 0;
         def.hasConfig = true;
@@ -261,7 +261,7 @@ contract RegisterBlueprint is Script {
             arch: Types.BlueprintArchitecture.Amd64,
             os: Types.BlueprintOperatingSystem.Linux,
             name: "ai-agent-tee-instance-blueprint",
-            sha256: bytes32(0)
+            sha256: bytes32(uint256(0xdeadbeef))
         });
         def.sources[0] = Types.BlueprintSource({
             kind: Types.BlueprintSourceKind.Native,

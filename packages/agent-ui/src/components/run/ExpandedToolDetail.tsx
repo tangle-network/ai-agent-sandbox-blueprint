@@ -46,10 +46,10 @@ export const ExpandedToolDetail = memo(({ part }: ExpandedToolDetailProps) => {
     <div className="space-y-2">
       {/* Input */}
       {inputStr && (
-        <div className="rounded-lg overflow-hidden border border-neutral-700/50">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-neutral-800/80">
+        <div className="rounded-lg overflow-hidden border border-neutral-200/50 dark:border-neutral-700/50">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-neutral-100/80 dark:bg-neutral-800/80">
             <div className="i-ph:arrow-right w-3 h-3 text-neutral-400" />
-            <span className="text-xs text-neutral-400">Input</span>
+            <span className="text-xs text-neutral-500 dark:text-neutral-400">Input</span>
           </div>
           <CodeBlock code={inputStr} language="json" className="rounded-none" />
         </div>
@@ -57,10 +57,10 @@ export const ExpandedToolDetail = memo(({ part }: ExpandedToolDetailProps) => {
 
       {/* Output */}
       {status === 'completed' && outputStr && (
-        <div className="rounded-lg overflow-hidden border border-neutral-700/50">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-neutral-800/80">
+        <div className="rounded-lg overflow-hidden border border-neutral-200/50 dark:border-neutral-700/50">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-neutral-100/80 dark:bg-neutral-800/80">
             <div className="i-ph:arrow-left w-3 h-3 text-neutral-400" />
-            <span className="text-xs text-neutral-400">Output</span>
+            <span className="text-xs text-neutral-500 dark:text-neutral-400">Output</span>
           </div>
           <CodeBlock
             code={outputStr.length > 2000 ? outputStr.slice(0, 2000) + '\n...(truncated)' : outputStr}
@@ -72,12 +72,12 @@ export const ExpandedToolDetail = memo(({ part }: ExpandedToolDetailProps) => {
 
       {/* Error */}
       {error && (
-        <div className="rounded-lg overflow-hidden border border-red-900/50">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-red-900/30">
-            <div className="i-ph:warning-circle w-3 h-3 text-red-400" />
-            <span className="text-xs text-red-400">Error</span>
+        <div className="rounded-lg overflow-hidden border border-red-300/50 dark:border-red-900/50">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-red-100/30 dark:bg-red-900/30">
+            <div className="i-ph:warning-circle w-3 h-3 text-red-500 dark:text-red-400" />
+            <span className="text-xs text-red-500 dark:text-red-400">Error</span>
           </div>
-          <pre className="p-3 text-xs font-mono text-red-300 whitespace-pre-wrap break-all bg-neutral-900/60">
+          <pre className="p-3 text-xs font-mono text-red-600 dark:text-red-300 whitespace-pre-wrap break-all bg-neutral-50/60 dark:bg-neutral-900/60">
             {error}
           </pre>
         </div>
@@ -85,7 +85,7 @@ export const ExpandedToolDetail = memo(({ part }: ExpandedToolDetailProps) => {
 
       {/* Running state */}
       {(status === 'pending' || status === 'running') && (
-        <div className="flex items-center gap-2 px-3 py-2 text-xs text-neutral-500">
+        <div className="flex items-center gap-2 px-3 py-2 text-xs text-neutral-400 dark:text-neutral-500">
           <div className="i-ph:circle-notch w-3 h-3 animate-spin" />
           Running...
         </div>

@@ -19,7 +19,7 @@ function ThinkingTimer({ startTime }: { startTime: number }) {
   }, [startTime]);
 
   return (
-    <span className="text-xs font-mono text-neutral-500 tabular-nums">
+    <span className="text-xs font-mono text-neutral-400 dark:text-neutral-500 tabular-nums">
       {formatDuration(elapsed)}
     </span>
   );
@@ -45,36 +45,36 @@ export const InlineThinkingItem = memo(({ part }: InlineThinkingItemProps) => {
           className={cn(
             'w-full flex items-center gap-2 px-3 py-1.5 text-left',
             'rounded-md transition-colors text-xs',
-            'hover:bg-neutral-800/60',
-            open && 'bg-neutral-800/40',
+            'hover:bg-neutral-100/60 dark:hover:bg-neutral-800/60',
+            open && 'bg-neutral-100/40 dark:bg-neutral-800/40',
           )}
         >
           <div
             className={cn(
               'w-4 h-4 shrink-0 i-ph:brain',
-              isActive ? 'text-purple-400 animate-pulse' : 'text-neutral-400',
+              isActive ? 'text-purple-500 dark:text-purple-400 animate-pulse' : 'text-neutral-400 dark:text-neutral-400',
             )}
           />
 
-          <span className="font-medium text-neutral-200 shrink-0">
+          <span className="font-medium text-neutral-800 dark:text-neutral-200 shrink-0">
             {isActive ? 'Thinking...' : 'Thought'}
           </span>
 
           {preview && !open && (
-            <span className="text-neutral-500 truncate flex-1">{preview}</span>
+            <span className="text-neutral-400 dark:text-neutral-500 truncate flex-1">{preview}</span>
           )}
           {!preview && <span className="flex-1" />}
 
           {isActive && startTime && <ThinkingTimer startTime={startTime} />}
           {!isActive && durationMs != null && (
-            <span className="text-xs font-mono text-neutral-500 tabular-nums">
+            <span className="text-xs font-mono text-neutral-400 dark:text-neutral-500 tabular-nums">
               {formatDuration(durationMs)}
             </span>
           )}
 
           <div
             className={cn(
-              'w-3 h-3 text-neutral-500 transition-transform shrink-0',
+              'w-3 h-3 text-neutral-400 dark:text-neutral-500 transition-transform shrink-0',
               open ? 'i-ph:caret-down' : 'i-ph:caret-right',
             )}
           />
@@ -83,7 +83,7 @@ export const InlineThinkingItem = memo(({ part }: InlineThinkingItemProps) => {
 
       <Collapsible.Content className="overflow-hidden data-[state=open]:animate-slideDown data-[state=closed]:animate-slideUp">
         {part.text && (
-          <div className="ml-6 mt-1 mb-2 p-3 rounded-md bg-neutral-800/40 text-xs text-neutral-300">
+          <div className="ml-6 mt-1 mb-2 p-3 rounded-md bg-neutral-100/40 dark:bg-neutral-800/40 text-xs text-neutral-600 dark:text-neutral-300">
             <Markdown>{part.text}</Markdown>
           </div>
         )}

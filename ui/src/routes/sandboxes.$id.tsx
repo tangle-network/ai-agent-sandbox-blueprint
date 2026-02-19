@@ -299,8 +299,11 @@ export default function SandboxDetail() {
           {!isSidecarAuthed ? (
             <CardContent className="py-16 text-center">
               <div className="i-ph:terminal-window text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary mb-4">
+              <p className="text-sm text-cloud-elements-textSecondary mb-2">
                 Authenticate to access the sandbox terminal
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mb-4">
+                You'll be asked to sign a message with your wallet to verify ownership
               </p>
               <Button
                 variant="secondary"
@@ -308,7 +311,7 @@ export default function SandboxDetail() {
                 onClick={() => sidecarAuth()}
                 disabled={isAuthenticating || !sidecarUrl}
               >
-                {isAuthenticating ? 'Signing...' : 'Connect Terminal'}
+                {isAuthenticating ? 'Signing...' : !sidecarUrl ? 'Waiting for sidecar...' : 'Connect Terminal'}
               </Button>
             </CardContent>
           ) : (
