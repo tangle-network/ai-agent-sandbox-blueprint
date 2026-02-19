@@ -97,11 +97,104 @@ impl EscrowWatchdogConfig {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Watchdog state
+// Tick result
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Shared counter for consecutive escrow-insufficient checks.
-static FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Outcome of a single watchdog tick, returned for observability and testing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatchdogTickResult {
+    /// Escrow balance >= subscription rate. Counter was reset.
+    Sufficient {
+        /// How many consecutive failures were cleared (0 if none).
+        previous_failures: u32,
+    },
+    /// Escrow balance < subscription rate, but below deprovision threshold.
+    Insufficient {
+        /// Current consecutive failure count (after increment).
+        consecutive: u32,
+        /// Threshold at which deprovision triggers.
+        threshold: u32,
+    },
+    /// Consecutive failures reached the threshold — deprovision should fire.
+    DeprovisionRequired {
+        /// How many consecutive failures accumulated.
+        consecutive: u32,
+    },
+    /// RPC or transient error. Counter is NOT modified.
+    TransientError(String),
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EscrowWatchdog (struct-based, testable)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Instance-scoped escrow watchdog with observable tick results.
+pub struct EscrowWatchdog {
+    pub config: EscrowWatchdogConfig,
+    failure_count: AtomicU32,
+}
+
+impl EscrowWatchdog {
+    pub fn new(config: EscrowWatchdogConfig) -> Self {
+        Self {
+            config,
+            failure_count: AtomicU32::new(0),
+        }
+    }
+
+    /// Current consecutive failure count.
+    pub fn failure_count(&self) -> u32 {
+        self.failure_count.load(Ordering::Relaxed)
+    }
+
+    /// Reset the failure counter to zero.
+    pub fn reset_failure_count(&self) {
+        self.failure_count.store(0, Ordering::Relaxed);
+    }
+
+    /// Run a single tick: check escrow, update counter, return the result.
+    pub async fn tick(&self) -> WatchdogTickResult {
+        match check_escrow(&self.config).await {
+            Ok(true) => {
+                let prev = self.failure_count.swap(0, Ordering::Relaxed);
+                if prev > 0 {
+                    info!(
+                        "escrow-watchdog: escrow balance recovered after {prev} consecutive failures"
+                    );
+                }
+                WatchdogTickResult::Sufficient {
+                    previous_failures: prev,
+                }
+            }
+            Ok(false) => {
+                let count = self.failure_count.fetch_add(1, Ordering::Relaxed) + 1;
+                if count >= self.config.max_consecutive_failures {
+                    error!(
+                        "escrow-watchdog: escrow exhausted for {count} consecutive checks — deprovision required"
+                    );
+                    WatchdogTickResult::DeprovisionRequired { consecutive: count }
+                } else {
+                    warn!(
+                        "escrow-watchdog: escrow insufficient ({count}/{} consecutive failures)",
+                        self.config.max_consecutive_failures
+                    );
+                    WatchdogTickResult::Insufficient {
+                        consecutive: count,
+                        threshold: self.config.max_consecutive_failures,
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("escrow-watchdog: RPC error (will retry): {e}");
+                WatchdogTickResult::TransientError(e)
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Standalone check (used by EscrowWatchdog::tick and directly in tests)
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// Check escrow balance against subscription rate.
 /// Returns `Ok(true)` if escrow is sufficient, `Ok(false)` if insufficient.
@@ -113,8 +206,7 @@ pub async fn check_escrow(config: &EscrowWatchdogConfig) -> Result<bool, String>
         .parse()
         .map_err(|e| format!("Invalid RPC URL: {e}"))?;
 
-    let provider = ProviderBuilder::new()
-        .connect_http(url);
+    let provider = ProviderBuilder::new().connect_http(url);
 
     let contract = ITangleRead::new(config.tangle_contract, &provider);
 
@@ -134,47 +226,36 @@ pub async fn check_escrow(config: &EscrowWatchdogConfig) -> Result<bool, String>
     let rate = bp_config.subscriptionRate;
 
     if rate == U256::ZERO {
-        // Free service or misconfigured — nothing to enforce
         return Ok(true);
     }
 
     Ok(balance >= rate)
 }
 
-/// Single tick of the escrow watchdog.
-/// Call this periodically from a `tokio::spawn` interval loop.
-pub async fn escrow_watchdog_tick(config: &EscrowWatchdogConfig) {
-    match check_escrow(config).await {
-        Ok(true) => {
-            // Escrow is sufficient — reset failure counter
-            let prev = FAILURE_COUNT.swap(0, Ordering::Relaxed);
-            if prev > 0 {
-                info!(
-                    "escrow-watchdog: escrow balance recovered after {prev} consecutive failures"
-                );
-            }
-        }
-        Ok(false) => {
-            let count = FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            warn!(
-                "escrow-watchdog: escrow insufficient ({count}/{} consecutive failures)",
-                config.max_consecutive_failures
-            );
+// ─────────────────────────────────────────────────────────────────────────────
+// Production spawner (calls deprovision_core on threshold)
+// ─────────────────────────────────────────────────────────────────────────────
 
-            if count >= config.max_consecutive_failures {
-                error!(
-                    "escrow-watchdog: escrow exhausted for {} consecutive checks — auto-deprovisioning",
-                    count
-                );
+/// Spawn the escrow watchdog as a background task.
+/// When the consecutive failure threshold is reached, triggers `deprovision_core`.
+pub fn spawn_watchdog(config: EscrowWatchdogConfig) -> tokio::task::JoinHandle<()> {
+    let interval = Duration::from_secs(config.check_interval_secs);
+    let watchdog = EscrowWatchdog::new(config);
+
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        info!(
+            "escrow-watchdog: started (check every {}s, deprovision after {} failures)",
+            watchdog.config.check_interval_secs, watchdog.config.max_consecutive_failures
+        );
+
+        loop {
+            ticker.tick().await;
+            if let WatchdogTickResult::DeprovisionRequired { .. } = watchdog.tick().await {
                 trigger_deprovision().await;
             }
         }
-        Err(e) => {
-            // RPC errors don't count as escrow failures — transient network issues
-            // shouldn't trigger deprovision. Just log and retry next tick.
-            warn!("escrow-watchdog: RPC error (will retry): {e}");
-        }
-    }
+    })
 }
 
 /// Trigger graceful deprovision of the instance sandbox.
@@ -189,25 +270,4 @@ async fn trigger_deprovision() {
             error!("escrow-watchdog: deprovision failed: {e}");
         }
     }
-}
-
-/// Spawn the escrow watchdog as a background task.
-/// Returns `None` if billing is not configured (TANGLE_CONTRACT_ADDRESS not set).
-pub fn spawn_watchdog(
-    config: EscrowWatchdogConfig,
-) -> tokio::task::JoinHandle<()> {
-    let interval = Duration::from_secs(config.check_interval_secs);
-
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        info!(
-            "escrow-watchdog: started (check every {}s, deprovision after {} failures)",
-            config.check_interval_secs, config.max_consecutive_failures
-        );
-
-        loop {
-            ticker.tick().await;
-            escrow_watchdog_tick(&config).await;
-        }
-    })
 }

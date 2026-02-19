@@ -2,8 +2,9 @@ use chrono::{TimeZone, Utc};
 use cron::Schedule;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::Mutex;
 
 use crate::SandboxTaskRequest;
 use crate::auth::require_sidecar_token;
@@ -65,6 +66,10 @@ pub struct WorkflowTaskSpec {
 
 static WORKFLOWS: once_cell::sync::OnceCell<PersistentStore<WorkflowEntry>> =
     once_cell::sync::OnceCell::new();
+
+/// Tracks workflow IDs that are currently executing to prevent concurrent runs.
+static RUNNING_WORKFLOWS: once_cell::sync::Lazy<Mutex<HashSet<u64>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashSet::new()));
 
 pub fn workflows() -> Result<&'static PersistentStore<WorkflowEntry>, String> {
     WORKFLOWS
@@ -205,11 +210,40 @@ pub async fn workflow_tick() -> Result<Value, String> {
 
     let mut executed = Vec::new();
     for workflow_id in due {
+        // Check if this workflow is already running (prevents concurrent
+        // executions when cron fires faster than the workflow completes).
+        {
+            let mut running = RUNNING_WORKFLOWS.lock().unwrap();
+            if running.contains(&workflow_id) {
+                tracing::debug!("Workflow {workflow_id} already running, skipping");
+                continue;
+            }
+            running.insert(workflow_id);
+        }
+
         let key = workflow_key(workflow_id);
         let entry = match workflows()?.get(&key).map_err(|e| e.to_string())? {
             Some(e) if e.active => e,
-            _ => continue,
+            _ => {
+                RUNNING_WORKFLOWS.lock().unwrap().remove(&workflow_id);
+                continue;
+            }
         };
+
+        // Advance next_run_at BEFORE starting the run to prevent duplicate
+        // executions when the cron fires faster than the workflow completes.
+        let tentative_next = resolve_next_run(
+            &entry.trigger_type,
+            &entry.trigger_config,
+            Some(now),
+        )
+        .ok()
+        .flatten();
+        workflows()?
+            .update(&key, |e| {
+                e.next_run_at = tentative_next;
+            })
+            .map_err(|e| e.to_string())?;
 
         match run_workflow(&entry).await {
             Ok(execution) => {
@@ -229,6 +263,9 @@ pub async fn workflow_tick() -> Result<Value, String> {
                 "error": err,
             })),
         }
+
+        // Release the running lock after execution completes.
+        RUNNING_WORKFLOWS.lock().unwrap().remove(&workflow_id);
     }
 
     Ok(json!({
