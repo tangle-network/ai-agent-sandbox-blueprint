@@ -28,22 +28,22 @@ type ActionTab = 'overview' | 'terminal' | 'prompt' | 'task' | 'ssh';
 // Branding presets for each tab's chat container
 const PROMPT_BRANDING: AgentBranding = {
   label: 'Agent',
-  accentClass: 'text-violet-400',
+  accentClass: 'text-violet-600 dark:text-violet-400',
   bgClass: 'bg-violet-500/5',
-  containerBgClass: 'bg-neutral-950/60',
-  borderClass: 'border-violet-500/20',
+  containerBgClass: 'bg-violet-50/40 dark:bg-neutral-950/60',
+  borderClass: 'border-violet-500/15 dark:border-violet-500/20',
   iconClass: 'i-ph:robot',
-  textClass: 'text-violet-400',
+  textClass: 'text-violet-600 dark:text-violet-400',
 };
 
 const TASK_BRANDING: AgentBranding = {
   label: 'Task Agent',
-  accentClass: 'text-amber-400',
+  accentClass: 'text-amber-600 dark:text-amber-400',
   bgClass: 'bg-amber-500/5',
-  containerBgClass: 'bg-neutral-950/60',
-  borderClass: 'border-amber-500/20',
+  containerBgClass: 'bg-amber-50/40 dark:bg-neutral-950/60',
+  borderClass: 'border-amber-500/15 dark:border-amber-500/20',
   iconClass: 'i-ph:lightning',
-  textClass: 'text-amber-400',
+  textClass: 'text-amber-600 dark:text-amber-400',
 };
 
 export default function SandboxDetail() {
