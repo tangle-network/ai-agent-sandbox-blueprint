@@ -159,7 +159,7 @@ const SHADCN_COLORS = {
 export default defineConfig({
   content: {
     pipeline: {
-      include: [/\.(tsx?|jsx?)$/, '../../blueprint-ui/src/**/*.{ts,tsx}'],
+      include: [/\.(tsx?|jsx?)$/, '../../blueprint-ui/src/**/*.{ts,tsx}', '../packages/agent-ui/src/**/*.{ts,tsx}'],
     },
   },
   shortcuts: {
