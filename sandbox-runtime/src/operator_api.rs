@@ -245,12 +245,13 @@ pub fn extract_session_from_headers(headers: &HeaderMap) -> Result<session_auth:
 /// - `"none"` → CORS disabled (use when behind BPM proxy that handles CORS).
 /// - Comma-separated origins → strict whitelist with credentials.
 /// - Unset or `"*"` → allow any origin (development mode only).
-fn build_cors_layer() -> CorsLayer {
+pub fn build_cors_layer() -> CorsLayer {
     use axum::http::{header, Method};
 
     let allowed_methods = vec![
         Method::GET,
         Method::POST,
+        Method::PATCH,
         Method::DELETE,
         Method::OPTIONS,
     ];

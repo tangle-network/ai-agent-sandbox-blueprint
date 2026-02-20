@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod error;
 pub mod http;
+pub mod instance_types;
 pub mod metrics;
 pub mod operator_api;
 pub mod provision_progress;
@@ -21,7 +22,10 @@ pub mod util;
 
 pub use error::SandboxError;
 pub use runtime::{CreateSandboxParams, SandboxRecord, SandboxState};
-pub use tee::{AttestationReport, TeeBackend, TeeConfig, TeeDeployParams, TeeDeployment, TeeType};
+pub use tee::{
+    AttestationReport, TeeBackend, TeeConfig, TeeDeployParams, TeeDeployment, TeeType,
+    init_tee_backend, tee_backend,
+};
 
 pub const DEFAULT_SIDECAR_IMAGE: &str = "ghcr.io/tangle-network/sidecar:latest";
 pub const DEFAULT_SIDECAR_HTTP_PORT: u16 = 8080;

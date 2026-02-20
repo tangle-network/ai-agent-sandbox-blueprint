@@ -93,33 +93,12 @@ pub use ai_agent_instance_blueprint_lib::{
     util,
 };
 
-use once_cell::sync::OnceCell;
-use std::sync::Arc;
-
 use blueprint_sdk::Job;
 use blueprint_sdk::Router;
 use blueprint_sdk::tangle::TangleLayer;
-use sandbox_runtime::tee::TeeBackend;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Global TEE backend
-// ─────────────────────────────────────────────────────────────────────────────
-
-static TEE_BACKEND: OnceCell<Arc<dyn TeeBackend>> = OnceCell::new();
-
-/// Initialize the global TEE backend. Call once at startup.
-pub fn init_tee_backend(backend: Arc<dyn TeeBackend>) {
-    if TEE_BACKEND.set(backend).is_err() {
-        tracing::warn!("TEE backend already initialized, ignoring duplicate init");
-    }
-}
-
-/// Get the global TEE backend. Panics if not yet initialized.
-pub fn tee_backend() -> &'static Arc<dyn TeeBackend> {
-    TEE_BACKEND
-        .get()
-        .expect("TEE backend not initialized — call init_tee_backend() first")
-}
+// Re-export TEE backend singleton from sandbox-runtime.
+pub use sandbox_runtime::tee::{init_tee_backend, tee_backend};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Router

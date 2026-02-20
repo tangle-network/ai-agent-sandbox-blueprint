@@ -210,6 +210,27 @@ pub trait TeeBackend: Send + Sync {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Global TEE backend singleton
+// ─────────────────────────────────────────────────────────────────────────────
+
+static TEE_BACKEND: once_cell::sync::OnceCell<std::sync::Arc<dyn TeeBackend>> =
+    once_cell::sync::OnceCell::new();
+
+/// Initialize the global TEE backend. Call once at startup.
+pub fn init_tee_backend(backend: std::sync::Arc<dyn TeeBackend>) {
+    if TEE_BACKEND.set(backend).is_err() {
+        tracing::warn!("TEE backend already initialized, ignoring duplicate init");
+    }
+}
+
+/// Get the global TEE backend. Panics if not yet initialized.
+pub fn tee_backend() -> &'static std::sync::Arc<dyn TeeBackend> {
+    TEE_BACKEND
+        .get()
+        .expect("TEE backend not initialized — call init_tee_backend() first")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers for cloud TEE backends
 // ─────────────────────────────────────────────────────────────────────────────
 

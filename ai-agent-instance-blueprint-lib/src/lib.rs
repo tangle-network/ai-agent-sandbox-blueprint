@@ -19,6 +19,10 @@ pub use sandbox_runtime::{
     TeeConfig, TeeType,
 };
 pub use sandbox_runtime::{auth, error, http, metrics, reaper, runtime, store, tee, util};
+pub use sandbox_runtime::instance_types::{
+    InstanceExecRequest, InstanceExecResponse, InstancePromptRequest, InstancePromptResponse,
+    InstanceTaskRequest, InstanceTaskResponse,
+};
 
 use blueprint_sdk::Job;
 use blueprint_sdk::Router;
@@ -95,63 +99,6 @@ sol! {
         /// TEE-bound public key JSON (empty for non-TEE sandboxes).
         /// Clients verify the attestation inside, then encrypt secrets to this key.
         string tee_public_key_json;
-    }
-
-    // ── Exec (no sidecar_url/token — instance-scoped) ─────────────────────
-
-    struct InstanceExecRequest {
-        string command;
-        string cwd;
-        string env_json;
-        uint64 timeout_ms;
-    }
-
-    struct InstanceExecResponse {
-        uint32 exit_code;
-        string stdout;
-        string stderr;
-    }
-
-    // ── Prompt (no sidecar_url/token — instance-scoped) ───────────────────
-
-    struct InstancePromptRequest {
-        string message;
-        string session_id;
-        string model;
-        string context_json;
-        uint64 timeout_ms;
-    }
-
-    struct InstancePromptResponse {
-        bool success;
-        string response;
-        string error;
-        string trace_id;
-        uint64 duration_ms;
-        uint32 input_tokens;
-        uint32 output_tokens;
-    }
-
-    // ── Task (no sidecar_url/token — instance-scoped) ─────────────────────
-
-    struct InstanceTaskRequest {
-        string prompt;
-        string session_id;
-        uint64 max_turns;
-        string model;
-        string context_json;
-        uint64 timeout_ms;
-    }
-
-    struct InstanceTaskResponse {
-        bool success;
-        string result;
-        string error;
-        string trace_id;
-        uint64 duration_ms;
-        uint32 input_tokens;
-        uint32 output_tokens;
-        string session_id;
     }
 
     // ── SSH (no sidecar_url/token — instance-scoped) ──────────────────────

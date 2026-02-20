@@ -166,7 +166,6 @@ version = "0.1.0"
 dependencies = [
  "ai-agent-instance-blueprint-lib",
  "blueprint-sdk",
- "once_cell",
  "sandbox-runtime",
  "tokio",
  "tracing",
@@ -8304,6 +8303,7 @@ dependencies = [
 name = "sandbox-runtime"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "async-trait",
  "aws-config",
  "aws-sdk-ec2",
@@ -8333,6 +8333,7 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http",
+ "tracing",
  "uuid 1.20.0",
 ]
 

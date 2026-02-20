@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 async-trait = "0.1"
+alloy = { version = "1", default-features = false, features = ["sol-types"] }
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tracing", "local-store"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
@@ -26,6 +27,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 subtle = "2"
 tokio = { version = "1", default-features = false, features = ["sync", "rt", "time"] }
+tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
 # Session auth (EIP-191 + PASETO v4)
