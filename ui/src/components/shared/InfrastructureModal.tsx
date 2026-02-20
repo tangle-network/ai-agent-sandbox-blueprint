@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useStore } from '@nanostores/react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import {
@@ -42,10 +42,14 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
   const [selectedOperators, setSelectedOperators] = useState<Address[]>([]);
   const [manualAddr, setManualAddr] = useState('');
 
-  // RFQ quotes
+  // RFQ quotes — memoize filtered operators to prevent useQuotes from re-running every render
   const TTL_BLOCKS = 864000n; // ~30 days at 3s blocks
+  const selectedOps = useMemo(
+    () => operators.filter((op) => selectedOperators.includes(op.address)),
+    [operators, selectedOperators],
+  );
   const { quotes, isLoading: quotesLoading, isSolvingPow, errors: quoteErrors, totalCost, refetch: refetchQuotes } = useQuotes(
-    operators.filter((op) => selectedOperators.includes(op.address)),
+    selectedOps,
     BigInt(blueprintId || '0'),
     TTL_BLOCKS,
     mode === 'new' && selectedOperators.length > 0,

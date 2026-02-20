@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/com
 import { Button } from '~/components/ui/button';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
+import { SessionSidebar } from '~/components/shared/SessionSidebar';
 import { sandboxListStore, updateSandboxStatus, getSandbox } from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
@@ -13,8 +14,6 @@ import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { getJobById } from '~/lib/blueprints';
 import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
 import '~/lib/blueprints'; // auto-register
-import { ChatContainer, type AgentBranding } from '@tangle/agent-ui';
-import { useSandboxChat } from '~/lib/hooks/useSandboxChat';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '~/lib/utils';
@@ -23,28 +22,7 @@ const TerminalView = lazy(() =>
   import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView }))
 );
 
-type ActionTab = 'overview' | 'terminal' | 'prompt' | 'task' | 'ssh';
-
-// Branding presets for each tab's chat container
-const PROMPT_BRANDING: AgentBranding = {
-  label: 'Agent',
-  accentClass: 'text-violet-600 dark:text-violet-400',
-  bgClass: 'bg-violet-500/5',
-  containerBgClass: 'bg-violet-50/40 dark:bg-neutral-950/60',
-  borderClass: 'border-violet-500/15 dark:border-violet-500/20',
-  iconClass: 'i-ph:robot',
-  textClass: 'text-violet-600 dark:text-violet-400',
-};
-
-const TASK_BRANDING: AgentBranding = {
-  label: 'Task Agent',
-  accentClass: 'text-amber-600 dark:text-amber-400',
-  bgClass: 'bg-amber-500/5',
-  containerBgClass: 'bg-amber-50/40 dark:bg-neutral-950/60',
-  borderClass: 'border-amber-500/15 dark:border-amber-500/20',
-  iconClass: 'i-ph:lightning',
-  textClass: 'text-amber-600 dark:text-amber-400',
-};
+type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh';
 
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
@@ -70,10 +48,6 @@ export default function SandboxDetail() {
     if (!sb?.sidecarUrl || !sidecarToken) return null;
     return createDirectClient(sb.sidecarUrl, sidecarToken);
   }, [sb?.sidecarUrl, sidecarToken]);
-
-  // Chat hooks for prompt/task tabs
-  const promptChat = useSandboxChat({ client, mode: 'prompt', systemPrompt });
-  const taskChat = useSandboxChat({ client, mode: 'task', systemPrompt });
 
   const bpId = 'ai-agent-sandbox-blueprint';
 
@@ -161,8 +135,7 @@ export default function SandboxDetail() {
   const tabs: { key: ActionTab; label: string; icon: string; disabled?: boolean }[] = [
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal', disabled: !isRunning },
-    { key: 'prompt', label: 'Prompt', icon: 'i-ph:robot', disabled: !isRunning },
-    { key: 'task', label: 'Task', icon: 'i-ph:lightning', disabled: !isRunning },
+    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !isRunning },
     { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !isRunning },
   ];
 
@@ -335,83 +308,40 @@ export default function SandboxDetail() {
         </Card>
       )}
 
-      {/* Prompt Tab — ChatContainer with agent prompting */}
-      {tab === 'prompt' && (
-        <div className="space-y-4">
-          {/* System prompt config */}
-          <Card>
-            <CardContent className="p-3">
-              <details className="group">
-                <summary className="cursor-pointer text-xs font-display text-cloud-elements-textTertiary hover:text-cloud-elements-textSecondary transition-colors flex items-center gap-1.5">
-                  <div className="i-ph:gear text-sm" />
-                  System Prompt
-                  {systemPrompt && <span className="text-violet-400 ml-1">(set)</span>}
-                </summary>
-                <textarea
-                  value={systemPrompt}
-                  onChange={(e) => setSystemPrompt(e.target.value)}
-                  placeholder="You are a helpful coding assistant."
-                  rows={2}
-                  className="mt-2 flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
+      {/* Chat Tab — multi-session agent chat */}
+      {tab === 'chat' && (
+        <Card className="overflow-hidden">
+          <CardContent className="p-0">
+            <div className="h-[600px]">
+              {!isSidecarAuthed ? (
+                <div className="flex flex-col items-center justify-center h-full gap-3">
+                  <div className="i-ph:chat-circle text-3xl text-cloud-elements-textTertiary" />
+                  <p className="text-sm text-cloud-elements-textSecondary">
+                    Authenticate to start chatting
+                  </p>
+                  <p className="text-xs text-cloud-elements-textTertiary">
+                    Sign a message with your wallet to verify ownership
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => sidecarAuth()}
+                    disabled={isAuthenticating || !sidecarUrl}
+                  >
+                    {isAuthenticating ? 'Signing...' : !sidecarUrl ? 'Waiting for sidecar...' : 'Connect'}
+                  </Button>
+                </div>
+              ) : (
+                <SessionSidebar
+                  sandboxId={decodedId}
+                  client={client}
+                  systemPrompt={systemPrompt}
+                  onSystemPromptChange={setSystemPrompt}
                 />
-              </details>
-            </CardContent>
-          </Card>
-
-          <Card className="overflow-hidden">
-            <CardContent className="p-0">
-              <div className="h-[500px]">
-                <ChatContainer
-                  messages={promptChat.messages}
-                  partMap={promptChat.partMap}
-                  isStreaming={promptChat.isStreaming}
-                  onSend={promptChat.send}
-                  branding={PROMPT_BRANDING}
-                  placeholder="What files are in the workspace?"
-                />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* Task Tab — ChatContainer for autonomous tasks */}
-      {tab === 'task' && (
-        <div className="space-y-4">
-          <Card>
-            <CardContent className="p-3">
-              <details className="group">
-                <summary className="cursor-pointer text-xs font-display text-cloud-elements-textTertiary hover:text-cloud-elements-textSecondary transition-colors flex items-center gap-1.5">
-                  <div className="i-ph:gear text-sm" />
-                  System Prompt
-                  {systemPrompt && <span className="text-amber-400 ml-1">(set)</span>}
-                </summary>
-                <textarea
-                  value={systemPrompt}
-                  onChange={(e) => setSystemPrompt(e.target.value)}
-                  placeholder="You are an expert developer."
-                  rows={2}
-                  className="mt-2 flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-                />
-              </details>
-            </CardContent>
-          </Card>
-
-          <Card className="overflow-hidden">
-            <CardContent className="p-0">
-              <div className="h-[500px]">
-                <ChatContainer
-                  messages={taskChat.messages}
-                  partMap={taskChat.partMap}
-                  isStreaming={taskChat.isStreaming}
-                  onSend={taskChat.send}
-                  branding={TASK_BRANDING}
-                  placeholder="Build a REST API with Express.js..."
-                />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {tab === 'ssh' && (

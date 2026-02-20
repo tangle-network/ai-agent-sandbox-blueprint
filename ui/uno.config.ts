@@ -325,6 +325,12 @@ export default defineConfig({
     'i-ph:caret-right',
     'i-ph:x',
     'i-ph:rocket-launch',
+    'i-ph:chat-circle',
+    'i-ph:sidebar-simple',
+    'i-ph:paper-plane-tilt',
+    'i-ph:arrow-down',
+    'i-ph:note-pencil',
+    'i-ph:terminal-window',
   ],
 });
 

@@ -6,42 +6,21 @@ import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card';
 import { Button } from '~/components/ui/button';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
+import { SessionSidebar } from '~/components/shared/SessionSidebar';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { getBlueprint, getJobById } from '~/lib/blueprints';
 import { INSTANCE_JOB_IDS, INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
-import { ChatContainer, type AgentBranding } from '@tangle/agent-ui';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
-import { useSandboxChat } from '~/lib/hooks/useSandboxChat';
 import { cn } from '~/lib/utils';
 
 const TerminalView = lazy(() =>
   import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),
 );
 
-type ActionTab = 'overview' | 'terminal' | 'prompt' | 'task';
-
-const PROMPT_BRANDING: AgentBranding = {
-  label: 'Agent',
-  accentClass: 'text-blue-400',
-  bgClass: 'bg-blue-500/5',
-  containerBgClass: 'bg-neutral-950/60',
-  borderClass: 'border-blue-500/20',
-  iconClass: 'i-ph:robot',
-  textClass: 'text-blue-400',
-};
-
-const TASK_BRANDING: AgentBranding = {
-  label: 'Task Agent',
-  accentClass: 'text-amber-400',
-  bgClass: 'bg-amber-500/5',
-  containerBgClass: 'bg-neutral-950/60',
-  borderClass: 'border-amber-500/20',
-  iconClass: 'i-ph:lightning',
-  textClass: 'text-amber-400',
-};
+type ActionTab = 'overview' | 'terminal' | 'chat';
 
 export default function InstanceDetail() {
   const { id } = useParams<{ id: string }>();
@@ -65,9 +44,6 @@ export default function InstanceDetail() {
     if (!sidecarUrl || !sidecarToken) return null;
     return createDirectClient(sidecarUrl, sidecarToken);
   }, [sidecarUrl, sidecarToken]);
-
-  const promptChat = useSandboxChat({ client, mode: 'prompt', systemPrompt });
-  const taskChat = useSandboxChat({ client, mode: 'task', systemPrompt });
 
   /** Compute job value from pricing tier (base rate = 0.001 TNT = 1e15 wei) */
   const jobValue = (jobId: number): bigint =>
@@ -106,8 +82,7 @@ export default function InstanceDetail() {
   const tabs: { key: ActionTab; label: string; icon: string }[] = [
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal' },
-    { key: 'prompt', label: 'Prompt', icon: 'i-ph:robot' },
-    { key: 'task', label: 'Task', icon: 'i-ph:lightning' },
+    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle' },
   ];
 
   return (
@@ -125,7 +100,7 @@ export default function InstanceDetail() {
               <h1 className="text-xl font-display font-bold text-cloud-elements-textPrimary">{inst.name}</h1>
               <StatusBadge status={inst.status === 'creating' ? 'running' : inst.status} />
               {inst.teeEnabled && (
-                <span className="text-xs text-violet-400 font-data bg-violet-500/10 px-2 py-0.5 rounded-full">TEE</span>
+                <span className="text-xs text-violet-700 dark:text-violet-400 font-data bg-violet-500/10 px-2 py-0.5 rounded-full">TEE</span>
               )}
             </div>
             <p className="text-xs font-data text-cloud-elements-textTertiary mt-1">
@@ -223,34 +198,30 @@ export default function InstanceDetail() {
         </Card>
       )}
 
-      {/* Prompt */}
-      {tab === 'prompt' && (
+      {/* Chat */}
+      {tab === 'chat' && (
         <Card className="overflow-hidden">
-          <CardContent className="p-0 h-[600px]">
-            <ChatContainer
-              messages={promptChat.messages}
-              partMap={promptChat.partMap}
-              isStreaming={promptChat.isStreaming}
-              onSend={promptChat.send}
-              branding={PROMPT_BRANDING}
-              placeholder="Send a prompt to the agent..."
-            />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Task */}
-      {tab === 'task' && (
-        <Card className="overflow-hidden">
-          <CardContent className="p-0 h-[600px]">
-            <ChatContainer
-              messages={taskChat.messages}
-              partMap={taskChat.partMap}
-              isStreaming={taskChat.isStreaming}
-              onSend={taskChat.send}
-              branding={TASK_BRANDING}
-              placeholder="Describe a task for the agent..."
-            />
+          <CardContent className="p-0">
+            <div className="h-[600px]">
+              {!isSidecarAuthed ? (
+                <div className="flex flex-col items-center justify-center h-full gap-3">
+                  <div className="i-ph:chat-circle text-3xl text-cloud-elements-textTertiary" />
+                  <p className="text-sm text-cloud-elements-textSecondary">
+                    Authenticate to start chatting
+                  </p>
+                  <Button size="sm" onClick={sidecarAuth} disabled={isAuthenticating || !sidecarUrl}>
+                    {isAuthenticating ? 'Authenticating...' : 'Authenticate'}
+                  </Button>
+                </div>
+              ) : (
+                <SessionSidebar
+                  sandboxId={decodedId}
+                  client={client}
+                  systemPrompt={systemPrompt}
+                  onSystemPromptChange={setSystemPrompt}
+                />
+              )}
+            </div>
           </CardContent>
         </Card>
       )}

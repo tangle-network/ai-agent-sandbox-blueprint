@@ -94,7 +94,7 @@ export class SandboxClient {
   }
 
   /** Send a prompt to the sandbox agent. */
-  async prompt(text: string, systemPrompt?: string): Promise<PromptResult> {
+  async prompt(text: string, systemPrompt?: string, sessionId?: string): Promise<PromptResult> {
     const url =
       this.config.mode === 'direct'
         ? `${this.baseUrl}/agent/prompt`
@@ -102,6 +102,7 @@ export class SandboxClient {
 
     const body: Record<string, unknown> = { prompt: text };
     if (systemPrompt) body.system_prompt = systemPrompt;
+    if (sessionId) body.session_id = sessionId;
 
     const res = await fetch(url, {
       method: 'POST',
@@ -122,7 +123,7 @@ export class SandboxClient {
   }
 
   /** Submit an autonomous task to the sandbox agent. */
-  async task(description: string, systemPrompt?: string): Promise<TaskResult> {
+  async task(description: string, systemPrompt?: string, sessionId?: string): Promise<TaskResult> {
     const url =
       this.config.mode === 'direct'
         ? `${this.baseUrl}/agent/task`
@@ -130,6 +131,7 @@ export class SandboxClient {
 
     const body: Record<string, unknown> = { task: description };
     if (systemPrompt) body.system_prompt = systemPrompt;
+    if (sessionId) body.session_id = sessionId;
 
     const res = await fetch(url, {
       method: 'POST',
