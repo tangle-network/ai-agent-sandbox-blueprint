@@ -7,8 +7,9 @@ import { Button } from '~/components/ui/button';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
-import { sandboxListStore, updateSandboxStatus, getSandbox } from '~/lib/stores/sandboxes';
+import { sandboxListStore, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
+import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
 import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { getJobById } from '~/lib/blueprints';
@@ -23,6 +24,9 @@ const TerminalView = lazy(() =>
 );
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh';
+
+/** Operator API base URL for sandbox lifecycle operations. */
+const OPERATOR_API_URL = import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090';
 
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
@@ -64,27 +68,42 @@ export default function SandboxDetail() {
     [],
   );
 
-  const handleStop = useCallback(async () => {
-    const hash = await submitJob({
-      serviceId,
-      jobId: JOB_IDS.SANDBOX_STOP,
-      args: encodeCtxJob(JOB_IDS.SANDBOX_STOP, { sandbox_id: decodedId }),
-      label: `Stop: ${decodedId}`,
-      value: jobValue(JOB_IDS.SANDBOX_STOP),
+  /** Call operator API for sandbox lifecycle operations (stop/resume/snapshot). */
+  const operatorApiCall = useCallback(async (action: string, body?: Record<string, unknown>) => {
+    const url = `${OPERATOR_API_URL}/api/sandboxes/${encodeURIComponent(decodedId)}/${action}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (sidecarToken) headers['Authorization'] = `Bearer ${sidecarToken}`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: body ? JSON.stringify(body) : '{}',
     });
-    if (hash) updateSandboxStatus(decodedId, 'stopped');
-  }, [decodedId, serviceId, submitJob, encodeCtxJob]);
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`${action} failed (${res.status}): ${text}`);
+    }
+    return res;
+  }, [decodedId, sidecarToken]);
+
+  const handleStop = useCallback(async () => {
+    try {
+      await operatorApiCall('stop');
+      updateSandboxStatus(decodedId, 'stopped');
+    } catch (e) {
+      console.error('Stop failed:', e);
+    }
+  }, [decodedId, operatorApiCall]);
 
   const handleResume = useCallback(async () => {
-    const hash = await submitJob({
-      serviceId,
-      jobId: JOB_IDS.SANDBOX_RESUME,
-      args: encodeCtxJob(JOB_IDS.SANDBOX_RESUME, { sandbox_id: decodedId }),
-      label: `Resume: ${decodedId}`,
-      value: jobValue(JOB_IDS.SANDBOX_RESUME),
-    });
-    if (hash) updateSandboxStatus(decodedId, 'running');
-  }, [decodedId, serviceId, submitJob, encodeCtxJob]);
+    try {
+      await operatorApiCall('resume');
+      updateSandboxStatus(decodedId, 'running');
+    } catch (e) {
+      console.error('Resume failed:', e);
+    }
+  }, [decodedId, operatorApiCall]);
 
   const handleDelete = useCallback(async () => {
     const hash = await submitJob({
@@ -98,19 +117,16 @@ export default function SandboxDetail() {
   }, [decodedId, serviceId, submitJob, encodeCtxJob]);
 
   const handleSnapshot = useCallback(async () => {
-    const sidecarCtx = { sidecar_url: sb?.sidecarUrl ?? '' };
-    await submitJob({
-      serviceId,
-      jobId: JOB_IDS.SANDBOX_SNAPSHOT,
-      args: encodeCtxJob(JOB_IDS.SANDBOX_SNAPSHOT, sidecarCtx, {
+    try {
+      await operatorApiCall('snapshot', {
         destination: '',
-        includeWorkspace: true,
-        includeState: true,
-      }),
-      label: `Snapshot: ${decodedId}`,
-      value: jobValue(JOB_IDS.SANDBOX_SNAPSHOT),
-    });
-  }, [decodedId, serviceId, sb?.sidecarUrl, submitJob, encodeCtxJob]);
+        include_workspace: true,
+        include_state: true,
+      });
+    } catch (e) {
+      console.error('Snapshot failed:', e);
+    }
+  }, [operatorApiCall]);
 
   if (!sb) {
     return (
@@ -180,14 +196,12 @@ export default function SandboxDetail() {
             <Button variant="secondary" size="sm" onClick={handleStop}>
               <div className="i-ph:stop text-sm" />
               Stop
-              <JobPriceBadge jobIndex={JOB_IDS.SANDBOX_STOP} pricingMultiplier={PRICING_TIERS[JOB_IDS.SANDBOX_STOP]?.multiplier ?? 1} compact />
             </Button>
           )}
           {isStopped && (
             <Button variant="success" size="sm" onClick={handleResume}>
               <div className="i-ph:play text-sm" />
               Resume
-              <JobPriceBadge jobIndex={JOB_IDS.SANDBOX_RESUME} pricingMultiplier={PRICING_TIERS[JOB_IDS.SANDBOX_RESUME]?.multiplier ?? 1} compact />
             </Button>
           )}
           {!isGone && (
@@ -195,7 +209,6 @@ export default function SandboxDetail() {
               <Button variant="secondary" size="sm" onClick={handleSnapshot}>
                 <div className="i-ph:camera text-sm" />
                 Snapshot
-                <JobPriceBadge jobIndex={JOB_IDS.SANDBOX_SNAPSHOT} pricingMultiplier={PRICING_TIERS[JOB_IDS.SANDBOX_SNAPSHOT]?.multiplier ?? 5} compact />
               </Button>
               <Button variant="destructive" size="sm" onClick={handleDelete}>
                 <div className="i-ph:trash text-sm" />
@@ -229,6 +242,17 @@ export default function SandboxDetail() {
         ))}
       </div>
 
+      {/* Provision Progress (shown when creating) */}
+      {sb.status === 'creating' && sb.callId && (
+        <ProvisionProgress
+          callId={sb.callId}
+          className="mb-4"
+          onReady={(sandboxId, sidecarUrl) => {
+            updateSandboxStatus(decodedId, 'running', { id: sandboxId, sidecarUrl });
+          }}
+        />
+      )}
+
       {/* Tab Content */}
       {tab === 'overview' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -260,7 +284,17 @@ export default function SandboxDetail() {
                 mono
               />
               {sb.txHash && <DetailRow label="TX Hash" value={sb.txHash} mono />}
-              {sb.sidecarUrl && <DetailRow label="Sidecar" value={sb.sidecarUrl} mono />}
+              {sb.sidecarUrl ? (
+                <DetailRow label="Sidecar" value={sb.sidecarUrl} mono />
+              ) : sb.status === 'creating' ? (
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-cloud-elements-textSecondary">Sidecar</span>
+                  <span className="flex items-center gap-2 text-xs font-data text-violet-400">
+                    <div className="i-ph:circle-fill text-[8px] animate-pulse" />
+                    Provisioning...
+                  </span>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </div>

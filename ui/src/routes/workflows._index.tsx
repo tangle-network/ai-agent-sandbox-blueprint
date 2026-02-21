@@ -116,7 +116,7 @@ export default function Workflows() {
                 <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Trigger Type</label>
                 <Select
                   value={triggerType}
-                  onChange={(e) => setTriggerType(e.target.value)}
+                  onValueChange={setTriggerType}
                   options={[
                     { label: 'Cron Schedule', value: 'cron' },
                     { label: 'Webhook', value: 'webhook' },

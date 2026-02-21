@@ -8,6 +8,7 @@
 //! Exec/prompt/task jobs are instance-scoped: no sidecar URLs or tokens in
 //! the request — the operator looks them up automatically.
 
+pub mod auto_provision;
 #[cfg(feature = "billing")]
 pub mod billing;
 pub mod jobs;
@@ -34,27 +35,30 @@ use serde_json::Value;
 pub use blueprint_sdk::tangle;
 pub use jobs::exec::{
     AgentResponse, build_agent_payload, build_exec_payload, call_agent, extract_exec_fields,
-    instance_exec, instance_prompt, instance_task, parse_agent_response, run_instance_exec,
-    run_instance_prompt, run_instance_task,
+    parse_agent_response, run_instance_exec, run_instance_prompt, run_instance_task,
 };
 pub use jobs::provision::{
     deprovision_core, instance_deprovision, instance_provision, provision_core,
 };
-pub use jobs::snapshot::instance_snapshot;
-pub use jobs::ssh::{instance_ssh_provision, instance_ssh_revoke, provision_key, revoke_key};
+pub use jobs::snapshot::run_instance_snapshot;
+pub use jobs::ssh::{provision_key, revoke_key};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Job IDs
+// Job IDs — must match the sequential indices in RegisterBlueprint.s.sol.
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub const JOB_PROVISION: u8 = 0;
-pub const JOB_EXEC: u8 = 1;
-pub const JOB_PROMPT: u8 = 2;
-pub const JOB_TASK: u8 = 3;
-pub const JOB_SSH_PROVISION: u8 = 4;
-pub const JOB_SSH_REVOKE: u8 = 5;
-pub const JOB_SNAPSHOT: u8 = 6;
-pub const JOB_DEPROVISION: u8 = 7;
+/// Cloud mode only — defined for cross-crate consistency.
+pub const JOB_SANDBOX_CREATE: u8 = 0;
+/// Cloud mode only — defined for cross-crate consistency.
+pub const JOB_SANDBOX_DELETE: u8 = 1;
+/// Cloud mode only — defined for cross-crate consistency.
+pub const JOB_WORKFLOW_CREATE: u8 = 2;
+/// Cloud mode only — defined for cross-crate consistency.
+pub const JOB_WORKFLOW_TRIGGER: u8 = 3;
+/// Cloud mode only — defined for cross-crate consistency.
+pub const JOB_WORKFLOW_CANCEL: u8 = 4;
+pub const JOB_PROVISION: u8 = 5;
+pub const JOB_DEPROVISION: u8 = 6;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ABI types
@@ -63,6 +67,12 @@ pub const JOB_DEPROVISION: u8 = 7;
 sol! {
     struct JsonResponse {
         string json;
+    }
+
+    // ── BSM contract read interface ───────────────────────────────────────
+    #[sol(rpc)]
+    interface IBsmRead {
+        function getServiceConfig(uint64 serviceId) external view returns (bytes memory);
     }
 
     // ── Provision ──────────────────────────────────────────────────────────
@@ -248,14 +258,13 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
 // Router
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Router that maps job IDs to handlers.
+///
+/// Only state-changing operations remain on-chain (provision + deprovision).
+/// Read-only ops (exec, prompt, task, snapshot, SSH) are served via the
+/// operator HTTP API.
 pub fn router() -> Router {
     Router::new()
         .route(JOB_PROVISION, instance_provision.layer(TangleLayer))
-        .route(JOB_EXEC, instance_exec.layer(TangleLayer))
-        .route(JOB_PROMPT, instance_prompt.layer(TangleLayer))
-        .route(JOB_TASK, instance_task.layer(TangleLayer))
-        .route(JOB_SSH_PROVISION, instance_ssh_provision.layer(TangleLayer))
-        .route(JOB_SSH_REVOKE, instance_ssh_revoke.layer(TangleLayer))
-        .route(JOB_SNAPSHOT, instance_snapshot.layer(TangleLayer))
         .route(JOB_DEPROVISION, instance_deprovision.layer(TangleLayer))
 }

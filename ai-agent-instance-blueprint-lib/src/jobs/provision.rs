@@ -129,6 +129,18 @@ pub async fn instance_provision(
     Caller(_caller): Caller,
     TangleArg(request): TangleArg<ProvisionRequest>,
 ) -> Result<TangleResult<ProvisionOutput>, String> {
+    // Idempotent: if auto-provision already created the sandbox, return existing info.
+    if let Some(record) = crate::get_instance_sandbox().map_err(|e| e.to_string())? {
+        let output = ProvisionOutput {
+            sandbox_id: record.id.clone(),
+            sidecar_url: record.sidecar_url.clone(),
+            ssh_port: record.ssh_port.unwrap_or(0) as u32,
+            tee_attestation_json: String::new(),
+            tee_public_key_json: String::new(),
+        };
+        return Ok(TangleResult(output));
+    }
+
     let (output, record) = provision_core(&request, None).await?;
     set_instance_sandbox(record).map_err(|e| e.to_string())?;
     Ok(TangleResult(output))

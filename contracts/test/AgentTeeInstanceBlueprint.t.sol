@@ -13,18 +13,18 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
         uint64 callId = 100;
         simulateJobCall(testServiceId, teeInstance.JOB_PROVISION(), callId, bytes(""));
 
-        // Use literal job ID (0 = PROVISION) to avoid staticcall consuming expectRevert
+        // Use literal job ID (5 = PROVISION)
         vm.prank(tangleCore);
         vm.expectRevert(
             abi.encodeWithSelector(
-                AgentTeeInstanceBlueprint.MissingTeeAttestation.selector,
+                AgentSandboxBlueprint.MissingTeeAttestation.selector,
                 testServiceId,
                 operator1
             )
         );
         teeInstance.onJobResult(
             testServiceId,
-            0, // JOB_PROVISION
+            5, // JOB_PROVISION
             callId,
             operator1,
             bytes(""),
@@ -50,53 +50,27 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // TEE PRICING
+    // MODE FLAGS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function test_teePricingConstants() public view {
-        assertEq(teeInstance.PRICE_MULT_PROVISION(), 500);
-        assertEq(teeInstance.PRICE_MULT_TASK(), 350);
-        assertEq(teeInstance.PRICE_MULT_PROMPT(), 30);
-        assertEq(teeInstance.PRICE_MULT_EXEC(), 2);
-        assertEq(teeInstance.PRICE_MULT_SNAPSHOT(), 10);
-        assertEq(teeInstance.PRICE_MULT_SSH_PROVISION(), 3);
-        assertEq(teeInstance.PRICE_MULT_SSH_REVOKE(), 1);
-        assertEq(teeInstance.PRICE_MULT_DEPROVISION(), 5);
-    }
-
-    function test_teeGetDefaultJobRates() public view {
-        uint256 baseRate = 0.001 ether;
-        (uint8[] memory jobs, uint256[] memory rates) = teeInstance.getDefaultJobRates(baseRate);
-
-        assertEq(jobs.length, 8);
-        assertEq(rates[0], baseRate * 500); // PROVISION
-        assertEq(rates[1], baseRate * 2);   // EXEC
-        assertEq(rates[2], baseRate * 30);  // PROMPT
-        assertEq(rates[3], baseRate * 350); // TASK
-        assertEq(rates[4], baseRate * 3);   // SSH_PROVISION
-        assertEq(rates[5], baseRate * 1);   // SSH_REVOKE
-        assertEq(rates[6], baseRate * 10);  // SNAPSHOT
-        assertEq(rates[7], baseRate * 5);   // DEPROVISION
-    }
-
-    function test_teeUnknownJobPriceReturnsZero() public view {
-        assertEq(teeInstance.getJobPriceMultiplier(255), 0);
+    function test_teeModeFlagsSet() public view {
+        assertTrue(teeInstance.instanceMode());
+        assertTrue(teeInstance.teeRequired());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // INHERITED BEHAVIOR — LIFECYCLE
+    // LIFECYCLE
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_provisionDeprovisionLifecycle() public {
         _provisionOperator(operator1);
         assertTrue(teeInstance.isProvisioned(testServiceId));
 
-        // Deprovision
         uint64 callId = 200;
         simulateJobCall(testServiceId, teeInstance.JOB_DEPROVISION(), callId, bytes(""));
 
         vm.expectEmit(true, true, false, false);
-        emit AgentTeeInstanceBlueprint.OperatorDeprovisioned(testServiceId, operator1);
+        emit AgentSandboxBlueprint.OperatorDeprovisioned(testServiceId, operator1);
 
         simulateJobResult(
             testServiceId,
@@ -122,46 +96,15 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
         assertEq(urls.length, 2);
     }
 
-    function test_jobGating() public {
-        // Before provision, non-provision jobs should revert
-        vm.prank(tangleCore);
-        vm.expectRevert(
-            abi.encodeWithSelector(AgentTeeInstanceBlueprint.NoOperatorsProvisioned.selector, testServiceId)
-        );
-        teeInstance.onJobCall(testServiceId, 1, 300, bytes("")); // JOB_EXEC = 1
-
-        // After provision, should succeed
-        _provisionOperator(operator1);
-        simulateJobCall(testServiceId, teeInstance.JOB_EXEC(), 301, bytes(""));
-    }
-
-    function test_resultHashes() public {
-        _provisionOperator(operator1);
-        _provisionOperator(operator2);
-
-        uint64 callId = 400;
-        bytes memory out1 = encodeJsonOutputs('{"response":"from-op1"}');
-        bytes memory out2 = encodeJsonOutputs('{"response":"from-op2"}');
-
-        simulateJobCall(testServiceId, teeInstance.JOB_PROMPT(), callId, bytes(""));
-        simulateJobResult(testServiceId, teeInstance.JOB_PROMPT(), callId, operator1, bytes(""), out1);
-        simulateJobResult(testServiceId, teeInstance.JOB_PROMPT(), callId, operator2, bytes(""), out2);
-
-        (address[] memory ops, bytes32[] memory hashes) = teeInstance.getJobResultHashes(testServiceId, callId);
-        assertEq(ops.length, 2);
-        assertEq(hashes[0], keccak256(out1));
-        assertEq(hashes[1], keccak256(out2));
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
     // METADATA
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_blueprintName() public view {
-        assertEq(teeInstance.BLUEPRINT_NAME(), "ai-agent-tee-instance-blueprint");
+        assertEq(teeInstance.BLUEPRINT_NAME(), "ai-agent-sandbox-blueprint");
     }
 
     function test_blueprintVersion() public view {
-        assertEq(teeInstance.BLUEPRINT_VERSION(), "0.1.0");
+        assertEq(teeInstance.BLUEPRINT_VERSION(), "0.4.0");
     }
 }

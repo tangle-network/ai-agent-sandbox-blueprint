@@ -4,8 +4,6 @@ pragma solidity ^0.8.26;
 import "forge-std/Script.sol";
 import "tnt-core/libraries/Types.sol";
 import "../src/AgentSandboxBlueprint.sol";
-import "../src/AgentInstanceBlueprint.sol";
-import "../src/AgentTeeInstanceBlueprint.sol";
 
 /// @notice Minimal interface for Tangle contract blueprint registration
 interface ITangle {
@@ -13,12 +11,8 @@ interface ITangle {
 }
 
 /// @title RegisterBlueprint
-/// @notice Deploys all 3 blueprint contracts and registers them on Tangle.
+/// @notice Deploys 1 unified contract 3 times with different mode flags and registers on Tangle.
 /// @dev Run via: forge script contracts/script/RegisterBlueprint.s.sol --rpc-url $RPC_URL --broadcast --slow
-///
-///      This script handles the complex BlueprintDefinition struct encoding.
-///      Service lifecycle (registerOperator, requestService, approveService) is
-///      handled by the bash wrapper (scripts/deploy-local.sh).
 contract RegisterBlueprint is Script {
     // Anvil well-known deployer key
     uint256 constant DEPLOYER_KEY = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
@@ -33,9 +27,12 @@ contract RegisterBlueprint is Script {
         vm.startBroadcast(DEPLOYER_KEY);
 
         // ── Deploy Blueprint Service Managers ────────────────────────────
-        AgentSandboxBlueprint sandbox = new AgentSandboxBlueprint(RESTAKING);
-        AgentInstanceBlueprint instance = new AgentInstanceBlueprint();
-        AgentTeeInstanceBlueprint teeInstance = new AgentTeeInstanceBlueprint();
+        // Cloud mode: capacity-weighted operator selection
+        AgentSandboxBlueprint sandbox = new AgentSandboxBlueprint(RESTAKING, false, false);
+        // Instance mode: per-service singleton sandbox
+        AgentSandboxBlueprint instance = new AgentSandboxBlueprint(address(0), true, false);
+        // TEE instance mode: singleton with attestation enforcement
+        AgentSandboxBlueprint teeInstance = new AgentSandboxBlueprint(address(0), true, true);
 
         // ── Register on Tangle ──────────────────────────────────────────
         uint64 sandboxId = tangle.createBlueprint(_buildSandboxDefinition(address(sandbox)));
@@ -54,8 +51,19 @@ contract RegisterBlueprint is Script {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // Blueprint Definition builders
+    // Blueprint Definition builders — all use 7 jobs
     // ═════════════════════════════════════════════════════════════════════════
+
+    function _buildJobs() internal pure returns (Types.JobDefinition[] memory jobs) {
+        jobs = new Types.JobDefinition[](7);
+        jobs[0] = Types.JobDefinition("sandbox_create", "Create a new AI sandbox", "", "", "");
+        jobs[1] = Types.JobDefinition("sandbox_delete", "Delete an AI sandbox", "", "", "");
+        jobs[2] = Types.JobDefinition("workflow_create", "Create or update a workflow", "", "", "");
+        jobs[3] = Types.JobDefinition("workflow_trigger", "Trigger a workflow execution", "", "", "");
+        jobs[4] = Types.JobDefinition("workflow_cancel", "Cancel an active workflow", "", "", "");
+        jobs[5] = Types.JobDefinition("provision", "Provision operator for instance mode", "", "", "");
+        jobs[6] = Types.JobDefinition("deprovision", "Deprovision operator instance", "", "", "");
+    }
 
     function _buildSandboxDefinition(address manager)
         internal
@@ -79,7 +87,7 @@ contract RegisterBlueprint is Script {
 
         def.metadata = Types.BlueprintMetadata({
             name: "AI Agent Sandbox Blueprint",
-            description: "Multi-operator AI sandbox with Docker backends, batch execution, workflows, and SSH access",
+            description: "Multi-operator AI sandbox with Docker backends, workflows, and SSH access",
             author: "Tangle",
             category: "AI/Compute",
             codeRepository: "https://github.com/tangle-network/ai-agent-sandbox-blueprint",
@@ -89,30 +97,11 @@ contract RegisterBlueprint is Script {
             profilingData: ""
         });
 
-        // 17 jobs
-        def.jobs = new Types.JobDefinition[](17);
-        def.jobs[0]  = Types.JobDefinition("sandbox_create", "Create a new AI sandbox", "", "", "");
-        def.jobs[1]  = Types.JobDefinition("sandbox_stop", "Stop a running sandbox", "", "", "");
-        def.jobs[2]  = Types.JobDefinition("sandbox_resume", "Resume a stopped sandbox", "", "", "");
-        def.jobs[3]  = Types.JobDefinition("sandbox_delete", "Delete a sandbox", "", "", "");
-        def.jobs[4]  = Types.JobDefinition("sandbox_snapshot", "Snapshot a sandbox", "", "", "");
-        def.jobs[5]  = Types.JobDefinition("exec", "Execute shell command", "", "", "");
-        def.jobs[6]  = Types.JobDefinition("prompt", "Single LLM inference", "", "", "");
-        def.jobs[7]  = Types.JobDefinition("task", "Multi-turn agent task", "", "", "");
-        def.jobs[8]  = Types.JobDefinition("batch_create", "Create N sandboxes", "", "", "");
-        def.jobs[9]  = Types.JobDefinition("batch_task", "Run tasks on N sandboxes", "", "", "");
-        def.jobs[10] = Types.JobDefinition("batch_exec", "Execute on N sandboxes", "", "", "");
-        def.jobs[11] = Types.JobDefinition("batch_collect", "Collect batch results", "", "", "");
-        def.jobs[12] = Types.JobDefinition("workflow_create", "Create a workflow", "", "", "");
-        def.jobs[13] = Types.JobDefinition("workflow_trigger", "Trigger a workflow", "", "", "");
-        def.jobs[14] = Types.JobDefinition("workflow_cancel", "Cancel a workflow", "", "", "");
-        def.jobs[15] = Types.JobDefinition("ssh_provision", "Grant SSH access", "", "", "");
-        def.jobs[16] = Types.JobDefinition("ssh_revoke", "Revoke SSH access", "", "", "");
+        def.jobs = _buildJobs();
 
         def.registrationSchema = "";
         def.requestSchema = "";
 
-        // Native binary source
         def.sources = new Types.BlueprintSource[](1);
         Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
         bins[0] = Types.BlueprintBinary({
@@ -170,16 +159,7 @@ contract RegisterBlueprint is Script {
             profilingData: ""
         });
 
-        // 8 jobs
-        def.jobs = new Types.JobDefinition[](8);
-        def.jobs[0] = Types.JobDefinition("provision", "Provision AI sandbox instance", "", "", "");
-        def.jobs[1] = Types.JobDefinition("exec", "Execute shell command", "", "", "");
-        def.jobs[2] = Types.JobDefinition("prompt", "Single LLM inference", "", "", "");
-        def.jobs[3] = Types.JobDefinition("task", "Multi-turn agent task", "", "", "");
-        def.jobs[4] = Types.JobDefinition("ssh_provision", "Grant SSH access", "", "", "");
-        def.jobs[5] = Types.JobDefinition("ssh_revoke", "Revoke SSH access", "", "", "");
-        def.jobs[6] = Types.JobDefinition("snapshot", "Create disk snapshot", "", "", "");
-        def.jobs[7] = Types.JobDefinition("deprovision", "Deprovision instance", "", "", "");
+        def.jobs = _buildJobs();
 
         def.registrationSchema = "";
         def.requestSchema = "";
@@ -241,16 +221,7 @@ contract RegisterBlueprint is Script {
             profilingData: ""
         });
 
-        // Same 8 jobs as instance
-        def.jobs = new Types.JobDefinition[](8);
-        def.jobs[0] = Types.JobDefinition("provision", "Provision TEE sandbox instance", "", "", "");
-        def.jobs[1] = Types.JobDefinition("exec", "Execute shell command in TEE", "", "", "");
-        def.jobs[2] = Types.JobDefinition("prompt", "Single LLM inference in TEE", "", "", "");
-        def.jobs[3] = Types.JobDefinition("task", "Multi-turn agent task in TEE", "", "", "");
-        def.jobs[4] = Types.JobDefinition("ssh_provision", "Grant SSH access", "", "", "");
-        def.jobs[5] = Types.JobDefinition("ssh_revoke", "Revoke SSH access", "", "", "");
-        def.jobs[6] = Types.JobDefinition("snapshot", "Create disk snapshot", "", "", "");
-        def.jobs[7] = Types.JobDefinition("deprovision", "Deprovision TEE instance", "", "", "");
+        def.jobs = _buildJobs();
 
         def.registrationSchema = "";
         def.requestSchema = "";

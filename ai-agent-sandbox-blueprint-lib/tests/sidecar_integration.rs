@@ -8,7 +8,7 @@
 
 use ai_agent_sandbox_blueprint_lib::extract_agent_fields;
 use ai_agent_sandbox_blueprint_lib::http::{auth_headers, build_url, sidecar_post_json};
-use ai_agent_sandbox_blueprint_lib::metrics::{OnChainMetrics, metrics};
+use ai_agent_sandbox_blueprint_lib::metrics::OnChainMetrics;
 use ai_agent_sandbox_blueprint_lib::util::{
     build_snapshot_command, merge_metadata, normalize_username, parse_json_object, shell_escape,
 };
@@ -133,127 +133,11 @@ mod http_tests {
         assert_eq!(result["sessionId"], "session-xyz");
     }
 
-    #[tokio::test]
-    async fn sidecar_post_json_http_error_propagates() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/terminals/commands"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
-            .mount(&server)
-            .await;
-
-        let result = sidecar_post_json(
-            &server.uri(),
-            "/terminals/commands",
-            "test-token",
-            json!({"command": "fail"}),
-        )
-        .await;
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("500"),
-            "Error should mention status code: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn sidecar_post_json_invalid_json_response() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/terminals/commands"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
-            .mount(&server)
-            .await;
-
-        let result = sidecar_post_json(
-            &server.uri(),
-            "/terminals/commands",
-            "test-token",
-            json!({"command": "echo hi"}),
-        )
-        .await;
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("Invalid sidecar response JSON"),
-            "Error should mention invalid JSON: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn sidecar_post_json_connection_refused() {
-        let result = sidecar_post_json(
-            "http://127.0.0.1:1",
-            "/terminals/commands",
-            "test-token",
-            json!({"command": "echo hi"}),
-        )
-        .await;
-
-        assert!(result.is_err());
-    }
+    // HTTP error propagation tests (500, invalid JSON, connection refused)
+    // are covered in integration.rs::errors module.
 }
 
-// ─── Response Parsing Tests ──────────────────────────────────────────────────
-
-mod response_parsing_tests {
-    use super::*;
-
-    #[test]
-    fn extract_agent_fields_success() {
-        let parsed = json!({
-            "success": true,
-            "response": "Task done",
-            "traceId": "trace-1",
-            "error": null
-        });
-        let (success, response, error, trace_id) = extract_agent_fields(&parsed);
-        assert!(success);
-        assert_eq!(response, "Task done");
-        assert_eq!(trace_id, "trace-1");
-        assert_eq!(error, "");
-    }
-
-    #[test]
-    fn extract_agent_fields_error_string() {
-        let parsed = json!({
-            "success": false,
-            "error": "Something went wrong"
-        });
-        let (success, _response, error, _trace_id) = extract_agent_fields(&parsed);
-        assert!(!success);
-        assert_eq!(error, "Something went wrong");
-    }
-
-    #[test]
-    fn extract_agent_fields_error_object_with_message() {
-        let parsed = json!({
-            "success": false,
-            "error": {
-                "message": "Rate limit exceeded",
-                "code": 429
-            }
-        });
-        let (success, _response, error, _trace_id) = extract_agent_fields(&parsed);
-        assert!(!success);
-        assert_eq!(error, "Rate limit exceeded");
-    }
-
-    #[test]
-    fn extract_agent_fields_empty_response() {
-        let parsed = json!({});
-        let (success, response, error, trace_id) = extract_agent_fields(&parsed);
-        assert!(!success);
-        assert_eq!(response, "");
-        assert_eq!(error, "");
-        assert_eq!(trace_id, "");
-    }
-}
+// Response parsing tests (extract_agent_fields) are covered in integration.rs.
 
 // ─── Agent Interaction Tests (with wiremock) ─────────────────────────────────
 
@@ -625,40 +509,8 @@ mod util_tests {
         assert!(normalize_username("user name").is_err());
     }
 
-    #[test]
-    fn build_snapshot_command_workspace_only() {
-        let cmd = build_snapshot_command("https://example.com/upload", true, false).unwrap();
-        assert!(cmd.contains("/home/agent"));
-        assert!(!cmd.contains("/var/lib/sidecar"));
-        assert!(cmd.contains("tar -czf"));
-        assert!(cmd.contains("curl"));
-    }
-
-    #[test]
-    fn build_snapshot_command_state_only() {
-        let cmd = build_snapshot_command("https://example.com/upload", false, true).unwrap();
-        assert!(!cmd.contains("/home/agent"));
-        assert!(cmd.contains("/var/lib/sidecar"));
-    }
-
-    #[test]
-    fn build_snapshot_command_both() {
-        let cmd = build_snapshot_command("https://example.com/upload", true, true).unwrap();
-        assert!(cmd.contains("/home/agent"));
-        assert!(cmd.contains("/var/lib/sidecar"));
-    }
-
-    #[test]
-    fn build_snapshot_command_neither_fails() {
-        let result = build_snapshot_command("https://example.com/upload", false, false);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("must include workspace or state")
-        );
-    }
+    // build_snapshot_command basic tests (workspace_only, state_only, both, neither_fails)
+    // are covered in integration.rs::snapshot_job.
 
     #[test]
     fn build_snapshot_command_escapes_destination() {
@@ -748,10 +600,15 @@ mod workflow_tests {
     }
 }
 
-// ─── Metrics Tests ───────────────────────────────────────────────────────────
+// Metrics tests (OnChainMetrics, session_guard, snapshots) are covered in
+// integration.rs::metrics_tests. Only unique metrics tests with isolated
+// OnChainMetrics::new() instances remain here.
 
 mod metrics_tests {
     use super::*;
+
+    // These use isolated OnChainMetrics::new() instances (not the global singleton),
+    // so they test the metrics API without interference from other tests.
 
     #[test]
     fn record_job_increments_counters() {
@@ -806,56 +663,6 @@ mod metrics_tests {
         assert_eq!(m.active_sandboxes.load(Ordering::Relaxed), 0);
         assert_eq!(m.allocated_cpu_cores.load(Ordering::Relaxed), 0);
         assert_eq!(m.allocated_memory_mb.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn session_guard_decrements_on_drop() {
-        let m = metrics();
-
-        let initial = m.active_sessions.load(Ordering::Relaxed);
-        {
-            let _guard = m.session_guard();
-            assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial + 1);
-        }
-        assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial);
-    }
-
-    #[test]
-    fn session_guard_multiple_concurrent() {
-        let m = metrics();
-        let initial = m.active_sessions.load(Ordering::Relaxed);
-
-        let _g1 = m.session_guard();
-        let _g2 = m.session_guard();
-        assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial + 2);
-
-        drop(_g1);
-        assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial + 1);
-
-        drop(_g2);
-        assert_eq!(m.active_sessions.load(Ordering::Relaxed), initial);
-    }
-
-    #[test]
-    fn snapshot_contains_all_metrics() {
-        let m = OnChainMetrics::new();
-        m.record_job(500, 100, 50);
-        m.record_sandbox_created(2, 4096);
-        m.record_failure();
-
-        let snapshot = m.snapshot();
-        let keys: Vec<&str> = snapshot.iter().map(|(k, _)| k.as_str()).collect();
-
-        assert!(keys.contains(&"total_jobs"));
-        assert!(keys.contains(&"avg_duration_ms"));
-        assert!(keys.contains(&"total_input_tokens"));
-        assert!(keys.contains(&"total_output_tokens"));
-        assert!(keys.contains(&"active_sandboxes"));
-        assert!(keys.contains(&"peak_sandboxes"));
-        assert!(keys.contains(&"active_sessions"));
-        assert!(keys.contains(&"allocated_cpu_cores"));
-        assert!(keys.contains(&"allocated_memory_mb"));
-        assert!(keys.contains(&"failed_jobs"));
     }
 
     #[test]

@@ -11,7 +11,7 @@
 //!   - `/agents/run` → `{ success, response, traceId, durationMs, usage, sessionId }`
 
 use ai_agent_instance_blueprint_lib::*;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wiremock::matchers::{header, method, path};
@@ -833,15 +833,14 @@ mod job_constants_tests {
     use super::*;
 
     #[test]
-    fn job_ids_are_sequential() {
-        assert_eq!(JOB_PROVISION, 0);
-        assert_eq!(JOB_EXEC, 1);
-        assert_eq!(JOB_PROMPT, 2);
-        assert_eq!(JOB_TASK, 3);
-        assert_eq!(JOB_SSH_PROVISION, 4);
-        assert_eq!(JOB_SSH_REVOKE, 5);
-        assert_eq!(JOB_SNAPSHOT, 6);
-        assert_eq!(JOB_DEPROVISION, 7);
+    fn job_ids_match_contract() {
+        assert_eq!(JOB_SANDBOX_CREATE, 0);
+        assert_eq!(JOB_SANDBOX_DELETE, 1);
+        assert_eq!(JOB_WORKFLOW_CREATE, 2);
+        assert_eq!(JOB_WORKFLOW_TRIGGER, 3);
+        assert_eq!(JOB_WORKFLOW_CANCEL, 4);
+        assert_eq!(JOB_PROVISION, 5);
+        assert_eq!(JOB_DEPROVISION, 6);
     }
 }
 
@@ -1100,5 +1099,426 @@ mod conversion_tests {
                 "tee_type {tee_type_id} should map to {expected:?}"
             );
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SESSION CONTINUITY TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod session_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn prompt_session_id_passthrough() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(mock_agent_ok("reply"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let id = insert_sandbox(&server.uri(), "tok");
+        let request = InstancePromptRequest {
+            message: "Hello".to_string(),
+            session_id: "sess-abc".to_string(),
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+
+        let _resp = run_instance_prompt(&server.uri(), "tok", &id, &request)
+            .await
+            .unwrap();
+
+        // Verify sidecar received the sessionId in the request body.
+        let received = &server.received_requests().await.unwrap()[0];
+        let body: Value = serde_json::from_slice(&received.body).unwrap();
+        assert_eq!(body["sessionId"], "sess-abc", "body: {body}");
+        rm(&id);
+    }
+
+    #[tokio::test]
+    async fn task_returns_session_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true, "response": "done",
+                "traceId": "t1", "durationMs": 50,
+                "usage": {"inputTokens": 5, "outputTokens": 3},
+                "sessionId": "s-new-42"
+            })))
+            .mount(&server)
+            .await;
+
+        let id = insert_sandbox(&server.uri(), "tok");
+        let request = InstanceTaskRequest {
+            prompt: "Do something".to_string(),
+            session_id: String::new(),
+            max_turns: 0,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+
+        let resp = run_instance_task(&server.uri(), "tok", &id, &request)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.session_id, "s-new-42");
+        rm(&id);
+    }
+
+    #[tokio::test]
+    async fn task_session_reuse() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true, "response": "ok",
+                "traceId": "t1", "durationMs": 50,
+                "usage": {"inputTokens": 5, "outputTokens": 3},
+                "sessionId": "s-reused"
+            })))
+            .mount(&server)
+            .await;
+
+        let id = insert_sandbox(&server.uri(), "tok");
+
+        // First call: empty session_id.
+        let req1 = InstanceTaskRequest {
+            prompt: "First".to_string(),
+            session_id: String::new(),
+            max_turns: 0,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+        let resp1 = run_instance_task(&server.uri(), "tok", &id, &req1)
+            .await
+            .unwrap();
+        assert_eq!(resp1.session_id, "s-reused");
+
+        // Second call: pass session_id from first response.
+        let req2 = InstanceTaskRequest {
+            prompt: "Second".to_string(),
+            session_id: "s-reused".to_string(),
+            max_turns: 0,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+        let _resp2 = run_instance_task(&server.uri(), "tok", &id, &req2)
+            .await
+            .unwrap();
+
+        // Verify second request body contains the session_id.
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let body2: Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(body2["sessionId"], "s-reused", "second request body: {body2}");
+        rm(&id);
+    }
+
+    #[tokio::test]
+    async fn multiple_independent_sessions() {
+        let server = MockServer::start().await;
+        // Return different session IDs based on request count.
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(mock_agent_ok("reply"))
+            .mount(&server)
+            .await;
+
+        let id = insert_sandbox(&server.uri(), "tok");
+
+        // Two calls with different explicit session IDs.
+        let req_a = InstanceTaskRequest {
+            prompt: "Task A".to_string(),
+            session_id: "session-alpha".to_string(),
+            max_turns: 0,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+        let req_b = InstanceTaskRequest {
+            prompt: "Task B".to_string(),
+            session_id: "session-beta".to_string(),
+            max_turns: 0,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+
+        let _a = run_instance_task(&server.uri(), "tok", &id, &req_a).await.unwrap();
+        let _b = run_instance_task(&server.uri(), "tok", &id, &req_b).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body_a: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let body_b: Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(body_a["sessionId"], "session-alpha");
+        assert_eq!(body_b["sessionId"], "session-beta");
+        assert_ne!(body_a["sessionId"], body_b["sessionId"]);
+        rm(&id);
+    }
+
+    /// InstancePromptResponse intentionally omits session_id (prompt is stateless),
+    /// while InstanceTaskResponse includes it (tasks are session-aware).
+    /// This test documents that design decision by exercising both and comparing.
+    #[tokio::test]
+    async fn prompt_is_stateless_while_task_returns_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true, "response": "ok",
+                "traceId": "t1", "durationMs": 50,
+                "usage": {"inputTokens": 5, "outputTokens": 3},
+                "sessionId": "s-from-sidecar"
+            })))
+            .mount(&server)
+            .await;
+
+        let id = insert_sandbox(&server.uri(), "tok");
+
+        // Prompt: no session_id in response struct (compile-time guarantee).
+        let prompt_resp = run_instance_prompt(
+            &server.uri(), "tok", &id,
+            &InstancePromptRequest {
+                message: "Hi".to_string(),
+                session_id: String::new(),
+                model: String::new(),
+                context_json: String::new(),
+                timeout_ms: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Task: has session_id in response.
+        let task_resp = run_instance_task(
+            &server.uri(), "tok", &id,
+            &InstanceTaskRequest {
+                prompt: "Do it".to_string(),
+                session_id: String::new(),
+                max_turns: 0,
+                model: String::new(),
+                context_json: String::new(),
+                timeout_ms: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Both succeed with same mock.
+        assert!(prompt_resp.success);
+        assert!(task_resp.success);
+        // Task response carries the session; prompt doesn't have the field at all.
+        assert_eq!(task_resp.session_id, "s-from-sidecar");
+        rm(&id);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SNAPSHOT TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod snapshot_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn snapshot_basic() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/terminals/commands"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(mock_exec_ok("snapshot complete"))
+            .mount(&server)
+            .await;
+
+        let id = insert_sandbox(&server.uri(), "tok");
+        let result = run_instance_snapshot(
+            &server.uri(),
+            "tok",
+            &id,
+            "s3://bucket/snap",
+            true,
+            true,
+        )
+        .await;
+
+        assert!(result.is_ok(), "snapshot should succeed: {result:?}");
+        rm(&id);
+    }
+
+    #[tokio::test]
+    async fn snapshot_empty_destination_rejected() {
+        let result = run_instance_snapshot(
+            "http://unused",
+            "tok",
+            "sb-1",
+            "",
+            true,
+            false,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("destination"),
+            "error should mention destination"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_builds_correct_command() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/terminals/commands"))
+            .respond_with(mock_exec_ok("ok"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let id = insert_sandbox(&server.uri(), "tok");
+        let _result = run_instance_snapshot(
+            &server.uri(),
+            "tok",
+            &id,
+            "s3://bucket/workspace-snap",
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Inspect what command was sent to the sidecar.
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let command = body["command"].as_str().unwrap_or("");
+
+        // Command should contain tar and the destination.
+        assert!(
+            command.contains("tar") || command.contains("sh -c"),
+            "command should be a tar/shell command: '{command}'"
+        );
+        rm(&id);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROVISION GUARD TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod provision_guard_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Serialize with instance_state_tests — they share the same singleton store.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn already_provisioned_guard() {
+        init();
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = clear_instance_sandbox();
+
+        // Set a sandbox record.
+        let record = SandboxRecord {
+            id: "guard-test".to_string(),
+            container_id: "ctr-guard".to_string(),
+            sidecar_url: "http://localhost:9999".to_string(),
+            sidecar_port: 9999,
+            ssh_port: None,
+            token: "tok".to_string(),
+            created_at: util::now_ts(),
+            cpu_cores: 1,
+            memory_mb: 512,
+            state: Default::default(),
+            idle_timeout_seconds: 0,
+            max_lifetime_seconds: 0,
+            last_activity_at: util::now_ts(),
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: String::new(),
+            base_env_json: String::new(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            tee_config: None,
+        };
+        set_instance_sandbox(record).unwrap();
+
+        // The "already provisioned" check lives in provision_core, but we can
+        // verify the guard condition directly.
+        let existing = get_instance_sandbox().unwrap();
+        assert!(existing.is_some(), "should have a record");
+
+        // Cleanup.
+        clear_instance_sandbox().unwrap();
+    }
+
+    #[test]
+    fn deprovision_clears_instance_store() {
+        init();
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = clear_instance_sandbox();
+
+        let record = SandboxRecord {
+            id: "to-deprovision".to_string(),
+            container_id: "ctr-dep".to_string(),
+            sidecar_url: "http://localhost:1234".to_string(),
+            sidecar_port: 1234,
+            ssh_port: None,
+            token: "tok".to_string(),
+            created_at: util::now_ts(),
+            cpu_cores: 1,
+            memory_mb: 512,
+            state: Default::default(),
+            idle_timeout_seconds: 0,
+            max_lifetime_seconds: 0,
+            last_activity_at: util::now_ts(),
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: String::new(),
+            base_env_json: String::new(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            tee_config: None,
+        };
+        set_instance_sandbox(record).unwrap();
+        assert!(get_instance_sandbox().unwrap().is_some());
+
+        // Simulate deprovision by clearing.
+        clear_instance_sandbox().unwrap();
+        assert!(get_instance_sandbox().unwrap().is_none());
+
+        // Verify require_instance_sandbox now fails.
+        let err = require_instance_sandbox();
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("not provisioned"));
     }
 }

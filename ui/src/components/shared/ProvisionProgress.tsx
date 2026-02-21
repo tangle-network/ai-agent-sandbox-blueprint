@@ -32,16 +32,16 @@ interface ProvisionProgressProps {
   callId: number | null;
   apiUrl?: string;
   className?: string;
-  onReady?: (sandboxId: string) => void;
+  onReady?: (sandboxId: string, sidecarUrl: string) => void;
 }
 
 export function ProvisionProgress({ callId, apiUrl, className, onReady }: ProvisionProgressProps) {
-  const { status, phase, progressPct, message, isReady, isFailed, sandboxId } =
+  const { status, phase, progressPct, message, isReady, isFailed, sandboxId, sidecarUrl } =
     useProvisionProgress({ callId, apiUrl });
 
   // Notify parent when ready
-  if (isReady && sandboxId && onReady) {
-    onReady(sandboxId);
+  if (isReady && sandboxId && sidecarUrl && onReady) {
+    onReady(sandboxId, sidecarUrl);
   }
 
   if (!callId) return null;

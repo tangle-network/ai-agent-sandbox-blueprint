@@ -140,58 +140,62 @@ echo "  TEE Instance BSM:  $TEE_INSTANCE_BSM (blueprint #$TEE_INSTANCE_BLUEPRINT
 # ── [2/10] Configure per-job pricing ────────────────────────────────
 echo "[2/10] Configuring per-job pricing (base rate: $BASE_RATE wei)..."
 
-# Sandbox blueprint (EventDriven pricing)
-BASE_RATE=$BASE_RATE \
-BLUEPRINT_ID=$SANDBOX_BLUEPRINT_ID \
-TANGLE_ADDRESS=$TANGLE \
-BSM_ADDRESS=$SANDBOX_BSM \
-forge script "$ROOT_DIR/contracts/script/ConfigureJobRates.s.sol:ConfigureJobRates" \
-    --rpc-url "$RPC_URL" --broadcast --slow --disable-code-size-limit > /dev/null 2>&1 || true
-echo "  Sandbox: 17 job rates configured"
-
-# Instance blueprint
-BASE_RATE=$BASE_RATE \
-BLUEPRINT_ID=$INSTANCE_BLUEPRINT_ID \
-TANGLE_ADDRESS=$TANGLE \
-BSM_ADDRESS=$INSTANCE_BSM \
-forge script "$ROOT_DIR/contracts/script/ConfigureInstanceJobRates.s.sol:ConfigureInstanceJobRates" \
-    --rpc-url "$RPC_URL" --broadcast --slow --disable-code-size-limit > /dev/null 2>&1 || true
-echo "  Instance: 8 job rates configured"
-
-# TEE Instance blueprint
-BASE_RATE=$BASE_RATE \
-BLUEPRINT_ID=$TEE_INSTANCE_BLUEPRINT_ID \
-TANGLE_ADDRESS=$TANGLE \
-BSM_ADDRESS=$TEE_INSTANCE_BSM \
-forge script "$ROOT_DIR/contracts/script/ConfigureTeeInstanceJobRates.s.sol:ConfigureTeeInstanceJobRates" \
-    --rpc-url "$RPC_URL" --broadcast --slow --disable-code-size-limit > /dev/null 2>&1 || true
-echo "  TEE Instance: 8 job rates configured"
+# All 3 blueprints use the same unified ConfigureJobRates script (7 jobs each).
+for BP_LABEL_ID in "Sandbox:$SANDBOX_BLUEPRINT_ID:$SANDBOX_BSM" \
+                   "Instance:$INSTANCE_BLUEPRINT_ID:$INSTANCE_BSM" \
+                   "TEE Instance:$TEE_INSTANCE_BLUEPRINT_ID:$TEE_INSTANCE_BSM"; do
+    IFS=: read -r BP_LABEL BP_ID BSM_ADDR <<< "$BP_LABEL_ID"
+    BASE_RATE=$BASE_RATE \
+    BLUEPRINT_ID=$BP_ID \
+    TANGLE_ADDRESS=$TANGLE \
+    BSM_ADDRESS=$BSM_ADDR \
+    forge script "$ROOT_DIR/contracts/script/ConfigureJobRates.s.sol:ConfigureJobRates" \
+        --rpc-url "$RPC_URL" --broadcast --slow --disable-code-size-limit > /dev/null 2>&1 || true
+    echo "  $BP_LABEL: 7 job rates configured"
+done
 
 # ── [3/10] Register operators ────────────────────────────────────────
 echo "[3/10] Registering operators on Tangle..."
 
-# Derive ECDSA public keys from private keys using cast
-OPERATOR1_PUBKEY=$(cast wallet address --private-key "$OPERATOR1_KEY" 2>/dev/null | head -1)
-OPERATOR2_PUBKEY=$(cast wallet address --private-key "$OPERATOR2_KEY" 2>/dev/null | head -1)
+# Derive uncompressed ECDSA public keys (65 bytes, 04 prefix) from private keys
+# registerOperator requires a valid ECDSA key; passing empty 0x fails with InvalidOperatorKey()
+OPERATOR1_PUBKEY_RAW=$(cast wallet public-key --private-key "$OPERATOR1_KEY" 2>/dev/null | head -1)
+OPERATOR2_PUBKEY_RAW=$(cast wallet public-key --private-key "$OPERATOR2_KEY" 2>/dev/null | head -1)
+OPERATOR1_PUBKEY="0x04${OPERATOR1_PUBKEY_RAW#0x}"
+OPERATOR2_PUBKEY="0x04${OPERATOR2_PUBKEY_RAW#0x}"
 
-# Register both operators for the Sandbox blueprint
+# Register both operators for all blueprints
 OPERATOR1_RPC="http://$PUBLIC_HOST:$OPERATOR_API_PORT"
 OPERATOR2_RPC="http://$PUBLIC_HOST:$((OPERATOR_API_PORT + 1))"
 
-for BLUEPRINT_ID in "$SANDBOX_BLUEPRINT_ID" "$INSTANCE_BLUEPRINT_ID" "$TEE_INSTANCE_BLUEPRINT_ID"; do
+for BP_ID in "$SANDBOX_BLUEPRINT_ID" "$INSTANCE_BLUEPRINT_ID" "$TEE_INSTANCE_BLUEPRINT_ID"; do
     # Operator 1
-    cast send "$TANGLE" \
+    if ! cast send "$TANGLE" \
         "registerOperator(uint64,bytes,string)" \
-        "$BLUEPRINT_ID" "0x" "$OPERATOR1_RPC" \
-        --gas-limit 500000 \
-        --rpc-url "$RPC_URL" --private-key "$OPERATOR1_KEY" > /dev/null 2>&1 || true
+        "$BP_ID" "$OPERATOR1_PUBKEY" "$OPERATOR1_RPC" \
+        --gas-limit 2000000 \
+        --rpc-url "$RPC_URL" --private-key "$OPERATOR1_KEY" > /dev/null 2>&1; then
+        echo "  WARNING: Operator 1 registration for blueprint #$BP_ID failed (may already be registered)"
+    fi
 
     # Operator 2
-    cast send "$TANGLE" \
+    if ! cast send "$TANGLE" \
         "registerOperator(uint64,bytes,string)" \
-        "$BLUEPRINT_ID" "0x" "$OPERATOR2_RPC" \
-        --gas-limit 500000 \
-        --rpc-url "$RPC_URL" --private-key "$OPERATOR2_KEY" > /dev/null 2>&1 || true
+        "$BP_ID" "$OPERATOR2_PUBKEY" "$OPERATOR2_RPC" \
+        --gas-limit 2000000 \
+        --rpc-url "$RPC_URL" --private-key "$OPERATOR2_KEY" > /dev/null 2>&1; then
+        echo "  WARNING: Operator 2 registration for blueprint #$BP_ID failed (may already be registered)"
+    fi
+done
+
+# Verify operator registration
+for BP_ID in "$SANDBOX_BLUEPRINT_ID" "$INSTANCE_BLUEPRINT_ID"; do
+    OP1_REG=$(cast call "$TANGLE" "isOperatorRegistered(uint64,address)(bool)" "$BP_ID" "$OPERATOR1_ADDR" --rpc-url "$RPC_URL" 2>/dev/null)
+    OP2_REG=$(cast call "$TANGLE" "isOperatorRegistered(uint64,address)(bool)" "$BP_ID" "$OPERATOR2_ADDR" --rpc-url "$RPC_URL" 2>/dev/null)
+    if [[ "$OP1_REG" != "true" || "$OP2_REG" != "true" ]]; then
+        echo "  ERROR: Operators not fully registered for blueprint #$BP_ID (op1=$OP1_REG, op2=$OP2_REG)"
+        exit 1
+    fi
 done
 
 echo "  Operator 1: $OPERATOR1_ADDR → $OPERATOR1_RPC"
@@ -207,7 +211,7 @@ SVC_BEFORE=$(cast call "$TANGLE" "serviceCount()(uint64)" --rpc-url "$RPC_URL" 2
 SVC_BEFORE=$(echo "$SVC_BEFORE" | sed 's/^0x//' | sed 's/^0*//' | sed 's/^$/0/')
 
 # Request sandbox service (Dynamic membership, EventDriven pricing → no payment)
-cast send "$TANGLE" \
+if ! cast send "$TANGLE" \
     "requestService(uint64,address[],bytes,address[],uint64,address,uint256)" \
     "$SANDBOX_BLUEPRINT_ID" \
     "[$OPERATOR1_ADDR,$OPERATOR2_ADDR]" \
@@ -217,25 +221,38 @@ cast send "$TANGLE" \
     "0x0000000000000000000000000000000000000000" \
     0 \
     --gas-limit 3000000 \
-    --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" > /dev/null 2>&1
+    --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" > /dev/null 2>&1; then
+    echo "  ERROR: Sandbox requestService failed"
+    exit 1
+fi
 SANDBOX_REQ_ID=$NEXT_REQ
 echo "  Sandbox service request #$SANDBOX_REQ_ID submitted"
 
-# Request instance service
+# Request instance service — encode ProvisionRequest as requestInputs for auto-provision.
+# The BSM contract stores this in serviceConfig[serviceId] after onServiceInitialized.
 NEXT_REQ=$((NEXT_REQ + 1))
-cast send "$TANGLE" \
+INSTANCE_CONFIG=$(cast abi-encode \
+    "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,string,bool,uint8)" \
+    "dev-sandbox" "agent-dev" "default" "default-agent" "{}" "{}" \
+    true "" false \
+    3600 900 2 4096 20 \
+    "" false 0)
+if ! cast send "$TANGLE" \
     "requestService(uint64,address[],bytes,address[],uint64,address,uint256)" \
     "$INSTANCE_BLUEPRINT_ID" \
     "[$OPERATOR1_ADDR,$OPERATOR2_ADDR]" \
-    "0x" \
+    "$INSTANCE_CONFIG" \
     "[$USER_ADDR,$DEPLOYER_ADDR]" \
     31536000 \
     "0x0000000000000000000000000000000000000000" \
     0 \
     --gas-limit 3000000 \
-    --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" > /dev/null 2>&1
+    --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" > /dev/null 2>&1; then
+    echo "  ERROR: Instance requestService failed"
+    exit 1
+fi
 INSTANCE_REQ_ID=$NEXT_REQ
-echo "  Instance service request #$INSTANCE_REQ_ID submitted"
+echo "  Instance service request #$INSTANCE_REQ_ID submitted (with config)"
 
 # ── [5/10] Operators approve services ────────────────────────────────
 echo "[5/10] Operators approving services..."
@@ -258,12 +275,35 @@ cast send "$TANGLE" "approveService(uint64,uint8)" "$INSTANCE_REQ_ID" 100 \
     --rpc-url "$RPC_URL" --private-key "$OPERATOR2_KEY" > /dev/null 2>&1
 echo "  Instance service: both operators approved"
 
-# Service IDs: sandbox was requested first, instance second
-SANDBOX_SERVICE_ID=$SVC_BEFORE
-INSTANCE_SERVICE_ID=$((SVC_BEFORE + 1))
+# Discover service IDs by scanning from SVC_BEFORE to current count
+SVC_AFTER=$(cast call "$TANGLE" "serviceCount()(uint64)" --rpc-url "$RPC_URL" 2>&1 | awk '{print $1}')
+SVC_AFTER=$(echo "$SVC_AFTER" | sed 's/^0x//' | sed 's/^0*//' | sed 's/^$/0/')
 
-echo "  Sandbox service ID: $SANDBOX_SERVICE_ID"
-echo "  Instance service ID: $INSTANCE_SERVICE_ID"
+SANDBOX_SERVICE_ID=""
+INSTANCE_SERVICE_ID=""
+for SVC_ID in $(seq "$SVC_BEFORE" "$((SVC_AFTER - 1))"); do
+    # First 32-byte word of getService is blueprintId
+    SVC_DATA=$(cast call "$TANGLE" "getService(uint64)" "$SVC_ID" --rpc-url "$RPC_URL" 2>/dev/null)
+    BP_WORD=$(echo "$SVC_DATA" | head -c 66) # 0x + 64 hex chars
+    BP_NUM=$(echo "$BP_WORD" | sed 's/^0x0*//' | sed 's/^$/0/')
+    if [[ "$BP_NUM" == "$SANDBOX_BLUEPRINT_ID" ]]; then
+        SANDBOX_SERVICE_ID=$SVC_ID
+    elif [[ "$BP_NUM" == "$INSTANCE_BLUEPRINT_ID" ]]; then
+        INSTANCE_SERVICE_ID=$SVC_ID
+    fi
+done
+
+if [[ -z "$SANDBOX_SERVICE_ID" ]]; then
+    echo "  ERROR: Could not find sandbox service (blueprintId=$SANDBOX_BLUEPRINT_ID) in services $SVC_BEFORE..$((SVC_AFTER-1))"
+    exit 1
+fi
+if [[ -z "$INSTANCE_SERVICE_ID" ]]; then
+    echo "  ERROR: Could not find instance service (blueprintId=$INSTANCE_BLUEPRINT_ID) in services $SVC_BEFORE..$((SVC_AFTER-1))"
+    exit 1
+fi
+
+echo "  Sandbox service ID: $SANDBOX_SERVICE_ID (verified blueprintId=$SANDBOX_BLUEPRINT_ID)"
+echo "  Instance service ID: $INSTANCE_SERVICE_ID (verified blueprintId=$INSTANCE_BLUEPRINT_ID)"
 
 # ── [6/10] Set operator capacity (Sandbox blueprint) ────────────────
 echo "[6/10] Setting operator capacity..."

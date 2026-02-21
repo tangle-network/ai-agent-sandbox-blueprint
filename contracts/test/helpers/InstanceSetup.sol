@@ -2,15 +2,13 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
-import "../../src/AgentInstanceBlueprint.sol";
-import "../../src/AgentTeeInstanceBlueprint.sol";
+import "../../src/AgentSandboxBlueprint.sol";
 
 /// @title InstanceBlueprintTestSetup
-/// @dev Base test contract providing helpers for instance blueprint tests.
-///      Unlike the sandbox Setup, instance blueprints don't need MockMultiAssetDelegation
-///      — there's no operator selection algorithm. Operators self-provision.
+/// @dev Base test contract providing helpers for instance mode tests.
+///      Uses the unified AgentSandboxBlueprint with instanceMode=true.
 contract InstanceBlueprintTestSetup is Test {
-    AgentInstanceBlueprint public instance;
+    AgentSandboxBlueprint public instance;
 
     address public tangleCore = address(0x7A);
     address public blueprintOwner = address(0xBB);
@@ -23,7 +21,7 @@ contract InstanceBlueprintTestSetup is Test {
     uint64 public testServiceId = 1;
 
     function setUp() public virtual {
-        instance = new AgentInstanceBlueprint();
+        instance = new AgentSandboxBlueprint(address(0), true, false);
         instance.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
     }
 
@@ -103,9 +101,9 @@ contract InstanceBlueprintTestSetup is Test {
 }
 
 /// @title TeeInstanceBlueprintTestSetup
-/// @dev Base test for the TEE variant. Identical structure but uses AgentTeeInstanceBlueprint.
+/// @dev Base test for the TEE variant. Uses unified contract with teeRequired=true.
 contract TeeInstanceBlueprintTestSetup is Test {
-    AgentTeeInstanceBlueprint public teeInstance;
+    AgentSandboxBlueprint public teeInstance;
 
     address public tangleCore = address(0x7A);
     address public blueprintOwner = address(0xBB);
@@ -117,7 +115,7 @@ contract TeeInstanceBlueprintTestSetup is Test {
     uint64 public testServiceId = 1;
 
     function setUp() public virtual {
-        teeInstance = new AgentTeeInstanceBlueprint();
+        teeInstance = new AgentSandboxBlueprint(address(0), true, true);
         teeInstance.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
     }
 

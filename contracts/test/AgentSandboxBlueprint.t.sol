@@ -63,13 +63,11 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         // operator3 has most capacity, should get assigned more often
         uint256 op3Count = 0;
         for (uint256 i = 0; i < 100; i++) {
-            // We need to track which operator gets assigned by checking the event
             vm.prevrandao(bytes32(uint256(i * 7 + 42)));
             vm.recordLogs();
             simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), uint64(1000 + i), encodeSandboxCreateInputs());
 
             Vm.Log[] memory logs = vm.getRecordedLogs();
-            // OperatorAssigned(uint64 serviceId, uint64 callId, address operator)
             for (uint256 j = 0; j < logs.length; j++) {
                 if (logs[j].topics[0] == AgentSandboxBlueprint.OperatorAssigned.selector) {
                     address assigned = address(uint160(uint256(logs[j].topics[3])));
@@ -78,9 +76,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             }
         }
 
-        // operator3 has 10/27 of the weight (~37%), should get roughly 37 out of 100
-        // Allow generous bounds for randomness
-        assertGt(op3Count, 15, "operator3 should get significant assignments");
+        assertGt(op3Count, 25, "operator3 should get significant assignments (~37% expected)");
     }
 
     function test_weightedDistribution() public {
@@ -103,7 +99,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             }
         }
 
-        // operator1 should get ~91% (100/110), so roughly 182/200
         assertGt(op1Count, 140, "operator1 should get majority of assignments");
         assertLt(op1Count, 200, "operator2 should get some assignments too");
     }
@@ -112,7 +107,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         registerOperator(operator1, 1);
         _createSandbox(1, 1, operator1, "sb-full");
 
-        // Use literal job ID (0 = CREATE) to avoid staticcall consuming expectRevert
         vm.prank(tangleCore);
         vm.expectRevert(AgentSandboxBlueprint.NoAvailableCapacity.selector);
         blueprint.onJobCall(1, 0, 999, encodeSandboxCreateInputs());
@@ -122,10 +116,8 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         registerOperator(operator1, 10);
         registerOperator(operator2, 10);
 
-        // Deactivate operator1
         mockDelegation.setActive(operator1, false);
 
-        // All assignments should go to operator2
         for (uint256 i = 0; i < 10; i++) {
             vm.prevrandao(bytes32(uint256(i)));
             vm.recordLogs();
@@ -172,13 +164,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         registerOperator(operator1, 10);
         registerOperator(operator2, 10);
 
-        // Force operator1 to be selected (single operator with capacity)
         mockDelegation.setActive(operator2, false);
         simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 30, encodeSandboxCreateInputs());
         mockDelegation.setActive(operator2, true);
 
-        // Try to submit result as operator2 (wrong operator)
-        // Use literal job ID (0) to avoid staticcall consuming expectRevert
         vm.prank(tangleCore);
         vm.expectRevert(
             abi.encodeWithSelector(AgentSandboxBlueprint.OperatorMismatch.selector, operator1, operator2)
@@ -194,9 +183,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         registerOperator(operator1, 10);
         _createSandbox(1, 40, operator1, "sandbox-clear");
 
-        // Submitting result again should fail because assignment is cleared
-        // The assigned operator will be address(0) since it was deleted
-        // Use literal job ID (0) to avoid staticcall consuming expectRevert
         vm.prank(tangleCore);
         vm.expectRevert(
             abi.encodeWithSelector(AgentSandboxBlueprint.OperatorMismatch.selector, address(0), operator1)
@@ -209,18 +195,8 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // SANDBOX ROUTING (onJobCall for STOP/DELETE)
+    // SANDBOX ROUTING (onJobCall for DELETE)
     // ═══════════════════════════════════════════════════════════════════════════
-
-    function test_routeStopToCorrectOperator() public {
-        registerOperator(operator1, 10);
-        _createSandbox(1, 50, operator1, "sandbox-stop");
-
-        vm.expectEmit(true, true, true, true);
-        emit AgentSandboxBlueprint.OperatorRouted(1, 51, operator1);
-
-        simulateJobCall(1, blueprint.JOB_SANDBOX_STOP(), 51, encodeSandboxIdInputs("sandbox-stop"));
-    }
 
     function test_routeDeleteToCorrectOperator() public {
         registerOperator(operator1, 10);
@@ -234,7 +210,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
     function test_routeRevertsUnknownSandbox() public {
         bytes32 unknownHash = keccak256(bytes("no-such-sandbox"));
-        // Use literal job ID (1 = STOP) to avoid staticcall consuming expectRevert
         vm.prank(tangleCore);
         vm.expectRevert(
             abi.encodeWithSelector(AgentSandboxBlueprint.SandboxNotFound.selector, unknownHash)
@@ -290,13 +265,12 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         registerOperator(operator2, 10);
         _createSandbox(1, 100, operator1, "sandbox-own");
 
-        // Use literal job ID (3 = DELETE) to avoid staticcall consuming expectRevert
         vm.prank(tangleCore);
         vm.expectRevert(
             abi.encodeWithSelector(AgentSandboxBlueprint.OperatorMismatch.selector, operator1, operator2)
         );
         blueprint.onJobResult(
-            1, 3, 101, operator2,
+            1, 1, 101, operator2,
             encodeSandboxIdInputs("sandbox-own"),
             encodeJsonOutputs("{}")
         );
@@ -316,27 +290,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertEq(blueprint.getSandboxOperator(sid), operator1);
         assertEq(blueprint.totalActiveSandboxes(), 1);
 
-        // 2. Stop
-        simulateJobCall(1, blueprint.JOB_SANDBOX_STOP(), 201, encodeSandboxIdInputs(sid));
+        // 2. Delete
+        simulateJobCall(1, blueprint.JOB_SANDBOX_DELETE(), 201, encodeSandboxIdInputs(sid));
         simulateJobResult(
-            1, blueprint.JOB_SANDBOX_STOP(), 201, operator1,
-            encodeSandboxIdInputs(sid), encodeJsonOutputs("{\"stopped\":true}")
-        );
-        // Still active (stop doesn't delete)
-        assertTrue(blueprint.isSandboxActive(sid));
-
-        // 3. Resume
-        simulateJobCall(1, blueprint.JOB_SANDBOX_RESUME(), 202, encodeSandboxIdInputs(sid));
-        simulateJobResult(
-            1, blueprint.JOB_SANDBOX_RESUME(), 202, operator1,
-            encodeSandboxIdInputs(sid), encodeJsonOutputs("{\"resumed\":true}")
-        );
-        assertTrue(blueprint.isSandboxActive(sid));
-
-        // 4. Delete
-        simulateJobCall(1, blueprint.JOB_SANDBOX_DELETE(), 203, encodeSandboxIdInputs(sid));
-        simulateJobResult(
-            1, blueprint.JOB_SANDBOX_DELETE(), 203, operator1,
+            1, blueprint.JOB_SANDBOX_DELETE(), 201, operator1,
             encodeSandboxIdInputs(sid), encodeJsonOutputs("{\"deleted\":true}")
         );
         assertFalse(blueprint.isSandboxActive(sid));
@@ -352,7 +309,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         uint256[3] memory counts;
         address[3] memory ops = [operator1, operator2, operator3];
 
-        // Create 10 sandboxes
         for (uint256 i = 0; i < 10; i++) {
             vm.prevrandao(bytes32(uint256(i * 31 + 5)));
             vm.recordLogs();
@@ -379,9 +335,12 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         }
 
         assertEq(blueprint.totalActiveSandboxes(), 10);
-        // Each operator should have gotten at least 1 sandbox
-        // (with equal capacity and 10 creates, very likely)
-        assertGt(counts[0] + counts[1] + counts[2], 0, "all sandboxes accounted for");
+        assertEq(counts[0] + counts[1] + counts[2], 10, "all sandboxes accounted for");
+        uint256 activeOps = 0;
+        for (uint256 i = 0; i < 3; i++) {
+            if (counts[i] > 0) activeOps++;
+        }
+        assertGt(activeOps, 1, "at least 2 operators should receive assignments");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -440,7 +399,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // WORKFLOW HOOKS (regression)
+    // WORKFLOW HOOKS
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_workflowCreateStoresConfig() public {
@@ -467,7 +426,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     function test_workflowTriggerUpdatesTimestamp() public {
-        // First create a workflow
         AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
             name: "trigger-test",
             workflow_json: "{}",
@@ -529,17 +487,87 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // SANDBOX ALREADY EXISTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_createResultRevertsDuplicateSandboxId() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 800, operator1, "sandbox-dup");
+
+        simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 801, encodeSandboxCreateInputs());
+
+        bytes32 dupHash = keccak256(bytes("sandbox-dup"));
+        vm.prank(tangleCore);
+        vm.expectRevert(
+            abi.encodeWithSelector(AgentSandboxBlueprint.SandboxAlreadyExists.selector, dupHash)
+        );
+        blueprint.onJobResult(
+            1, 0, 801, operator1,
+            encodeSandboxCreateInputs(),
+            encodeSandboxCreateOutputs("sandbox-dup", "{}")
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // getRequiredResultCount
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_getRequiredResultCountAlwaysReturnsOne() public view {
+        assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_SANDBOX_CREATE()), 1);
+        assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_SANDBOX_DELETE()), 1);
+        assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_WORKFLOW_CREATE()), 1);
+        assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_PROVISION()), 1);
+        assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_DEPROVISION()), 1);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MODE FLAGS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_cloudModeIsDefault() public view {
+        assertFalse(blueprint.instanceMode());
+        assertFalse(blueprint.teeRequired());
+    }
+
+    function test_setInstanceMode() public {
+        vm.prank(blueprintOwner);
+        blueprint.setInstanceMode(true);
+        assertTrue(blueprint.instanceMode());
+    }
+
+    function test_setTeeRequired() public {
+        vm.prank(blueprintOwner);
+        blueprint.setTeeRequired(true);
+        assertTrue(blueprint.teeRequired());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // JOB METADATA
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_jobMetadata() public view {
+        uint8[] memory ids = blueprint.jobIds();
+        assertEq(ids.length, 7);
+        assertEq(ids[0], 0); // SANDBOX_CREATE
+        assertEq(ids[6], 6); // DEPROVISION
+
+        assertTrue(blueprint.supportsJob(0));
+        assertTrue(blueprint.supportsJob(6));
+        assertFalse(blueprint.supportsJob(7));
+
+        assertEq(blueprint.jobCount(), 7);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @dev Full create flow: jobCall (with forced operator) + jobResult.
     function _createSandbox(
         uint64 serviceId,
         uint64 callId,
         address operator,
         string memory sandboxId
     ) internal {
-        // Temporarily deactivate all other operators so our target is selected
         address[3] memory allOps = [operator1, operator2, operator3];
         for (uint256 i = 0; i < 3; i++) {
             if (allOps[i] != operator && allOps[i] != address(0)) {
@@ -549,7 +577,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         simulateJobCall(serviceId, blueprint.JOB_SANDBOX_CREATE(), callId, encodeSandboxCreateInputs());
 
-        // Reactivate
         for (uint256 i = 0; i < 3; i++) {
             if (allOps[i] != operator && allOps[i] != address(0)) {
                 mockDelegation.setActive(allOps[i], true);

@@ -3,6 +3,8 @@ import { renderHook, act } from '@testing-library/react';
 import { useJobForm } from './useJobForm';
 import { makeJob, makeField } from '~/test/fixtures';
 import { getJobById } from '~/lib/blueprints/registry';
+import { JOB_IDS } from '~/lib/types/sandbox';
+import { INSTANCE_JOB_IDS } from '~/lib/types/instance';
 import '~/lib/blueprints'; // auto-register
 
 // ── Defaults ──
@@ -89,24 +91,17 @@ describe('useJobForm with real blueprint jobs', () => {
   });
 
   it('initializes instance_provision with sidecarToken excluded', () => {
-    const job = getJobById('ai-agent-instance-blueprint', 0)!;
+    const job = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
     const { result } = renderHook(() => useJobForm(job));
     expect(result.current.values).not.toHaveProperty('sidecarToken');
     expect(result.current.values.name).toBe('');
   });
 
   it('initializes TEE instance_provision with teeRequired=true', () => {
-    const job = getJobById('ai-agent-tee-instance-blueprint', 0)!;
+    const job = getJobById('ai-agent-tee-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
     const { result } = renderHook(() => useJobForm(job));
     expect(result.current.values.teeRequired).toBe(true);
     expect(result.current.values.teeType).toBe('1');
-  });
-
-  it('initializes exec job with timeout default', () => {
-    const job = getJobById('ai-agent-sandbox-blueprint', 10)!;
-    const { result } = renderHook(() => useJobForm(job));
-    expect(result.current.values.timeoutMs).toBe(30000);
-    expect(result.current.values.command).toBe('');
   });
 });
 
@@ -274,12 +269,13 @@ describe('useJobForm numeric bounds', () => {
     expect(result.current.errors.cpuCores).toContain('at least 1');
   });
 
-  it('validates real sandbox timeout allows 0', () => {
-    const job = getJobById('ai-agent-sandbox-blueprint', 10)!; // exec
+  it('validates real sandbox maxLifetimeSeconds allows 0', () => {
+    const job = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.SANDBOX_CREATE)!;
     const { result } = renderHook(() => useJobForm(job));
     act(() => {
-      result.current.onChange('command', 'ls'); // fill required field
-      result.current.onChange('timeoutMs', 0);
+      result.current.onChange('name', 'test'); // fill required field
+      result.current.onChange('image', 'ubuntu:22.04'); // fill required field
+      result.current.onChange('maxLifetimeSeconds', 0);
     });
     let valid = false;
     act(() => { valid = result.current.validate(); });

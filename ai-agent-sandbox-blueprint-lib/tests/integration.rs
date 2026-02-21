@@ -712,20 +712,9 @@ mod workflow_jobs {
         workflows().unwrap().remove(&key).unwrap();
     }
 
-    #[test]
-    fn inactive_workflow_skipped_by_tick() {
-        init();
-        let key = workflow_key(90004);
-        let mut entry = wf(90004, "http://unused", "t");
-        entry.active = false;
-        workflows().unwrap().insert(key.clone(), entry).unwrap();
-
-        let all = workflows().unwrap().values().unwrap();
-        let w = all.iter().find(|w| w.id == 90004).unwrap();
-        assert!(!w.active);
-
-        workflows().unwrap().remove(&key).unwrap();
-    }
+    // inactive_workflow_skipped_by_tick was removed: it never called workflow_tick(),
+    // just asserted the workflow was inactive. The tick_runs_due_workflows test above
+    // covers the actual scheduling logic.
 }
 
 // ─── Response Parsing: extract_agent_fields ──────────────────────────────────

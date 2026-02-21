@@ -26,9 +26,11 @@ export {
 } from '@tangle/blueprint-ui';
 export type { CoreAddresses, NetworkConfig } from '@tangle/blueprint-ui';
 
-/** Sandbox-specific addresses — extends CoreAddresses with sandboxBlueprint. */
+/** Sandbox-specific addresses — extends CoreAddresses with blueprint BSM addresses. */
 export interface SandboxAddresses extends CoreAddresses {
   sandboxBlueprint: Address;
+  instanceBlueprint: Address;
+  teeInstanceBlueprint: Address;
 }
 
 // Configure sandbox networks at module load time.
@@ -39,9 +41,11 @@ configureNetworks<SandboxAddresses>({
     label: 'Tangle Local',
     shortLabel: 'Local',
     addresses: {
-      sandboxBlueprint: (import.meta.env.VITE_SANDBOX_CONTRACT ?? '0x0000000000000000000000000000000000000000') as Address,
-      jobs: (import.meta.env.VITE_JOBS_CONTRACT ?? '0x0000000000000000000000000000000000000000') as Address,
-      services: (import.meta.env.VITE_SERVICES_CONTRACT ?? '0x0000000000000000000000000000000000000000') as Address,
+      sandboxBlueprint: (import.meta.env.VITE_SANDBOX_BSM ?? '0x0000000000000000000000000000000000000000') as Address,
+      instanceBlueprint: (import.meta.env.VITE_INSTANCE_BSM ?? '0x0000000000000000000000000000000000000000') as Address,
+      teeInstanceBlueprint: (import.meta.env.VITE_TEE_INSTANCE_BSM ?? '0x0000000000000000000000000000000000000000') as Address,
+      jobs: (import.meta.env.VITE_TANGLE_CONTRACT ?? '0x0000000000000000000000000000000000000000') as Address,
+      services: (import.meta.env.VITE_TANGLE_CONTRACT ?? '0x0000000000000000000000000000000000000000') as Address,
     },
   },
   [tangleTestnet.id]: {
@@ -51,6 +55,8 @@ configureNetworks<SandboxAddresses>({
     shortLabel: 'Testnet',
     addresses: {
       sandboxBlueprint: '0x0000000000000000000000000000000000000000' as Address,
+      instanceBlueprint: '0x0000000000000000000000000000000000000000' as Address,
+      teeInstanceBlueprint: '0x0000000000000000000000000000000000000000' as Address,
       jobs: '0x0000000000000000000000000000000000000000' as Address,
       services: '0x0000000000000000000000000000000000000000' as Address,
     },
@@ -62,6 +68,8 @@ configureNetworks<SandboxAddresses>({
     shortLabel: 'Mainnet',
     addresses: {
       sandboxBlueprint: '0x0000000000000000000000000000000000000000' as Address,
+      instanceBlueprint: '0x0000000000000000000000000000000000000000' as Address,
+      teeInstanceBlueprint: '0x0000000000000000000000000000000000000000' as Address,
       jobs: '0x0000000000000000000000000000000000000000' as Address,
       services: '0x0000000000000000000000000000000000000000' as Address,
     },

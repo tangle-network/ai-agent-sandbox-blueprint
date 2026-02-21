@@ -22,6 +22,7 @@ export interface LocalSandbox {
   /** Local status (hydrated from contract + events) */
   status: 'creating' | 'running' | 'stopped' | 'warm' | 'cold' | 'gone' | 'error';
   txHash?: string;
+  callId?: number;
 }
 
 export const sandboxListStore = persistedAtom<LocalSandbox[]>({

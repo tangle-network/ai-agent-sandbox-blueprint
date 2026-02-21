@@ -1,8 +1,8 @@
 use ai_agent_sandbox_blueprint_lib::{
-    BatchExecRequest, JOB_BATCH_EXEC, JOB_EXEC, JOB_PROMPT, JOB_SANDBOX_CREATE, JOB_TASK,
-    JOB_WORKFLOW_CANCEL, JOB_WORKFLOW_CREATE, JOB_WORKFLOW_TRIGGER, JsonResponse,
-    SandboxCreateOutput, SandboxCreateRequest, SandboxExecRequest, SandboxPromptRequest,
-    SandboxTaskRequest, WorkflowControlRequest, WorkflowCreateRequest, router,
+    JOB_SANDBOX_CREATE, JOB_SANDBOX_DELETE, JOB_WORKFLOW_CANCEL,
+    JOB_WORKFLOW_CREATE, JOB_WORKFLOW_TRIGGER, JsonResponse, SandboxCreateOutput,
+    SandboxCreateRequest, SandboxIdRequest,
+    WorkflowControlRequest, WorkflowCreateRequest, router,
 };
 use anyhow::{Context, Result};
 use blueprint_anvil_testing_utils::{BlueprintHarness, missing_tnt_core_artifacts};
@@ -203,7 +203,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             eprintln!("Session auth OK: address={address}");
         }
 
-        // Wait for the sidecar to become healthy before sending jobs
+        // Wait for the sidecar to become healthy before sending workflow jobs
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -225,90 +225,9 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        let exec_payload = SandboxExecRequest {
-            sidecar_url: sidecar_url.clone(),
-            command: "echo ok".to_string(),
-            cwd: "".to_string(),
-            env_json: "".to_string(),
-            timeout_ms: 30000,
-        }
-        .abi_encode();
-        let exec_submission = harness
-            .submit_job(JOB_EXEC, Bytes::from(exec_payload))
-            .await?;
-        let exec_output = harness
-            .wait_for_job_result_with_deadline(exec_submission, JOB_RESULT_TIMEOUT)
-            .await?;
-        let exec_receipt =
-            ai_agent_sandbox_blueprint_lib::SandboxExecResponse::abi_decode(&exec_output)?;
-        assert_eq!(exec_receipt.exit_code, 0);
-        assert_eq!(exec_receipt.stdout, "ok");
-
-        let prompt_payload = SandboxPromptRequest {
-            sidecar_url: sidecar_url.clone(),
-            message: "hello".to_string(),
-            session_id: "".to_string(),
-            model: "".to_string(),
-            context_json: "".to_string(),
-            timeout_ms: 0,
-        }
-        .abi_encode();
-        let prompt_submission = harness
-            .submit_job(JOB_PROMPT, Bytes::from(prompt_payload))
-            .await?;
-        let prompt_output = harness
-            .wait_for_job_result_with_deadline(prompt_submission, JOB_RESULT_TIMEOUT)
-            .await?;
-        let prompt_receipt =
-            ai_agent_sandbox_blueprint_lib::SandboxPromptResponse::abi_decode(&prompt_output)?;
-        assert!(prompt_receipt.success);
-        assert!(!prompt_receipt.response.is_empty());
-
-        let task_payload = SandboxTaskRequest {
-            sidecar_url: sidecar_url.clone(),
-            prompt: "do work".to_string(),
-            session_id: "session-override".to_string(),
-            max_turns: 2,
-            model: "".to_string(),
-            context_json: "".to_string(),
-            timeout_ms: 0,
-        }
-        .abi_encode();
-        let task_submission = harness
-            .submit_job(JOB_TASK, Bytes::from(task_payload))
-            .await?;
-        let task_output = harness
-            .wait_for_job_result_with_deadline(task_submission, JOB_RESULT_TIMEOUT)
-            .await?;
-        let task_receipt =
-            ai_agent_sandbox_blueprint_lib::SandboxTaskResponse::abi_decode(&task_output)?;
-        assert!(task_receipt.success);
-        assert!(!task_receipt.result.is_empty());
-        assert!(!task_receipt.session_id.is_empty());
-
-        let batch_payload = BatchExecRequest {
-            sidecar_urls: vec![sidecar_url.clone(), sidecar_url.clone()],
-            command: "ls".to_string(),
-            cwd: "".to_string(),
-            env_json: "".to_string(),
-            timeout_ms: 0,
-            parallel: false,
-        }
-        .abi_encode();
-        let batch_submission = harness
-            .submit_job(JOB_BATCH_EXEC, Bytes::from(batch_payload))
-            .await?;
-        let batch_output = harness
-            .wait_for_job_result_with_deadline(batch_submission, JOB_RESULT_TIMEOUT)
-            .await?;
-        let batch_receipt = JsonResponse::abi_decode(&batch_output)?;
-        let batch_json: serde_json::Value = serde_json::from_str(&batch_receipt.json)
-            .context("batch exec response must be json")?;
-        let results = batch_json
-            .get("execResults")
-            .and_then(|value| value.as_array())
-            .context("missing execResults")?;
-        assert_eq!(results.len(), 2);
+        // Read-only ops (exec, prompt, task, stop/resume, batch, ssh, snapshot)
+        // are now served via the operator HTTP API, not on-chain jobs.
+        // See sandbox-runtime/src/operator_api.rs for those endpoints.
 
         let workflow_payload = WorkflowCreateRequest {
             name: "daily".to_string(),
@@ -361,6 +280,25 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             .await?;
         let cancel_receipt = JsonResponse::abi_decode(&cancel_output)?;
         assert!(cancel_receipt.json.contains("canceled"));
+
+        // ---------------------------------------------------------------
+        // Sandbox lifecycle: delete (cleanup)
+        // ---------------------------------------------------------------
+        let delete_payload = SandboxIdRequest {
+            sandbox_id: create_receipt.sandboxId.clone(),
+        }
+        .abi_encode();
+        let delete_submission = harness
+            .submit_job(JOB_SANDBOX_DELETE, Bytes::from(delete_payload))
+            .await?;
+        let delete_output = harness
+            .wait_for_job_result_with_deadline(delete_submission, JOB_RESULT_TIMEOUT)
+            .await?;
+        let delete_receipt = JsonResponse::abi_decode(&delete_output)?;
+        let delete_json: serde_json::Value =
+            serde_json::from_str(&delete_receipt.json).context("delete response must be json")?;
+        assert_eq!(delete_json["deleted"], true);
+        eprintln!("Sandbox deleted: id={}", create_receipt.sandboxId);
 
         harness.shutdown().await;
         Ok(())

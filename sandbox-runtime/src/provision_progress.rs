@@ -57,6 +57,9 @@ pub struct ProvisionStatus {
     pub started_at: u64,
     pub updated_at: u64,
     pub progress_pct: u8,
+    /// Sidecar URL populated when the provision reaches the Ready phase.
+    #[serde(default)]
+    pub sidecar_url: Option<String>,
     /// Blueprint-specific metadata (service_id, bot_id, etc.).
     /// Defaults to `null` for backward compatibility.
     #[serde(default)]
@@ -90,6 +93,7 @@ pub fn start_provision(call_id: u64) -> Result<ProvisionStatus> {
         started_at: now,
         updated_at: now,
         progress_pct: 0,
+        sidecar_url: None,
         metadata: serde_json::Value::Null,
     };
     provisions()?.insert(call_id.to_string(), status.clone())?;
@@ -102,6 +106,7 @@ pub fn update_provision(
     phase: ProvisionPhase,
     message: Option<String>,
     sandbox_id: Option<String>,
+    sidecar_url: Option<String>,
 ) -> Result<Option<ProvisionStatus>> {
     let now = crate::util::now_ts();
     let key = call_id.to_string();
@@ -116,6 +121,9 @@ pub fn update_provision(
         }
         if let Some(id) = sandbox_id {
             entry.sandbox_id = Some(id);
+        }
+        if let Some(url) = sidecar_url {
+            entry.sidecar_url = Some(url);
         }
     })?;
 
@@ -203,6 +211,7 @@ mod tests {
             ProvisionPhase::ImagePull,
             Some("Pulling image".into()),
             None,
+            None,
         )
         .unwrap();
         assert!(updated.is_some());
@@ -215,6 +224,7 @@ mod tests {
             ProvisionPhase::Ready,
             Some("Sandbox ready".into()),
             Some("sandbox-abc".into()),
+            Some("http://localhost:3000".into()),
         )
         .unwrap();
         let updated = updated.unwrap();

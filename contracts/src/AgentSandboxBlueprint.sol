@@ -6,176 +6,89 @@ import "tnt-core/interfaces/IMultiAssetDelegation.sol";
 
 /**
  * @title AgentSandboxBlueprint
- * @dev Multi-operator service manager for AI Agent Sandbox Blueprint.
- *      Handles capacity-weighted operator assignment for sandbox creation,
- *      on-chain routing of lifecycle operations, and workflow storage.
+ * @dev Unified service manager for AI Agent Sandbox Blueprint.
+ *      Deployed 3x with different mode flags:
+ *        - Cloud mode (instanceMode=false): Multi-operator fleet with capacity-weighted
+ *          sandbox assignment, workflow storage, and batch operations.
+ *        - Instance mode (instanceMode=true): Per-service singleton sandbox with
+ *          operator self-provisioning. Config stored at service request time.
+ *        - TEE instance mode (instanceMode=true, teeRequired=true): Same as instance
+ *          but requires TEE attestation on provision.
+ *
+ *      7 on-chain jobs (state-changing only). All read-only operations (exec, prompt,
+ *      task, stop, resume, snapshot, SSH) are served via the operator HTTP API.
  */
 contract AgentSandboxBlueprint is OperatorSelectionBase {
     // ═══════════════════════════════════════════════════════════════════════════
-    // JOB IDS
+    // JOB IDS (7 total — state-changing only)
     // ═══════════════════════════════════════════════════════════════════════════
 
     uint8 public constant JOB_SANDBOX_CREATE = 0;
-    uint8 public constant JOB_SANDBOX_STOP = 1;
-    uint8 public constant JOB_SANDBOX_RESUME = 2;
-    uint8 public constant JOB_SANDBOX_DELETE = 3;
-    uint8 public constant JOB_SANDBOX_SNAPSHOT = 4;
-
-    uint8 public constant JOB_EXEC = 10;
-    uint8 public constant JOB_PROMPT = 11;
-    uint8 public constant JOB_TASK = 12;
-
-    uint8 public constant JOB_BATCH_CREATE = 20;
-    uint8 public constant JOB_BATCH_TASK = 21;
-    uint8 public constant JOB_BATCH_EXEC = 22;
-    uint8 public constant JOB_BATCH_COLLECT = 23;
-
-    uint8 public constant JOB_WORKFLOW_CREATE = 30;
-    uint8 public constant JOB_WORKFLOW_TRIGGER = 31;
-    uint8 public constant JOB_WORKFLOW_CANCEL = 32;
-
-    uint8 public constant JOB_SSH_PROVISION = 40;
-    uint8 public constant JOB_SSH_REVOKE = 41;
+    uint8 public constant JOB_SANDBOX_DELETE = 1;
+    uint8 public constant JOB_WORKFLOW_CREATE = 2;
+    uint8 public constant JOB_WORKFLOW_TRIGGER = 3;
+    uint8 public constant JOB_WORKFLOW_CANCEL = 4;
+    uint8 public constant JOB_PROVISION = 5;      // Instance mode only
+    uint8 public constant JOB_DEPROVISION = 6;    // Instance mode only
 
     // ═══════════════════════════════════════════════════════════════════════════
     // METADATA
     // ═══════════════════════════════════════════════════════════════════════════
 
     string public constant BLUEPRINT_NAME = "ai-agent-sandbox-blueprint";
-    string public constant BLUEPRINT_VERSION = "0.3.0";
+    string public constant BLUEPRINT_VERSION = "0.4.0";
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MODE FLAGS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice When true, this deployment operates in instance mode:
+    ///         one sandbox per service, operators self-provision.
+    bool public instanceMode;
+
+    /// @notice When true, provision requires non-empty TEE attestation.
+    bool public teeRequired;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PER-JOB PRICING MULTIPLIERS
     // ═══════════════════════════════════════════════════════════════════════════
-    //
-    // Each job type has a multiplier relative to a configurable base rate.
-    // The blueprint owner sets ONE base rate (the cost of the cheapest
-    // operation — a single command exec), and all other rates scale from it.
-    //
-    // Multipliers are derived from real infrastructure cost analysis:
-    //
-    // TIER 1 (1x) — Trivial ops, <100ms CPU, no external calls:
-    //   EXEC (single bash command), STOP, RESUME, DELETE, BATCH_COLLECT,
-    //   WORKFLOW_CANCEL, SSH_REVOKE
-    //   Raw cost: ~$0.0001 (container exec overhead + <1s CPU burst)
-    //   Competitors: E2B/Daytona bill per-second (~$0.000014/vCPU/s)
-    //
-    // TIER 2 (2x) — Light state changes, key generation:
-    //   SSH_PROVISION, WORKFLOW_CREATE
-    //   Raw cost: ~$0.0002 (key generation or config validation + storage)
-    //
-    // TIER 3 (5x) — I/O-heavy or trigger operations:
-    //   SANDBOX_SNAPSHOT (docker commit ~300MB, 5-15s I/O)
-    //   WORKFLOW_TRIGGER (initiates sandbox + execution)
-    //   Raw cost: ~$0.0005-0.002 (disk I/O + storage write)
-    //   Competitors: Vercel charges $0.60/million creations
-    //
-    // TIER 4 (20x) — Single LLM inference call:
-    //   PROMPT (one model call with context)
-    //   Raw cost: $0.002-0.035 depending on model
-    //     - Budget (GPT-4o-mini/Gemini Flash): ~$0.001/call
-    //     - Mid (GPT-4o/Claude Sonnet): ~$0.015/call
-    //     - Premium (Claude Opus): ~$0.035/call
-    //   Competitors: Together AI code sandbox $0.03/session
-    //
-    // TIER 5 (50x) — Container lifecycle with compute reservation:
-    //   SANDBOX_CREATE (pull image + start container + reserve resources)
-    //   Raw cost: $0.005-0.02 (cold start + prepaid compute)
-    //     - AWS Fargate: ~$0.001 startup + $0.05/hr reserved
-    //     - E2B: $0.083/hr (1vCPU+2GB)
-    //     - Hetzner: $0.012/hr (2vCPU+4GB)
-    //   BATCH_EXEC (N commands, priced per-submission)
-    //
-    // TIER 6 (100x) — Batch container creation:
-    //   BATCH_CREATE (N sandbox creations in one call)
-    //   Raw cost: N × $0.005-0.02
-    //
-    // TIER 7 (250x) — Multi-turn AI agent task:
-    //   TASK (5-10 LLM turns with accumulating context)
-    //   Raw cost: $0.01-0.50 depending on model and turns
-    //     - Budget (GPT-4o-mini, 7 turns): ~$0.014
-    //     - Mid (Claude Sonnet, 7 turns): ~$0.10 (with caching)
-    //     - Premium (Claude Opus, 7 turns): ~$0.17 (with caching)
-    //   Competitors: Replit agent tasks $0.25-$10+
-    //
-    // TIER 8 (500x) — Batch multi-turn agent tasks:
-    //   BATCH_TASK (N agent tasks in one call)
-    //   Raw cost: N × $0.01-0.50
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
 
-    // Tier 1: Trivial operations (1x base)
-    uint256 public constant PRICE_MULT_EXEC = 1;
-    uint256 public constant PRICE_MULT_STOP = 1;
-    uint256 public constant PRICE_MULT_RESUME = 1;
-    uint256 public constant PRICE_MULT_DELETE = 1;
-    uint256 public constant PRICE_MULT_BATCH_COLLECT = 1;
-    uint256 public constant PRICE_MULT_WORKFLOW_CANCEL = 1;
-    uint256 public constant PRICE_MULT_SSH_REVOKE = 1;
-
-    // Tier 2: Light state changes (2x base)
-    uint256 public constant PRICE_MULT_SSH_PROVISION = 2;
-    uint256 public constant PRICE_MULT_WORKFLOW_CREATE = 2;
-
-    // Tier 3: I/O-heavy operations (5x base)
-    uint256 public constant PRICE_MULT_SNAPSHOT = 5;
-    uint256 public constant PRICE_MULT_WORKFLOW_TRIGGER = 5;
-
-    // Tier 4: Single LLM call (20x base)
-    uint256 public constant PRICE_MULT_PROMPT = 20;
-
-    // Tier 5: Container lifecycle (50x base)
+    // Cloud jobs
     uint256 public constant PRICE_MULT_SANDBOX_CREATE = 50;
-    uint256 public constant PRICE_MULT_BATCH_EXEC = 50;
+    uint256 public constant PRICE_MULT_SANDBOX_DELETE = 1;
+    uint256 public constant PRICE_MULT_WORKFLOW_CREATE = 2;
+    uint256 public constant PRICE_MULT_WORKFLOW_TRIGGER = 5;
+    uint256 public constant PRICE_MULT_WORKFLOW_CANCEL = 1;
 
-    // Tier 6: Batch container creation (100x base)
-    uint256 public constant PRICE_MULT_BATCH_CREATE = 100;
-
-    // Tier 7: Multi-turn agent (250x base)
-    uint256 public constant PRICE_MULT_TASK = 250;
-
-    // Tier 8: Batch agent tasks (500x base)
-    uint256 public constant PRICE_MULT_BATCH_TASK = 500;
+    // Instance jobs
+    uint256 public constant PRICE_MULT_PROVISION = 50;
+    uint256 public constant PRICE_MULT_DEPROVISION = 1;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // OPERATOR CAPACITY STATE
+    // OPERATOR CAPACITY STATE (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Maximum sandboxes an operator declared they can run.
     mapping(address => uint32) public operatorMaxCapacity;
-
-    /// @notice Current active sandbox count per operator.
     mapping(address => uint32) public operatorActiveSandboxes;
-
-    /// @notice Default capacity assigned when operator registers without specifying one.
     uint32 public defaultMaxCapacity = 100;
-
-    /// @notice Global counter of active sandboxes across all operators.
     uint32 public totalActiveSandboxes;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // OPERATOR ASSIGNMENT STATE
+    // OPERATOR ASSIGNMENT STATE (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Temporary assignment: serviceId → callId → assigned operator (for SANDBOX_CREATE).
-    ///         Cleared after onJobResult processes the result.
     mapping(uint64 => mapping(uint64 => address)) internal _createAssignments;
-
-    /// @notice Nonce for capacity-weighted selection entropy.
     uint256 internal _selectionNonce;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // SANDBOX REGISTRY
+    // SANDBOX REGISTRY (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Routing: keccak256(sandboxId) → operator address.
     mapping(bytes32 => address) public sandboxOperator;
-
-    /// @notice Whether a sandbox is currently active.
     mapping(bytes32 => bool) public sandboxActive;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // WORKFLOW STATE (preserved from v0.1)
+    // WORKFLOW STATE (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
     struct WorkflowCreateRequest {
@@ -207,35 +120,72 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     uint64[] private workflow_ids;
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // INSTANCE STATE (instance mode)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    mapping(uint64 => uint32) public instanceOperatorCount;
+    mapping(uint64 => mapping(address => bool)) public operatorProvisioned;
+    mapping(uint64 => mapping(address => bytes32)) public operatorAttestationHash;
+    mapping(uint64 => address[]) internal _serviceOperators;
+    mapping(uint64 => mapping(address => uint256)) internal _operatorIndex;
+    mapping(uint64 => mapping(address => string)) public operatorSidecarUrl;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SERVICE CONFIG STORAGE (instance mode)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Sandbox config submitted at service request time, keyed by requestId.
+    ///         Moved to serviceConfig[serviceId] in onServiceInitialized.
+    mapping(uint64 => bytes) internal _pendingRequestConfig;
+
+    /// @notice Sandbox config keyed by serviceId, set after service initialization.
+    mapping(uint64 => bytes) public serviceConfig;
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // EVENTS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    // Cloud events
     event OperatorAssigned(uint64 indexed serviceId, uint64 indexed callId, address indexed operator);
     event OperatorRouted(uint64 indexed serviceId, uint64 indexed callId, address indexed operator);
     event SandboxCreated(bytes32 indexed sandboxHash, address indexed operator);
     event SandboxDeleted(bytes32 indexed sandboxHash, address indexed operator);
-
     event WorkflowStored(uint64 indexed workflow_id, string trigger_type, string trigger_config);
     event WorkflowTriggered(uint64 indexed workflow_id, uint64 triggered_at);
     event WorkflowCanceled(uint64 indexed workflow_id, uint64 canceled_at);
+
+    // Instance events
+    event OperatorProvisioned(uint64 indexed serviceId, address indexed operator, string sandboxId, string sidecarUrl);
+    event OperatorDeprovisioned(uint64 indexed serviceId, address indexed operator);
+    event TeeAttestationStored(uint64 indexed serviceId, address indexed operator, bytes32 attestationHash);
+    event ServiceTerminationReceived(uint64 indexed serviceId, address indexed owner);
+    event ServiceConfigStored(uint64 indexed serviceId, uint64 indexed requestId);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // ERRORS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    // Cloud errors
     error NoAvailableCapacity();
     error OperatorMismatch(address expected, address actual);
     error SandboxNotFound(bytes32 sandboxHash);
     error SandboxAlreadyExists(bytes32 sandboxHash);
 
+    // Instance errors
+    error AlreadyProvisioned(uint64 serviceId, address operator);
+    error NotProvisioned(uint64 serviceId, address operator);
+    error MissingTeeAttestation(uint64 serviceId, address operator);
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CONSTRUCTOR
     // ═══════════════════════════════════════════════════════════════════════════
 
-    constructor(address restakingAddress) {
+    constructor(address restakingAddress, bool _instanceMode, bool _teeRequired) {
         if (restakingAddress != address(0)) {
             restaking = IMultiAssetDelegation(restakingAddress);
         }
+        instanceMode = _instanceMode;
+        teeRequired = _teeRequired;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -243,70 +193,43 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // ═══════════════════════════════════════════════════════════════════════════
 
     function jobIds() external pure returns (uint8[] memory ids) {
-        ids = new uint8[](17);
+        ids = new uint8[](7);
         ids[0] = JOB_SANDBOX_CREATE;
-        ids[1] = JOB_SANDBOX_STOP;
-        ids[2] = JOB_SANDBOX_RESUME;
-        ids[3] = JOB_SANDBOX_DELETE;
-        ids[4] = JOB_SANDBOX_SNAPSHOT;
-        ids[5] = JOB_EXEC;
-        ids[6] = JOB_PROMPT;
-        ids[7] = JOB_TASK;
-        ids[8] = JOB_BATCH_CREATE;
-        ids[9] = JOB_BATCH_TASK;
-        ids[10] = JOB_BATCH_EXEC;
-        ids[11] = JOB_BATCH_COLLECT;
-        ids[12] = JOB_WORKFLOW_CREATE;
-        ids[13] = JOB_WORKFLOW_TRIGGER;
-        ids[14] = JOB_WORKFLOW_CANCEL;
-        ids[15] = JOB_SSH_PROVISION;
-        ids[16] = JOB_SSH_REVOKE;
+        ids[1] = JOB_SANDBOX_DELETE;
+        ids[2] = JOB_WORKFLOW_CREATE;
+        ids[3] = JOB_WORKFLOW_TRIGGER;
+        ids[4] = JOB_WORKFLOW_CANCEL;
+        ids[5] = JOB_PROVISION;
+        ids[6] = JOB_DEPROVISION;
     }
 
     function supportsJob(uint8 jobId) external pure returns (bool) {
-        return jobId == JOB_SANDBOX_CREATE
-            || jobId == JOB_SANDBOX_STOP
-            || jobId == JOB_SANDBOX_RESUME
-            || jobId == JOB_SANDBOX_DELETE
-            || jobId == JOB_SANDBOX_SNAPSHOT
-            || jobId == JOB_EXEC
-            || jobId == JOB_PROMPT
-            || jobId == JOB_TASK
-            || jobId == JOB_BATCH_CREATE
-            || jobId == JOB_BATCH_TASK
-            || jobId == JOB_BATCH_EXEC
-            || jobId == JOB_BATCH_COLLECT
-            || jobId == JOB_WORKFLOW_CREATE
-            || jobId == JOB_WORKFLOW_TRIGGER
-            || jobId == JOB_WORKFLOW_CANCEL
-            || jobId == JOB_SSH_PROVISION
-            || jobId == JOB_SSH_REVOKE;
+        return jobId <= JOB_DEPROVISION;
     }
 
     function jobCount() external pure returns (uint256) {
-        return 17;
+        return 7;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // OPERATOR REGISTRATION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * @dev Operator registration hook. Decodes optional capacity from inputs.
-     *      If inputs are empty or decode to 0, uses defaultMaxCapacity.
-     */
     function onRegister(
         address operator,
         bytes calldata registrationInputs
     ) external payable override onlyFromTangle {
-        uint32 capacity = defaultMaxCapacity;
-        if (registrationInputs.length >= 32) {
-            uint32 decoded = abi.decode(registrationInputs, (uint32));
-            if (decoded > 0) {
-                capacity = decoded;
+        if (!instanceMode) {
+            uint32 capacity = defaultMaxCapacity;
+            if (registrationInputs.length >= 32) {
+                uint32 decoded = abi.decode(registrationInputs, (uint32));
+                if (decoded > 0) {
+                    capacity = decoded;
+                }
             }
+            operatorMaxCapacity[operator] = capacity;
         }
-        operatorMaxCapacity[operator] = capacity;
+        // Instance mode: no-op (operators self-provision via JOB_PROVISION)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -322,24 +245,60 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         address paymentAsset,
         uint256 paymentAmount
     ) external payable override onlyFromTangle {
-        requestId;
         requester;
         ttl;
         paymentAsset;
         paymentAmount;
 
-        SelectionRequest memory selection = _decodeSelectionRequest(requestInputs);
-        _validateOperatorSelection(operators, selection);
+        require(operators.length >= 1, "At least 1 operator required");
+
+        if (instanceMode) {
+            // Store sandbox config for retrieval in onServiceInitialized
+            if (requestInputs.length > 0) {
+                _pendingRequestConfig[requestId] = requestInputs;
+            }
+        } else {
+            SelectionRequest memory selection = _decodeSelectionRequest(requestInputs);
+            _validateOperatorSelection(operators, selection);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SERVICE LIFECYCLE HOOKS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Called when the service is initialized. Moves pending config
+    ///         to persistent storage keyed by serviceId.
+    function onServiceInitialized(
+        uint64,              // blueprintId
+        uint64 requestId,
+        uint64 serviceId,
+        address,             // owner
+        address[] calldata,  // permittedCallers
+        uint64               // ttl
+    ) external override onlyFromTangle {
+        if (instanceMode) {
+            bytes memory cfg = _pendingRequestConfig[requestId];
+            if (cfg.length > 0) {
+                serviceConfig[serviceId] = cfg;
+                delete _pendingRequestConfig[requestId];
+                emit ServiceConfigStored(serviceId, requestId);
+            }
+        }
+    }
+
+    /// @notice Called when the service owner terminates the service.
+    function onServiceTermination(
+        uint64 serviceId,
+        address owner
+    ) external override onlyFromTangle {
+        emit ServiceTerminationReceived(serviceId, owner);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // JOB CALL HOOK — OPERATOR ASSIGNMENT & ROUTING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * @dev Called when a job is submitted. For sandbox lifecycle jobs,
-     *      assigns or routes to the correct operator.
-     */
     function onJobCall(
         uint64 serviceId,
         uint8 job,
@@ -350,29 +309,20 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             address selected = _selectByCapacity(serviceId);
             _createAssignments[serviceId][jobCallId] = selected;
             emit OperatorAssigned(serviceId, jobCallId, selected);
-        } else if (
-            job == JOB_SANDBOX_STOP
-            || job == JOB_SANDBOX_RESUME
-            || job == JOB_SANDBOX_DELETE
-            || job == JOB_SANDBOX_SNAPSHOT
-        ) {
+        } else if (job == JOB_SANDBOX_DELETE) {
             string memory sandboxId = abi.decode(inputs, (string));
             bytes32 sandboxHash = keccak256(bytes(sandboxId));
             address routed = sandboxOperator[sandboxHash];
             if (routed == address(0)) revert SandboxNotFound(sandboxHash);
             emit OperatorRouted(serviceId, jobCallId, routed);
         }
-        // Exec/prompt/task/batch/workflow/ssh: no on-chain routing needed.
+        // Workflow and instance jobs: no on-chain routing needed.
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // JOB RESULT HOOK — STATE UPDATES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * @dev Called when an operator submits a job result. Validates operator
-     *      assignment and updates sandbox registry / load counters.
-     */
     function onJobResult(
         uint64 serviceId,
         uint8 job,
@@ -385,8 +335,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             _handleCreateResult(serviceId, jobCallId, operator, outputs);
         } else if (job == JOB_SANDBOX_DELETE) {
             _handleDeleteResult(operator, inputs);
-        } else if (job == JOB_SANDBOX_STOP || job == JOB_SANDBOX_RESUME || job == JOB_SANDBOX_SNAPSHOT) {
-            _validateSandboxOperator(operator, inputs);
         } else if (job == JOB_WORKFLOW_CREATE) {
             WorkflowCreateRequest memory request = abi.decode(inputs, (WorkflowCreateRequest));
             _upsert_workflow(jobCallId, request);
@@ -396,17 +344,14 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         } else if (job == JOB_WORKFLOW_CANCEL) {
             WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
             _cancel_workflow(request.workflow_id);
+        } else if (job == JOB_PROVISION) {
+            _handleProvisionResult(serviceId, operator, outputs);
+        } else if (job == JOB_DEPROVISION) {
+            _handleDeprovisionResult(serviceId, operator);
         }
     }
 
-    function getRequiredResultCount(uint64, uint8 job) external view override returns (uint32) {
-        if (
-            job == JOB_BATCH_CREATE
-            || job == JOB_BATCH_TASK
-            || job == JOB_BATCH_EXEC
-        ) {
-            return 0;
-        }
+    function getRequiredResultCount(uint64, uint8) external pure override returns (uint32) {
         return 1;
     }
 
@@ -422,8 +367,16 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         operatorMaxCapacity[operator] = capacity;
     }
 
+    function setInstanceMode(bool _mode) external onlyBlueprintOwner {
+        instanceMode = _mode;
+    }
+
+    function setTeeRequired(bool _required) external onlyBlueprintOwner {
+        teeRequired = _required;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
-    // VIEW FUNCTIONS
+    // VIEW FUNCTIONS — CLOUD MODE
     // ═══════════════════════════════════════════════════════════════════════════
 
     function getOperatorLoad(address operator) external view returns (uint32 active, uint32 max) {
@@ -466,7 +419,43 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // WORKFLOW VIEWS (preserved from v0.1)
+    // VIEW FUNCTIONS — INSTANCE MODE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function isProvisioned(uint64 serviceId) external view returns (bool) {
+        return instanceOperatorCount[serviceId] > 0;
+    }
+
+    function isOperatorProvisioned(uint64 serviceId, address operator) external view returns (bool) {
+        return operatorProvisioned[serviceId][operator];
+    }
+
+    function getOperatorCount(uint64 serviceId) external view returns (uint32) {
+        return instanceOperatorCount[serviceId];
+    }
+
+    function getAttestationHash(uint64 serviceId, address operator) external view returns (bytes32) {
+        return operatorAttestationHash[serviceId][operator];
+    }
+
+    function getOperatorEndpoints(uint64 serviceId)
+        external
+        view
+        returns (address[] memory operators, string[] memory sidecarUrls)
+    {
+        operators = _serviceOperators[serviceId];
+        sidecarUrls = new string[](operators.length);
+        for (uint256 i = 0; i < operators.length; i++) {
+            sidecarUrls[i] = operatorSidecarUrl[serviceId][operators[i]];
+        }
+    }
+
+    function getServiceConfig(uint64 serviceId) external view returns (bytes memory) {
+        return serviceConfig[serviceId];
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // WORKFLOW VIEWS
     // ═══════════════════════════════════════════════════════════════════════════
 
     function getWorkflow(uint64 workflowId) external view returns (WorkflowConfig memory) {
@@ -501,96 +490,42 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // PRICING HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * @notice Returns the recommended per-job event rates for all 17 job types,
-     *         scaled from a single base rate. The base rate represents the cost
-     *         of the cheapest operation (a single EXEC command).
-     *
-     *         After registering a blueprint, the owner should call:
-     *           tangle.setJobEventRates(blueprintId, jobIndexes, rates)
-     *         using the arrays returned by this function.
-     *
-     * @param baseRate The cost of the cheapest job (EXEC) in native token wei.
-     *                 Example: if 1 TNT = $1 and EXEC should cost $0.001,
-     *                 set baseRate = 1e15 (0.001 * 1e18).
-     * @return jobIndexes Array of job IDs (matches jobIds() ordering)
-     * @return rates Array of per-job rates in wei
-     */
     function getDefaultJobRates(uint256 baseRate)
         external
         pure
         returns (uint8[] memory jobIndexes, uint256[] memory rates)
     {
-        jobIndexes = new uint8[](17);
-        rates = new uint256[](17);
+        jobIndexes = new uint8[](7);
+        rates = new uint256[](7);
 
-        // Sandbox lifecycle
-        jobIndexes[0]  = JOB_SANDBOX_CREATE;   rates[0]  = baseRate * PRICE_MULT_SANDBOX_CREATE;
-        jobIndexes[1]  = JOB_SANDBOX_STOP;     rates[1]  = baseRate * PRICE_MULT_STOP;
-        jobIndexes[2]  = JOB_SANDBOX_RESUME;   rates[2]  = baseRate * PRICE_MULT_RESUME;
-        jobIndexes[3]  = JOB_SANDBOX_DELETE;   rates[3]  = baseRate * PRICE_MULT_DELETE;
-        jobIndexes[4]  = JOB_SANDBOX_SNAPSHOT;  rates[4]  = baseRate * PRICE_MULT_SNAPSHOT;
-
-        // Execution
-        jobIndexes[5]  = JOB_EXEC;             rates[5]  = baseRate * PRICE_MULT_EXEC;
-        jobIndexes[6]  = JOB_PROMPT;           rates[6]  = baseRate * PRICE_MULT_PROMPT;
-        jobIndexes[7]  = JOB_TASK;             rates[7]  = baseRate * PRICE_MULT_TASK;
-
-        // Batch
-        jobIndexes[8]  = JOB_BATCH_CREATE;     rates[8]  = baseRate * PRICE_MULT_BATCH_CREATE;
-        jobIndexes[9]  = JOB_BATCH_TASK;       rates[9]  = baseRate * PRICE_MULT_BATCH_TASK;
-        jobIndexes[10] = JOB_BATCH_EXEC;       rates[10] = baseRate * PRICE_MULT_BATCH_EXEC;
-        jobIndexes[11] = JOB_BATCH_COLLECT;    rates[11] = baseRate * PRICE_MULT_BATCH_COLLECT;
-
-        // Workflow
-        jobIndexes[12] = JOB_WORKFLOW_CREATE;  rates[12] = baseRate * PRICE_MULT_WORKFLOW_CREATE;
-        jobIndexes[13] = JOB_WORKFLOW_TRIGGER; rates[13] = baseRate * PRICE_MULT_WORKFLOW_TRIGGER;
-        jobIndexes[14] = JOB_WORKFLOW_CANCEL;  rates[14] = baseRate * PRICE_MULT_WORKFLOW_CANCEL;
-
-        // SSH
-        jobIndexes[15] = JOB_SSH_PROVISION;    rates[15] = baseRate * PRICE_MULT_SSH_PROVISION;
-        jobIndexes[16] = JOB_SSH_REVOKE;       rates[16] = baseRate * PRICE_MULT_SSH_REVOKE;
+        jobIndexes[0] = JOB_SANDBOX_CREATE;    rates[0] = baseRate * PRICE_MULT_SANDBOX_CREATE;
+        jobIndexes[1] = JOB_SANDBOX_DELETE;    rates[1] = baseRate * PRICE_MULT_SANDBOX_DELETE;
+        jobIndexes[2] = JOB_WORKFLOW_CREATE;   rates[2] = baseRate * PRICE_MULT_WORKFLOW_CREATE;
+        jobIndexes[3] = JOB_WORKFLOW_TRIGGER;  rates[3] = baseRate * PRICE_MULT_WORKFLOW_TRIGGER;
+        jobIndexes[4] = JOB_WORKFLOW_CANCEL;   rates[4] = baseRate * PRICE_MULT_WORKFLOW_CANCEL;
+        jobIndexes[5] = JOB_PROVISION;         rates[5] = baseRate * PRICE_MULT_PROVISION;
+        jobIndexes[6] = JOB_DEPROVISION;       rates[6] = baseRate * PRICE_MULT_DEPROVISION;
     }
 
-    /**
-     * @notice Returns the multiplier for a given job type. Useful for off-chain
-     *         pricing calculators and operator quote generation.
-     */
     function getJobPriceMultiplier(uint8 jobId) external pure returns (uint256) {
-        if (jobId == JOB_SANDBOX_CREATE)   return PRICE_MULT_SANDBOX_CREATE;
-        if (jobId == JOB_SANDBOX_STOP)     return PRICE_MULT_STOP;
-        if (jobId == JOB_SANDBOX_RESUME)   return PRICE_MULT_RESUME;
-        if (jobId == JOB_SANDBOX_DELETE)   return PRICE_MULT_DELETE;
-        if (jobId == JOB_SANDBOX_SNAPSHOT)  return PRICE_MULT_SNAPSHOT;
-        if (jobId == JOB_EXEC)             return PRICE_MULT_EXEC;
-        if (jobId == JOB_PROMPT)           return PRICE_MULT_PROMPT;
-        if (jobId == JOB_TASK)             return PRICE_MULT_TASK;
-        if (jobId == JOB_BATCH_CREATE)     return PRICE_MULT_BATCH_CREATE;
-        if (jobId == JOB_BATCH_TASK)       return PRICE_MULT_BATCH_TASK;
-        if (jobId == JOB_BATCH_EXEC)       return PRICE_MULT_BATCH_EXEC;
-        if (jobId == JOB_BATCH_COLLECT)    return PRICE_MULT_BATCH_COLLECT;
-        if (jobId == JOB_WORKFLOW_CREATE)  return PRICE_MULT_WORKFLOW_CREATE;
-        if (jobId == JOB_WORKFLOW_TRIGGER) return PRICE_MULT_WORKFLOW_TRIGGER;
-        if (jobId == JOB_WORKFLOW_CANCEL)  return PRICE_MULT_WORKFLOW_CANCEL;
-        if (jobId == JOB_SSH_PROVISION)    return PRICE_MULT_SSH_PROVISION;
-        if (jobId == JOB_SSH_REVOKE)       return PRICE_MULT_SSH_REVOKE;
+        if (jobId == JOB_SANDBOX_CREATE)    return PRICE_MULT_SANDBOX_CREATE;
+        if (jobId == JOB_SANDBOX_DELETE)    return PRICE_MULT_SANDBOX_DELETE;
+        if (jobId == JOB_WORKFLOW_CREATE)   return PRICE_MULT_WORKFLOW_CREATE;
+        if (jobId == JOB_WORKFLOW_TRIGGER)  return PRICE_MULT_WORKFLOW_TRIGGER;
+        if (jobId == JOB_WORKFLOW_CANCEL)   return PRICE_MULT_WORKFLOW_CANCEL;
+        if (jobId == JOB_PROVISION)         return PRICE_MULT_PROVISION;
+        if (jobId == JOB_DEPROVISION)       return PRICE_MULT_DEPROVISION;
         return 0;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: CAPACITY-WEIGHTED OPERATOR SELECTION
+    // INTERNAL: CAPACITY-WEIGHTED OPERATOR SELECTION (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * @dev Select an operator weighted by available capacity.
-     *      Operators with more room get proportionally more assignments.
-     *      Uses prevrandao + nonce for entropy (adequate for load balancing).
-     */
     function _selectByCapacity(uint64 serviceId) internal returns (address) {
         if (address(restaking) == address(0)) revert RestakingNotSet();
 
         uint256 total = restaking.operatorCount();
-        // Build arrays of eligible operators and their weights
         address[] memory candidates = new address[](total);
         uint32[] memory weights = new uint32[](total);
         uint32 totalWeight = 0;
@@ -623,12 +558,11 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             }
         }
 
-        // Should not reach here, but return last candidate as safety.
         return candidates[count - 1];
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: SANDBOX CREATE RESULT HANDLING
+    // INTERNAL: SANDBOX CREATE/DELETE RESULT HANDLING (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
     function _handleCreateResult(
@@ -640,7 +574,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         address assigned = _createAssignments[serviceId][jobCallId];
         if (assigned != operator) revert OperatorMismatch(assigned, operator);
 
-        // Decode new output format: (string sandboxId, string json)
         (string memory sandboxId,) = abi.decode(outputs, (string, string));
         bytes32 sandboxHash = keccak256(bytes(sandboxId));
 
@@ -651,15 +584,10 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         operatorActiveSandboxes[operator]++;
         totalActiveSandboxes++;
 
-        // Clean up temporary assignment
         delete _createAssignments[serviceId][jobCallId];
 
         emit SandboxCreated(sandboxHash, operator);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: SANDBOX DELETE RESULT HANDLING
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function _handleDeleteResult(address operator, bytes calldata inputs) internal {
         string memory sandboxId = abi.decode(inputs, (string));
@@ -678,19 +606,73 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: SANDBOX OPERATOR VALIDATION (STOP/RESUME/SNAPSHOT)
+    // INTERNAL: PROVISION/DEPROVISION (instance mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function _validateSandboxOperator(address operator, bytes calldata inputs) internal view {
-        string memory sandboxId = abi.decode(inputs, (string));
-        bytes32 sandboxHash = keccak256(bytes(sandboxId));
-        address expected = sandboxOperator[sandboxHash];
-        if (expected == address(0)) revert SandboxNotFound(sandboxHash);
-        if (expected != operator) revert OperatorMismatch(expected, operator);
+    function _handleProvisionResult(
+        uint64 serviceId,
+        address operator,
+        bytes calldata outputs
+    ) internal {
+        if (operatorProvisioned[serviceId][operator]) revert AlreadyProvisioned(serviceId, operator);
+
+        (string memory sandboxId, string memory sidecarUrl,, string memory teeAttestationJson) =
+            abi.decode(outputs, (string, string, uint32, string));
+
+        // TEE attestation enforcement
+        if (teeRequired) {
+            if (bytes(teeAttestationJson).length == 0) {
+                revert MissingTeeAttestation(serviceId, operator);
+            }
+        }
+
+        operatorProvisioned[serviceId][operator] = true;
+        instanceOperatorCount[serviceId]++;
+
+        operatorSidecarUrl[serviceId][operator] = sidecarUrl;
+        _serviceOperators[serviceId].push(operator);
+        _operatorIndex[serviceId][operator] = _serviceOperators[serviceId].length; // 1-indexed
+
+        // Store TEE attestation hash if present
+        if (bytes(teeAttestationJson).length > 0) {
+            bytes32 attestationHash = keccak256(bytes(teeAttestationJson));
+            operatorAttestationHash[serviceId][operator] = attestationHash;
+            emit TeeAttestationStored(serviceId, operator, attestationHash);
+        }
+
+        emit OperatorProvisioned(serviceId, operator, sandboxId, sidecarUrl);
+    }
+
+    function _handleDeprovisionResult(
+        uint64 serviceId,
+        address operator
+    ) internal {
+        if (!operatorProvisioned[serviceId][operator]) revert NotProvisioned(serviceId, operator);
+
+        operatorProvisioned[serviceId][operator] = false;
+        instanceOperatorCount[serviceId]--;
+
+        // Swap-and-pop to remove operator from enumerable list
+        uint256 index = _operatorIndex[serviceId][operator];
+        if (index > 0) {
+            uint256 lastIndex = _serviceOperators[serviceId].length;
+            if (index != lastIndex) {
+                address lastOperator = _serviceOperators[serviceId][lastIndex - 1];
+                _serviceOperators[serviceId][index - 1] = lastOperator;
+                _operatorIndex[serviceId][lastOperator] = index;
+            }
+            _serviceOperators[serviceId].pop();
+            delete _operatorIndex[serviceId][operator];
+        }
+
+        delete operatorSidecarUrl[serviceId][operator];
+        delete operatorAttestationHash[serviceId][operator];
+
+        emit OperatorDeprovisioned(serviceId, operator);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: WORKFLOW STORAGE (preserved from v0.1)
+    // INTERNAL: WORKFLOW STORAGE (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
     function _upsert_workflow(uint64 workflowId, WorkflowCreateRequest memory request) internal {

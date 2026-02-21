@@ -475,7 +475,7 @@ export function InfraBar({ onOpenModal }: { onOpenModal: () => void }) {
     <div className="glass-card rounded-lg p-3 flex items-center justify-between mb-6">
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
-          <div className="i-ph:globe text-sm text-cloud-elements-textTertiary" />
+          <div className="i-ph:cube text-sm text-cloud-elements-textTertiary" />
           <span className="text-xs text-cloud-elements-textTertiary">Blueprint</span>
           <Badge variant="accent">#{infra.blueprintId}</Badge>
         </div>
@@ -489,6 +489,9 @@ export function InfraBar({ onOpenModal }: { onOpenModal: () => void }) {
             <span className="text-xs text-cloud-elements-textTertiary">
               ({infra.serviceInfo.operatorCount} operators)
             </span>
+          )}
+          {!infra.serviceValidated && (
+            <div className="i-ph:warning text-xs text-amber-400" title="Service not validated" />
           )}
         </div>
       </div>

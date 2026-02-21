@@ -16,6 +16,7 @@ export interface LocalInstance {
   teeEnabled?: boolean;
   status: 'creating' | 'running' | 'stopped' | 'gone' | 'error';
   txHash?: string;
+  callId?: number;
 }
 
 export const instanceListStore = persistedAtom<LocalInstance[]>({

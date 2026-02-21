@@ -7,6 +7,9 @@ import type { Address } from 'viem';
  * Creates job definitions for the Instance blueprint family.
  * Shared between Instance and TEE Instance (which differs only in pricing and defaults).
  *
+ * On-chain jobs: provision and deprovision only.
+ * Read-only ops (exec, prompt, task, ssh, snapshot) are served by the operator API.
+ *
  * ABI types verified against ai-agent-instance-blueprint-lib/src/lib.rs sol! macros.
  */
 export function createInstanceJobs(opts?: {
@@ -66,107 +69,7 @@ export function createInstanceJobs(opts?: {
       ],
     },
     {
-      // ABI: InstanceExecRequest { command, cwd, env_json, timeout_ms }
-      id: INSTANCE_JOB_IDS.EXEC,
-      name: 'exec',
-      label: 'Execute Command',
-      description: 'Run a shell command inside the instance.',
-      category: 'execution',
-      icon: 'i-ph:terminal',
-      pricingMultiplier: pricing(INSTANCE_JOB_IDS.EXEC),
-      requiresSandbox: true,
-      fields: [
-        { name: 'command', label: 'Command', type: 'text', placeholder: 'ls -la', required: true, abiType: 'string' },
-        { name: 'cwd', label: 'Working Directory', type: 'text', placeholder: '/workspace', abiType: 'string' },
-        { name: 'envJson', label: 'Environment (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'env_json' },
-        { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 30000, min: 0, abiType: 'uint64', abiParam: 'timeout_ms' },
-      ],
-    },
-    {
-      // ABI: InstancePromptRequest { message, session_id, model, context_json, timeout_ms }
-      id: INSTANCE_JOB_IDS.PROMPT,
-      name: 'prompt',
-      label: 'AI Prompt',
-      description: 'Send a prompt to the AI agent running in the instance.',
-      category: 'execution',
-      icon: 'i-ph:robot',
-      pricingMultiplier: pricing(INSTANCE_JOB_IDS.PROMPT),
-      requiresSandbox: true,
-      fields: [
-        { name: 'message', label: 'Message', type: 'textarea', placeholder: 'What files are in the workspace?', required: true, abiType: 'string' },
-        { name: 'sessionId', label: 'Session ID', type: 'text', placeholder: 'auto-generated if empty', abiType: 'string', abiParam: 'session_id' },
-        { name: 'model', label: 'Model', type: 'text', placeholder: 'default', abiType: 'string' },
-        { name: 'contextJson', label: 'Context (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'context_json' },
-        { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 60000, min: 0, abiType: 'uint64', abiParam: 'timeout_ms' },
-      ],
-    },
-    {
-      // ABI: InstanceTaskRequest { prompt, session_id, max_turns, model, context_json, timeout_ms }
-      id: INSTANCE_JOB_IDS.TASK,
-      name: 'task',
-      label: 'Agent Task',
-      description: 'Submit an autonomous task for the agent to complete.',
-      category: 'execution',
-      icon: 'i-ph:lightning',
-      pricingMultiplier: pricing(INSTANCE_JOB_IDS.TASK),
-      requiresSandbox: true,
-      fields: [
-        { name: 'prompt', label: 'Task Prompt', type: 'textarea', placeholder: 'Build a REST API with Express...', required: true, abiType: 'string' },
-        { name: 'sessionId', label: 'Session ID', type: 'text', placeholder: 'auto-generated if empty', abiType: 'string', abiParam: 'session_id' },
-        { name: 'maxTurns', label: 'Max Turns', type: 'number', defaultValue: 10, min: 1, abiType: 'uint64', abiParam: 'max_turns' },
-        { name: 'model', label: 'Model', type: 'text', placeholder: 'default', abiType: 'string' },
-        { name: 'contextJson', label: 'Context (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'context_json' },
-        { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', defaultValue: 300000, min: 0, abiType: 'uint64', abiParam: 'timeout_ms' },
-      ],
-    },
-    {
-      // ABI: InstanceSshProvisionRequest { username, public_key }
-      id: INSTANCE_JOB_IDS.SSH_PROVISION,
-      name: 'ssh_provision',
-      label: 'Provision SSH',
-      description: 'Add an SSH public key to the instance.',
-      category: 'ssh',
-      icon: 'i-ph:key',
-      pricingMultiplier: pricing(INSTANCE_JOB_IDS.SSH_PROVISION),
-      requiresSandbox: true,
-      fields: [
-        { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'agent', abiType: 'string' },
-        { name: 'publicKey', label: 'SSH Public Key', type: 'textarea', required: true, placeholder: 'ssh-ed25519 AAAA...', abiType: 'string', abiParam: 'public_key' },
-      ],
-    },
-    {
-      // ABI: InstanceSshRevokeRequest { username, public_key }
-      id: INSTANCE_JOB_IDS.SSH_REVOKE,
-      name: 'ssh_revoke',
-      label: 'Revoke SSH',
-      description: 'Remove an SSH public key from the instance.',
-      category: 'ssh',
-      icon: 'i-ph:key',
-      pricingMultiplier: pricing(INSTANCE_JOB_IDS.SSH_REVOKE),
-      requiresSandbox: true,
-      fields: [
-        { name: 'username', label: 'Username', type: 'text', required: true, abiType: 'string' },
-        { name: 'publicKey', label: 'SSH Public Key', type: 'textarea', required: true, abiType: 'string', abiParam: 'public_key' },
-      ],
-    },
-    {
-      // ABI: InstanceSnapshotRequest { destination, include_workspace, include_state }
-      id: INSTANCE_JOB_IDS.SNAPSHOT,
-      name: 'snapshot',
-      label: 'Snapshot',
-      description: 'Create a snapshot of the current instance state.',
-      category: 'management',
-      icon: 'i-ph:camera',
-      pricingMultiplier: pricing(INSTANCE_JOB_IDS.SNAPSHOT),
-      requiresSandbox: true,
-      fields: [
-        { name: 'destination', label: 'Destination', type: 'text', placeholder: 'registry/path or s3://bucket/key', abiType: 'string' },
-        { name: 'includeWorkspace', label: 'Include Workspace', type: 'boolean', defaultValue: true, abiType: 'bool', abiParam: 'include_workspace' },
-        { name: 'includeState', label: 'Include State', type: 'boolean', defaultValue: true, abiType: 'bool', abiParam: 'include_state' },
-      ],
-    },
-    {
-      // ABI: JsonRequest { json } → JsonResponse { json }
+      // ABI: JsonRequest { json } -> JsonResponse { json }
       id: INSTANCE_JOB_IDS.DEPROVISION,
       name: 'deprovision',
       label: 'Deprovision Instance',
@@ -188,17 +91,14 @@ export function createInstanceJobs(opts?: {
 export const INSTANCE_BLUEPRINT: BlueprintDefinition = {
   id: 'ai-agent-instance-blueprint',
   name: 'AI Agent Instance',
-  version: '0.3.0',
-  description: 'Subscription-based single-instance AI agent with exec, prompt, task, SSH, and snapshot capabilities.',
+  version: '0.4.0',
+  description: 'Subscription-based single-instance AI agent with operator API for exec, prompt, task, SSH, and snapshot.',
   icon: 'i-ph:cube',
   color: 'blue',
   contracts: {},
   jobs: createInstanceJobs(),
   categories: [
     { key: 'lifecycle', label: 'Instance Lifecycle', icon: 'i-ph:cube' },
-    { key: 'execution', label: 'Execution', icon: 'i-ph:terminal' },
-    { key: 'ssh', label: 'SSH Management', icon: 'i-ph:key' },
-    { key: 'management', label: 'Management', icon: 'i-ph:gear' },
   ],
 };
 

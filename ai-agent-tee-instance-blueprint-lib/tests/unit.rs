@@ -32,14 +32,8 @@ mod re_export_tests {
 
     #[test]
     fn job_constants_accessible() {
-        assert_eq!(JOB_PROVISION, 0);
-        assert_eq!(JOB_EXEC, 1);
-        assert_eq!(JOB_PROMPT, 2);
-        assert_eq!(JOB_TASK, 3);
-        assert_eq!(JOB_SSH_PROVISION, 4);
-        assert_eq!(JOB_SSH_REVOKE, 5);
-        assert_eq!(JOB_SNAPSHOT, 6);
-        assert_eq!(JOB_DEPROVISION, 7);
+        assert_eq!(JOB_PROVISION, 5);
+        assert_eq!(JOB_DEPROVISION, 6);
     }
 
     #[test]

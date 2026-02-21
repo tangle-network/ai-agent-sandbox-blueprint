@@ -306,3 +306,20 @@ export const agentSandboxBlueprintAbi = [
     stateMutability: 'payable',
   },
 ] as const;
+
+/**
+ * AgentInstanceBlueprint ABI — subset for event watching.
+ * Shared between instance and TEE-instance blueprints.
+ */
+export const agentInstanceBlueprintAbi = [
+  {
+    type: 'event',
+    name: 'OperatorProvisioned',
+    inputs: [
+      { name: 'serviceId', type: 'uint64', indexed: true },
+      { name: 'operator', type: 'address', indexed: true },
+      { name: 'sandboxId', type: 'string', indexed: false },
+      { name: 'sidecarUrl', type: 'string', indexed: false },
+    ],
+  },
+] as const;

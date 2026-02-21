@@ -15,6 +15,7 @@ pub mod jobs;
 // Re-export from base instance blueprint — explicit to avoid leaking the base
 // `router()` (callers should use `tee_router()`) and `jobs` module (shadowed
 // by our own).
+pub use ai_agent_instance_blueprint_lib::auto_provision;
 pub use ai_agent_instance_blueprint_lib::{
     AgentResponse,
     // Types
@@ -32,15 +33,9 @@ pub use ai_agent_instance_blueprint_lib::{
     InstanceSshRevokeRequest,
     InstanceTaskRequest,
     InstanceTaskResponse,
-    JOB_DEPROVISION,
-    JOB_EXEC,
-    JOB_PROMPT,
     // Job IDs
+    JOB_DEPROVISION,
     JOB_PROVISION,
-    JOB_SNAPSHOT,
-    JOB_SSH_PROVISION,
-    JOB_SSH_REVOKE,
-    JOB_TASK,
     // ABI types
     JsonResponse,
     ProvisionOutput,
@@ -64,15 +59,8 @@ pub use ai_agent_instance_blueprint_lib::{
     extract_exec_fields,
     get_instance_sandbox,
     http,
-    // Reused job handlers
-    instance_exec,
-    instance_prompt,
-    instance_snapshot,
-    instance_ssh_provision,
-    instance_ssh_revoke,
     // Instance state
     instance_store,
-    instance_task,
     metrics,
     parse_agent_response,
     // Core functions (for composition)
@@ -106,18 +94,12 @@ pub use sandbox_runtime::tee::{init_tee_backend, tee_backend};
 
 /// Build the TEE instance blueprint router.
 ///
-/// Uses TEE-aware provision/deprovision handlers; all other handlers are
-/// reused from the base instance blueprint.
+/// Uses TEE-aware provision/deprovision handlers. Read-only ops (exec,
+/// prompt, task, snapshot, SSH) are served via the operator HTTP API.
 pub fn tee_router() -> Router {
     use jobs::provision::{tee_deprovision, tee_provision};
 
     Router::new()
         .route(JOB_PROVISION, tee_provision.layer(TangleLayer))
-        .route(JOB_EXEC, instance_exec.layer(TangleLayer))
-        .route(JOB_PROMPT, instance_prompt.layer(TangleLayer))
-        .route(JOB_TASK, instance_task.layer(TangleLayer))
-        .route(JOB_SSH_PROVISION, instance_ssh_provision.layer(TangleLayer))
-        .route(JOB_SSH_REVOKE, instance_ssh_revoke.layer(TangleLayer))
-        .route(JOB_SNAPSHOT, instance_snapshot.layer(TangleLayer))
         .route(JOB_DEPROVISION, tee_deprovision.layer(TangleLayer))
 }

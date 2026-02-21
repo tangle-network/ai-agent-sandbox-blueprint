@@ -7,6 +7,7 @@ import "../src/AgentSandboxBlueprint.sol";
 /**
  * @title ConfigureJobRates
  * @notice Post-registration script to set per-job pricing on the Tangle contract.
+ *         Works for all 3 deployment modes (cloud, instance, TEE instance).
  *
  *         After deploying the BSM and registering the blueprint on Tangle, run:
  *
@@ -16,11 +17,6 @@ import "../src/AgentSandboxBlueprint.sol";
  *         BSM_ADDRESS=<bsm> \
  *         forge script contracts/script/ConfigureJobRates.s.sol:ConfigureJobRates \
  *           --rpc-url $RPC_URL --broadcast
- *
- *         Base rate guide (assuming 1 TNT ≈ $1):
- *           1e15  = 0.001 TNT ≈ $0.001 per EXEC  → SANDBOX_CREATE ≈ $0.05, TASK ≈ $0.25
- *           1e14  = 0.0001 TNT ≈ $0.0001 per EXEC → SANDBOX_CREATE ≈ $0.005, TASK ≈ $0.025
- *           1e16  = 0.01 TNT ≈ $0.01 per EXEC   → SANDBOX_CREATE ≈ $0.50, TASK ≈ $2.50
  */
 
 interface ITangleSetJobRates {
@@ -45,16 +41,13 @@ contract ConfigureJobRates is Script {
         console.log("Base rate (wei):", baseRate);
         console.log("");
 
-        string[17] memory jobNames = [
-            "SANDBOX_CREATE", "SANDBOX_STOP", "SANDBOX_RESUME",
-            "SANDBOX_DELETE", "SANDBOX_SNAPSHOT",
-            "EXEC", "PROMPT", "TASK",
-            "BATCH_CREATE", "BATCH_TASK", "BATCH_EXEC", "BATCH_COLLECT",
+        string[7] memory jobNames = [
+            "SANDBOX_CREATE", "SANDBOX_DELETE",
             "WORKFLOW_CREATE", "WORKFLOW_TRIGGER", "WORKFLOW_CANCEL",
-            "SSH_PROVISION", "SSH_REVOKE"
+            "PROVISION", "DEPROVISION"
         ];
 
-        for (uint256 i = 0; i < 17; i++) {
+        for (uint256 i = 0; i < 7; i++) {
             console.log(
                 string.concat(
                     "  Job ", jobNames[i],

@@ -305,7 +305,7 @@ async fn full_operator_api_lifecycle() {
         (ProvisionPhase::ContainerStart, "container_start", 60),
         (ProvisionPhase::HealthCheck, "health_check", 80),
     ] {
-        provision_progress::update_provision(call_id, phase, None, None).unwrap();
+        provision_progress::update_provision(call_id, phase, None, None, None).unwrap();
 
         let resp = http()
             .get(format!("{}/api/provisions/{call_id}", api.url))
@@ -323,6 +323,7 @@ async fn full_operator_api_lifecycle() {
         ProvisionPhase::Ready,
         Some("Sandbox ready".into()),
         Some("sandbox-test-123".into()),
+        Some("http://localhost:3000".into()),
     )
     .unwrap();
 
@@ -553,6 +554,7 @@ async fn provision_failure_tracking() {
         ProvisionPhase::ImagePull,
         Some("Pulling image".into()),
         None,
+        None,
     )
     .unwrap();
 
@@ -560,6 +562,7 @@ async fn provision_failure_tracking() {
         call_id,
         ProvisionPhase::Failed,
         Some("Docker pull failed: image not found".into()),
+        None,
         None,
     )
     .unwrap();

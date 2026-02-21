@@ -10,6 +10,20 @@ pub async fn tee_provision(
     Caller(_caller): Caller,
     TangleArg(request): TangleArg<ProvisionRequest>,
 ) -> Result<TangleResult<ProvisionOutput>, String> {
+    // Idempotent: if auto-provision already created the sandbox, return existing info.
+    if let Some(record) =
+        ai_agent_instance_blueprint_lib::get_instance_sandbox().map_err(|e| e.to_string())?
+    {
+        let output = ProvisionOutput {
+            sandbox_id: record.id.clone(),
+            sidecar_url: record.sidecar_url.clone(),
+            ssh_port: record.ssh_port.unwrap_or(0) as u32,
+            tee_attestation_json: String::new(),
+            tee_public_key_json: String::new(),
+        };
+        return Ok(TangleResult(output));
+    }
+
     let backend = tee_backend();
     let (output, record) = provision_core(&request, Some(backend.as_ref())).await?;
     set_instance_sandbox(record).map_err(|e| e.to_string())?;

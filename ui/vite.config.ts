@@ -105,6 +105,7 @@ export default defineConfig({
     dedupe: [
       '@nanostores/react',
       '@radix-ui/react-dialog',
+      '@radix-ui/react-select',
       '@radix-ui/react-separator',
       '@radix-ui/react-slot',
       '@radix-ui/react-tabs',

@@ -4,6 +4,7 @@
 //! and garbage collection primitives that can be reused across multiple
 //! blueprint implementations (event-driven, subscription, etc.).
 
+pub mod api_types;
 pub mod auth;
 pub mod error;
 pub mod http;

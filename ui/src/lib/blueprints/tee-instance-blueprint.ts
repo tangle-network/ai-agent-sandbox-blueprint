@@ -11,7 +11,7 @@ import type { Address } from 'viem';
 export const TEE_INSTANCE_BLUEPRINT: BlueprintDefinition = {
   id: 'ai-agent-tee-instance-blueprint',
   name: 'AI Agent TEE Instance',
-  version: '0.3.0',
+  version: '0.4.0',
   description: 'TEE-enforced AI agent instance with hardware-level isolation, attestation, and sealed secrets.',
   icon: 'i-ph:shield-check',
   color: 'violet',
@@ -24,9 +24,6 @@ export const TEE_INSTANCE_BLUEPRINT: BlueprintDefinition = {
   }),
   categories: [
     { key: 'lifecycle', label: 'TEE Lifecycle', icon: 'i-ph:shield-check' },
-    { key: 'execution', label: 'Execution', icon: 'i-ph:terminal' },
-    { key: 'ssh', label: 'SSH Management', icon: 'i-ph:key' },
-    { key: 'management', label: 'Management', icon: 'i-ph:gear' },
   ],
 };
 

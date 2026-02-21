@@ -1,5 +1,5 @@
 import { useParams, Link } from 'react-router';
-import { lazy, Suspense, useState, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useState, useCallback, useMemo, useEffect } from 'react';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '~/components/motion/AnimatedPage';
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card';
@@ -13,6 +13,7 @@ import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { getBlueprint, getJobById } from '~/lib/blueprints';
 import { INSTANCE_JOB_IDS, INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
+import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '~/lib/utils';
 
@@ -34,6 +35,23 @@ export default function InstanceDetail() {
 
   const serviceId = BigInt(inst?.serviceId ?? '1');
   const bpId = inst?.teeEnabled ? 'ai-agent-tee-instance-blueprint' : 'ai-agent-instance-blueprint';
+  const isCreating = inst?.status === 'creating' && !inst?.sidecarUrl;
+
+  // Watch for OperatorProvisioned event if instance is still creating
+  const instanceProvision = useInstanceProvisionWatcher(
+    serviceId,
+    inst?.teeEnabled ? 'tee-instance' : 'instance',
+    isCreating,
+  );
+
+  useEffect(() => {
+    if (instanceProvision && decodedId) {
+      updateInstanceStatus(decodedId, 'running', {
+        id: instanceProvision.sandboxId,
+        sidecarUrl: instanceProvision.sidecarUrl,
+      });
+    }
+  }, [instanceProvision, decodedId]);
 
   // Sidecar auth
   const sidecarUrl = inst?.sidecarUrl ?? '';
@@ -157,7 +175,17 @@ export default function InstanceDetail() {
               <CardTitle>Connection</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Row label="Sidecar URL" value={inst.sidecarUrl ?? 'Pending...'} mono />
+              {inst.sidecarUrl ? (
+                <Row label="Sidecar URL" value={inst.sidecarUrl} mono />
+              ) : (
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-cloud-elements-textSecondary">Sidecar URL</span>
+                  <span className="flex items-center gap-2 text-xs font-data text-violet-400">
+                    <div className="i-ph:circle-fill text-[8px] animate-pulse" />
+                    Provisioning...
+                  </span>
+                </div>
+              )}
               <Row label="Authenticated" value={isSidecarAuthed ? 'Yes' : 'No'} />
               {!isSidecarAuthed && inst.sidecarUrl && (
                 <Button size="sm" onClick={sidecarAuth} disabled={isAuthenticating}>

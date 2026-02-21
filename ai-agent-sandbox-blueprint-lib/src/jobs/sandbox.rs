@@ -28,6 +28,7 @@ pub async fn sandbox_create(
         ProvisionPhase::ImagePull,
         Some("Preparing sandbox image".into()),
         None,
+        None,
     );
 
     let mut params = CreateSandboxParams::from(&request);
@@ -38,6 +39,7 @@ pub async fn sandbox_create(
         ProvisionPhase::ContainerCreate,
         Some("Creating container".into()),
         None,
+        None,
     );
 
     let tee = crate::tee_backend().map(|b| b.as_ref());
@@ -46,6 +48,7 @@ pub async fn sandbox_create(
             call_id,
             ProvisionPhase::Failed,
             Some(format!("Container creation failed: {e}")),
+            None,
             None,
         );
         e
@@ -56,6 +59,7 @@ pub async fn sandbox_create(
         ProvisionPhase::ContainerStart,
         Some("Container started, configuring".into()),
         Some(record.id.clone()),
+        None,
     );
 
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
@@ -72,6 +76,7 @@ pub async fn sandbox_create(
                 ProvisionPhase::Failed,
                 Some(format!("SSH key provisioning failed: {e}")),
                 Some(record.id.clone()),
+                None,
             );
             e
         })?;
@@ -82,6 +87,7 @@ pub async fn sandbox_create(
         ProvisionPhase::Ready,
         Some("Sandbox ready".into()),
         Some(record.id.clone()),
+        Some(record.sidecar_url.clone()),
     );
 
     // If TEE was used, serialize attestation and derive the public key.

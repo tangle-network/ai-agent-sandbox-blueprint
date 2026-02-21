@@ -48,7 +48,7 @@ contract MockMultiAssetDelegation {
 }
 
 /// @title BlueprintTestSetup
-/// @dev Base test contract providing helpers for AgentSandboxBlueprint tests.
+/// @dev Base test contract providing helpers for AgentSandboxBlueprint tests (cloud mode).
 contract BlueprintTestSetup is Test {
     AgentSandboxBlueprint public blueprint;
     MockMultiAssetDelegation public mockDelegation;
@@ -63,7 +63,7 @@ contract BlueprintTestSetup is Test {
 
     function setUp() public virtual {
         mockDelegation = new MockMultiAssetDelegation();
-        blueprint = new AgentSandboxBlueprint(address(mockDelegation));
+        blueprint = new AgentSandboxBlueprint(address(mockDelegation), false, false);
         // Initialize blueprint via onBlueprintCreated
         blueprint.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
     }
@@ -115,7 +115,7 @@ contract BlueprintTestSetup is Test {
         return abi.encode(sandboxId, json);
     }
 
-    /// @dev Encode sandbox ID inputs for stop/resume/delete: (string sandboxId).
+    /// @dev Encode sandbox ID inputs for delete: (string sandboxId).
     function encodeSandboxIdInputs(string memory sandboxId) internal pure returns (bytes memory) {
         return abi.encode(sandboxId);
     }

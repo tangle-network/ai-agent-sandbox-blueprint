@@ -35,6 +35,23 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     // Reconcile stored sandbox state with Docker reality.
     ai_agent_instance_blueprint_lib::reaper::reconcile_on_startup().await;
 
+    // Auto-provision: read service config from BSM and provision sandbox on startup.
+    if let Some(ap_config) =
+        ai_agent_instance_blueprint_lib::auto_provision::AutoProvisionConfig::from_env(service_id)
+    {
+        info!("Auto-provision enabled (BSM={})", ap_config.bsm_address);
+        tokio::spawn(async move {
+            match ai_agent_instance_blueprint_lib::auto_provision::run_auto_provision(
+                ap_config, None,
+            )
+            .await
+            {
+                Ok(()) => info!("Auto-provision completed"),
+                Err(e) => error!("Auto-provision failed: {e}"),
+            }
+        });
+    }
+
     // Spawn reaper background task (idle timeout + max lifetime enforcement).
     {
         let config = ai_agent_instance_blueprint_lib::runtime::SidecarRuntimeConfig::load();

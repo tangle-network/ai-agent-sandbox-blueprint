@@ -230,6 +230,14 @@ pub fn tee_backend() -> &'static std::sync::Arc<dyn TeeBackend> {
         .expect("TEE backend not initialized — call init_tee_backend() first")
 }
 
+/// Try to get the global TEE backend, returning `None` if not initialized.
+///
+/// Use this in shared code paths (e.g. instance operator API) that need to
+/// auto-detect whether TEE is available without panicking.
+pub fn try_tee_backend() -> Option<&'static std::sync::Arc<dyn TeeBackend>> {
+    TEE_BACKEND.get()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers for cloud TEE backends
 // ─────────────────────────────────────────────────────────────────────────────

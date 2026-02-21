@@ -22,46 +22,28 @@ use blueprint_sdk::tangle::TangleLayer;
 use serde_json::Value;
 
 pub use blueprint_sdk::tangle;
-pub use jobs::batch::{batch_collect, batch_create, batch_exec, batch_task};
 pub use jobs::exec::{
     build_exec_payload, extract_exec_fields, run_exec_request, run_prompt_request,
     run_task_request, run_task_request_with_profile, run_task_request_with_system_prompt,
-    sandbox_exec, sandbox_prompt, sandbox_task, system_prompt_to_profile,
+    system_prompt_to_profile,
 };
-pub use jobs::sandbox::{
-    sandbox_create, sandbox_delete, sandbox_resume, sandbox_snapshot, sandbox_stop,
-};
-pub use jobs::ssh::{provision_key, revoke_key, ssh_provision, ssh_revoke};
+pub use jobs::sandbox::{sandbox_create, sandbox_delete};
+pub use jobs::ssh::{provision_key, revoke_key};
 pub use jobs::workflow::{workflow_cancel, workflow_create, workflow_tick_job, workflow_trigger};
 pub use workflows::bootstrap_workflows_from_chain;
 
-/// Job IDs for sandbox operations (write-only).
+/// Job IDs — must match the sequential indices in RegisterBlueprint.s.sol.
 pub const JOB_SANDBOX_CREATE: u8 = 0;
-pub const JOB_SANDBOX_STOP: u8 = 1;
-pub const JOB_SANDBOX_RESUME: u8 = 2;
-pub const JOB_SANDBOX_DELETE: u8 = 3;
-pub const JOB_SANDBOX_SNAPSHOT: u8 = 4;
-
-/// Job IDs for execution operations (write-only).
-pub const JOB_EXEC: u8 = 10;
-pub const JOB_PROMPT: u8 = 11;
-pub const JOB_TASK: u8 = 12;
-
-/// Job IDs for batch operations (write-only).
-pub const JOB_BATCH_CREATE: u8 = 20;
-pub const JOB_BATCH_TASK: u8 = 21;
-pub const JOB_BATCH_EXEC: u8 = 22;
-pub const JOB_BATCH_COLLECT: u8 = 23;
-
-/// Job IDs for workflow operations (write-only).
-pub const JOB_WORKFLOW_CREATE: u8 = 30;
-pub const JOB_WORKFLOW_TRIGGER: u8 = 31;
-pub const JOB_WORKFLOW_CANCEL: u8 = 32;
-pub const JOB_WORKFLOW_TICK: u8 = 33;
-
-/// Job IDs for SSH access operations (write-only).
-pub const JOB_SSH_PROVISION: u8 = 40;
-pub const JOB_SSH_REVOKE: u8 = 41;
+pub const JOB_SANDBOX_DELETE: u8 = 1;
+pub const JOB_WORKFLOW_CREATE: u8 = 2;
+pub const JOB_WORKFLOW_TRIGGER: u8 = 3;
+pub const JOB_WORKFLOW_CANCEL: u8 = 4;
+/// Instance mode only — defined for cross-crate consistency.
+pub const JOB_PROVISION: u8 = 5;
+/// Instance mode only — defined for cross-crate consistency.
+pub const JOB_DEPROVISION: u8 = 6;
+/// Internal cron job — not registered on-chain, never submitted via submitJob.
+pub const JOB_WORKFLOW_TICK: u8 = 255;
 
 pub const MAX_BATCH_COUNT: u32 = 50;
 
@@ -387,26 +369,18 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
 }
 
 /// Router that maps job IDs to handlers.
+///
+/// Only state-changing operations remain on-chain (7 jobs).
+/// Read-only ops (exec, prompt, task, stop, resume, snapshot, SSH)
+/// are served via the operator HTTP API.
 pub fn router() -> Router {
     Router::new()
         .route(JOB_SANDBOX_CREATE, sandbox_create.layer(TangleLayer))
         .route(JOB_SANDBOX_DELETE, sandbox_delete.layer(TangleLayer))
-        .route(JOB_SANDBOX_STOP, sandbox_stop.layer(TangleLayer))
-        .route(JOB_SANDBOX_RESUME, sandbox_resume.layer(TangleLayer))
-        .route(JOB_SANDBOX_SNAPSHOT, sandbox_snapshot.layer(TangleLayer))
-        .route(JOB_EXEC, sandbox_exec.layer(TangleLayer))
-        .route(JOB_PROMPT, sandbox_prompt.layer(TangleLayer))
-        .route(JOB_TASK, sandbox_task.layer(TangleLayer))
-        .route(JOB_BATCH_CREATE, batch_create.layer(TangleLayer))
-        .route(JOB_BATCH_TASK, batch_task.layer(TangleLayer))
-        .route(JOB_BATCH_EXEC, batch_exec.layer(TangleLayer))
-        .route(JOB_BATCH_COLLECT, batch_collect.layer(TangleLayer))
         .route(JOB_WORKFLOW_CREATE, workflow_create.layer(TangleLayer))
         .route(JOB_WORKFLOW_TRIGGER, workflow_trigger.layer(TangleLayer))
         .route(JOB_WORKFLOW_CANCEL, workflow_cancel.layer(TangleLayer))
         .route(JOB_WORKFLOW_TICK, workflow_tick_job)
-        .route(JOB_SSH_PROVISION, ssh_provision.layer(TangleLayer))
-        .route(JOB_SSH_REVOKE, ssh_revoke.layer(TangleLayer))
 }
 
 #[cfg(test)]
