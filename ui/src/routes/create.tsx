@@ -10,19 +10,19 @@ import { InfrastructureModal, InfraBar } from '~/components/shared/Infrastructur
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { infraStore, updateInfra } from '~/lib/stores/infra';
 import { BlueprintJobForm, type FormSection } from '~/components/forms/BlueprintJobForm';
+import { Identicon } from '~/components/shared/Identicon';
 
 import { useJobForm } from '~/lib/hooks/useJobForm';
-import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { useJobPrice } from '~/lib/hooks/useJobPrice';
 import { useServiceValidation } from '~/lib/hooks/useServiceValidation';
 import { formatCost } from '~/lib/hooks/useQuotes';
 import { useAvailableCapacity } from '~/lib/hooks/useSandboxReads';
-import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
+import { useCreateDeploy, type DeployStatus } from '~/lib/hooks/useCreateDeploy';
 import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition } from '~/lib/blueprints';
-import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
-import { addInstance, updateInstanceStatus } from '~/lib/stores/instances';
+import { updateSandboxStatus } from '~/lib/stores/sandboxes';
+import { updateInstanceStatus } from '~/lib/stores/instances';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
-import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
+import type { DiscoveredOperator } from '~/lib/hooks/useOperators';
 import { cn } from '~/lib/utils';
 
 // ── Blueprint → on-chain ID mapping from env vars ──
@@ -68,7 +68,6 @@ export default function CreatePage() {
   const [searchParams] = useSearchParams();
   const { address } = useAccount();
   const infra = useStore(infraStore);
-  const { submitJob, status: txStatus, error: txError, txHash, callId, reset: resetTx } = useSubmitJob();
   const { validate: validateService, isValidating: serviceValidating, serviceInfo, error: serviceError } = useServiceValidation();
   const { data: capacity } = useAvailableCapacity();
 
@@ -79,7 +78,6 @@ export default function CreatePage() {
   const [selectedBlueprint, setSelectedBlueprint] = useState<BlueprintDefinition | undefined>(preselected);
   const [step, setStep] = useState<WizardStep>(preselected ? 'configure' : 'blueprint');
   const [showInfra, setShowInfra] = useState(false);
-  const [provisionCallId, setProvisionCallId] = useState<number | null>(null);
 
   // Auto-set infra for preselected blueprint (from query param)
   useEffect(() => {
@@ -92,58 +90,24 @@ export default function CreatePage() {
     }
   }, []);
 
-  const isSandbox = selectedBlueprint?.id === 'ai-agent-sandbox-blueprint';
-  const isInstance = selectedBlueprint?.id === 'ai-agent-instance-blueprint';
-  const isTeeInstance = selectedBlueprint?.id === 'ai-agent-tee-instance-blueprint';
-  const entityLabel = isSandbox ? 'Sandbox' : 'Instance';
-
-  // The create/provision job is always job 0 for all blueprints
-  const createJob = useMemo<JobDefinition | null>(
-    () => selectedBlueprint?.jobs.find((j) => j.id === 0) ?? null,
-    [selectedBlueprint],
-  );
+  // The create/provision job: first lifecycle job that doesn't require an existing resource
+  const createJob = useMemo<JobDefinition | null>(() => {
+    if (!selectedBlueprint) return null;
+    return selectedBlueprint.jobs.find(
+      (j) => j.category === 'lifecycle' && !j.requiresSandbox,
+    ) ?? null;
+  }, [selectedBlueprint]);
 
   const { values, errors, onChange, validate, reset: resetForm } = useJobForm(createJob);
 
-  // Set provisionCallId once the tx receipt is parsed
-  useEffect(() => {
-    if (callId != null) {
-      setProvisionCallId(callId);
-      const name = String(values.name || '');
-      if (name) {
-        if (isSandbox) {
-          updateSandboxStatus(name, 'creating', { callId });
-        } else {
-          updateInstanceStatus(name, 'creating', { callId });
-        }
-      }
-    }
-  }, [callId]);
+  // Unified deploy hook — manages both submitJob and requestService paths
+  const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values, infra, validate });
 
-  // Watch for OperatorProvisioned event (instances only)
-  const instanceProvision = useInstanceProvisionWatcher(
-    infra.serviceId ? BigInt(infra.serviceId) : null,
-    isTeeInstance ? 'tee-instance' : 'instance',
-    txStatus === 'confirmed' && !isSandbox,
-  );
-
-  // When instance provision event arrives, update the store
-  useEffect(() => {
-    if (instanceProvision) {
-      const name = String(values.name || '');
-      if (name) {
-        updateInstanceStatus(name, 'running', {
-          id: instanceProvision.sandboxId,
-          sidecarUrl: instanceProvision.sidecarUrl,
-        });
-      }
-    }
-  }, [instanceProvision]);
-
+  const isSandbox = deploy.mode === 'sandbox';
+  const entityLabel = isSandbox ? 'Sandbox' : 'Instance';
   const currentIdx = STEPS.findIndex((s) => s.key === step);
-  const canDeploy = createJob && values.name && infra.serviceId;
 
-  // Per-job RFQ: fetch price from operator for the provision/create job
+  // Per-job RFQ pricing
   const operatorRpcUrl = infra.serviceInfo?.operators?.[0]?.rpcAddress;
   const blueprintId = BigInt(infra.blueprintId || '0');
   const serviceIdBig = BigInt(infra.serviceId || '0');
@@ -154,10 +118,7 @@ export default function CreatePage() {
     blueprintId,
     step === 'deploy' && !!operatorRpcUrl && serviceIdBig > 0n && !!createJob,
   );
-
-  // Fallback price from multiplier
   const provisionEstimate = BigInt(createJob?.pricingMultiplier ?? 50) * 1_000_000_000_000_000n;
-  const provisionValue = provisionQuote?.price ?? provisionEstimate;
   const hasProvisionRfq = !!provisionQuote;
 
   // ── Handlers ──
@@ -165,58 +126,16 @@ export default function CreatePage() {
   const handleSelectBlueprint = useCallback((bp: BlueprintDefinition) => {
     setSelectedBlueprint(bp);
     resetForm();
-    resetTx();
-    // Auto-set on-chain blueprint + service IDs from env vars
+    deploy.reset();
     const mapping = BLUEPRINT_INFRA[bp.id];
     if (mapping) {
-      updateInfra({
-        blueprintId: mapping.blueprintId,
-        serviceId: mapping.serviceId,
-        serviceValidated: false,
-      });
-      // Auto-validate the service on-chain
-      validateService(BigInt(mapping.serviceId), address);
-    }
-    setStep('configure');
-  }, [resetForm, resetTx, address, validateService]);
-
-  const handleDeploy = useCallback(async () => {
-    if (!createJob || !validate()) return;
-
-    const args = encodeJobArgs(createJob, values);
-    const name = String(values.name || '');
-    const hash = await submitJob({
-      serviceId: BigInt(infra.serviceId || '0'),
-      jobId: createJob.id,
-      args,
-      label: `${createJob.label}: ${name}`,
-      value: provisionValue,
-    });
-
-    if (hash) {
-      const common = {
-        id: name,
-        name,
-        image: String(values.image || ''),
-        cpuCores: Number(values.cpuCores) || 2,
-        memoryMb: Number(values.memoryMb) || 2048,
-        diskGb: Number(values.diskGb) || 10,
-        createdAt: Date.now(),
-        blueprintId: infra.blueprintId,
-        serviceId: infra.serviceId,
-        status: 'creating' as const,
-        txHash: hash,
-      };
-      if (isSandbox) {
-        addSandbox(common);
-      } else {
-        addInstance({
-          ...common,
-          teeEnabled: selectedBlueprint?.id === 'ai-agent-tee-instance-blueprint',
-        });
+      updateInfra({ blueprintId: mapping.blueprintId, serviceId: mapping.serviceId, serviceValidated: false });
+      if (mapping.serviceId) {
+        validateService(BigInt(mapping.serviceId), address);
       }
     }
-  }, [createJob, values, infra, submitJob, validate, isSandbox, selectedBlueprint]);
+    setStep('configure');
+  }, [resetForm, deploy.reset, address, validateService]);
 
   return (
     <AnimatedPage className="mx-auto max-w-3xl px-4 sm:px-6 py-8">
@@ -231,10 +150,20 @@ export default function CreatePage() {
         </p>
       </div>
 
-      {/* Infrastructure bar (shown after blueprint selection) */}
+      {/* Infrastructure bar */}
       {step !== 'blueprint' && (
         <>
-          <InfraBar onOpenModal={() => setShowInfra(true)} />
+          {isSandbox ? (
+            <InfraBar onOpenModal={() => setShowInfra(true)} />
+          ) : (
+            <InstanceInfraBar
+              infra={infra}
+              operators={deploy.operators}
+              operatorsLoading={deploy.operatorsLoading}
+              hasValidService={deploy.hasValidService}
+              onOpenModal={() => setShowInfra(true)}
+            />
+          )}
           <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} />
         </>
       )}
@@ -289,28 +218,21 @@ export default function CreatePage() {
           </Card>
           <div className="flex justify-between">
             <Button variant="secondary" onClick={() => setStep('blueprint')}>Back</Button>
-            <Button onClick={() => setStep('deploy')} disabled={!canDeploy}>Continue</Button>
+            <Button onClick={() => setStep('deploy')} disabled={!createJob || !values.name}>Continue</Button>
           </div>
         </div>
       )}
 
       {/* Step 3: Review & Deploy */}
-      {step === 'deploy' && createJob && (
+      {step === 'deploy' && createJob && selectedBlueprint && (
         <DeployStep
-          blueprint={selectedBlueprint!}
+          blueprint={selectedBlueprint}
           job={createJob}
           values={values}
           infra={infra}
           entityLabel={entityLabel}
-          isSandbox={isSandbox}
-          address={address}
-          txStatus={txStatus}
-          txHash={txHash}
-          txError={txError}
-          provisionCallId={provisionCallId}
-          instanceProvision={instanceProvision}
+          deploy={deploy}
           capacity={capacity}
-          provisionValue={provisionValue}
           provisionEstimate={provisionEstimate}
           provisionPriceFormatted={provisionPriceFormatted}
           hasProvisionRfq={hasProvisionRfq}
@@ -318,8 +240,8 @@ export default function CreatePage() {
           serviceInfo={serviceInfo}
           serviceValidating={serviceValidating}
           serviceError={serviceError}
-          onBack={() => { setStep('configure'); resetTx(); }}
-          onDeploy={handleDeploy}
+          onBack={() => { setStep('configure'); deploy.reset(); }}
+          onDeploy={deploy.deploy}
           onViewList={() => navigate(isSandbox ? '/sandboxes' : '/instances')}
           onOpenInfra={() => setShowInfra(true)}
           onProvisionReady={(sandboxId, sidecarUrl) => {
@@ -333,6 +255,43 @@ export default function CreatePage() {
         />
       )}
     </AnimatedPage>
+  );
+}
+
+// ── Instance Infra Bar ──
+
+function InstanceInfraBar({
+  infra, operators, operatorsLoading, hasValidService, onOpenModal,
+}: {
+  infra: { blueprintId: string; serviceId: string };
+  operators: DiscoveredOperator[];
+  operatorsLoading: boolean;
+  hasValidService: boolean;
+  onOpenModal: () => void;
+}) {
+  return (
+    <div className="glass-card rounded-lg p-3 flex items-center justify-between mb-6">
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2">
+          <div className="i-ph:cube text-sm text-cloud-elements-textTertiary" />
+          <span className="text-xs text-cloud-elements-textTertiary">Blueprint</span>
+          <Badge variant="accent">#{infra.blueprintId}</Badge>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="i-ph:users-three text-sm text-cloud-elements-textTertiary" />
+          <span className="text-xs text-cloud-elements-textTertiary">
+            {operatorsLoading ? 'Discovering...' : `${operators.length} operators`}
+          </span>
+        </div>
+        {hasValidService && (
+          <div className="flex items-center gap-2">
+            <div className="i-ph:check-circle text-sm text-teal-400" />
+            <span className="text-xs text-teal-400">Service #{infra.serviceId}</span>
+          </div>
+        )}
+      </div>
+      <Button variant="ghost" size="sm" onClick={onOpenModal}>Change</Button>
+    </div>
   );
 }
 
@@ -404,15 +363,8 @@ interface DeployStepProps {
   values: Record<string, unknown>;
   infra: { blueprintId: string; serviceId: string };
   entityLabel: string;
-  isSandbox: boolean;
-  address?: string;
-  txStatus: string;
-  txHash?: `0x${string}`;
-  txError: string | null;
-  provisionCallId: number | null;
-  instanceProvision: { sandboxId: string; sidecarUrl: string } | null;
+  deploy: ReturnType<typeof useCreateDeploy>;
   capacity?: number | bigint;
-  provisionValue: bigint;
   provisionEstimate: bigint;
   provisionPriceFormatted: string;
   hasProvisionRfq: boolean;
@@ -428,13 +380,13 @@ interface DeployStepProps {
 }
 
 function DeployStep({
-  blueprint, job, values, infra, entityLabel, isSandbox, address,
-  txStatus, txHash, txError, provisionCallId, instanceProvision,
-  capacity, provisionValue, provisionEstimate, provisionPriceFormatted,
+  blueprint, job, values, infra, entityLabel, deploy,
+  capacity, provisionEstimate, provisionPriceFormatted,
   hasProvisionRfq, priceLoading,
   serviceInfo, serviceValidating, serviceError,
   onBack, onDeploy, onViewList, onOpenInfra, onProvisionReady,
 }: DeployStepProps) {
+  const { address } = useAccount();
   const [showAllJobs, setShowAllJobs] = useState(false);
 
   const name = String(values.name || '');
@@ -443,15 +395,19 @@ function DeployStep({
   const memoryMb = Number(values.memoryMb) || 2048;
   const diskGb = Number(values.diskGb) || 10;
   const costDisplay = hasProvisionRfq ? provisionPriceFormatted : `~${formatCost(provisionEstimate)}`;
+  const { status, txHash, error, isNewService, isInstanceMode, hasValidService, operators, operatorsLoading, provision, callId } = deploy;
+  const isSandbox = !isInstanceMode;
+  const isActive = status !== 'idle';
+  const isComplete = status === 'confirmed' || status === 'ready';
 
-  // Separate config fields into key settings vs advanced
+  // Separate config fields into key vs advanced
   const visibleFields = job.fields.filter((f) => !f.internal);
   const keyFieldNames = new Set(['name', 'image', 'stack', 'cpuCores', 'memoryMb', 'diskGb']);
   const extraFields = visibleFields.filter((f) => !keyFieldNames.has(f.name));
   const activeExtras = extraFields.filter((f) => {
     const v = values[f.name];
     if (f.type === 'boolean') return !!v;
-    return v != null && v !== '' && v !== '{}' && v !== f.default;
+    return v != null && v !== '' && v !== '{}' && v !== f.defaultValue;
   });
 
   const otherJobs = blueprint.jobs.filter((j) => j.id !== job.id);
@@ -483,37 +439,14 @@ function DeployStep({
           <ResourcePill icon="i-ph:memory" label={`${memoryMb} MB`} />
           <ResourcePill icon="i-ph:hard-drive" label={`${diskGb} GB`} />
           <div className="ml-auto flex items-center gap-1.5 text-xs">
-            {serviceValidating ? (
-              <>
-                <div className="w-3 h-3 rounded-full border border-cloud-elements-textTertiary border-t-transparent animate-spin" />
-                <span className="text-cloud-elements-textTertiary">Checking service...</span>
-              </>
-            ) : serviceInfo?.active && serviceInfo?.permitted ? (
-              <>
-                <div className="i-ph:check-circle-fill text-sm text-teal-400" />
-                <span className="text-teal-400">Service #{infra.serviceId}</span>
-              </>
-            ) : serviceInfo && !serviceInfo.active ? (
-              <>
-                <div className="i-ph:x-circle text-sm text-crimson-400" />
-                <span className="text-crimson-400">Service #{infra.serviceId} inactive</span>
-              </>
-            ) : serviceInfo && !serviceInfo.permitted ? (
-              <>
-                <div className="i-ph:warning text-sm text-amber-400" />
-                <span className="text-amber-400">Not permitted</span>
-              </>
-            ) : serviceError ? (
-              <>
-                <div className="i-ph:x-circle text-sm text-crimson-400" />
-                <span className="text-crimson-400">Service not found</span>
-              </>
-            ) : (
-              <>
-                <div className="i-ph:globe-simple text-sm text-cloud-elements-textTertiary" />
-                <span className="text-cloud-elements-textTertiary">Service #{infra.serviceId}</span>
-              </>
-            )}
+            <ServiceStatusBadge
+              infra={infra}
+              serviceInfo={serviceInfo}
+              serviceValidating={serviceValidating}
+              serviceError={serviceError}
+              isInstanceMode={isInstanceMode}
+              hasValidService={hasValidService}
+            />
           </div>
         </div>
 
@@ -539,30 +472,32 @@ function DeployStep({
       </div>
 
       {/* ── Per-job pricing (collapsible) ── */}
-      <div className="glass-card rounded-xl overflow-hidden">
-        <button
-          onClick={() => setShowAllJobs(!showAllJobs)}
-          className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-white/[0.02] transition-colors"
-        >
-          <div className="flex items-center gap-2">
-            <div className="i-ph:receipt text-sm text-cloud-elements-textTertiary" />
-            <span className="text-xs font-display font-medium text-cloud-elements-textSecondary">
-              Per-job pricing ({otherJobs.length} operations)
-            </span>
-          </div>
-          <div className={cn('i-ph:caret-down text-xs text-cloud-elements-textTertiary transition-transform', showAllJobs && 'rotate-180')} />
-        </button>
-        {showAllJobs && (
-          <div className="px-5 pb-3 space-y-1">
-            {otherJobs.map((j) => (
-              <div key={j.id} className="flex items-center justify-between py-1">
-                <span className="text-xs text-cloud-elements-textSecondary truncate mr-2">{j.label}</span>
-                <JobPriceBadge jobIndex={j.id} pricingMultiplier={j.pricingMultiplier} compact />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {otherJobs.length > 0 && (
+        <div className="glass-card rounded-xl overflow-hidden">
+          <button
+            onClick={() => setShowAllJobs(!showAllJobs)}
+            className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-white/[0.02] transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <div className="i-ph:receipt text-sm text-cloud-elements-textTertiary" />
+              <span className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+                Per-job pricing ({otherJobs.length} operations)
+              </span>
+            </div>
+            <div className={cn('i-ph:caret-down text-xs text-cloud-elements-textTertiary transition-transform', showAllJobs && 'rotate-180')} />
+          </button>
+          {showAllJobs && (
+            <div className="px-5 pb-3 space-y-1">
+              {otherJobs.map((j) => (
+                <div key={j.id} className="flex items-center justify-between py-1">
+                  <span className="text-xs text-cloud-elements-textSecondary truncate mr-2">{j.label}</span>
+                  <JobPriceBadge jobIndex={j.id} pricingMultiplier={j.pricingMultiplier} compact />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Capacity ── */}
       {capacity !== undefined && (
@@ -575,75 +510,23 @@ function DeployStep({
       )}
 
       {/* ── TX Status ── */}
-      {txStatus !== 'idle' && (
-        <div className={cn(
-          'rounded-xl border p-4',
-          txStatus === 'confirmed' ? 'border-teal-500/20 bg-teal-500/[0.03]'
-            : txStatus === 'failed' ? 'border-crimson-500/20 bg-crimson-500/[0.03]'
-            : 'border-white/[0.06] bg-white/[0.02]',
-        )}>
-          <div className="flex items-center gap-3">
-            {txStatus === 'signing' && <div className="w-5 h-5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />}
-            {txStatus === 'pending' && <div className="w-5 h-5 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />}
-            {txStatus === 'confirmed' && <div className="i-ph:check-circle-fill text-lg text-teal-400" />}
-            {txStatus === 'failed' && <div className="i-ph:x-circle-fill text-lg text-crimson-400" />}
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
-                {txStatus === 'signing' && 'Confirm in wallet...'}
-                {txStatus === 'pending' && 'Confirming on-chain...'}
-                {txStatus === 'confirmed' && `${entityLabel} creation confirmed`}
-                {txStatus === 'failed' && 'Transaction failed'}
-              </p>
-              {txHash && (
-                <p className="text-[11px] font-data text-cloud-elements-textTertiary mt-0.5 truncate">
-                  {txHash}
-                </p>
-              )}
-              {txError && <p className="text-xs text-crimson-400 mt-0.5">{txError}</p>}
-            </div>
-          </div>
-        </div>
-      )}
+      {isActive && <TxStatusCard status={status} txHash={txHash} error={error ?? undefined} entityLabel={entityLabel} isNewService={isNewService} />}
 
       {/* ── Provision Progress ── */}
-      {txStatus === 'confirmed' && isSandbox && provisionCallId && (
-        <ProvisionProgress callId={provisionCallId} onReady={onProvisionReady} />
+      {status === 'confirmed' && isSandbox && callId && (
+        <ProvisionProgress callId={callId} onReady={onProvisionReady} />
       )}
-      {txStatus === 'confirmed' && !isSandbox && (
-        <div className={cn(
-          'rounded-xl border p-4',
-          instanceProvision ? 'border-teal-500/20 bg-teal-500/[0.03]' : 'border-violet-500/20 bg-violet-500/[0.03]',
-        )}>
-          <div className="flex items-center gap-3">
-            {instanceProvision ? (
-              <>
-                <div className="i-ph:check-circle-fill text-lg text-teal-400" />
-                <div>
-                  <p className="text-sm font-display font-medium text-teal-400">Instance ready</p>
-                  <p className="text-[11px] text-cloud-elements-textTertiary mt-0.5 font-data truncate max-w-sm">
-                    {instanceProvision.sidecarUrl}
-                  </p>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="w-5 h-5 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
-                <div>
-                  <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
-                    Waiting for operator...
-                  </p>
-                  <p className="text-[11px] text-cloud-elements-textTertiary mt-0.5">
-                    Watching for on-chain provisioning event
-                  </p>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+      {status === 'confirmed' && isInstanceMode && (
+        <InstanceProvisionCard provision={provision} />
       )}
 
-      {/* ── Service warning ── */}
-      {txStatus === 'idle' && (serviceError || (serviceInfo && (!serviceInfo.active || !serviceInfo.permitted))) && (
+      {/* ── Operators (instance mode, new service, idle) ── */}
+      {isNewService && status === 'idle' && (
+        <OperatorList operators={operators} operatorsLoading={operatorsLoading} blueprintId={infra.blueprintId} />
+      )}
+
+      {/* ── Service warning (sandbox mode only) ── */}
+      {status === 'idle' && !isInstanceMode && (serviceError || (serviceInfo && (!serviceInfo.active || !serviceInfo.permitted))) && (
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
           <div className="flex items-center gap-3">
             <div className="i-ph:warning-circle text-lg text-amber-400" />
@@ -659,15 +542,13 @@ function DeployStep({
                 Open Infrastructure Settings to create a new service or verify a different one.
               </p>
             </div>
-            <Button variant="secondary" size="sm" onClick={onOpenInfra}>
-              Settings
-            </Button>
+            <Button variant="secondary" size="sm" onClick={onOpenInfra}>Settings</Button>
           </div>
         </div>
       )}
 
       {/* ── Wallet warning ── */}
-      {!address && txStatus === 'idle' && (
+      {!address && status === 'idle' && (
         <div className="flex items-center gap-2 px-1">
           <div className="i-ph:wallet text-sm text-amber-400" />
           <span className="text-xs text-amber-400/80">Connect wallet to deploy</span>
@@ -677,34 +558,248 @@ function DeployStep({
       {/* ── Actions ── */}
       <div className="flex justify-between pt-1">
         <Button variant="secondary" onClick={onBack}>Back</Button>
-        {txStatus === 'confirmed' ? (
+        {isComplete ? (
           <Button variant="success" onClick={onViewList}>
             <div className="i-ph:check-bold text-sm" />
             View {entityLabel}s
           </Button>
         ) : (
-          <Button
-            size="lg"
-            onClick={onDeploy}
-            disabled={!address || txStatus === 'signing' || txStatus === 'pending' || priceLoading || serviceValidating || !serviceInfo?.active || !serviceInfo?.permitted}
-          >
-            {(txStatus === 'signing' || txStatus === 'pending') ? (
-              <>
-                <div className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                Deploying...
-              </>
-            ) : priceLoading ? (
-              'Loading price...'
-            ) : (
-              <>
-                <div className="i-ph:lightning text-base" />
-                Deploy for {costDisplay}
-              </>
-            )}
-          </Button>
+          <DeployButton
+            status={status}
+            canDeploy={deploy.canDeploy}
+            isNewService={isNewService}
+            priceLoading={priceLoading}
+            serviceValidating={serviceValidating}
+            costDisplay={costDisplay}
+            onDeploy={onDeploy}
+          />
         )}
       </div>
     </div>
+  );
+}
+
+// ── Sub-components (extracted for readability) ──
+
+function ServiceStatusBadge({
+  infra, serviceInfo, serviceValidating, serviceError, isInstanceMode, hasValidService,
+}: {
+  infra: { serviceId: string };
+  serviceInfo: { active: boolean; permitted: boolean } | null;
+  serviceValidating: boolean;
+  serviceError: string | null;
+  isInstanceMode: boolean;
+  hasValidService: boolean;
+}) {
+  if (serviceValidating) {
+    return (
+      <>
+        <div className="w-3 h-3 rounded-full border border-cloud-elements-textTertiary border-t-transparent animate-spin" />
+        <span className="text-cloud-elements-textTertiary">Checking service...</span>
+      </>
+    );
+  }
+  if (serviceInfo?.active && serviceInfo?.permitted) {
+    return (
+      <>
+        <div className="i-ph:check-circle-fill text-sm text-teal-400" />
+        <span className="text-teal-400">Service #{infra.serviceId}</span>
+      </>
+    );
+  }
+  if (isInstanceMode && !hasValidService) {
+    return (
+      <>
+        <div className="i-ph:plus-circle text-sm text-violet-400" />
+        <span className="text-violet-400">New service</span>
+      </>
+    );
+  }
+  if (serviceInfo && !serviceInfo.active) {
+    return (
+      <>
+        <div className="i-ph:x-circle text-sm text-crimson-400" />
+        <span className="text-crimson-400">Service #{infra.serviceId} inactive</span>
+      </>
+    );
+  }
+  if (serviceInfo && !serviceInfo.permitted) {
+    return (
+      <>
+        <div className="i-ph:warning text-sm text-amber-400" />
+        <span className="text-amber-400">Not permitted</span>
+      </>
+    );
+  }
+  if (serviceError) {
+    return (
+      <>
+        <div className="i-ph:x-circle text-sm text-crimson-400" />
+        <span className="text-crimson-400">Service not found</span>
+      </>
+    );
+  }
+  return (
+    <>
+      <div className="i-ph:globe-simple text-sm text-cloud-elements-textTertiary" />
+      <span className="text-cloud-elements-textTertiary">Service #{infra.serviceId}</span>
+    </>
+  );
+}
+
+function TxStatusCard({
+  status, txHash, error, entityLabel, isNewService,
+}: {
+  status: DeployStatus;
+  txHash?: `0x${string}`;
+  error?: string;
+  entityLabel: string;
+  isNewService: boolean;
+}) {
+  const borderClass = status === 'confirmed' ? 'border-teal-500/20 bg-teal-500/[0.03]'
+    : status === 'failed' ? 'border-crimson-500/20 bg-crimson-500/[0.03]'
+    : 'border-white/[0.06] bg-white/[0.02]';
+
+  const messages: Record<DeployStatus, string> = {
+    idle: '',
+    signing: isNewService ? 'Confirm service creation in wallet...' : 'Confirm in wallet...',
+    pending: isNewService ? 'Creating service on-chain...' : 'Confirming on-chain...',
+    confirmed: isNewService ? 'Service created — waiting for operator provisioning' : `${entityLabel} creation confirmed`,
+    provisioning: 'Operator provisioning in progress...',
+    ready: `${entityLabel} is ready`,
+    failed: 'Transaction failed',
+  };
+
+  const icons: Record<DeployStatus, React.ReactNode> = {
+    idle: null,
+    signing: <div className="w-5 h-5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />,
+    pending: <div className="w-5 h-5 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />,
+    confirmed: <div className="i-ph:check-circle-fill text-lg text-teal-400" />,
+    provisioning: <div className="w-5 h-5 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />,
+    ready: <div className="i-ph:check-circle-fill text-lg text-teal-400" />,
+    failed: <div className="i-ph:x-circle-fill text-lg text-crimson-400" />,
+  };
+
+  return (
+    <div className={cn('rounded-xl border p-4', borderClass)}>
+      <div className="flex items-center gap-3">
+        {icons[status]}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+            {messages[status]}
+          </p>
+          {txHash && (
+            <p className="text-[11px] font-data text-cloud-elements-textTertiary mt-0.5 truncate">{txHash}</p>
+          )}
+          {error && <p className="text-xs text-crimson-400 mt-0.5">{error}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InstanceProvisionCard({ provision }: { provision?: { sandboxId: string; sidecarUrl: string } }) {
+  return (
+    <div className={cn(
+      'rounded-xl border p-4',
+      provision ? 'border-teal-500/20 bg-teal-500/[0.03]' : 'border-violet-500/20 bg-violet-500/[0.03]',
+    )}>
+      <div className="flex items-center gap-3">
+        {provision ? (
+          <>
+            <div className="i-ph:check-circle-fill text-lg text-teal-400" />
+            <div>
+              <p className="text-sm font-display font-medium text-teal-400">Instance ready</p>
+              <p className="text-[11px] text-cloud-elements-textTertiary mt-0.5 font-data truncate max-w-sm">
+                {provision.sidecarUrl}
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="w-5 h-5 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+            <div>
+              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">Waiting for operator...</p>
+              <p className="text-[11px] text-cloud-elements-textTertiary mt-0.5">Watching for on-chain provisioning event</p>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OperatorList({ operators, operatorsLoading, blueprintId }: { operators: DiscoveredOperator[]; operatorsLoading: boolean; blueprintId: string }) {
+  return (
+    <div className="glass-card rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="i-ph:users-three text-sm text-cloud-elements-textTertiary" />
+        <span className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+          Operators ({operatorsLoading ? '...' : operators.length})
+        </span>
+      </div>
+      {operatorsLoading ? (
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded-full border border-cloud-elements-textTertiary border-t-transparent animate-spin" />
+          <span className="text-xs text-cloud-elements-textTertiary">Discovering operators for blueprint #{blueprintId}...</span>
+        </div>
+      ) : operators.length === 0 ? (
+        <div className="flex items-center gap-2">
+          <div className="i-ph:warning text-sm text-amber-400" />
+          <span className="text-xs text-amber-400">No operators found for this blueprint</span>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {operators.map((op) => (
+            <div key={op.address} className="flex items-center gap-2 py-1">
+              <Identicon address={op.address} size={18} />
+              <span className="text-xs font-data text-cloud-elements-textSecondary truncate">{op.address}</span>
+            </div>
+          ))}
+          <p className="text-[11px] text-cloud-elements-textTertiary mt-2">
+            A new service will be created with these operators. Your sandbox config will be passed as service request inputs.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeployButton({
+  status, canDeploy, isNewService, priceLoading, serviceValidating, costDisplay, onDeploy,
+}: {
+  status: DeployStatus;
+  canDeploy: boolean;
+  isNewService: boolean;
+  priceLoading: boolean;
+  serviceValidating: boolean;
+  costDisplay: string;
+  onDeploy: () => void;
+}) {
+  const isBusy = status === 'signing' || status === 'pending';
+  const isDisabled = !canDeploy || isBusy || priceLoading || serviceValidating;
+
+  return (
+    <Button size="lg" onClick={onDeploy} disabled={isDisabled}>
+      {isBusy ? (
+        <>
+          <div className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+          {status === 'signing' ? 'Confirm in wallet...' : 'Deploying...'}
+        </>
+      ) : priceLoading ? (
+        'Loading price...'
+      ) : isNewService ? (
+        <>
+          <div className="i-ph:lightning text-base" />
+          Create Service & Deploy
+        </>
+      ) : (
+        <>
+          <div className="i-ph:lightning text-base" />
+          Deploy for {costDisplay}
+        </>
+      )}
+    </Button>
   );
 }
 

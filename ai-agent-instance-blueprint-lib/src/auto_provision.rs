@@ -100,8 +100,12 @@ pub async fn read_service_config(config: &AutoProvisionConfig) -> Result<Option<
 }
 
 /// Decode raw config bytes as a `ProvisionRequest`.
+///
+/// The on-chain config is stored as ABI-encoded params (flat tuple, no outer offset prefix),
+/// e.g. from `cast abi-encode "f(string,...)" ...` or `abi.encode(field1, field2, ...)`.
+/// Use `abi_decode_params` rather than `abi_decode` to match this encoding.
 pub fn decode_provision_config(config_bytes: &[u8]) -> Result<ProvisionRequest, String> {
-    ProvisionRequest::abi_decode(config_bytes)
+    ProvisionRequest::abi_decode_params(config_bytes)
         .map_err(|e| format!("Failed to decode ProvisionRequest from service config: {e}"))
 }
 
@@ -215,6 +219,8 @@ mod tests {
 
     #[test]
     fn decode_provision_config_roundtrip() {
+        use blueprint_sdk::alloy::sol_types::SolValue;
+
         let request = ProvisionRequest {
             name: "test-sandbox".to_string(),
             image: "agent-dev".to_string(),
@@ -235,7 +241,9 @@ mod tests {
             tee_type: 0,
         };
 
-        let encoded = request.abi_encode();
+        // On-chain config is stored as params encoding (flat tuple, no outer offset),
+        // matching `cast abi-encode` / `abi.encode(field1, field2, ...)`.
+        let encoded = request.abi_encode_params();
         let decoded = decode_provision_config(&encoded).unwrap();
 
         assert_eq!(decoded.name, "test-sandbox");
