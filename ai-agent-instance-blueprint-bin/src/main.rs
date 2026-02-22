@@ -9,7 +9,7 @@ use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
 use blueprint_sdk::runner::tangle::config::TangleConfig;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
-use blueprint_sdk::{error, info};
+use blueprint_sdk::{error, info, warn};
 
 #[tokio::main]
 #[allow(clippy::result_large_err)]
@@ -34,6 +34,37 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
     // Reconcile stored sandbox state with Docker reality.
     ai_agent_instance_blueprint_lib::reaper::reconcile_on_startup().await;
+
+    // Start operator API for read-only operations (exec, prompt, task, ssh, snapshot).
+    // Instance mode uses singleton /api/sandbox/* endpoints.
+    let api_port: u16 = std::env::var("OPERATOR_API_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9090);
+
+    let api_shutdown = tokio::sync::watch::channel(());
+    let api_shutdown_tx = api_shutdown.0;
+    let api_handle = {
+        let router = sandbox_runtime::operator_api::operator_api_router();
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0u8], api_port));
+        info!("Starting operator API on {addr}");
+
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+            blueprint_sdk::Error::Other(format!("Failed to bind operator API on {addr}: {e}"))
+        })?;
+
+        let mut shutdown_rx = api_shutdown.1;
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.changed().await;
+                })
+                .await
+            {
+                error!("Operator API error: {e}");
+            }
+        })
+    };
 
     // Auto-provision: read service config from BSM and provision sandbox on startup.
     if let Some(ap_config) =
@@ -142,6 +173,14 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .consumer(tangle_consumer)
         .with_shutdown_handler(async move {
             info!("Shutting down ai-agent-instance-blueprint");
+
+            // Drain operator API first.
+            drop(api_shutdown_tx);
+            match tokio::time::timeout(std::time::Duration::from_secs(10), api_handle).await {
+                Ok(Ok(())) => info!("Operator API shut down cleanly"),
+                Ok(Err(e)) => error!("Operator API task panicked: {e}"),
+                Err(_) => warn!("Operator API shutdown timed out after 10s"),
+            }
 
             #[cfg(feature = "billing")]
             if let Some(tx) = billing_shutdown_tx {

@@ -237,12 +237,8 @@ fn resolve_sandbox(sandbox_id: &str, caller: &str) -> Result<SandboxRecord, (Sta
 
 /// Look up the singleton instance sandbox and validate ownership.
 fn resolve_instance(caller: &str) -> Result<SandboxRecord, (StatusCode, Json<ApiError>)> {
-    let records = sandboxes()
+    let record = runtime::get_instance_sandbox()
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .values()
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let record = records.into_iter().next()
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Instance not provisioned"))?;
 
     if !record.owner.is_empty() && !record.owner.eq_ignore_ascii_case(caller) {

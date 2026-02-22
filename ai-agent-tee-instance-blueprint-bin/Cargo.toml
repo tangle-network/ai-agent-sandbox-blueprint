@@ -15,6 +15,7 @@ billing = ["ai-agent-tee-instance-blueprint-lib/billing", "dep:blueprint-tangle-
 
 [dependencies]
 ai-agent-tee-instance-blueprint-lib = { path = "../ai-agent-tee-instance-blueprint-lib" }
+axum = { version = "0.8", features = ["macros"] }
 sandbox-runtime = { path = "../sandbox-runtime", features = ["tee-all"] }
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tangle"] }
 blueprint-tangle-extra = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", features = ["keepers"], optional = true }

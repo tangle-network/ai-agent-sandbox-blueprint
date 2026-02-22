@@ -73,6 +73,7 @@ sol! {
     #[sol(rpc)]
     interface IBsmRead {
         function getServiceConfig(uint64 serviceId) external view returns (bytes memory);
+        function serviceOwner(uint64 serviceId) external view returns (address);
     }
 
     // ── Provision ──────────────────────────────────────────────────────────

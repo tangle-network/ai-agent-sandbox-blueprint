@@ -141,6 +141,10 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @notice Sandbox config keyed by serviceId, set after service initialization.
     mapping(uint64 => bytes) public serviceConfig;
 
+    /// @notice Service requester address, set during onServiceInitialized.
+    ///         Used by operators to assign sandbox ownership.
+    mapping(uint64 => address) public serviceOwner;
+
     // ═══════════════════════════════════════════════════════════════════════════
     // EVENTS
     // ═══════════════════════════════════════════════════════════════════════════
@@ -273,11 +277,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         uint64,              // blueprintId
         uint64 requestId,
         uint64 serviceId,
-        address,             // owner
+        address owner,
         address[] calldata,  // permittedCallers
         uint64               // ttl
     ) external override onlyFromTangle {
         if (instanceMode) {
+            serviceOwner[serviceId] = owner;
             bytes memory cfg = _pendingRequestConfig[requestId];
             if (cfg.length > 0) {
                 serviceConfig[serviceId] = cfg;

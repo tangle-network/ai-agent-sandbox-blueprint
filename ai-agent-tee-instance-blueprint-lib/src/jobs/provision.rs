@@ -7,9 +7,11 @@ use ai_agent_instance_blueprint_lib::{
 use crate::tee_backend;
 
 pub async fn tee_provision(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<ProvisionRequest>,
 ) -> Result<TangleResult<ProvisionOutput>, String> {
+    let caller_hex = super::caller_hex(&caller);
+
     // Idempotent: if auto-provision already created the sandbox, return existing info.
     if let Some(record) =
         ai_agent_instance_blueprint_lib::get_instance_sandbox().map_err(|e| e.to_string())?
@@ -25,7 +27,7 @@ pub async fn tee_provision(
     }
 
     let backend = tee_backend();
-    let (output, record) = provision_core(&request, Some(backend.as_ref())).await?;
+    let (output, record) = provision_core(&request, Some(backend.as_ref()), &caller_hex).await?;
     set_instance_sandbox(record).map_err(|e| e.to_string())?;
     Ok(TangleResult(output))
 }

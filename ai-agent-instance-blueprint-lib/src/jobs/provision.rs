@@ -16,12 +16,17 @@ use crate::{clear_instance_sandbox, require_instance_sandbox, set_instance_sandb
 
 /// Provision a sandbox, optionally inside a TEE.
 ///
+/// `owner` is the hex address of the service requester (e.g. `"0xabcdef..."`).
+/// When called from auto-provision, this is read from `serviceOwner(serviceId)` on-chain.
+/// When called from the JOB_PROVISION handler, this comes from the `Caller` extractor.
+///
 /// Returns the `ProvisionOutput` (for on-chain result) and the `SandboxRecord`
 /// (for local persistent storage). The caller is responsible for storing the
 /// record via `set_instance_sandbox`.
 pub async fn provision_core(
     request: &ProvisionRequest,
     tee: Option<&dyn TeeBackend>,
+    owner: &str,
 ) -> Result<(ProvisionOutput, SandboxRecord), String> {
     // Fail if already provisioned — deprovision first.
     if crate::get_instance_sandbox()
@@ -31,7 +36,8 @@ pub async fn provision_core(
         return Err("Instance already provisioned — deprovision first".to_string());
     }
 
-    let params = CreateSandboxParams::from(request);
+    let mut params = CreateSandboxParams::from(request);
+    params.owner = owner.to_string();
     let (record, attestation) = create_sidecar(&params, tee)
         .await
         .map_err(|e| e.to_string())?;
@@ -126,9 +132,11 @@ pub async fn deprovision_core(
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub async fn instance_provision(
-    Caller(_caller): Caller,
+    Caller(caller): Caller,
     TangleArg(request): TangleArg<ProvisionRequest>,
 ) -> Result<TangleResult<ProvisionOutput>, String> {
+    let caller_hex = super::caller_hex(&caller);
+
     // Idempotent: if auto-provision already created the sandbox, return existing info.
     if let Some(record) = crate::get_instance_sandbox().map_err(|e| e.to_string())? {
         let output = ProvisionOutput {
@@ -141,7 +149,7 @@ pub async fn instance_provision(
         return Ok(TangleResult(output));
     }
 
-    let (output, record) = provision_core(&request, None).await?;
+    let (output, record) = provision_core(&request, None, &caller_hex).await?;
     set_instance_sandbox(record).map_err(|e| e.to_string())?;
     Ok(TangleResult(output))
 }

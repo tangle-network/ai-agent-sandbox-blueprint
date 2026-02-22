@@ -287,6 +287,7 @@ impl SandboxRecord {
 use crate::store::PersistentStore;
 
 static SANDBOXES: OnceCell<PersistentStore<SandboxRecord>> = OnceCell::new();
+static INSTANCE_STORE: OnceCell<PersistentStore<SandboxRecord>> = OnceCell::new();
 static DOCKER_BUILDER: AsyncOnceCell<DockerBuilder> = AsyncOnceCell::const_new();
 static IMAGE_PULLED: AsyncOnceCell<()> = AsyncOnceCell::const_new();
 
@@ -297,6 +298,25 @@ pub fn sandboxes() -> Result<&'static PersistentStore<SandboxRecord>> {
             PersistentStore::open(path)
         })
         .map_err(|err: SandboxError| err)
+}
+
+/// Access the instance-mode singleton sandbox store (`instance.json`).
+///
+/// In instance mode, a single sandbox is stored under key `"instance"`.
+/// This is the same file written by `set_instance_sandbox()` in the instance
+/// blueprint lib. The operator API reads from it for `/api/sandbox/*` routes.
+pub fn instance_store() -> Result<&'static PersistentStore<SandboxRecord>> {
+    INSTANCE_STORE
+        .get_or_try_init(|| {
+            let path = crate::store::state_dir().join("instance.json");
+            PersistentStore::open(path)
+        })
+        .map_err(|err: SandboxError| err)
+}
+
+/// Get the instance-mode singleton sandbox, if provisioned.
+pub fn get_instance_sandbox() -> Result<Option<SandboxRecord>> {
+    instance_store()?.get("instance")
 }
 
 pub async fn docker_builder() -> Result<&'static DockerBuilder> {

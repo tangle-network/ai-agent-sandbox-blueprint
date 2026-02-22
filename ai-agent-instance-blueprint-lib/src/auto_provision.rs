@@ -99,6 +99,32 @@ pub async fn read_service_config(config: &AutoProvisionConfig) -> Result<Option<
     }
 }
 
+/// Read service owner from the BSM contract via RPC.
+///
+/// Returns the owner address as a lowercase hex string, or empty string if not set.
+pub async fn read_service_owner(config: &AutoProvisionConfig) -> Result<String, String> {
+    let url: url::Url = config
+        .http_rpc_endpoint
+        .parse()
+        .map_err(|e| format!("Invalid RPC URL: {e}"))?;
+
+    let provider = ProviderBuilder::new().connect_http(url);
+    let contract = IBsmRead::new(config.bsm_address, &provider);
+
+    let result = contract
+        .serviceOwner(config.service_id)
+        .call()
+        .await
+        .map_err(|e| format!("serviceOwner RPC failed: {e}"))?;
+
+    let addr = result.0;
+    if addr.is_zero() {
+        Ok(String::new())
+    } else {
+        Ok(format!("{addr}").to_lowercase())
+    }
+}
+
 /// Decode raw config bytes as a `ProvisionRequest`.
 ///
 /// The on-chain config is stored as ABI-encoded params (flat tuple, no outer offset prefix),
@@ -183,6 +209,22 @@ pub async fn run_auto_provision(
         request.name, request.image, request.tee_required
     );
 
+    // Read service owner from chain so the sandbox record has correct ownership.
+    let owner = match read_service_owner(&config).await {
+        Ok(addr) if !addr.is_empty() => {
+            info!("Auto-provision: service owner = {addr}");
+            addr
+        }
+        Ok(_) => {
+            warn!("Auto-provision: no service owner set on-chain, sandbox will be unowned");
+            String::new()
+        }
+        Err(e) => {
+            warn!("Auto-provision: failed to read service owner ({e}), sandbox will be unowned");
+            String::new()
+        }
+    };
+
     // Final check before provisioning (race with manual JOB_PROVISION)
     if get_instance_sandbox()
         .map_err(|e| e.to_string())?
@@ -193,7 +235,7 @@ pub async fn run_auto_provision(
     }
 
     // Provision
-    let (output, record) = provision_core(&request, tee).await?;
+    let (output, record) = provision_core(&request, tee, &owner).await?;
 
     // Store record
     set_instance_sandbox(record).map_err(|e| e.to_string())?;

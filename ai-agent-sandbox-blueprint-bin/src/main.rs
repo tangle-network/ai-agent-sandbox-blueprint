@@ -260,18 +260,29 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     }
 
     // NOW start the API server — after registration is complete.
-    {
+    let api_shutdown = tokio::sync::watch::channel(());
+    let api_shutdown_tx = api_shutdown.0;
+    let api_handle = {
         let router = sandbox_runtime::operator_api::operator_api_router_with_tee(tee_backend);
         let addr = std::net::SocketAddr::from((bind_addr, api_port));
         info!("Starting operator API on {addr}");
 
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+            blueprint_sdk::Error::Other(format!("Failed to bind operator API on {addr}: {e}"))
+        })?;
+
+        let mut shutdown_rx = api_shutdown.1;
         tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-            if let Err(e) = axum::serve(listener, router).await {
+            if let Err(e) = axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.changed().await;
+                })
+                .await
+            {
                 error!("Operator API error: {e}");
             }
-        });
-    }
+        })
+    };
 
     if let Err(err) = bootstrap_workflows_from_chain(&tangle_client, service_id).await {
         error!("Failed to load workflows from chain: {err}");
@@ -339,6 +350,17 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .consumer(tangle_consumer)
         .with_shutdown_handler(async move {
             info!("Shutting down ai-agent-sandbox-blueprint blueprint");
+
+            // Signal the API server to stop accepting new connections and drain in-flight requests.
+            drop(api_shutdown_tx);
+            match tokio::time::timeout(std::time::Duration::from_secs(10), api_handle).await {
+                Ok(Ok(())) => info!("Operator API shut down cleanly"),
+                Ok(Err(e)) => error!("Operator API task panicked: {e}"),
+                Err(_) => warn!("Operator API shutdown timed out after 10s"),
+            }
+
+            // Only unregister from BPM AFTER the API is fully stopped, so the proxy
+            // doesn't reject requests while we're still processing them.
             if let Some(b) = shutdown_bridge {
                 if let Err(e) = b.unregister_blueprint_service_proxy(service_id).await {
                     error!("Failed to unregister from BPM proxy: {e}");
