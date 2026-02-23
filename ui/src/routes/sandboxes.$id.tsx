@@ -4,6 +4,8 @@ import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '~/components/motion/AnimatedPage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card';
 import { Button } from '~/components/ui/button';
+import { Input } from '~/components/ui/input';
+import { Textarea } from '~/components/ui/textarea';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
@@ -24,10 +26,16 @@ const TerminalView = lazy(() =>
   import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView }))
 );
 
-type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh';
+type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets';
 
 /** Operator API base URL for sandbox lifecycle operations. */
 const OPERATOR_API_URL = import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090';
+const INSTANCE_OPERATOR_API_URL = import.meta.env.VITE_INSTANCE_OPERATOR_API_URL ?? 'http://localhost:9200';
+
+interface SshKey {
+  username: string;
+  publicKey: string;
+}
 
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
@@ -42,14 +50,34 @@ export default function SandboxDetail() {
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
 
+  // SSH state
+  const [sshPublicKey, setSshPublicKey] = useState('');
+  const [sshUsername, setSshUsername] = useState('agent');
+  const [sshKeys, setSshKeys] = useState<SshKey[]>([]);
+  const [sshBusy, setSshBusy] = useState(false);
+  const [sshError, setSshError] = useState<string | null>(null);
+  const [sshSuccess, setSshSuccess] = useState<string | null>(null);
+
+  // Secrets state
+  const [secretsJson, setSecretsJson] = useState('{\n  \n}');
+  const [secretsBusy, setSecretsBusy] = useState(false);
+  const [secretsError, setSecretsError] = useState<string | null>(null);
+  const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
+
   const serviceId = BigInt(sb?.serviceId ?? '1');
+
+  // Resolve correct operator API URL (instance blueprints run on a different port)
+  const instanceBpId = import.meta.env.VITE_INSTANCE_BLUEPRINT_ID;
+  const teeBpId = import.meta.env.VITE_TEE_INSTANCE_BLUEPRINT_ID;
+  const isInstance = sb ? (sb.blueprintId === instanceBpId || sb.blueprintId === teeBpId) : false;
+  const operatorUrl = isInstance ? INSTANCE_OPERATOR_API_URL : OPERATOR_API_URL;
 
   // Sidecar auth for PTY terminal and chat (direct connection)
   const sidecarUrl = sb?.sidecarUrl ?? '';
   const { token: sidecarToken, isAuthenticated: isSidecarAuthed, authenticate: sidecarAuth, isAuthenticating } = useWagmiSidecarAuth(decodedId, sidecarUrl);
 
-  // Operator API auth for lifecycle operations (stop/resume/snapshot)
-  const { getToken: getOperatorToken } = useOperatorAuth();
+  // Operator API auth for lifecycle operations (stop/resume/snapshot/ssh/secrets)
+  const { getToken: getOperatorToken } = useOperatorAuth(operatorUrl);
 
   // Create sandbox client for direct API access (uses authenticated sidecar token)
   const client: SandboxClient | null = useMemo(() => {
@@ -72,20 +100,27 @@ export default function SandboxDetail() {
     [],
   );
 
-  /** Call operator API for sandbox lifecycle operations (stop/resume/snapshot). */
-  const operatorApiCall = useCallback(async (action: string, body?: Record<string, unknown>) => {
+  /** Call operator API for sandbox lifecycle operations (stop/resume/snapshot/ssh/secrets). */
+  const operatorApiCall = useCallback(async (
+    action: string,
+    body?: Record<string, unknown>,
+    opts?: { method?: string },
+  ) => {
     const token = await getOperatorToken();
     if (!token) throw new Error('Wallet authentication required');
 
-    const url = `${OPERATOR_API_URL}/api/sandboxes/${encodeURIComponent(decodedId)}/${action}`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    };
+    // Instance sandboxes use singleton /api/sandbox/* endpoints
+    const path = isInstance
+      ? `/api/sandbox/${action}`
+      : `/api/sandboxes/${encodeURIComponent(decodedId)}/${action}`;
+    const url = `${operatorUrl}${path}`;
 
     const res = await fetch(url, {
-      method: 'POST',
-      headers,
+      method: opts?.method ?? 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
       body: body ? JSON.stringify(body) : '{}',
     });
 
@@ -94,7 +129,7 @@ export default function SandboxDetail() {
       throw new Error(`${action} failed (${res.status}): ${text}`);
     }
     return res;
-  }, [decodedId, getOperatorToken]);
+  }, [decodedId, isInstance, operatorUrl, getOperatorToken]);
 
   const handleStop = useCallback(async () => {
     try {
@@ -137,6 +172,76 @@ export default function SandboxDetail() {
     }
   }, [operatorApiCall]);
 
+  // SSH handlers
+  const handleSshProvision = useCallback(async () => {
+    if (!sshPublicKey.trim()) return;
+    setSshBusy(true);
+    setSshError(null);
+    setSshSuccess(null);
+    try {
+      await operatorApiCall('ssh', { username: sshUsername, public_key: sshPublicKey.trim() });
+      setSshKeys((prev) => [...prev, { username: sshUsername, publicKey: sshPublicKey.trim() }]);
+      setSshPublicKey('');
+      setSshSuccess('SSH key provisioned');
+      setTimeout(() => setSshSuccess(null), 3000);
+    } catch (e) {
+      setSshError(e instanceof Error ? e.message : 'Failed to provision SSH key');
+    } finally {
+      setSshBusy(false);
+    }
+  }, [sshUsername, sshPublicKey, operatorApiCall]);
+
+  const handleSshRevoke = useCallback(async (key: SshKey) => {
+    setSshBusy(true);
+    setSshError(null);
+    setSshSuccess(null);
+    try {
+      await operatorApiCall('ssh', { username: key.username, public_key: key.publicKey }, { method: 'DELETE' });
+      setSshKeys((prev) => prev.filter((k) => k.publicKey !== key.publicKey));
+      setSshSuccess('SSH key revoked');
+      setTimeout(() => setSshSuccess(null), 3000);
+    } catch (e) {
+      setSshError(e instanceof Error ? e.message : 'Failed to revoke SSH key');
+    } finally {
+      setSshBusy(false);
+    }
+  }, [operatorApiCall]);
+
+  // Secrets handlers
+  const handleInjectSecrets = useCallback(async () => {
+    setSecretsBusy(true);
+    setSecretsError(null);
+    setSecretsSuccess(null);
+    try {
+      const parsed = JSON.parse(secretsJson);
+      if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Secrets must be a JSON object');
+      }
+      await operatorApiCall('secrets', { env_json: parsed });
+      setSecretsSuccess('Secrets injected');
+      setTimeout(() => setSecretsSuccess(null), 3000);
+    } catch (e) {
+      setSecretsError(e instanceof Error ? e.message : 'Failed to inject secrets');
+    } finally {
+      setSecretsBusy(false);
+    }
+  }, [secretsJson, operatorApiCall]);
+
+  const handleWipeSecrets = useCallback(async () => {
+    setSecretsBusy(true);
+    setSecretsError(null);
+    setSecretsSuccess(null);
+    try {
+      await operatorApiCall('secrets', undefined, { method: 'DELETE' });
+      setSecretsSuccess('Secrets wiped');
+      setTimeout(() => setSecretsSuccess(null), 3000);
+    } catch (e) {
+      setSecretsError(e instanceof Error ? e.message : 'Failed to wipe secrets');
+    } finally {
+      setSecretsBusy(false);
+    }
+  }, [operatorApiCall]);
+
   if (!sb) {
     return (
       <AnimatedPage className="mx-auto max-w-3xl px-4 sm:px-6 py-8">
@@ -162,6 +267,7 @@ export default function SandboxDetail() {
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal', disabled: !isRunning },
     { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !isRunning },
     { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !isRunning },
+    { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', disabled: !isRunning },
   ];
 
   return (
@@ -387,22 +493,131 @@ export default function SandboxDetail() {
         </Card>
       )}
 
+      {/* SSH Tab — provision and revoke SSH keys */}
       {tab === 'ssh' && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">SSH Access</CardTitle>
-            <CardDescription>Manage SSH keys for this sandbox</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="py-8 text-center">
-              <div className="i-ph:key text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary">SSH key management coming soon</p>
-              <p className="text-xs text-cloud-elements-textTertiary mt-1">
-                Provision and revoke SSH keys for secure remote access
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Add SSH Key</CardTitle>
+              <CardDescription>Provision an SSH public key for remote access</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-cloud-elements-textSecondary">Username</label>
+                <Input
+                  value={sshUsername}
+                  onChange={(e) => setSshUsername(e.target.value)}
+                  placeholder="agent"
+                  className="font-data text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-cloud-elements-textSecondary">Public Key</label>
+                <Textarea
+                  value={sshPublicKey}
+                  onChange={(e) => setSshPublicKey(e.target.value)}
+                  placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
+                  className="font-data text-xs min-h-[80px] resize-none"
+                />
+              </div>
+              {sshError && (
+                <p className="text-xs text-red-400">{sshError}</p>
+              )}
+              {sshSuccess && (
+                <p className="text-xs text-teal-400">{sshSuccess}</p>
+              )}
+              <Button
+                size="sm"
+                onClick={handleSshProvision}
+                disabled={sshBusy || !sshPublicKey.trim()}
+              >
+                {sshBusy ? 'Provisioning...' : 'Add Key'}
+              </Button>
+            </CardContent>
+          </Card>
+
+          {sshKeys.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Active Keys</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {sshKeys.map((key) => (
+                  <div
+                    key={key.publicKey}
+                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-cloud-elements-background-depth-2"
+                  >
+                    <div className="min-w-0">
+                      <span className="text-xs font-data text-cloud-elements-textSecondary">{key.username}@</span>
+                      <span className="text-xs font-data text-cloud-elements-textTertiary truncate block">
+                        {key.publicKey.length > 60 ? `${key.publicKey.slice(0, 60)}...` : key.publicKey}
+                      </span>
+                    </div>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => handleSshRevoke(key)}
+                      disabled={sshBusy}
+                    >
+                      Revoke
+                    </Button>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* Secrets Tab — inject and wipe environment secrets */}
+      {tab === 'secrets' && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Environment Secrets</CardTitle>
+              <CardDescription>Inject environment variables as secrets into the sandbox</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-cloud-elements-textSecondary">
+                  Secrets (JSON object)
+                </label>
+                <Textarea
+                  value={secretsJson}
+                  onChange={(e) => setSecretsJson(e.target.value)}
+                  placeholder='{"API_KEY": "sk-...", "DB_URL": "postgres://..."}'
+                  className="font-data text-xs min-h-[120px] resize-y"
+                />
+                <p className="text-[11px] text-cloud-elements-textTertiary">
+                  Key-value pairs injected as environment variables. Values are stored securely and not readable after injection.
+                </p>
+              </div>
+              {secretsError && (
+                <p className="text-xs text-red-400">{secretsError}</p>
+              )}
+              {secretsSuccess && (
+                <p className="text-xs text-teal-400">{secretsSuccess}</p>
+              )}
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={handleInjectSecrets}
+                  disabled={secretsBusy}
+                >
+                  {secretsBusy ? 'Injecting...' : 'Inject Secrets'}
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleWipeSecrets}
+                  disabled={secretsBusy}
+                >
+                  Wipe All Secrets
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
     </AnimatedPage>
   );

@@ -3,16 +3,41 @@ import { useOperatorAuth } from './useOperatorAuth';
 import { sandboxListStore, type LocalSandbox } from '~/lib/stores/sandboxes';
 
 const OPERATOR_API_URL = import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090';
+const INSTANCE_OPERATOR_API_URL = import.meta.env.VITE_INSTANCE_OPERATOR_API_URL ?? '';
+
+interface ApiSandbox {
+  id: string;
+  sidecar_url: string;
+  state: string;
+  cpu_cores: number;
+  memory_mb: number;
+  created_at: number;
+  last_activity_at: number;
+}
+
+async function fetchSandboxes(
+  baseUrl: string,
+  token: string,
+  blueprintId: string,
+  serviceId: string,
+): Promise<ApiSandbox[]> {
+  const res = await fetch(`${baseUrl}/api/sandboxes`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.sandboxes ?? [];
+}
 
 /**
- * Hydrate the local sandbox list from the operator API on mount.
+ * Hydrate the local sandbox list from operator APIs on mount.
  *
- * Merges API results with existing local state — API sandboxes that aren't
- * in the local store are added, and running/stopped status is updated from
- * the operator's ground truth.
+ * Fetches from both the sandbox operator and (if configured) the instance
+ * operator, then merges with local state.
  */
 export function useSandboxHydration() {
-  const { getToken } = useOperatorAuth();
+  const { getToken: getSandboxToken } = useOperatorAuth(OPERATOR_API_URL);
+  const { getToken: getInstanceToken } = useOperatorAuth(INSTANCE_OPERATOR_API_URL || undefined);
   const hydrated = useRef(false);
 
   useEffect(() => {
@@ -21,30 +46,41 @@ export function useSandboxHydration() {
 
     (async () => {
       try {
-        const token = await getToken();
-        if (!token) return;
+        const results: ApiSandbox[] = [];
 
-        const res = await fetch(`${OPERATOR_API_URL}/api/sandboxes`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
+        // Fetch from sandbox operator
+        const sandboxToken = await getSandboxToken();
+        if (sandboxToken) {
+          const sandboxes = await fetchSandboxes(
+            OPERATOR_API_URL,
+            sandboxToken,
+            import.meta.env.VITE_SANDBOX_BLUEPRINT_ID ?? '',
+            import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '',
+          );
+          results.push(...sandboxes);
+        }
 
-        const data = await res.json();
-        const apiSandboxes: Array<{
-          id: string;
-          sidecar_url: string;
-          state: string;
-          cpu_cores: number;
-          memory_mb: number;
-          created_at: number;
-          last_activity_at: number;
-        }> = data.sandboxes ?? [];
+        // Fetch from instance operator (if configured)
+        if (INSTANCE_OPERATOR_API_URL) {
+          const instanceToken = await getInstanceToken();
+          if (instanceToken) {
+            const instances = await fetchSandboxes(
+              INSTANCE_OPERATOR_API_URL,
+              instanceToken,
+              import.meta.env.VITE_INSTANCE_BLUEPRINT_ID ?? '',
+              import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '',
+            );
+            results.push(...instances);
+          }
+        }
+
+        if (results.length === 0) return;
 
         const existing = sandboxListStore.get();
         const existingIds = new Set(existing.map((s) => s.id));
 
         // Add new sandboxes from API that aren't in local store
-        const newSandboxes: LocalSandbox[] = apiSandboxes
+        const newSandboxes: LocalSandbox[] = results
           .filter((s) => !existingIds.has(s.id))
           .map((s) => ({
             id: s.id,
@@ -61,7 +97,7 @@ export function useSandboxHydration() {
           }));
 
         // Update status of existing sandboxes from API ground truth
-        const apiStatusMap = new Map(apiSandboxes.map((s) => [s.id, s]));
+        const apiStatusMap = new Map(results.map((s) => [s.id, s]));
         const updated = existing.map((local) => {
           const api = apiStatusMap.get(local.id);
           if (!api) return local;
@@ -79,5 +115,5 @@ export function useSandboxHydration() {
         // Silently fail — hydration is best-effort
       }
     })();
-  }, [getToken]);
+  }, [getSandboxToken, getInstanceToken]);
 }

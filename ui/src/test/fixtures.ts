@@ -35,7 +35,6 @@ export function makeField(overrides: Partial<JobFieldDef> & Pick<JobFieldDef, 'n
 }
 
 // ── ABI shape definitions (mirroring Rust sol! macros) ──
-// These are the canonical ABI param arrays for each Rust request struct.
 // Used by integration tests to verify TS encoding matches Rust decoding.
 
 export type AbiParamDef = { name: string; type: string; components?: AbiParamDef[] };
@@ -65,80 +64,6 @@ export const SANDBOX_ID_ABI: AbiParamDef[] = [
   { name: 'sandbox_id', type: 'string' },
 ];
 
-/** SandboxSnapshotRequest */
-export const SANDBOX_SNAPSHOT_ABI: AbiParamDef[] = [
-  { name: 'sidecar_url', type: 'string' },
-  { name: 'destination', type: 'string' },
-  { name: 'include_workspace', type: 'bool' },
-  { name: 'include_state', type: 'bool' },
-];
-
-/** SandboxExecRequest */
-export const SANDBOX_EXEC_ABI: AbiParamDef[] = [
-  { name: 'sidecar_url', type: 'string' },
-  { name: 'command', type: 'string' },
-  { name: 'cwd', type: 'string' },
-  { name: 'env_json', type: 'string' },
-  { name: 'timeout_ms', type: 'uint64' },
-];
-
-/** SandboxPromptRequest */
-export const SANDBOX_PROMPT_ABI: AbiParamDef[] = [
-  { name: 'sidecar_url', type: 'string' },
-  { name: 'message', type: 'string' },
-  { name: 'session_id', type: 'string' },
-  { name: 'model', type: 'string' },
-  { name: 'context_json', type: 'string' },
-  { name: 'timeout_ms', type: 'uint64' },
-];
-
-/** SandboxTaskRequest */
-export const SANDBOX_TASK_ABI: AbiParamDef[] = [
-  { name: 'sidecar_url', type: 'string' },
-  { name: 'prompt', type: 'string' },
-  { name: 'session_id', type: 'string' },
-  { name: 'max_turns', type: 'uint64' },
-  { name: 'model', type: 'string' },
-  { name: 'context_json', type: 'string' },
-  { name: 'timeout_ms', type: 'uint64' },
-];
-
-/** BatchTaskRequest */
-export const BATCH_TASK_ABI: AbiParamDef[] = [
-  { name: 'sidecar_urls', type: 'string[]' },
-  { name: 'prompt', type: 'string' },
-  { name: 'session_id', type: 'string' },
-  { name: 'max_turns', type: 'uint64' },
-  { name: 'model', type: 'string' },
-  { name: 'context_json', type: 'string' },
-  { name: 'timeout_ms', type: 'uint64' },
-  { name: 'parallel', type: 'bool' },
-  { name: 'aggregation', type: 'string' },
-];
-
-/** BatchExecRequest */
-export const BATCH_EXEC_ABI: AbiParamDef[] = [
-  { name: 'sidecar_urls', type: 'string[]' },
-  { name: 'command', type: 'string' },
-  { name: 'cwd', type: 'string' },
-  { name: 'env_json', type: 'string' },
-  { name: 'timeout_ms', type: 'uint64' },
-  { name: 'parallel', type: 'bool' },
-];
-
-/** BatchCollectRequest */
-export const BATCH_COLLECT_ABI: AbiParamDef[] = [
-  { name: 'batch_id', type: 'string' },
-];
-
-/** BatchCreateRequest (with nested SandboxCreateRequest) */
-export const BATCH_CREATE_ABI: AbiParamDef[] = [
-  { name: 'count', type: 'uint32' },
-  { name: 'template_request', type: 'tuple', components: SANDBOX_CREATE_ABI },
-  { name: 'operators', type: 'address[]' },
-  { name: 'distribution', type: 'string' },
-];
-
 /** WorkflowCreateRequest */
 export const WORKFLOW_CREATE_ABI: AbiParamDef[] = [
   { name: 'name', type: 'string' },
@@ -152,15 +77,6 @@ export const WORKFLOW_CREATE_ABI: AbiParamDef[] = [
 export const WORKFLOW_CONTROL_ABI: AbiParamDef[] = [
   { name: 'workflow_id', type: 'uint64' },
 ];
-
-/** SshProvisionRequest / SshRevokeRequest */
-export const SSH_REQUEST_ABI: AbiParamDef[] = [
-  { name: 'sidecar_url', type: 'string' },
-  { name: 'username', type: 'string' },
-  { name: 'public_key', type: 'string' },
-];
-
-// ── Instance blueprint ABIs (no sidecar_url context) ──
 
 /** ProvisionRequest — includes sidecar_token before TEE fields */
 export const INSTANCE_PROVISION_ABI: AbiParamDef[] = [
@@ -181,46 +97,6 @@ export const INSTANCE_PROVISION_ABI: AbiParamDef[] = [
   { name: 'sidecar_token', type: 'string' },
   { name: 'tee_required', type: 'bool' },
   { name: 'tee_type', type: 'uint8' },
-];
-
-/** InstanceExecRequest */
-export const INSTANCE_EXEC_ABI: AbiParamDef[] = [
-  { name: 'command', type: 'string' },
-  { name: 'cwd', type: 'string' },
-  { name: 'env_json', type: 'string' },
-  { name: 'timeout_ms', type: 'uint64' },
-];
-
-/** InstancePromptRequest */
-export const INSTANCE_PROMPT_ABI: AbiParamDef[] = [
-  { name: 'message', type: 'string' },
-  { name: 'session_id', type: 'string' },
-  { name: 'model', type: 'string' },
-  { name: 'context_json', type: 'string' },
-  { name: 'timeout_ms', type: 'uint64' },
-];
-
-/** InstanceTaskRequest */
-export const INSTANCE_TASK_ABI: AbiParamDef[] = [
-  { name: 'prompt', type: 'string' },
-  { name: 'session_id', type: 'string' },
-  { name: 'max_turns', type: 'uint64' },
-  { name: 'model', type: 'string' },
-  { name: 'context_json', type: 'string' },
-  { name: 'timeout_ms', type: 'uint64' },
-];
-
-/** InstanceSshProvisionRequest / InstanceSshRevokeRequest */
-export const INSTANCE_SSH_ABI: AbiParamDef[] = [
-  { name: 'username', type: 'string' },
-  { name: 'public_key', type: 'string' },
-];
-
-/** InstanceSnapshotRequest */
-export const INSTANCE_SNAPSHOT_ABI: AbiParamDef[] = [
-  { name: 'destination', type: 'string' },
-  { name: 'include_workspace', type: 'bool' },
-  { name: 'include_state', type: 'bool' },
 ];
 
 /** JsonRequest (deprovision) */
@@ -257,46 +133,6 @@ export const INSTANCE_PROVISION_VALUES: Record<string, unknown> = {
   sidecarToken: '',
 };
 
-/** Exec form values */
-export const EXEC_VALUES: Record<string, unknown> = {
-  command: 'ls -la /workspace',
-  cwd: '/workspace',
-  envJson: '{}',
-  timeoutMs: 30000,
-};
-
-/** Prompt form values */
-export const PROMPT_VALUES: Record<string, unknown> = {
-  message: 'What files are in the workspace?',
-  sessionId: 'sess-123',
-  model: 'claude-3',
-  contextJson: '{}',
-  timeoutMs: 60000,
-};
-
-/** Task form values */
-export const TASK_VALUES: Record<string, unknown> = {
-  prompt: 'Build a REST API',
-  sessionId: 'sess-456',
-  maxTurns: 10,
-  model: 'claude-3',
-  contextJson: '{}',
-  timeoutMs: 300000,
-};
-
-/** SSH form values */
-export const SSH_VALUES: Record<string, unknown> = {
-  username: 'agent',
-  publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest',
-};
-
-/** Snapshot form values */
-export const SNAPSHOT_VALUES: Record<string, unknown> = {
-  destination: 's3://bucket/snapshot-001',
-  includeWorkspace: true,
-  includeState: true,
-};
-
 /** Workflow create form values */
 export const WORKFLOW_CREATE_VALUES: Record<string, unknown> = {
   name: 'daily-backup',
@@ -304,11 +140,6 @@ export const WORKFLOW_CREATE_VALUES: Record<string, unknown> = {
   triggerType: 'cron',
   triggerConfig: '0 */6 * * *',
   sandboxConfigJson: '{"image":"ubuntu:22.04"}',
-};
-
-/** Context with sidecar_url */
-export const SIDECAR_CONTEXT: Record<string, unknown> = {
-  sidecar_url: 'http://localhost:8080',
 };
 
 /** Context with sandbox_id */

@@ -8,8 +8,7 @@
  * TypeScript field metadata and the actual Rust ABI structs.
  *
  * NOTE: Read-only ops (exec, prompt, task, ssh, snapshot, batch) have been
- * moved to the operator API and are no longer on-chain jobs. Those tests
- * have been removed. The fixtures remain for future API-level testing.
+ * moved to the operator API and are no longer on-chain jobs.
  */
 
 import { describe, it, expect } from 'vitest';
