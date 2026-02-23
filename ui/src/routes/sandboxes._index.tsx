@@ -6,9 +6,11 @@ import { Button } from '~/components/ui/button';
 import { Badge } from '~/components/ui/badge';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { sandboxListStore, activeSandboxes } from '~/lib/stores/sandboxes';
+import { useSandboxHydration } from '~/lib/hooks/useSandboxHydration';
 import { cn } from '~/lib/utils';
 
 export default function SandboxList() {
+  useSandboxHydration();
   const allSandboxes = useStore(sandboxListStore);
   const active = useStore(activeSandboxes);
 

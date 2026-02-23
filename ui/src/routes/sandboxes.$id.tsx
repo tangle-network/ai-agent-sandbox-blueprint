@@ -16,6 +16,7 @@ import { getJobById } from '~/lib/blueprints';
 import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
 import '~/lib/blueprints'; // auto-register
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
+import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '~/lib/utils';
 
@@ -43,9 +44,12 @@ export default function SandboxDetail() {
 
   const serviceId = BigInt(sb?.serviceId ?? '1');
 
-  // Sidecar auth for PTY terminal and API access
+  // Sidecar auth for PTY terminal and chat (direct connection)
   const sidecarUrl = sb?.sidecarUrl ?? '';
   const { token: sidecarToken, isAuthenticated: isSidecarAuthed, authenticate: sidecarAuth, isAuthenticating } = useWagmiSidecarAuth(decodedId, sidecarUrl);
+
+  // Operator API auth for lifecycle operations (stop/resume/snapshot)
+  const { getToken: getOperatorToken } = useOperatorAuth();
 
   // Create sandbox client for direct API access (uses authenticated sidecar token)
   const client: SandboxClient | null = useMemo(() => {
@@ -70,9 +74,14 @@ export default function SandboxDetail() {
 
   /** Call operator API for sandbox lifecycle operations (stop/resume/snapshot). */
   const operatorApiCall = useCallback(async (action: string, body?: Record<string, unknown>) => {
+    const token = await getOperatorToken();
+    if (!token) throw new Error('Wallet authentication required');
+
     const url = `${OPERATOR_API_URL}/api/sandboxes/${encodeURIComponent(decodedId)}/${action}`;
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (sidecarToken) headers['Authorization'] = `Bearer ${sidecarToken}`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    };
 
     const res = await fetch(url, {
       method: 'POST',
@@ -85,7 +94,7 @@ export default function SandboxDetail() {
       throw new Error(`${action} failed (${res.status}): ${text}`);
     }
     return res;
-  }, [decodedId, sidecarToken]);
+  }, [decodedId, getOperatorToken]);
 
   const handleStop = useCallback(async () => {
     try {
