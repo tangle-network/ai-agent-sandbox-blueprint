@@ -214,7 +214,39 @@ async fn wipe_secrets(
 // ---------------------------------------------------------------------------
 
 async fn health() -> impl IntoResponse {
-    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+    // Check Docker daemon connectivity.
+    let docker_ok = match runtime::docker_builder().await {
+        Ok(builder) => builder.client().ping().await.is_ok(),
+        Err(_) => false,
+    };
+
+    // Check persistent store readability.
+    let store_ok = runtime::sandboxes().and_then(|s| s.values()).is_ok();
+
+    let (status, code) = match (docker_ok, store_ok) {
+        (true, true) => ("ok", StatusCode::OK),
+        (false, false) => ("unhealthy", StatusCode::SERVICE_UNAVAILABLE),
+        _ => ("degraded", StatusCode::OK),
+    };
+
+    let check = |ok: bool| {
+        if ok {
+            json!({ "status": "ok" })
+        } else {
+            json!({ "status": "error" })
+        }
+    };
+
+    (
+        code,
+        Json(json!({
+            "status": status,
+            "checks": {
+                "docker": check(docker_ok),
+                "store": check(store_ok),
+            }
+        })),
+    )
 }
 
 async fn prometheus_metrics() -> impl IntoResponse {
@@ -889,7 +921,8 @@ pub fn extract_session_from_headers(
 ///
 /// - `"none"` → CORS disabled (use when behind BPM proxy that handles CORS).
 /// - Comma-separated origins → strict whitelist with credentials.
-/// - Unset or `"*"` → allow any origin (development mode only).
+/// - `"*"` → allow any origin (development mode only, must be explicit).
+/// - Unset → localhost-only with warning (safe default for production).
 pub fn build_cors_layer() -> CorsLayer {
     use axum::http::{Method, header};
 
@@ -914,11 +947,32 @@ pub fn build_cors_layer() -> CorsLayer {
             .allow_headers(allowed_headers);
     }
 
-    if origins_env.is_empty() || origins_env == "*" {
+    if origins_env == "*" {
+        // Explicit wildcard — development mode only.
         CorsLayer::new()
             .allow_origin(AllowOrigin::any())
             .allow_methods(allowed_methods)
             .allow_headers(allowed_headers)
+    } else if origins_env.is_empty() {
+        // Unset — restrictive default for production safety.
+        tracing::warn!(
+            "CORS_ALLOWED_ORIGINS not set; defaulting to localhost-only. \
+             Set explicitly for production deployments."
+        );
+        let localhost_origins: Vec<_> = [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+        ]
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(localhost_origins))
+            .allow_methods(allowed_methods)
+            .allow_headers(allowed_headers)
+            .allow_credentials(true)
     } else {
         let origins: Vec<_> = origins_env
             .split(',')
@@ -1302,9 +1356,22 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        // Health returns 200 (ok/degraded) or 503 (unhealthy) depending on Docker
+        let status = response.status();
+        assert!(
+            status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected health status: {status}"
+        );
         let json = body_json(response.into_body()).await;
-        assert_eq!(json["status"], "ok");
+        assert!(json["status"].is_string(), "missing status field");
+        assert!(
+            json["checks"]["docker"]["status"].is_string(),
+            "missing checks.docker.status"
+        );
+        assert!(
+            json["checks"]["store"]["status"].is_string(),
+            "missing checks.store.status"
+        );
     }
 
     #[tokio::test]
@@ -1369,94 +1436,86 @@ mod tests {
     /// Insert a sandbox record with TEE fields into the store.
     fn insert_tee_sandbox(id: &str, deployment_id: &str, owner: &str) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes};
-        sandboxes()
-            .unwrap()
-            .insert(
-                id.to_string(),
-                SandboxRecord {
-                    id: id.to_string(),
-                    container_id: format!("tee-{deployment_id}"),
-                    sidecar_url: "http://mock-tee:8080".into(),
-                    sidecar_port: 8080,
-                    ssh_port: None,
-                    token: "test-token".into(),
-                    created_at: 1_700_000_000,
-                    cpu_cores: 2,
-                    memory_mb: 4096,
-                    state: SandboxState::Running,
-                    idle_timeout_seconds: 1800,
-                    max_lifetime_seconds: 86400,
-                    last_activity_at: 1_700_000_000,
-                    stopped_at: None,
-                    snapshot_image_id: None,
-                    snapshot_s3_url: None,
-                    container_removed_at: None,
-                    image_removed_at: None,
-                    original_image: "test:latest".into(),
-                    base_env_json: "{}".into(),
-                    user_env_json: String::new(),
-                    snapshot_destination: None,
-                    tee_deployment_id: Some(deployment_id.to_string()),
-                    tee_metadata_json: Some(r#"{"backend":"mock"}"#.into()),
-                    name: "tee-sandbox".into(),
-                    agent_identifier: String::new(),
-                    metadata_json: "{}".into(),
-                    disk_gb: 50,
-                    stack: String::new(),
-                    owner: owner.to_string(),
-                    tee_config: Some(crate::tee::TeeConfig {
-                        required: true,
-                        tee_type: crate::tee::TeeType::Tdx,
-                    }),
-                },
-            )
-            .unwrap();
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        let mut record = SandboxRecord {
+            id: id.to_string(),
+            container_id: format!("tee-{deployment_id}"),
+            sidecar_url: "http://mock-tee:8080".into(),
+            sidecar_port: 8080,
+            ssh_port: None,
+            token: "test-token".into(),
+            created_at: 1_700_000_000,
+            cpu_cores: 2,
+            memory_mb: 4096,
+            state: SandboxState::Running,
+            idle_timeout_seconds: 1800,
+            max_lifetime_seconds: 86400,
+            last_activity_at: 1_700_000_000,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: "test:latest".into(),
+            base_env_json: "{}".into(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: Some(deployment_id.to_string()),
+            tee_metadata_json: Some(r#"{"backend":"mock"}"#.into()),
+            name: "tee-sandbox".into(),
+            agent_identifier: String::new(),
+            metadata_json: "{}".into(),
+            disk_gb: 50,
+            stack: String::new(),
+            owner: owner.to_string(),
+            tee_config: Some(crate::tee::TeeConfig {
+                required: true,
+                tee_type: crate::tee::TeeType::Tdx,
+            }),
+        };
+        seal_record(&mut record);
+        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
     /// Insert a non-TEE sandbox into the store.
     fn insert_plain_sandbox(id: &str, owner: &str) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes};
-        sandboxes()
-            .unwrap()
-            .insert(
-                id.to_string(),
-                SandboxRecord {
-                    id: id.to_string(),
-                    container_id: format!("ctr-{id}"),
-                    sidecar_url: "http://localhost:9999".into(),
-                    sidecar_port: 9999,
-                    ssh_port: None,
-                    token: "plain-token".into(),
-                    created_at: 1_700_000_000,
-                    cpu_cores: 1,
-                    memory_mb: 1024,
-                    state: SandboxState::Running,
-                    idle_timeout_seconds: 1800,
-                    max_lifetime_seconds: 86400,
-                    last_activity_at: 1_700_000_000,
-                    stopped_at: None,
-                    snapshot_image_id: None,
-                    snapshot_s3_url: None,
-                    container_removed_at: None,
-                    image_removed_at: None,
-                    original_image: "test:latest".into(),
-                    base_env_json: "{}".into(),
-                    user_env_json: String::new(),
-                    snapshot_destination: None,
-                    tee_deployment_id: None,
-                    tee_metadata_json: None,
-                    name: "plain-sandbox".into(),
-                    agent_identifier: String::new(),
-                    metadata_json: "{}".into(),
-                    disk_gb: 10,
-                    stack: String::new(),
-                    owner: owner.to_string(),
-                    tee_config: None,
-                },
-            )
-            .unwrap();
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        let mut record = SandboxRecord {
+            id: id.to_string(),
+            container_id: format!("ctr-{id}"),
+            sidecar_url: "http://localhost:9999".into(),
+            sidecar_port: 9999,
+            ssh_port: None,
+            token: "plain-token".into(),
+            created_at: 1_700_000_000,
+            cpu_cores: 1,
+            memory_mb: 1024,
+            state: SandboxState::Running,
+            idle_timeout_seconds: 1800,
+            max_lifetime_seconds: 86400,
+            last_activity_at: 1_700_000_000,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: "test:latest".into(),
+            base_env_json: "{}".into(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            name: "plain-sandbox".into(),
+            agent_identifier: String::new(),
+            metadata_json: "{}".into(),
+            disk_gb: 10,
+            stack: String::new(),
+            owner: owner.to_string(),
+            tee_config: None,
+        };
+        seal_record(&mut record);
+        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
     // Use a distinct owner for TEE tests so sandbox inserts don't pollute

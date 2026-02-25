@@ -316,7 +316,10 @@ pub fn instance_store() -> Result<&'static PersistentStore<SandboxRecord>> {
 
 /// Get the instance-mode singleton sandbox, if provisioned.
 pub fn get_instance_sandbox() -> Result<Option<SandboxRecord>> {
-    instance_store()?.get("instance")
+    Ok(instance_store()?.get("instance")?.map(|mut r| {
+        unseal_record(&mut r);
+        r
+    }))
 }
 
 pub async fn docker_builder() -> Result<&'static DockerBuilder> {
@@ -336,21 +339,180 @@ pub async fn docker_builder() -> Result<&'static DockerBuilder> {
         .await
 }
 
+/// Default timeout for Docker operations (seconds).
+const DEFAULT_DOCKER_TIMEOUT_SECS: u64 = 60;
+
+/// Wrap a Docker future in a timeout to prevent indefinite hangs.
+///
+/// Reads `DOCKER_OPERATION_TIMEOUT_SECS` env var (default: 60s).
+pub(crate) async fn docker_timeout<F, T, E>(op_name: &str, future: F) -> Result<T>
+where
+    F: std::future::Future<Output = std::result::Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let timeout_secs = env::var("DOCKER_OPERATION_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_DOCKER_TIMEOUT_SECS);
+
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), future).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(e)) => Err(SandboxError::Docker(format!("{op_name} failed: {e}"))),
+        Err(_) => Err(SandboxError::Docker(format!(
+            "{op_name} timed out after {timeout_secs}s"
+        ))),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// At-rest encryption for secrets stored in SandboxRecord
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Prefix that marks a field as encrypted (enables transparent migration).
+const ENC_PREFIX: &str = "enc:v1:";
+
+/// HKDF info parameter for secrets-at-rest key derivation (distinct from PASETO).
+const SECRETS_HKDF_INFO: &[u8] = b"secrets-at-rest-encryption-v1";
+
+/// HKDF salt — shared with session_auth to derive from the same root secret,
+/// but the distinct `info` parameter ensures an independent key.
+const SECRETS_HKDF_SALT: &[u8] = b"tangle-sandbox-blueprint-paseto-v4";
+
+/// 256-bit encryption key derived from `SESSION_AUTH_SECRET` via HKDF-SHA256.
+/// Falls back to an ephemeral random key (with warning) if the env var is unset.
+static SEAL_KEY: once_cell::sync::Lazy<[u8; 32]> = once_cell::sync::Lazy::new(|| {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    match std::env::var("SESSION_AUTH_SECRET") {
+        Ok(secret) => {
+            let hk = Hkdf::<Sha256>::new(Some(SECRETS_HKDF_SALT), secret.as_bytes());
+            let mut key = [0u8; 32];
+            hk.expand(SECRETS_HKDF_INFO, &mut key)
+                .expect("HKDF-SHA256 expand to 32 bytes cannot fail");
+            key
+        }
+        Err(_) => {
+            tracing::warn!(
+                "SESSION_AUTH_SECRET not set; using ephemeral key for secrets encryption. \
+                 Stored secrets will NOT survive restart."
+            );
+            let mut key = [0u8; 32];
+            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut key);
+            key
+        }
+    }
+});
+
+/// Encrypt a plaintext string using ChaCha20-Poly1305 AEAD.
+/// Returns `"enc:v1:" + base64(nonce || ciphertext)`.
+fn seal_field(plaintext: &str) -> Result<String> {
+    use base64::Engine;
+    use chacha20poly1305::{
+        AeadCore, ChaCha20Poly1305, KeyInit,
+        aead::{Aead, OsRng},
+    };
+
+    if plaintext.is_empty() {
+        return Ok(String::new());
+    }
+
+    let cipher = ChaCha20Poly1305::new((&*SEAL_KEY).into());
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_bytes())
+        .map_err(|e| SandboxError::Storage(format!("seal_field encrypt failed: {e}")))?;
+
+    let mut blob = Vec::with_capacity(12 + ciphertext.len());
+    blob.extend_from_slice(&nonce);
+    blob.extend_from_slice(&ciphertext);
+
+    Ok(format!(
+        "{ENC_PREFIX}{}",
+        base64::engine::general_purpose::STANDARD.encode(&blob)
+    ))
+}
+
+/// Decrypt a stored field. If it doesn't carry the `enc:v1:` prefix, return as-is
+/// (transparent migration from plaintext).
+fn unseal_field(stored: &str) -> Result<String> {
+    use base64::Engine;
+    use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
+
+    if stored.is_empty() || !stored.starts_with(ENC_PREFIX) {
+        return Ok(stored.to_string());
+    }
+
+    let encoded = &stored[ENC_PREFIX.len()..];
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| SandboxError::Storage(format!("unseal_field base64 decode failed: {e}")))?;
+
+    if blob.len() < 12 {
+        return Err(SandboxError::Storage(
+            "unseal_field: ciphertext too short".into(),
+        ));
+    }
+
+    let nonce = chacha20poly1305::Nonce::from_slice(&blob[..12]);
+    let ciphertext = &blob[12..];
+
+    let cipher = ChaCha20Poly1305::new((&*SEAL_KEY).into());
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| SandboxError::Storage(format!("unseal_field decrypt failed: {e}")))?;
+
+    String::from_utf8(plaintext)
+        .map_err(|e| SandboxError::Storage(format!("unseal_field utf8 failed: {e}")))
+}
+
+/// Encrypt sensitive fields in a `SandboxRecord` before persisting.
+pub fn seal_record(record: &mut SandboxRecord) {
+    if let Ok(sealed) = seal_field(&record.token) {
+        record.token = sealed;
+    }
+    if let Ok(sealed) = seal_field(&record.base_env_json) {
+        record.base_env_json = sealed;
+    }
+    if let Ok(sealed) = seal_field(&record.user_env_json) {
+        record.user_env_json = sealed;
+    }
+}
+
+/// Decrypt sensitive fields in a `SandboxRecord` after reading from store.
+pub fn unseal_record(record: &mut SandboxRecord) {
+    if let Ok(plain) = unseal_field(&record.token) {
+        record.token = plain;
+    }
+    if let Ok(plain) = unseal_field(&record.base_env_json) {
+        record.base_env_json = plain;
+    }
+    if let Ok(plain) = unseal_field(&record.user_env_json) {
+        record.user_env_json = plain;
+    }
+}
+
 fn next_sandbox_id() -> String {
     format!("sandbox-{}", uuid::Uuid::new_v4())
 }
 
 pub fn get_sandbox_by_id(id: &str) -> Result<SandboxRecord> {
-    sandboxes()?
+    let mut record = sandboxes()?
         .get(id)?
-        .ok_or_else(|| SandboxError::NotFound(format!("Sandbox '{id}' not found")))
+        .ok_or_else(|| SandboxError::NotFound(format!("Sandbox '{id}' not found")))?;
+    unseal_record(&mut record);
+    Ok(record)
 }
 
 pub fn get_sandbox_by_url(sidecar_url: &str) -> Result<SandboxRecord> {
     let url = sidecar_url.to_string();
-    sandboxes()?
+    let mut record = sandboxes()?
         .find(|record| record.sidecar_url == url)?
-        .ok_or_else(|| SandboxError::NotFound(format!("Sandbox not found for URL: {sidecar_url}")))
+        .ok_or_else(|| {
+            SandboxError::NotFound(format!("Sandbox not found for URL: {sidecar_url}"))
+        })?;
+    unseal_record(&mut record);
+    Ok(record)
 }
 
 /// Update `last_activity_at` to now for the given sandbox.
@@ -371,6 +533,10 @@ pub fn get_sandbox_by_url_opt(sidecar_url: &str) -> Option<SandboxRecord> {
             .find(|record| record.sidecar_url == url)
             .ok()
             .flatten()
+            .map(|mut r| {
+                unseal_record(&mut r);
+                r
+            })
     })
 }
 
@@ -434,9 +600,7 @@ async fn ensure_image_pulled(builder: &DockerBuilder, image: &str) -> Result<()>
         .get_or_try_init(|| async {
             let config = SidecarRuntimeConfig::load();
             if config.pull_image {
-                builder.pull_image(image, None).await.map_err(|err| {
-                    SandboxError::Docker(format!("Failed to pull image {image}: {err}"))
-                })?;
+                docker_timeout("pull_image", builder.pull_image(image, None)).await?;
             }
             Ok::<(), SandboxError>(())
         })
@@ -537,7 +701,9 @@ async fn create_sidecar_tee(
         tee_config: request.tee_config.clone(),
     };
 
-    sandboxes()?.insert(sandbox_id, record.clone())?;
+    let mut sealed = record.clone();
+    seal_record(&mut sealed);
+    sandboxes()?.insert(sandbox_id, sealed)?;
     crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
 
     Ok((record, Some(deployment.attestation)))
@@ -597,7 +763,7 @@ fn build_docker_config(
     port_bindings.insert(
         format!("{}/tcp", config.container_port),
         Some(vec![PortBinding {
-            host_ip: Some("0.0.0.0".to_string()),
+            host_ip: Some("127.0.0.1".to_string()),
             host_port: None,
         }]),
     );
@@ -605,7 +771,7 @@ fn build_docker_config(
         port_bindings.insert(
             format!("{}/tcp", config.ssh_port),
             Some(vec![PortBinding {
-                host_ip: Some("0.0.0.0".to_string()),
+                host_ip: Some("127.0.0.1".to_string()),
                 host_port: None,
             }]),
         );
@@ -619,6 +785,9 @@ fn build_docker_config(
 
     let mut host_config = HostConfig {
         port_bindings: Some(port_bindings),
+        cap_drop: Some(vec!["ALL".to_string()]),
+        cap_add: Some(vec!["SYS_PTRACE".to_string()]),
+        security_opt: Some(vec!["no-new-privileges=true".to_string()]),
         ..Default::default()
     };
     if cpu_cores > 0 {
@@ -685,21 +854,20 @@ async fn create_sidecar_docker(
         .env(env_vars)
         .config_override(override_config);
 
-    container
-        .start(false)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to start sidecar container: {err}")))?;
+    docker_timeout("start_container", container.start(false)).await?;
 
     let container_id = container
         .id()
         .ok_or_else(|| SandboxError::Docker("Missing container id".into()))?
         .to_string();
 
-    let inspect = builder
-        .client()
-        .inspect_container(&container_id, None::<InspectContainerOptions>)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to inspect container: {err}")))?;
+    let inspect = docker_timeout(
+        "inspect_container",
+        builder
+            .client()
+            .inspect_container(&container_id, None::<InspectContainerOptions>),
+    )
+    .await?;
 
     let (sidecar_port, ssh_port) =
         extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
@@ -743,7 +911,9 @@ async fn create_sidecar_docker(
         tee_config: None,
     };
 
-    sandboxes()?.insert(sandbox_id, record.clone())?;
+    let mut sealed = record.clone();
+    seal_record(&mut sealed);
+    sandboxes()?.insert(sandbox_id, sealed)?;
 
     crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
 
@@ -755,10 +925,7 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
     let mut container = Container::from_id(builder.client(), &record.container_id)
         .await
         .map_err(|err| SandboxError::Docker(format!("Failed to load container: {err}")))?;
-    container
-        .stop()
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to stop container: {err}")))?;
+    docker_timeout("stop_container", container.stop()).await?;
 
     let now = crate::util::now_ts();
     let _ = sandboxes()?.update(&record.id, |r| {
@@ -795,10 +962,7 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
             let mut container = Container::from_id(builder.client(), &record.container_id)
                 .await
                 .map_err(|err| SandboxError::Docker(format!("Failed to load container: {err}")))?;
-            container
-                .start(false)
-                .await
-                .map_err(|err| SandboxError::Docker(format!("Failed to start container: {err}")))?;
+            docker_timeout("start_container", container.start(false)).await?;
             Ok::<(), SandboxError>(())
         };
         match try_start.await {
@@ -964,13 +1128,14 @@ async fn delete_sidecar_docker(record: &SandboxRecord) -> Result<()> {
     let container = Container::from_id(builder.client(), &record.container_id)
         .await
         .map_err(|err| SandboxError::Docker(format!("Failed to load container: {err}")))?;
-    container
-        .remove(Some(RemoveContainerOptions {
+    docker_timeout(
+        "remove_container",
+        container.remove(Some(RemoveContainerOptions {
             force: true,
             ..Default::default()
-        }))
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to remove container: {err}")))?;
+        })),
+    )
+    .await?;
 
     crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
 
@@ -990,11 +1155,13 @@ pub async fn commit_container(record: &SandboxRecord) -> Result<String> {
         ..Default::default()
     };
     let repo_tag = format!("sandbox-snapshot/{}:latest", record.id);
-    let response = builder
-        .client()
-        .commit_container(options, BollardConfig::<String>::default())
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to commit container: {err}")))?;
+    let response = docker_timeout(
+        "commit_container",
+        builder
+            .client()
+            .commit_container(options, BollardConfig::<String>::default()),
+    )
+    .await?;
     Ok(response.id.filter(|s| !s.is_empty()).unwrap_or(repo_tag))
 }
 
@@ -1036,20 +1203,20 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .env(env_vars)
         .config_override(override_config);
 
-    container.start(false).await.map_err(|err| {
-        SandboxError::Docker(format!("Failed to start from snapshot image: {err}"))
-    })?;
+    docker_timeout("start_container", container.start(false)).await?;
 
     let container_id = container
         .id()
         .ok_or_else(|| SandboxError::Docker("Missing container id".into()))?
         .to_string();
 
-    let inspect = builder
-        .client()
-        .inspect_container(&container_id, None::<InspectContainerOptions>)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to inspect container: {err}")))?;
+    let inspect = docker_timeout(
+        "inspect_container",
+        builder
+            .client()
+            .inspect_container(&container_id, None::<InspectContainerOptions>),
+    )
+    .await?;
 
     let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
     let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
@@ -1066,7 +1233,9 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
     updated.container_removed_at = None;
     updated.snapshot_image_id = None;
 
-    sandboxes()?.insert(record.id.clone(), updated.clone())?;
+    let mut sealed = updated.clone();
+    seal_record(&mut sealed);
+    sandboxes()?.insert(record.id.clone(), sealed)?;
     Ok(updated)
 }
 
@@ -1105,21 +1274,20 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         .env(env_vars)
         .config_override(override_config);
 
-    container
-        .start(false)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to start from base image: {err}")))?;
+    docker_timeout("start_container", container.start(false)).await?;
 
     let container_id = container
         .id()
         .ok_or_else(|| SandboxError::Docker("Missing container id".into()))?
         .to_string();
 
-    let inspect = builder
-        .client()
-        .inspect_container(&container_id, None::<InspectContainerOptions>)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to inspect container: {err}")))?;
+    let inspect = docker_timeout(
+        "inspect_container",
+        builder
+            .client()
+            .inspect_container(&container_id, None::<InspectContainerOptions>),
+    )
+    .await?;
 
     let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
     let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
@@ -1157,7 +1325,9 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     updated.image_removed_at = None;
     updated.snapshot_s3_url = None;
 
-    sandboxes()?.insert(record.id.clone(), updated.clone())?;
+    let mut sealed = updated.clone();
+    seal_record(&mut sealed);
+    sandboxes()?.insert(record.id.clone(), sealed)?;
     Ok(updated)
 }
 
@@ -1173,12 +1343,11 @@ async fn refresh_port_mapping(
     public_host: &str,
 ) -> Result<(String, u16, Option<u16>)> {
     use docktopus::bollard::container::InspectContainerOptions;
-    let inspect = client
-        .inspect_container(container_id, None::<InspectContainerOptions>)
-        .await
-        .map_err(|err| {
-            SandboxError::Docker(format!("Failed to inspect container after restart: {err}"))
-        })?;
+    let inspect = docker_timeout(
+        "inspect_container",
+        client.inspect_container(container_id, None::<InspectContainerOptions>),
+    )
+    .await?;
     let (sidecar_port, ssh_port) = extract_ports(&inspect, container_port, ssh_enabled)?;
     let sidecar_url = format!("http://{public_host}:{sidecar_port}");
     Ok((sidecar_url, sidecar_port, ssh_port))
@@ -1367,5 +1536,83 @@ mod tee_tests {
             0,
             "Mock deploy should not be called for non-TEE requests"
         );
+    }
+}
+
+#[cfg(test)]
+mod seal_tests {
+    use super::*;
+
+    #[test]
+    fn seal_unseal_roundtrip() {
+        let plaintext = "super-secret-token-123";
+        let sealed = seal_field(plaintext).unwrap();
+        assert!(sealed.starts_with(ENC_PREFIX), "should have enc prefix");
+        assert_ne!(sealed, plaintext);
+
+        let unsealed = unseal_field(&sealed).unwrap();
+        assert_eq!(unsealed, plaintext);
+    }
+
+    #[test]
+    fn unseal_plaintext_passthrough() {
+        let plain = "not-encrypted-token";
+        let result = unseal_field(plain).unwrap();
+        assert_eq!(result, plain, "plaintext should pass through unchanged");
+    }
+
+    #[test]
+    fn seal_empty_string() {
+        let sealed = seal_field("").unwrap();
+        assert_eq!(sealed, "", "empty string should stay empty");
+        let unsealed = unseal_field("").unwrap();
+        assert_eq!(unsealed, "", "empty unseal should stay empty");
+    }
+
+    #[test]
+    fn seal_record_roundtrip() {
+        let mut record = SandboxRecord {
+            id: "test".into(),
+            container_id: "ctr".into(),
+            sidecar_url: "http://x".into(),
+            sidecar_port: 0,
+            ssh_port: None,
+            token: "my-token".into(),
+            created_at: 0,
+            cpu_cores: 0,
+            memory_mb: 0,
+            state: SandboxState::Running,
+            idle_timeout_seconds: 0,
+            max_lifetime_seconds: 0,
+            last_activity_at: 0,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: String::new(),
+            base_env_json: r#"{"KEY":"val"}"#.into(),
+            user_env_json: r#"{"USER":"x"}"#.into(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            tee_config: None,
+        };
+
+        seal_record(&mut record);
+        assert!(record.token.starts_with(ENC_PREFIX));
+        assert!(record.base_env_json.starts_with(ENC_PREFIX));
+        assert!(record.user_env_json.starts_with(ENC_PREFIX));
+
+        unseal_record(&mut record);
+        assert_eq!(record.token, "my-token");
+        assert_eq!(record.base_env_json, r#"{"KEY":"val"}"#);
+        assert_eq!(record.user_env_json, r#"{"USER":"x"}"#);
     }
 }
