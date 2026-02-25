@@ -4,9 +4,11 @@
 //!   1. Provision instance via Tangle job (BlueprintHarness → Anvil → Runner → Docker)
 //!   2. Start operator API server
 //!   3. Authenticate via EIP-191 challenge → PASETO session token
-//!   4. Exercise every instance operator API endpoint against the real sidecar
-//!   5. Verify cross-owner tenant isolation
-//!   6. Deprovision via Tangle job
+//!   4. Exercise EVERY instance operator API endpoint against the real sidecar
+//!   5. Test secrets inject/wipe through sandbox-scoped endpoint
+//!   6. Verify cross-owner tenant isolation
+//!   7. Test every input validation path, error path, and idempotency
+//!   8. Deprovision via Tangle job
 //!
 //! Run:
 //!   SIDECAR_E2E=1 cargo test -p ai-agent-instance-blueprint-lib \
@@ -56,7 +58,7 @@ async fn spawn_harness() -> Result<Option<BlueprintHarness>> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test: Full instance lifecycle with on-chain verification
+// Test: Full instance lifecycle with on-chain verification (25 steps)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -155,10 +157,11 @@ async fn instance_full_lifecycle() -> Result<()> {
             .find(|s| s["id"] == sandbox_id)
             .context("instance sandbox should be in list")?;
         assert_eq!(sb["state"], "running");
+        assert!(sb["sidecar_url"].is_string(), "should have sidecar_url");
         eprintln!("  Found instance, state=running");
 
-        // ─── Step 7: Exec via singleton endpoint ─────────────────────────
-        e2e_step!(7, "Exec via instance endpoint...");
+        // ─── Step 7: Exec via singleton endpoint (exit 0) ────────────────
+        e2e_step!(7, "Exec via instance endpoint (exit 0)...");
         let body = api_post(
             &api_url,
             "/api/sandbox/exec",
@@ -174,10 +177,40 @@ async fn instance_full_lifecycle() -> Result<()> {
                 .contains("e2e-instance-ok"),
             "stdout: {body}"
         );
-        eprintln!("  Exec OK");
+        eprintln!("  Exec OK (exit 0)");
 
-        // ─── Step 8: SSH provision ───────────────────────────────────────
-        e2e_step!(8, "SSH provision via instance endpoint...");
+        // ─── Step 8: Exec (non-zero exit code) ──────────────────────────
+        e2e_step!(8, "Exec (non-zero exit code)...");
+        let body = api_post(
+            &api_url,
+            "/api/sandbox/exec",
+            &auth,
+            json!({"command": "exit 42"}),
+        )
+        .await?;
+        assert_eq!(body["exit_code"], 42, "should return exit code 42: {body}");
+        eprintln!("  Exec OK (exit 42)");
+
+        // ─── Step 9: Exec (stderr output) ────────────────────────────────
+        e2e_step!(9, "Exec (stderr output)...");
+        let body = api_post(
+            &api_url,
+            "/api/sandbox/exec",
+            &auth,
+            json!({"command": "echo e2e-stderr >&2"}),
+        )
+        .await?;
+        assert!(
+            body["stderr"]
+                .as_str()
+                .unwrap_or("")
+                .contains("e2e-stderr"),
+            "stderr should contain test string: {body}"
+        );
+        eprintln!("  Exec OK (stderr captured)");
+
+        // ─── Step 10: SSH provision ──────────────────────────────────────
+        e2e_step!(10, "SSH provision via instance endpoint...");
         let ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp9pDAVl8TpDBLVnpXjAIRxMf3K+m6UPlv3VBMbRp2o e2e-test";
         assert_api_status(
             &api_url,
@@ -190,8 +223,8 @@ async fn instance_full_lifecycle() -> Result<()> {
         .await;
         eprintln!("  SSH provisioned");
 
-        // ─── Step 9: SSH revoke ──────────────────────────────────────────
-        e2e_step!(9, "SSH revoke via instance endpoint...");
+        // ─── Step 11: SSH revoke ─────────────────────────────────────────
+        e2e_step!(11, "SSH revoke via instance endpoint...");
         assert_api_status(
             &api_url,
             "DELETE",
@@ -203,30 +236,120 @@ async fn instance_full_lifecycle() -> Result<()> {
         .await;
         eprintln!("  SSH revoked");
 
-        // ─── Step 10: Stop instance ──────────────────────────────────────
-        e2e_step!(10, "Stopping instance...");
+        // ─── Step 12: Secrets inject + verify ────────────────────────────
+        e2e_step!(12, "Injecting secrets via sandbox-scoped endpoint...");
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/secrets"),
+            &auth,
+            json!({"env_json": {"E2E_INSTANCE_SECRET": "instance-secret-42"}}),
+            200,
+        )
+        .await;
+        eprintln!("  Secrets injected");
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let secrets_url = get_instance_sidecar_url(&api_url, &auth)
+            .await
+            .unwrap_or(initial_sidecar_url.clone());
+        wait_for_sidecar(&secrets_url).await?;
+
+        let body = api_post(
+            &api_url,
+            "/api/sandbox/exec",
+            &auth,
+            json!({"command": "printenv E2E_INSTANCE_SECRET"}),
+        )
+        .await?;
+        assert!(
+            body["stdout"]
+                .as_str()
+                .unwrap_or("")
+                .contains("instance-secret-42"),
+            "secret should be in env: {body}"
+        );
+        eprintln!("  Secret verified via exec");
+
+        // ─── Step 13: Secrets wipe + verify ──────────────────────────────
+        e2e_step!(13, "Wiping secrets...");
+        let body = api_delete(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/secrets"),
+            &auth,
+        )
+        .await?;
+        assert_eq!(body["status"], "secrets_wiped", "wipe response: {body}");
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let wiped_url = get_instance_sidecar_url(&api_url, &auth)
+            .await
+            .unwrap_or(secrets_url);
+        wait_for_sidecar(&wiped_url).await?;
+
+        let body = api_post(
+            &api_url,
+            "/api/sandbox/exec",
+            &auth,
+            json!({"command": "printenv E2E_INSTANCE_SECRET || echo NOT_SET"}),
+        )
+        .await?;
+        assert!(
+            !body["stdout"]
+                .as_str()
+                .unwrap_or("")
+                .contains("instance-secret-42"),
+            "secret should be gone: {body}"
+        );
+        eprintln!("  Secrets wiped and verified");
+
+        // ─── Step 14: Stop instance ──────────────────────────────────────
+        e2e_step!(14, "Stopping instance...");
         let body = api_post(&api_url, "/api/sandbox/stop", &auth, json!({})).await?;
         assert_eq!(body["state"], "stopped");
         eprintln!("  Stopped");
 
-        // ─── Step 11: Verify stopped in list ─────────────────────────────
-        e2e_step!(11, "Verifying stopped state...");
+        // ─── Step 15: Verify stopped + exec on stopped ──────────────────
+        e2e_step!(15, "Verifying stopped state + exec on stopped...");
         let body = api_get(&api_url, "/api/sandboxes", &auth).await?;
         let sb = body["sandboxes"]
             .as_array()
             .and_then(|a| a.iter().find(|s| s["id"] == sandbox_id))
             .context("instance should still be in list")?;
         assert_eq!(sb["state"], "stopped");
-        eprintln!("  Confirmed stopped");
 
-        // ─── Step 12: Resume instance ────────────────────────────────────
-        e2e_step!(12, "Resuming instance...");
+        // Exec on stopped instance → should fail (sidecar unreachable)
+        assert_api_status(
+            &api_url,
+            "POST",
+            "/api/sandbox/exec",
+            &auth,
+            json!({"command": "echo should-fail"}),
+            502,
+        )
+        .await;
+        eprintln!("  Confirmed stopped, exec returns 502");
+
+        // ─── Step 16: Stop idempotency ───────────────────────────────────
+        e2e_step!(16, "Testing stop idempotency...");
+        let body = api_post(&api_url, "/api/sandbox/stop", &auth, json!({})).await?;
+        assert_eq!(body["state"], "stopped", "second stop: {body}");
+        eprintln!("  Stop idempotent");
+
+        // ─── Step 17: Resume instance ────────────────────────────────────
+        e2e_step!(17, "Resuming instance...");
         let body = api_post(&api_url, "/api/sandbox/resume", &auth, json!({})).await?;
         assert_eq!(body["state"], "running");
         eprintln!("  Resumed");
 
-        // ─── Step 13: Re-read sidecar URL (Docker assigns new ports) ─────
-        e2e_step!(13, "Re-reading sidecar URL after resume...");
+        // ─── Step 18: Resume idempotency ─────────────────────────────────
+        e2e_step!(18, "Testing resume idempotency...");
+        let body = api_post(&api_url, "/api/sandbox/resume", &auth, json!({})).await?;
+        assert_eq!(body["state"], "running", "second resume: {body}");
+        eprintln!("  Resume idempotent");
+
+        // ─── Step 19: Re-read URL + exec after resume ────────────────────
+        e2e_step!(19, "Re-reading sidecar URL, exec after resume...");
         let resumed_url = get_instance_sidecar_url(&api_url, &auth).await?;
         eprintln!("  Post-resume URL: {resumed_url}");
         if resumed_url != initial_sidecar_url {
@@ -237,8 +360,6 @@ async fn instance_full_lifecycle() -> Result<()> {
         }
         wait_for_sidecar(&resumed_url).await?;
 
-        // ─── Step 14: Exec after resume ──────────────────────────────────
-        e2e_step!(14, "Exec after resume...");
         let body = api_post(
             &api_url,
             "/api/sandbox/exec",
@@ -253,8 +374,9 @@ async fn instance_full_lifecycle() -> Result<()> {
             .contains("instance-resumed-ok"));
         eprintln!("  Exec after resume OK");
 
-        // ─── Step 15: Input validation ───────────────────────────────────
-        e2e_step!(15, "Testing input validation...");
+        // ─── Step 20: Input validation ───────────────────────────────────
+        e2e_step!(20, "Testing input validation (6 checks)...");
+        // Empty command → 400
         assert_api_status(
             &api_url,
             "POST",
@@ -264,6 +386,27 @@ async fn instance_full_lifecycle() -> Result<()> {
             400,
         )
         .await;
+        // Empty prompt message → 400
+        assert_api_status(
+            &api_url,
+            "POST",
+            "/api/sandbox/prompt",
+            &auth,
+            json!({"message": ""}),
+            400,
+        )
+        .await;
+        // Empty task prompt → 400
+        assert_api_status(
+            &api_url,
+            "POST",
+            "/api/sandbox/task",
+            &auth,
+            json!({"prompt": ""}),
+            400,
+        )
+        .await;
+        // Invalid SSH key → 400
         assert_api_status(
             &api_url,
             "POST",
@@ -273,10 +416,31 @@ async fn instance_full_lifecycle() -> Result<()> {
             400,
         )
         .await;
-        eprintln!("  Input validation OK");
+        // Empty snapshot destination → 400
+        assert_api_status(
+            &api_url,
+            "POST",
+            "/api/sandbox/snapshot",
+            &auth,
+            json!({"destination": "", "include_workspace": true, "include_state": false}),
+            400,
+        )
+        .await;
+        // Empty secrets env_json → 400
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/secrets"),
+            &auth,
+            json!({"env_json": {}}),
+            400,
+        )
+        .await;
+        eprintln!("  Input validation OK (6/6)");
 
-        // ─── Step 16: Auth rejection ─────────────────────────────────────
-        e2e_step!(16, "Testing auth rejection...");
+        // ─── Step 21: Auth rejection ─────────────────────────────────────
+        e2e_step!(21, "Testing auth rejection...");
+        // Missing auth → 401
         let resp = http()
             .post(format!("{api_url}/api/sandbox/exec"))
             .json(&json!({"command": "echo fail"}))
@@ -284,6 +448,7 @@ async fn instance_full_lifecycle() -> Result<()> {
             .await?;
         assert_eq!(resp.status(), 401, "missing auth → 401");
 
+        // Bad PASETO → 401
         let resp = http()
             .post(format!("{api_url}/api/sandbox/exec"))
             .header("authorization", "Bearer v4.local.invalid-token-garbage")
@@ -293,8 +458,8 @@ async fn instance_full_lifecycle() -> Result<()> {
         assert_eq!(resp.status(), 401, "bad PASETO → 401");
         eprintln!("  Auth rejection OK");
 
-        // ─── Step 17: Cross-owner isolation ──────────────────────────────
-        e2e_step!(17, "Testing cross-owner tenant isolation...");
+        // ─── Step 22: Cross-owner isolation ──────────────────────────────
+        e2e_step!(22, "Testing cross-owner tenant isolation...");
         let non_owner_address = address_from_key(NON_OWNER_KEY);
         let (non_owner_token, addr) = get_auth_token(&api_url, NON_OWNER_KEY).await?;
         assert_eq!(addr.to_lowercase(), non_owner_address.to_lowercase());
@@ -322,10 +487,21 @@ async fn instance_full_lifecycle() -> Result<()> {
             "non-owner exec should fail, got {}",
             resp.status()
         );
-        eprintln!("  Cross-owner isolation confirmed");
 
-        // ─── Step 18: Deprovision via Tangle ─────────────────────────────
-        e2e_step!(18, "Deprovisioning via Tangle...");
+        // Non-owner secrets inject → 403
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/secrets"),
+            &non_owner_auth,
+            json!({"env_json": {"BAD": "nope"}}),
+            403,
+        )
+        .await;
+        eprintln!("  Cross-owner isolation confirmed (list, exec, secrets)");
+
+        // ─── Step 23: Deprovision via Tangle ─────────────────────────────
+        e2e_step!(23, "Deprovisioning via Tangle...");
         let deprovision_payload = JsonResponse {
             json: json!({"action": "deprovision"}).to_string(),
         }
@@ -347,8 +523,8 @@ async fn instance_full_lifecycle() -> Result<()> {
         );
         eprintln!("  Deprovisioned: {deprovision_json}");
 
-        // ─── Step 19: Verify gone ────────────────────────────────────────
-        e2e_step!(19, "Verifying instance gone from list...");
+        // ─── Step 24: Verify gone + exec after deprovision ───────────────
+        e2e_step!(24, "Verifying instance gone, exec after deprovision...");
         let body = api_get(&api_url, "/api/sandboxes", &auth).await?;
         let remaining = body["sandboxes"]
             .as_array()
@@ -357,79 +533,28 @@ async fn instance_full_lifecycle() -> Result<()> {
             !remaining.iter().any(|s| s["id"] == sandbox_id),
             "deprovisioned instance should not appear"
         );
-        eprintln!("  Confirmed gone");
 
-        // ─── Step 20: Shutdown ───────────────────────────────────────────
-        e2e_step!(20, "Shutting down...");
+        // Exec on deprovisioned instance → 404 (Instance not provisioned)
+        let resp = http()
+            .post(format!("{api_url}/api/sandbox/exec"))
+            .header("authorization", &auth)
+            .json(&json!({"command": "echo test"}))
+            .send()
+            .await?;
+        assert_eq!(
+            resp.status(),
+            404,
+            "exec after deprovision should return 404, got {}",
+            resp.status()
+        );
+        eprintln!("  Confirmed gone, exec → 404");
+
+        // ─── Step 25: Shutdown ───────────────────────────────────────────
+        e2e_step!(25, "Shutting down...");
         harness.shutdown().await;
-        eprintln!("\n=== All instance E2E tests passed (20 steps) ===");
+        eprintln!("\n=== All instance E2E tests passed (25 steps) ===");
         Ok(())
     })
     .await
     .context("instance_full_lifecycle timed out")?
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HTTP assertion helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-async fn api_get(api_url: &str, path: &str, auth: &str) -> Result<Value> {
-    let resp = http()
-        .get(format!("{api_url}{path}"))
-        .header("authorization", auth)
-        .send()
-        .await?;
-    let status = resp.status();
-    let body: Value = resp.json().await?;
-    anyhow::ensure!(status.is_success(), "GET {path} returned {status}: {body}");
-    Ok(body)
-}
-
-async fn api_post(api_url: &str, path: &str, auth: &str, body: Value) -> Result<Value> {
-    let resp = http()
-        .post(format!("{api_url}{path}"))
-        .header("authorization", auth)
-        .json(&body)
-        .send()
-        .await?;
-    let status = resp.status();
-    let resp_body: Value = resp.json().await?;
-    anyhow::ensure!(
-        status.is_success(),
-        "POST {path} returned {status}: {resp_body}"
-    );
-    Ok(resp_body)
-}
-
-async fn assert_api_status(
-    api_url: &str,
-    method: &str,
-    path: &str,
-    auth: &str,
-    body: Value,
-    expected_status: u16,
-) {
-    let url = format!("{api_url}{path}");
-    let resp = match method {
-        "POST" => http()
-            .post(&url)
-            .header("authorization", auth)
-            .json(&body)
-            .send()
-            .await,
-        "DELETE" => http()
-            .delete(&url)
-            .header("authorization", auth)
-            .json(&body)
-            .send()
-            .await,
-        _ => panic!("unsupported method: {method}"),
-    };
-    let resp = resp.unwrap_or_else(|e| panic!("{method} {path} failed: {e}"));
-    assert_eq!(
-        resp.status().as_u16(),
-        expected_status,
-        "{method} {path} expected {expected_status}, got {}",
-        resp.status()
-    );
 }

@@ -4,10 +4,11 @@
 //!   1. Provision sandbox via Tangle job (BlueprintHarness → Anvil → Runner → Docker)
 //!   2. Start operator API server
 //!   3. Authenticate via EIP-191 challenge → PASETO session token
-//!   4. Exercise every operator API endpoint against the real sidecar
+//!   4. Exercise EVERY operator API endpoint against the real sidecar
 //!   5. Verify cross-owner tenant isolation
 //!   6. Exercise workflow create / cancel on-chain
-//!   7. Clean up via Tangle job
+//!   7. Test every input validation path, error path, and idempotency
+//!   8. Clean up via Tangle job
 //!
 //! Run:
 //!   SIDECAR_E2E=1 cargo test -p ai-agent-sandbox-blueprint-lib \
@@ -59,7 +60,7 @@ async fn spawn_harness() -> Result<Option<BlueprintHarness>> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test: Full sandbox lifecycle with on-chain verification
+// Test: Full sandbox lifecycle with on-chain verification (28 steps)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -151,8 +152,38 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         let auth = format!("Bearer {token}");
         eprintln!("  Authenticated as {authed_address}");
 
-        // ─── Step 6: List sandboxes ──────────────────────────────────────
-        e2e_step!(6, "Listing sandboxes...");
+        // ─── Step 6: Health endpoint (unauthenticated) ───────────────────
+        e2e_step!(6, "Testing health endpoint...");
+        let body = api_get_unauth(&api_url, "/health").await?;
+        assert_eq!(body["status"], "ok", "health response: {body}");
+        eprintln!("  Health OK");
+
+        // ─── Step 7: Metrics endpoint (unauthenticated) ──────────────────
+        e2e_step!(7, "Testing metrics endpoint...");
+        let resp = http().get(format!("{api_url}/metrics")).send().await?;
+        assert_eq!(resp.status(), 200, "metrics should return 200");
+        let metrics_text = resp.text().await?;
+        assert!(
+            metrics_text.contains("sandbox_total_jobs"),
+            "metrics should contain sandbox_total_jobs"
+        );
+        assert!(
+            metrics_text.contains("sandbox_active_sandboxes"),
+            "metrics should contain sandbox_active_sandboxes"
+        );
+        eprintln!("  Metrics OK ({} bytes)", metrics_text.len());
+
+        // ─── Step 8: Provisions endpoint (unauthenticated) ───────────────
+        e2e_step!(8, "Testing provisions endpoint...");
+        let body = api_get_unauth(&api_url, "/api/provisions").await?;
+        assert!(
+            body["provisions"].is_array(),
+            "provisions should be an array: {body}"
+        );
+        eprintln!("  Provisions OK");
+
+        // ─── Step 9: List sandboxes ──────────────────────────────────────
+        e2e_step!(9, "Listing sandboxes...");
         let body = api_get(&api_url, "/api/sandboxes", &auth).await?;
         let sandboxes = body["sandboxes"]
             .as_array()
@@ -162,10 +193,14 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             .find(|s| s["id"] == sandbox_id)
             .context("sandbox should be in list")?;
         assert_eq!(sb["state"], "running");
+        assert!(sb["sidecar_url"].is_string(), "should have sidecar_url");
+        assert!(sb["cpu_cores"].is_number(), "should have cpu_cores");
+        assert!(sb["memory_mb"].is_number(), "should have memory_mb");
+        assert!(sb["created_at"].is_number(), "should have created_at");
         eprintln!("  Found sandbox, state=running");
 
-        // ─── Step 7: Exec ────────────────────────────────────────────────
-        e2e_step!(7, "Executing command...");
+        // ─── Step 10: Exec (stdout, exit 0) ──────────────────────────────
+        e2e_step!(10, "Executing command (exit 0)...");
         let body = api_post(
             &api_url,
             &format!("/api/sandboxes/{sandbox_id}/exec"),
@@ -173,7 +208,7 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             json!({"command": "echo e2e-sandbox-test-ok"}),
         )
         .await?;
-        assert_eq!(body["exit_code"], 0);
+        assert_eq!(body["exit_code"], 0, "exec response: {body}");
         assert!(
             body["stdout"]
                 .as_str()
@@ -181,10 +216,40 @@ async fn sandbox_full_lifecycle() -> Result<()> {
                 .contains("e2e-sandbox-test-ok"),
             "stdout should contain test string: {body}"
         );
-        eprintln!("  Exec OK");
+        eprintln!("  Exec OK (exit 0)");
 
-        // ─── Step 8: SSH provision + idempotency ─────────────────────────
-        e2e_step!(8, "SSH provision + idempotency...");
+        // ─── Step 11: Exec (non-zero exit code) ──────────────────────────
+        e2e_step!(11, "Executing command (non-zero exit)...");
+        let body = api_post(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/exec"),
+            &auth,
+            json!({"command": "exit 42"}),
+        )
+        .await?;
+        assert_eq!(body["exit_code"], 42, "should return exit code 42: {body}");
+        eprintln!("  Exec OK (exit 42)");
+
+        // ─── Step 12: Exec (stderr output) ───────────────────────────────
+        e2e_step!(12, "Executing command (stderr)...");
+        let body = api_post(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/exec"),
+            &auth,
+            json!({"command": "echo e2e-stderr >&2"}),
+        )
+        .await?;
+        assert!(
+            body["stderr"]
+                .as_str()
+                .unwrap_or("")
+                .contains("e2e-stderr"),
+            "stderr should contain test string: {body}"
+        );
+        eprintln!("  Exec OK (stderr captured)");
+
+        // ─── Step 13: SSH provision + idempotency ────────────────────────
+        e2e_step!(13, "SSH provision + idempotency...");
         let ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp9pDAVl8TpDBLVnpXjAIRxMf3K+m6UPlv3VBMbRp2o e2e-test";
         let ssh_body = json!({"username": "agent", "public_key": ssh_key});
         let path = format!("/api/sandboxes/{sandbox_id}/ssh");
@@ -193,8 +258,8 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         assert_api_status(&api_url, "POST", &path, &auth, ssh_body, 200).await;
         eprintln!("  SSH provisioned (idempotent)");
 
-        // ─── Step 9: SSH revoke ──────────────────────────────────────────
-        e2e_step!(9, "SSH revoke...");
+        // ─── Step 14: SSH revoke ─────────────────────────────────────────
+        e2e_step!(14, "SSH revoke...");
         assert_api_status(
             &api_url,
             "DELETE",
@@ -205,68 +270,6 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         )
         .await;
         eprintln!("  SSH revoked");
-
-        // ─── Step 10: Stop sandbox ───────────────────────────────────────
-        e2e_step!(10, "Stopping sandbox...");
-        let body = api_post(
-            &api_url,
-            &format!("/api/sandboxes/{sandbox_id}/stop"),
-            &auth,
-            json!({}),
-        )
-        .await?;
-        assert_eq!(body["state"], "stopped");
-        eprintln!("  Stopped");
-
-        // ─── Step 11: Verify stopped in list ─────────────────────────────
-        e2e_step!(11, "Verifying stopped state...");
-        let body = api_get(&api_url, "/api/sandboxes", &auth).await?;
-        let sb = body["sandboxes"]
-            .as_array()
-            .and_then(|a| a.iter().find(|s| s["id"] == sandbox_id))
-            .context("sandbox should still be in list")?;
-        assert_eq!(sb["state"], "stopped");
-        eprintln!("  Confirmed stopped");
-
-        // ─── Step 12: Resume sandbox ─────────────────────────────────────
-        e2e_step!(12, "Resuming sandbox...");
-        let body = api_post(
-            &api_url,
-            &format!("/api/sandboxes/{sandbox_id}/resume"),
-            &auth,
-            json!({}),
-        )
-        .await?;
-        assert_eq!(body["state"], "running");
-        eprintln!("  Resumed");
-
-        // ─── Step 13: Re-read sidecar URL (Docker assigns new ports) ─────
-        e2e_step!(13, "Re-reading sidecar URL after resume...");
-        let resumed_url = get_sidecar_url(&api_url, &auth, &sandbox_id).await?;
-        eprintln!("  Post-resume URL: {resumed_url}");
-        if resumed_url != initial_sidecar_url {
-            eprintln!(
-                "  Port changed: {} → {} (expected after Docker restart)",
-                initial_sidecar_url, resumed_url
-            );
-        }
-        wait_for_sidecar(&resumed_url).await?;
-
-        // ─── Step 14: Exec after resume (using UPDATED URL) ──────────────
-        e2e_step!(14, "Exec after resume...");
-        let body = api_post(
-            &api_url,
-            &format!("/api/sandboxes/{sandbox_id}/exec"),
-            &auth,
-            json!({"command": "echo resumed-ok"}),
-        )
-        .await?;
-        assert_eq!(body["exit_code"], 0);
-        assert!(body["stdout"]
-            .as_str()
-            .unwrap_or("")
-            .contains("resumed-ok"));
-        eprintln!("  Exec after resume OK");
 
         // ─── Step 15: Secrets inject ─────────────────────────────────────
         e2e_step!(15, "Injecting secrets...");
@@ -285,8 +288,9 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Re-read sidecar URL (secrets recreation may change port)
-        let secrets_url = get_sidecar_url(&api_url, &auth, &sandbox_id).await
-            .unwrap_or(resumed_url.clone());
+        let secrets_url = get_sidecar_url(&api_url, &auth, &sandbox_id)
+            .await
+            .unwrap_or(initial_sidecar_url.clone());
         wait_for_sidecar(&secrets_url).await?;
 
         // ─── Step 16: Verify secret visible ──────────────────────────────
@@ -307,23 +311,23 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         );
         eprintln!("  Secret verified");
 
-        // ─── Step 17: Secrets wipe ───────────────────────────────────────
+        // ─── Step 17: Secrets wipe + verify ──────────────────────────────
         e2e_step!(17, "Wiping secrets...");
-        let resp = http()
-            .delete(format!("{api_url}/api/sandboxes/{sandbox_id}/secrets"))
-            .header("authorization", &auth)
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 200);
+        let body = api_delete(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/secrets"),
+            &auth,
+        )
+        .await?;
+        assert_eq!(body["status"], "secrets_wiped", "wipe response: {body}");
         eprintln!("  Secrets wiped");
 
         tokio::time::sleep(Duration::from_secs(3)).await;
-        let wiped_url = get_sidecar_url(&api_url, &auth, &sandbox_id).await
+        let wiped_url = get_sidecar_url(&api_url, &auth, &sandbox_id)
+            .await
             .unwrap_or(secrets_url);
         wait_for_sidecar(&wiped_url).await?;
 
-        // ─── Step 18: Verify secret wiped ────────────────────────────────
-        e2e_step!(18, "Verifying secret wiped...");
         let body = api_post(
             &api_url,
             &format!("/api/sandboxes/{sandbox_id}/exec"),
@@ -340,8 +344,103 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         );
         eprintln!("  Secret confirmed wiped");
 
-        // ─── Step 19: Input validation ───────────────────────────────────
-        e2e_step!(19, "Testing input validation...");
+        // ─── Step 18: Stop sandbox ───────────────────────────────────────
+        e2e_step!(18, "Stopping sandbox...");
+        let body = api_post(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/stop"),
+            &auth,
+            json!({}),
+        )
+        .await?;
+        assert_eq!(body["state"], "stopped");
+        eprintln!("  Stopped");
+
+        // ─── Step 19: Verify stopped + exec on stopped ──────────────────
+        e2e_step!(19, "Verifying stopped state + exec on stopped sandbox...");
+        let body = api_get(&api_url, "/api/sandboxes", &auth).await?;
+        let sb = body["sandboxes"]
+            .as_array()
+            .and_then(|a| a.iter().find(|s| s["id"] == sandbox_id))
+            .context("sandbox should still be in list")?;
+        assert_eq!(sb["state"], "stopped");
+
+        // Exec on stopped sandbox → should fail (sidecar unreachable)
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/exec"),
+            &auth,
+            json!({"command": "echo should-fail"}),
+            502,
+        )
+        .await;
+        eprintln!("  Confirmed stopped, exec returns 502");
+
+        // ─── Step 20: Stop idempotency ───────────────────────────────────
+        e2e_step!(20, "Testing stop idempotency...");
+        let body = api_post(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/stop"),
+            &auth,
+            json!({}),
+        )
+        .await?;
+        assert_eq!(body["state"], "stopped", "second stop: {body}");
+        eprintln!("  Stop idempotent");
+
+        // ─── Step 21: Resume sandbox ─────────────────────────────────────
+        e2e_step!(21, "Resuming sandbox...");
+        let body = api_post(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/resume"),
+            &auth,
+            json!({}),
+        )
+        .await?;
+        assert_eq!(body["state"], "running");
+        eprintln!("  Resumed");
+
+        // ─── Step 22: Resume idempotency ─────────────────────────────────
+        e2e_step!(22, "Testing resume idempotency...");
+        let body = api_post(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/resume"),
+            &auth,
+            json!({}),
+        )
+        .await?;
+        assert_eq!(body["state"], "running", "second resume: {body}");
+        eprintln!("  Resume idempotent");
+
+        // ─── Step 23: Re-read URL + exec after resume ────────────────────
+        e2e_step!(23, "Re-reading sidecar URL, exec after resume...");
+        let resumed_url = get_sidecar_url(&api_url, &auth, &sandbox_id).await?;
+        eprintln!("  Post-resume URL: {resumed_url}");
+        if resumed_url != initial_sidecar_url {
+            eprintln!(
+                "  Port changed: {} → {} (expected after Docker restart)",
+                initial_sidecar_url, resumed_url
+            );
+        }
+        wait_for_sidecar(&resumed_url).await?;
+
+        let body = api_post(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/exec"),
+            &auth,
+            json!({"command": "echo resumed-ok"}),
+        )
+        .await?;
+        assert_eq!(body["exit_code"], 0);
+        assert!(body["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("resumed-ok"));
+        eprintln!("  Exec after resume OK");
+
+        // ─── Step 24: Input validation ───────────────────────────────────
+        e2e_step!(24, "Testing input validation (6 checks)...");
         // Empty command → 400
         assert_api_status(
             &api_url,
@@ -349,6 +448,26 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             &format!("/api/sandboxes/{sandbox_id}/exec"),
             &auth,
             json!({"command": ""}),
+            400,
+        )
+        .await;
+        // Empty prompt message → 400
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/prompt"),
+            &auth,
+            json!({"message": ""}),
+            400,
+        )
+        .await;
+        // Empty task prompt → 400
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/task"),
+            &auth,
+            json!({"prompt": ""}),
             400,
         )
         .await;
@@ -362,10 +481,31 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             400,
         )
         .await;
-        eprintln!("  Input validation OK");
+        // Empty snapshot destination → 400
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/snapshot"),
+            &auth,
+            json!({"destination": "", "include_workspace": true, "include_state": false}),
+            400,
+        )
+        .await;
+        // Empty secrets env_json → 400
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/secrets"),
+            &auth,
+            json!({"env_json": {}}),
+            400,
+        )
+        .await;
+        eprintln!("  Input validation OK (6/6)");
 
-        // ─── Step 20: Auth rejection ─────────────────────────────────────
-        e2e_step!(20, "Testing auth rejection...");
+        // ─── Step 25: Auth rejection ─────────────────────────────────────
+        e2e_step!(25, "Testing auth rejection...");
+        // Missing auth → 401
         let resp = http()
             .post(format!(
                 "{api_url}/api/sandboxes/{sandbox_id}/exec"
@@ -375,6 +515,7 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             .await?;
         assert_eq!(resp.status(), 401, "missing auth → 401");
 
+        // Bad PASETO → 401
         let resp = http()
             .post(format!(
                 "{api_url}/api/sandboxes/{sandbox_id}/exec"
@@ -384,10 +525,17 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             .send()
             .await?;
         assert_eq!(resp.status(), 401, "bad PASETO → 401");
+
+        // Missing auth on list → 401
+        let resp = http()
+            .get(format!("{api_url}/api/sandboxes"))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), 401, "list without auth → 401");
         eprintln!("  Auth rejection OK");
 
-        // ─── Step 21: Cross-owner isolation ──────────────────────────────
-        e2e_step!(21, "Testing cross-owner tenant isolation...");
+        // ─── Step 26: Cross-owner isolation ──────────────────────────────
+        e2e_step!(26, "Testing cross-owner tenant isolation...");
         let non_owner_address = address_from_key(NON_OWNER_KEY);
         let (non_owner_token, addr) = get_auth_token(&api_url, NON_OWNER_KEY).await?;
         assert_eq!(
@@ -406,10 +554,32 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             non_owner_sandboxes.is_empty(),
             "non-owner should see zero sandboxes, got: {body}"
         );
-        eprintln!("  Non-owner sees empty list (isolation confirmed)");
 
-        // ─── Step 22: Delete sandbox via Tangle ──────────────────────────
-        e2e_step!(22, "Deleting sandbox via Tangle...");
+        // Non-owner exec on specific sandbox → 403
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/exec"),
+            &non_owner_auth,
+            json!({"command": "echo pwned"}),
+            403,
+        )
+        .await;
+
+        // Non-owner secrets inject → 403
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/secrets"),
+            &non_owner_auth,
+            json!({"env_json": {"BAD": "nope"}}),
+            403,
+        )
+        .await;
+        eprintln!("  Non-owner sees empty list, exec/secrets → 403");
+
+        // ─── Step 27: Delete sandbox via Tangle ──────────────────────────
+        e2e_step!(27, "Deleting sandbox via Tangle...");
         let delete_payload = SandboxIdRequest {
             sandbox_id: sandbox_id.clone(),
         }
@@ -428,8 +598,8 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         assert_eq!(delete_json["deleted"], true, "delete response: {delete_json}");
         eprintln!("  Deleted: {delete_json}");
 
-        // ─── Step 23: Verify sandbox gone ────────────────────────────────
-        e2e_step!(23, "Verifying sandbox gone from list...");
+        // ─── Step 28: Verify gone + exec on deleted ──────────────────────
+        e2e_step!(28, "Verifying sandbox gone, exec on deleted → 404...");
         let body = api_get(&api_url, "/api/sandboxes", &auth).await?;
         let remaining = body["sandboxes"]
             .as_array()
@@ -438,12 +608,22 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             !remaining.iter().any(|s| s["id"] == sandbox_id),
             "deleted sandbox should not appear"
         );
-        eprintln!("  Confirmed gone");
 
-        // ─── Step 24: Shutdown ───────────────────────────────────────────
-        e2e_step!(24, "Shutting down...");
+        // Exec on deleted sandbox → 404
+        assert_api_status(
+            &api_url,
+            "POST",
+            &format!("/api/sandboxes/{sandbox_id}/exec"),
+            &auth,
+            json!({"command": "echo test"}),
+            404,
+        )
+        .await;
+        eprintln!("  Confirmed gone, exec → 404");
+
+        // ─── Shutdown ────────────────────────────────────────────────────
         harness.shutdown().await;
-        eprintln!("\n=== All sandbox E2E tests passed (24 steps) ===");
+        eprintln!("\n=== All sandbox E2E tests passed (28 steps) ===");
         Ok(())
     })
     .await
@@ -533,72 +713,4 @@ async fn workflow_create_and_cancel() -> Result<()> {
     })
     .await
     .context("workflow_create_and_cancel timed out")?
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HTTP assertion helpers (used only in this test file)
-// ─────────────────────────────────────────────────────────────────────────────
-
-async fn api_get(api_url: &str, path: &str, auth: &str) -> Result<Value> {
-    let resp = http()
-        .get(format!("{api_url}{path}"))
-        .header("authorization", auth)
-        .send()
-        .await?;
-    let status = resp.status();
-    let body: Value = resp.json().await?;
-    anyhow::ensure!(
-        status.is_success(),
-        "GET {path} returned {status}: {body}"
-    );
-    Ok(body)
-}
-
-async fn api_post(api_url: &str, path: &str, auth: &str, body: Value) -> Result<Value> {
-    let resp = http()
-        .post(format!("{api_url}{path}"))
-        .header("authorization", auth)
-        .json(&body)
-        .send()
-        .await?;
-    let status = resp.status();
-    let resp_body: Value = resp.json().await?;
-    anyhow::ensure!(
-        status.is_success(),
-        "POST {path} returned {status}: {resp_body}"
-    );
-    Ok(resp_body)
-}
-
-async fn assert_api_status(
-    api_url: &str,
-    method: &str,
-    path: &str,
-    auth: &str,
-    body: Value,
-    expected_status: u16,
-) {
-    let url = format!("{api_url}{path}");
-    let resp = match method {
-        "POST" => http()
-            .post(&url)
-            .header("authorization", auth)
-            .json(&body)
-            .send()
-            .await,
-        "DELETE" => http()
-            .delete(&url)
-            .header("authorization", auth)
-            .json(&body)
-            .send()
-            .await,
-        _ => panic!("unsupported method: {method}"),
-    };
-    let resp = resp.unwrap_or_else(|e| panic!("{method} {path} failed: {e}"));
-    assert_eq!(
-        resp.status().as_u16(),
-        expected_status,
-        "{method} {path} expected {expected_status}, got {}",
-        resp.status()
-    );
 }

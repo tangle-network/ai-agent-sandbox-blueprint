@@ -81,6 +81,112 @@ pub async fn wait_for_sidecar(sidecar_url: &str) -> Result<()> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// JSON API helpers (GET, POST, DELETE with auth)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Authenticated GET, returning parsed JSON. Fails on non-2xx status.
+pub async fn api_get(api_url: &str, path: &str, auth: &str) -> Result<Value> {
+    let resp = http()
+        .get(format!("{api_url}{path}"))
+        .header("authorization", auth)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body: Value = resp.json().await?;
+    anyhow::ensure!(status.is_success(), "GET {path} returned {status}: {body}");
+    Ok(body)
+}
+
+/// Unauthenticated GET, returning parsed JSON. Fails on non-2xx status.
+pub async fn api_get_unauth(api_url: &str, path: &str) -> Result<Value> {
+    let resp = http()
+        .get(format!("{api_url}{path}"))
+        .send()
+        .await?;
+    let status = resp.status();
+    let body: Value = resp.json().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "GET {path} (no auth) returned {status}: {body}"
+    );
+    Ok(body)
+}
+
+/// Authenticated POST with JSON body, returning parsed JSON. Fails on non-2xx.
+pub async fn api_post(api_url: &str, path: &str, auth: &str, body: Value) -> Result<Value> {
+    let resp = http()
+        .post(format!("{api_url}{path}"))
+        .header("authorization", auth)
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let resp_body: Value = resp.json().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "POST {path} returned {status}: {resp_body}"
+    );
+    Ok(resp_body)
+}
+
+/// Authenticated DELETE (no body), returning parsed JSON. Fails on non-2xx.
+pub async fn api_delete(api_url: &str, path: &str, auth: &str) -> Result<Value> {
+    let resp = http()
+        .delete(format!("{api_url}{path}"))
+        .header("authorization", auth)
+        .send()
+        .await?;
+    let status = resp.status();
+    let resp_body: Value = resp.json().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "DELETE {path} returned {status}: {resp_body}"
+    );
+    Ok(resp_body)
+}
+
+/// Assert that an API call returns a specific HTTP status code.
+///
+/// Supports GET, POST, and DELETE methods.
+pub async fn assert_api_status(
+    api_url: &str,
+    method: &str,
+    path: &str,
+    auth: &str,
+    body: Value,
+    expected_status: u16,
+) {
+    let url = format!("{api_url}{path}");
+    let resp = match method {
+        "GET" => http()
+            .get(&url)
+            .header("authorization", auth)
+            .send()
+            .await,
+        "POST" => http()
+            .post(&url)
+            .header("authorization", auth)
+            .json(&body)
+            .send()
+            .await,
+        "DELETE" => http()
+            .delete(&url)
+            .header("authorization", auth)
+            .json(&body)
+            .send()
+            .await,
+        _ => panic!("unsupported method: {method}"),
+    };
+    let resp = resp.unwrap_or_else(|e| panic!("{method} {path} failed: {e}"));
+    assert_eq!(
+        resp.status().as_u16(),
+        expected_status,
+        "{method} {path} expected {expected_status}, got {}",
+        resp.status()
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // EIP-191 Authentication
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -157,10 +263,19 @@ pub async fn get_auth_token(api_url: &str, key_hex: &str) -> Result<(String, Str
 /// Configure environment variables for sidecar E2E tests.
 ///
 /// Sets `SIDECAR_IMAGE`, `SIDECAR_PULL_IMAGE`, `SIDECAR_PUBLIC_HOST`,
-/// `REQUEST_TIMEOUT_SECS`, and `SESSION_AUTH_SECRET`.
+/// `REQUEST_TIMEOUT_SECS`, `SESSION_AUTH_SECRET`, and `BLUEPRINT_STATE_DIR`.
 pub fn setup_sidecar_env() {
     let image =
         std::env::var("SIDECAR_IMAGE").unwrap_or_else(|_| "tangle-sidecar:local".to_string());
+    let state_dir = std::env::temp_dir().join(format!(
+        "e2e-state-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ));
+    std::fs::create_dir_all(&state_dir).ok();
     // SAFETY: test-only, single-threaded env setup before any concurrent work.
     unsafe {
         std::env::set_var("SIDECAR_IMAGE", &image);
@@ -168,6 +283,7 @@ pub fn setup_sidecar_env() {
         std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
         std::env::set_var("REQUEST_TIMEOUT_SECS", "60");
         std::env::set_var("SESSION_AUTH_SECRET", "e2e-test-secret-key");
+        std::env::set_var("BLUEPRINT_STATE_DIR", &state_dir);
     }
 }
 

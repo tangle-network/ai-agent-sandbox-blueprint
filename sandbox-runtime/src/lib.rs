@@ -21,7 +21,7 @@ pub mod store;
 pub mod tee;
 pub mod util;
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 pub mod test_utils;
 
 pub use error::SandboxError;
