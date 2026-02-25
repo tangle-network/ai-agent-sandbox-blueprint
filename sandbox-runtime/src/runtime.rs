@@ -381,13 +381,20 @@ async fn cleanup_orphaned_container(builder: &DockerBuilder, container_id: &str)
         container_id,
         "Cleaning up orphaned container after creation failure"
     );
-    if let Ok(c) = Container::from_id(builder.client(), container_id).await {
-        let _ = c
-            .remove(Some(RemoveContainerOptions {
-                force: true,
-                ..Default::default()
-            }))
-            .await;
+    let timeout = std::time::Duration::from_secs(30);
+    let result = tokio::time::timeout(timeout, async {
+        if let Ok(c) = Container::from_id(builder.client(), container_id).await {
+            let _ = c
+                .remove(Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }))
+                .await;
+        }
+    })
+    .await;
+    if result.is_err() {
+        tracing::error!(container_id, "Orphan container cleanup timed out after 30s");
     }
 }
 
@@ -1674,5 +1681,209 @@ mod seal_tests {
         assert_eq!(record.token, "my-token");
         assert_eq!(record.base_env_json, r#"{"KEY":"val"}"#);
         assert_eq!(record.user_env_json, r#"{"USER":"x"}"#);
+    }
+}
+
+#[cfg(test)]
+mod core_logic_tests {
+    use super::*;
+    use docktopus::bollard::models::{ContainerInspectResponse, NetworkSettings, PortBinding};
+
+    // ── effective_idle_timeout ───────────────────────────────────────────
+
+    fn test_config() -> SidecarRuntimeConfig {
+        SidecarRuntimeConfig {
+            image: "test".into(),
+            public_host: "127.0.0.1".into(),
+            container_port: 3000,
+            ssh_port: 2222,
+            timeout: Duration::from_secs(30),
+            docker_host: None,
+            pull_image: false,
+            sandbox_default_idle_timeout: 1800,
+            sandbox_default_max_lifetime: 86400,
+            sandbox_max_idle_timeout: 7200,
+            sandbox_max_max_lifetime: 172800,
+            sandbox_reaper_interval: 30,
+            sandbox_gc_interval: 3600,
+            sandbox_gc_hot_retention: 86400,
+            sandbox_gc_warm_retention: 172800,
+            sandbox_gc_cold_retention: 604800,
+            snapshot_auto_commit: true,
+            snapshot_destination_prefix: None,
+        }
+    }
+
+    #[test]
+    fn idle_timeout_zero_uses_default() {
+        let cfg = test_config();
+        assert_eq!(cfg.effective_idle_timeout(0), 1800);
+    }
+
+    #[test]
+    fn idle_timeout_clamped_to_max() {
+        let cfg = test_config();
+        assert_eq!(cfg.effective_idle_timeout(99999), 7200);
+    }
+
+    #[test]
+    fn idle_timeout_within_range() {
+        let cfg = test_config();
+        assert_eq!(cfg.effective_idle_timeout(3600), 3600);
+    }
+
+    #[test]
+    fn max_lifetime_zero_uses_default() {
+        let cfg = test_config();
+        assert_eq!(cfg.effective_max_lifetime(0), 86400);
+    }
+
+    #[test]
+    fn max_lifetime_clamped_to_max() {
+        let cfg = test_config();
+        assert_eq!(cfg.effective_max_lifetime(999999), 172800);
+    }
+
+    #[test]
+    fn max_lifetime_within_range() {
+        let cfg = test_config();
+        assert_eq!(cfg.effective_max_lifetime(100000), 100000);
+    }
+
+    // ── build_env_vars ──────────────────────────────────────────────────
+
+    #[test]
+    fn env_vars_empty_json() {
+        let vars = build_env_vars("", "tok123", 3000).unwrap();
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains(&"SIDECAR_PORT=3000".to_string()));
+        assert!(vars.contains(&"SIDECAR_AUTH_TOKEN=tok123".to_string()));
+    }
+
+    #[test]
+    fn env_vars_with_json() {
+        let vars = build_env_vars(r#"{"API_KEY":"sk-test","DEBUG":"true"}"#, "tok", 8080).unwrap();
+        assert!(vars.contains(&"API_KEY=sk-test".to_string()));
+        assert!(vars.contains(&"DEBUG=true".to_string()));
+        assert!(vars.contains(&"SIDECAR_PORT=8080".to_string()));
+    }
+
+    #[test]
+    fn env_vars_invalid_json() {
+        let result = build_env_vars("not-json", "tok", 3000);
+        assert!(result.is_err());
+    }
+
+    // ── extract_host_port ───────────────────────────────────────────────
+
+    fn make_port_map(port: u16, host_port: &str) -> HashMap<String, Option<Vec<PortBinding>>> {
+        let mut map = HashMap::new();
+        map.insert(
+            format!("{port}/tcp"),
+            Some(vec![PortBinding {
+                host_ip: Some("127.0.0.1".to_string()),
+                host_port: Some(host_port.to_string()),
+            }]),
+        );
+        map
+    }
+
+    #[test]
+    fn extract_host_port_valid() {
+        let ports = make_port_map(3000, "32768");
+        let result = extract_host_port(&ports, 3000).unwrap();
+        assert_eq!(result, 32768);
+    }
+
+    #[test]
+    fn extract_host_port_missing_port() {
+        let ports = make_port_map(3000, "32768");
+        let result = extract_host_port(&ports, 8080);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_host_port_invalid_number() {
+        let ports = make_port_map(3000, "not-a-number");
+        let result = extract_host_port(&ports, 3000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_host_port_empty_bindings() {
+        let mut ports: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
+        ports.insert("3000/tcp".to_string(), Some(vec![]));
+        let result = extract_host_port(&ports, 3000);
+        assert!(result.is_err());
+    }
+
+    // ── extract_ports (full) ────────────────────────────────────────────
+
+    fn make_inspect(
+        port_map: HashMap<String, Option<Vec<PortBinding>>>,
+    ) -> ContainerInspectResponse {
+        ContainerInspectResponse {
+            network_settings: Some(NetworkSettings {
+                ports: Some(port_map),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extract_ports_no_ssh() {
+        let ports = make_port_map(3000, "49000");
+        let inspect = make_inspect(ports);
+        let (sidecar, ssh) = extract_ports(&inspect, 3000, false).unwrap();
+        assert_eq!(sidecar, 49000);
+        assert!(ssh.is_none());
+    }
+
+    #[test]
+    fn extract_ports_with_ssh() {
+        let mut ports = make_port_map(3000, "49000");
+        ports.insert(
+            format!("{DEFAULT_SIDECAR_SSH_PORT}/tcp"),
+            Some(vec![PortBinding {
+                host_ip: Some("127.0.0.1".to_string()),
+                host_port: Some("49001".to_string()),
+            }]),
+        );
+        let inspect = make_inspect(ports);
+        let (sidecar, ssh) = extract_ports(&inspect, 3000, true).unwrap();
+        assert_eq!(sidecar, 49000);
+        assert_eq!(ssh, Some(49001));
+    }
+
+    #[test]
+    fn extract_ports_missing_network() {
+        let inspect = ContainerInspectResponse {
+            network_settings: None,
+            ..Default::default()
+        };
+        let result = extract_ports(&inspect, 3000, false);
+        assert!(result.is_err());
+    }
+
+    // ── SandboxState ────────────────────────────────────────────────────
+
+    #[test]
+    fn sandbox_state_default_is_running() {
+        assert_eq!(SandboxState::default(), SandboxState::Running);
+    }
+
+    #[test]
+    fn sandbox_state_serialization_roundtrip() {
+        let running = serde_json::to_string(&SandboxState::Running).unwrap();
+        let stopped = serde_json::to_string(&SandboxState::Stopped).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SandboxState>(&running).unwrap(),
+            SandboxState::Running
+        );
+        assert_eq!(
+            serde_json::from_str::<SandboxState>(&stopped).unwrap(),
+            SandboxState::Stopped
+        );
     }
 }

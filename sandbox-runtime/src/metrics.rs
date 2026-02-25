@@ -301,3 +301,98 @@ static METRICS: OnChainMetrics = OnChainMetrics::new();
 pub fn metrics() -> &'static OnChainMetrics {
     &METRICS
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-endpoint HTTP metrics
+// ─────────────────────────────────────────────────────────────────────────────
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+/// Per-endpoint request count and cumulative duration.
+#[derive(Default, Clone)]
+pub struct EndpointStats {
+    pub count: u64,
+    pub total_ms: u64,
+    pub errors: u64,
+}
+
+/// Tracks per-endpoint HTTP latency and request counts.
+pub struct HttpMetrics {
+    endpoints: Mutex<HashMap<String, EndpointStats>>,
+}
+
+impl Default for HttpMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HttpMetrics {
+    pub fn new() -> Self {
+        Self {
+            endpoints: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Record a request for `path` with given duration and status.
+    pub fn record(&self, path: &str, duration_ms: u64, is_error: bool) {
+        if let Ok(mut map) = self.endpoints.lock() {
+            let entry = map.entry(path.to_string()).or_default();
+            entry.count += 1;
+            entry.total_ms += duration_ms;
+            if is_error {
+                entry.errors += 1;
+            }
+        }
+    }
+
+    /// Snapshot all endpoint stats for Prometheus rendering.
+    pub fn snapshot(&self) -> Vec<(String, EndpointStats)> {
+        self.endpoints
+            .lock()
+            .ok()
+            .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default()
+    }
+
+    /// Render per-endpoint metrics in Prometheus text exposition format.
+    pub fn render_prometheus(&self) -> String {
+        let snap = self.snapshot();
+        if snap.is_empty() {
+            return String::new();
+        }
+        let mut out = String::with_capacity(1024);
+        let _ = writeln!(out, "# TYPE http_requests_total counter");
+        let _ = writeln!(out, "# TYPE http_request_duration_ms_total counter");
+        let _ = writeln!(out, "# TYPE http_request_errors_total counter");
+        for (path, stats) in &snap {
+            let _ = writeln!(
+                out,
+                "http_requests_total{{path=\"{path}\"}} {}",
+                stats.count
+            );
+            let _ = writeln!(
+                out,
+                "http_request_duration_ms_total{{path=\"{path}\"}} {}",
+                stats.total_ms
+            );
+            if stats.errors > 0 {
+                let _ = writeln!(
+                    out,
+                    "http_request_errors_total{{path=\"{path}\"}} {}",
+                    stats.errors
+                );
+            }
+        }
+        out
+    }
+}
+
+static HTTP_METRICS: once_cell::sync::Lazy<HttpMetrics> =
+    once_cell::sync::Lazy::new(HttpMetrics::new);
+
+/// Returns the global HTTP metrics tracker.
+pub fn http_metrics() -> &'static HttpMetrics {
+    &HTTP_METRICS
+}

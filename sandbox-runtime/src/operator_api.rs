@@ -254,7 +254,8 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn prometheus_metrics() -> impl IntoResponse {
-    let body = metrics::metrics().render_prometheus();
+    let mut body = metrics::metrics().render_prometheus();
+    body.push_str(&metrics::http_metrics().render_prometheus());
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
@@ -991,6 +992,23 @@ pub fn build_cors_layer() -> CorsLayer {
 }
 
 // ---------------------------------------------------------------------------
+// Per-endpoint HTTP metrics middleware
+// ---------------------------------------------------------------------------
+
+async fn http_metrics_middleware(
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    let path = req.uri().path().to_string();
+    let start = std::time::Instant::now();
+    let response = next.run(req).await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let is_error = response.status().is_server_error();
+    metrics::http_metrics().record(&path, duration_ms, is_error);
+    response
+}
+
+// ---------------------------------------------------------------------------
 // Router builder
 // ---------------------------------------------------------------------------
 
@@ -1117,6 +1135,7 @@ pub fn operator_api_router_with_tee(
 
     router
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1 MB max request body
+        .layer(middleware::from_fn(http_metrics_middleware))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
 }
