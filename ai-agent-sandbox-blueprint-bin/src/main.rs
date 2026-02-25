@@ -301,21 +301,37 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         let reaper_interval = config.sandbox_reaper_interval;
         let gc_interval = config.sandbox_gc_interval;
 
+        let mut reaper_shutdown = api_shutdown_tx.subscribe();
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(reaper_interval));
             loop {
-                interval.tick().await;
-                ai_agent_sandbox_blueprint_lib::reaper::reaper_tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        ai_agent_sandbox_blueprint_lib::reaper::reaper_tick().await;
+                    }
+                    _ = reaper_shutdown.changed() => {
+                        info!("Reaper shutting down");
+                        break;
+                    }
+                }
             }
         });
 
         // Spawn GC background task (stopped sandbox cleanup)
+        let mut gc_shutdown = api_shutdown_tx.subscribe();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(gc_interval));
             loop {
-                interval.tick().await;
-                ai_agent_sandbox_blueprint_lib::reaper::gc_tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        ai_agent_sandbox_blueprint_lib::reaper::gc_tick().await;
+                    }
+                    _ = gc_shutdown.changed() => {
+                        info!("GC shutting down");
+                        break;
+                    }
+                }
             }
         });
     }

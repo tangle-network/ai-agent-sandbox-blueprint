@@ -139,3 +139,53 @@ jobs:
 
       - name: Tests
         run: pnpm test
+
+  security:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install Solidity Dependencies
+        run: forge soldeer update -d
+
+      - name: Forge build
+        run: forge update && forge build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "true"
+
+      - uses: taiki-e/install-action@cargo-tarpaulin
+
+      - uses: taiki-e/github-actions/free-device-space@main
+
+      - name: Run coverage
+        run: cargo tarpaulin --workspace --out xml --skip-clean
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: env.CODECOV_TOKEN != ''
+        with:
+          file: cobertura.xml
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

@@ -214,9 +214,13 @@ async fn wipe_secrets(
 // ---------------------------------------------------------------------------
 
 async fn health() -> impl IntoResponse {
-    // Check Docker daemon connectivity.
+    // Check Docker daemon connectivity (5s timeout to prevent hung health checks).
     let docker_ok = match runtime::docker_builder().await {
-        Ok(builder) => builder.client().ping().await.is_ok(),
+        Ok(builder) => {
+            tokio::time::timeout(std::time::Duration::from_secs(5), builder.client().ping())
+                .await
+                .is_ok_and(|r| r.is_ok())
+        }
         Err(_) => false,
     };
 
@@ -1113,6 +1117,7 @@ pub fn operator_api_router_with_tee(
 
     router
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1 MB max request body
+        .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
 }
 

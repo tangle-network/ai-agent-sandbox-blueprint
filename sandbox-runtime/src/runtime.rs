@@ -173,6 +173,17 @@ impl SidecarRuntimeConfig {
                 .ok()
                 .filter(|v| !v.trim().is_empty());
 
+            tracing::info!(
+                image = %image,
+                host = %public_host,
+                port = container_port,
+                idle_timeout = sandbox_default_idle_timeout,
+                max_lifetime = sandbox_default_max_lifetime,
+                reaper_interval = sandbox_reaper_interval,
+                gc_interval = sandbox_gc_interval,
+                "Runtime configuration loaded"
+            );
+
             SidecarRuntimeConfig {
                 image,
                 public_host,
@@ -361,6 +372,22 @@ where
         Err(_) => Err(SandboxError::Docker(format!(
             "{op_name} timed out after {timeout_secs}s"
         ))),
+    }
+}
+
+/// Best-effort removal of an orphaned container after a partial creation failure.
+async fn cleanup_orphaned_container(builder: &DockerBuilder, container_id: &str) {
+    tracing::warn!(
+        container_id,
+        "Cleaning up orphaned container after creation failure"
+    );
+    if let Ok(c) = Container::from_id(builder.client(), container_id).await {
+        let _ = c
+            .remove(Some(RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            }))
+            .await;
     }
 }
 
@@ -861,70 +888,80 @@ async fn create_sidecar_docker(
         .ok_or_else(|| SandboxError::Docker("Missing container id".into()))?
         .to_string();
 
-    let inspect = docker_timeout(
-        "inspect_container",
-        builder
-            .client()
-            .inspect_container(&container_id, None::<InspectContainerOptions>),
-    )
-    .await?;
+    let finish = async {
+        let inspect = docker_timeout(
+            "inspect_container",
+            builder
+                .client()
+                .inspect_container(&container_id, None::<InspectContainerOptions>),
+        )
+        .await?;
 
-    let (sidecar_port, ssh_port) =
-        extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
-    let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
+        let (sidecar_port, ssh_port) =
+            extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
+        let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
-    let now = crate::util::now_ts();
-    let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
-    let max_lifetime = config.effective_max_lifetime(request.max_lifetime_seconds);
+        let now = crate::util::now_ts();
+        let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
+        let max_lifetime = config.effective_max_lifetime(request.max_lifetime_seconds);
 
-    let record = SandboxRecord {
-        id: sandbox_id.clone(),
-        container_id,
-        sidecar_url,
-        sidecar_port,
-        ssh_port,
-        token,
-        created_at: now,
-        cpu_cores: request.cpu_cores,
-        memory_mb: request.memory_mb,
-        state: SandboxState::Running,
-        idle_timeout_seconds: idle_timeout,
-        max_lifetime_seconds: max_lifetime,
-        last_activity_at: now,
-        stopped_at: None,
-        snapshot_image_id: None,
-        snapshot_s3_url: None,
-        container_removed_at: None,
-        image_removed_at: None,
-        original_image: config.image.clone(),
-        base_env_json: request.env_json.clone(),
-        user_env_json: request.user_env_json.clone(),
-        snapshot_destination,
-        tee_deployment_id: None,
-        tee_metadata_json: None,
-        name: request.name.clone(),
-        agent_identifier: request.agent_identifier.clone(),
-        metadata_json: request.metadata_json.clone(),
-        disk_gb: request.disk_gb,
-        stack: request.stack.clone(),
-        owner: request.owner.clone(),
-        tee_config: None,
-    };
+        let record = SandboxRecord {
+            id: sandbox_id.clone(),
+            container_id: container_id.clone(),
+            sidecar_url,
+            sidecar_port,
+            ssh_port,
+            token,
+            created_at: now,
+            cpu_cores: request.cpu_cores,
+            memory_mb: request.memory_mb,
+            state: SandboxState::Running,
+            idle_timeout_seconds: idle_timeout,
+            max_lifetime_seconds: max_lifetime,
+            last_activity_at: now,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: config.image.clone(),
+            base_env_json: request.env_json.clone(),
+            user_env_json: request.user_env_json.clone(),
+            snapshot_destination,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            name: request.name.clone(),
+            agent_identifier: request.agent_identifier.clone(),
+            metadata_json: request.metadata_json.clone(),
+            disk_gb: request.disk_gb,
+            stack: request.stack.clone(),
+            owner: request.owner.clone(),
+            tee_config: None,
+        };
 
-    let mut sealed = record.clone();
-    seal_record(&mut sealed);
-    sandboxes()?.insert(sandbox_id, sealed)?;
+        let mut sealed = record.clone();
+        seal_record(&mut sealed);
+        sandboxes()?.insert(sandbox_id, sealed)?;
 
-    crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
+        crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
 
-    Ok(record)
+        Ok(record)
+    }
+    .await;
+
+    if finish.is_err() {
+        cleanup_orphaned_container(builder, &container_id).await;
+    }
+    finish
 }
 
 pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
     let builder = docker_builder().await?;
-    let mut container = Container::from_id(builder.client(), &record.container_id)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to load container: {err}")))?;
+    let mut container = docker_timeout(
+        "load_container",
+        Container::from_id(builder.client(), &record.container_id),
+    )
+    .await?;
     docker_timeout("stop_container", container.stop()).await?;
 
     let now = crate::util::now_ts();
@@ -959,9 +996,11 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
     if record.container_removed_at.is_none() {
         let builder = docker_builder().await?;
         let try_start = async {
-            let mut container = Container::from_id(builder.client(), &record.container_id)
-                .await
-                .map_err(|err| SandboxError::Docker(format!("Failed to load container: {err}")))?;
+            let mut container = docker_timeout(
+                "load_container",
+                Container::from_id(builder.client(), &record.container_id),
+            )
+            .await?;
             docker_timeout("start_container", container.start(false)).await?;
             Ok::<(), SandboxError>(())
         };
@@ -1125,9 +1164,11 @@ pub async fn recreate_sidecar_with_env(
 
 async fn delete_sidecar_docker(record: &SandboxRecord) -> Result<()> {
     let builder = docker_builder().await?;
-    let container = Container::from_id(builder.client(), &record.container_id)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to load container: {err}")))?;
+    let container = docker_timeout(
+        "load_container",
+        Container::from_id(builder.client(), &record.container_id),
+    )
+    .await?;
     docker_timeout(
         "remove_container",
         container.remove(Some(RemoveContainerOptions {
@@ -1168,11 +1209,11 @@ pub async fn commit_container(record: &SandboxRecord) -> Result<String> {
 /// Remove a committed snapshot image from the local Docker daemon.
 pub async fn remove_snapshot_image(image_id: &str) -> Result<()> {
     let builder = docker_builder().await?;
-    builder
-        .client()
-        .remove_image(image_id, None, None)
-        .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to remove image {image_id}: {err}")))?;
+    docker_timeout(
+        "remove_image",
+        builder.client().remove_image(image_id, None, None),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1210,33 +1251,41 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .ok_or_else(|| SandboxError::Docker("Missing container id".into()))?
         .to_string();
 
-    let inspect = docker_timeout(
-        "inspect_container",
-        builder
-            .client()
-            .inspect_container(&container_id, None::<InspectContainerOptions>),
-    )
-    .await?;
+    let finish = async {
+        let inspect = docker_timeout(
+            "inspect_container",
+            builder
+                .client()
+                .inspect_container(&container_id, None::<InspectContainerOptions>),
+        )
+        .await?;
 
-    let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
-    let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
+        let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
+        let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
-    let now = crate::util::now_ts();
-    let mut updated = record.clone();
-    updated.container_id = container_id;
-    updated.sidecar_url = sidecar_url;
-    updated.sidecar_port = sidecar_port;
-    updated.ssh_port = ssh_port;
-    updated.state = SandboxState::Running;
-    updated.stopped_at = None;
-    updated.last_activity_at = now;
-    updated.container_removed_at = None;
-    updated.snapshot_image_id = None;
+        let now = crate::util::now_ts();
+        let mut updated = record.clone();
+        updated.container_id = container_id.clone();
+        updated.sidecar_url = sidecar_url;
+        updated.sidecar_port = sidecar_port;
+        updated.ssh_port = ssh_port;
+        updated.state = SandboxState::Running;
+        updated.stopped_at = None;
+        updated.last_activity_at = now;
+        updated.container_removed_at = None;
+        updated.snapshot_image_id = None;
 
-    let mut sealed = updated.clone();
-    seal_record(&mut sealed);
-    sandboxes()?.insert(record.id.clone(), sealed)?;
-    Ok(updated)
+        let mut sealed = updated.clone();
+        seal_record(&mut sealed);
+        sandboxes()?.insert(record.id.clone(), sealed)?;
+        Ok(updated)
+    }
+    .await;
+
+    if finish.is_err() {
+        cleanup_orphaned_container(builder, &container_id).await;
+    }
+    finish
 }
 
 /// Create a fresh container from the original base image, then restore workspace from S3 snapshot.
@@ -1281,54 +1330,65 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         .ok_or_else(|| SandboxError::Docker("Missing container id".into()))?
         .to_string();
 
-    let inspect = docker_timeout(
-        "inspect_container",
-        builder
-            .client()
-            .inspect_container(&container_id, None::<InspectContainerOptions>),
-    )
-    .await?;
+    let finish = async {
+        let inspect = docker_timeout(
+            "inspect_container",
+            builder
+                .client()
+                .inspect_container(&container_id, None::<InspectContainerOptions>),
+        )
+        .await?;
 
-    let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
-    let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
-    let token = &record.token;
+        let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
+        let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
+        let token = &record.token;
 
-    if !wait_for_sidecar_health(&sidecar_url, 30).await {
-        blueprint_sdk::info!("S3 restore: sidecar slow to start, proceeding with restore anyway");
+        if !wait_for_sidecar_health(&sidecar_url, 30).await {
+            blueprint_sdk::info!(
+                "S3 restore: sidecar slow to start, proceeding with restore anyway"
+            );
+        }
+
+        // Restore workspace from S3 snapshot
+        let restore_cmd = format!(
+            "set -euo pipefail; curl -fsSL {} | tar -xzf - -C /",
+            crate::util::shell_escape(s3_url)
+        );
+        let payload = serde_json::json!({
+            "command": format!("sh -c {}", crate::util::shell_escape(&restore_cmd)),
+        });
+        if let Err(err) =
+            crate::http::sidecar_post_json(&sidecar_url, "/terminals/commands", token, payload)
+                .await
+        {
+            blueprint_sdk::error!("S3 restore failed for sandbox {}: {err}", record.id);
+            return Err(SandboxError::Docker(format!("S3 restore failed: {err}")));
+        }
+
+        let now = crate::util::now_ts();
+        let mut updated = record.clone();
+        updated.container_id = container_id.clone();
+        updated.sidecar_url = sidecar_url;
+        updated.sidecar_port = sidecar_port;
+        updated.ssh_port = ssh_port;
+        updated.state = SandboxState::Running;
+        updated.stopped_at = None;
+        updated.last_activity_at = now;
+        updated.container_removed_at = None;
+        updated.image_removed_at = None;
+        updated.snapshot_s3_url = None;
+
+        let mut sealed = updated.clone();
+        seal_record(&mut sealed);
+        sandboxes()?.insert(record.id.clone(), sealed)?;
+        Ok(updated)
     }
+    .await;
 
-    // Restore workspace from S3 snapshot
-    let restore_cmd = format!(
-        "set -euo pipefail; curl -fsSL {} | tar -xzf - -C /",
-        crate::util::shell_escape(s3_url)
-    );
-    let payload = serde_json::json!({
-        "command": format!("sh -c {}", crate::util::shell_escape(&restore_cmd)),
-    });
-    if let Err(err) =
-        crate::http::sidecar_post_json(&sidecar_url, "/terminals/commands", token, payload).await
-    {
-        blueprint_sdk::error!("S3 restore failed for sandbox {}: {err}", record.id);
-        return Err(SandboxError::Docker(format!("S3 restore failed: {err}")));
+    if finish.is_err() {
+        cleanup_orphaned_container(builder, &container_id).await;
     }
-
-    let now = crate::util::now_ts();
-    let mut updated = record.clone();
-    updated.container_id = container_id;
-    updated.sidecar_url = sidecar_url;
-    updated.sidecar_port = sidecar_port;
-    updated.ssh_port = ssh_port;
-    updated.state = SandboxState::Running;
-    updated.stopped_at = None;
-    updated.last_activity_at = now;
-    updated.container_removed_at = None;
-    updated.image_removed_at = None;
-    updated.snapshot_s3_url = None;
-
-    let mut sealed = updated.clone();
-    seal_record(&mut sealed);
-    sandboxes()?.insert(record.id.clone(), sealed)?;
-    Ok(updated)
+    finish
 }
 
 /// Re-inspect a running container to get its current host port mappings.
