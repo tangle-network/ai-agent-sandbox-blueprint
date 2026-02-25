@@ -121,9 +121,8 @@ pub fn backend_from_env() -> Result<Arc<dyn TeeBackend>> {
 }
 
 fn require_env(name: &str) -> Result<String> {
-    std::env::var(name).map_err(|_| {
-        SandboxError::Validation(format!("{name} environment variable is required"))
-    })
+    std::env::var(name)
+        .map_err(|_| SandboxError::Validation(format!("{name} environment variable is required")))
 }
 
 #[cfg(test)]

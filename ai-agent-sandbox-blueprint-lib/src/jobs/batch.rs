@@ -7,9 +7,9 @@ use crate::BatchExecRequest;
 use crate::BatchTaskRequest;
 use crate::CreateSandboxParams;
 use crate::JsonResponse;
+use crate::jobs::exec::run_task_request;
 use crate::runtime::{create_sidecar, require_sandbox_owner_by_url};
 use crate::tangle::extract::{Caller, TangleArg, TangleResult};
-use crate::jobs::exec::run_task_request;
 
 /// Maximum number of concurrent operations in parallel batch execution.
 const MAX_BATCH_CONCURRENCY: usize = 10;
@@ -79,7 +79,10 @@ pub async fn batch_task(
             let tok = tok.clone();
             set.spawn(async move {
                 let _permit = sem.acquire().await;
-                (idx, format_task_result(&url, run_task_request(&req, &tok).await))
+                (
+                    idx,
+                    format_task_result(&url, run_task_request(&req, &tok).await),
+                )
             });
         }
 
@@ -99,10 +102,7 @@ pub async fn batch_task(
     store_batch("task", results).await
 }
 
-fn make_task_request(
-    sidecar_url: &str,
-    request: &BatchTaskRequest,
-) -> crate::SandboxTaskRequest {
+fn make_task_request(sidecar_url: &str, request: &BatchTaskRequest) -> crate::SandboxTaskRequest {
     crate::SandboxTaskRequest {
         sidecar_url: sidecar_url.to_string(),
         prompt: request.prompt.to_string(),
@@ -258,7 +258,10 @@ pub async fn batch_collect(
 // ---------------------------------------------------------------------------
 
 /// Validate caller owns all sandboxes at the given URLs. Returns (url, token) pairs.
-fn validate_urls_with_owner(urls: &[String], caller: &str) -> Result<Vec<(String, String)>, String> {
+fn validate_urls_with_owner(
+    urls: &[String],
+    caller: &str,
+) -> Result<Vec<(String, String)>, String> {
     urls.iter()
         .map(|url| {
             let record = require_sandbox_owner_by_url(url, caller)?;

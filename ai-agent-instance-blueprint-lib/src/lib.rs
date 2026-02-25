@@ -14,16 +14,16 @@ pub mod billing;
 pub mod jobs;
 
 // Re-export sandbox-runtime modules.
+pub use sandbox_runtime::instance_types::{
+    InstanceExecRequest, InstanceExecResponse, InstancePromptRequest, InstancePromptResponse,
+    InstanceTaskRequest, InstanceTaskResponse,
+};
 pub use sandbox_runtime::{
     CreateSandboxParams, DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE,
     DEFAULT_SIDECAR_SSH_PORT, DEFAULT_TIMEOUT_SECS, SandboxError, SandboxRecord, SandboxState,
     TeeConfig, TeeType,
 };
 pub use sandbox_runtime::{auth, error, http, metrics, reaper, runtime, store, tee, util};
-pub use sandbox_runtime::instance_types::{
-    InstanceExecRequest, InstanceExecResponse, InstancePromptRequest, InstancePromptResponse,
-    InstanceTaskRequest, InstanceTaskResponse,
-};
 
 use blueprint_sdk::Job;
 use blueprint_sdk::Router;

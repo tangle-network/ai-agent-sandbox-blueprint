@@ -141,11 +141,7 @@ pub fn verify_eip191_signature(message: &str, signature_hex: &str) -> Result<Str
     let v = match v_byte[0] {
         0 | 27 => 0u8,
         1 | 28 => 1u8,
-        v => {
-            return Err(SandboxError::Auth(format!(
-                "Invalid recovery id: {v}"
-            )))
-        }
+        v => return Err(SandboxError::Auth(format!("Invalid recovery id: {v}"))),
     };
 
     let signature = Signature::from_slice(rs)
@@ -157,9 +153,8 @@ pub fn verify_eip191_signature(message: &str, signature_hex: &str) -> Result<Str
     let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
     let digest = keccak256(prefixed.as_bytes());
 
-    let verifying_key =
-        VerifyingKey::recover_from_prehash(&digest, &signature, recovery_id)
-            .map_err(|e| SandboxError::Auth(format!("Signature recovery failed: {e}")))?;
+    let verifying_key = VerifyingKey::recover_from_prehash(&digest, &signature, recovery_id)
+        .map_err(|e| SandboxError::Auth(format!("Signature recovery failed: {e}")))?;
 
     // Derive address from uncompressed public key (skip 0x04 prefix byte)
     let pubkey_bytes = verifying_key.to_encoded_point(false);
@@ -191,20 +186,19 @@ const HKDF_INFO: &[u8] = b"session-auth-symmetric-key-v1";
 
 /// Symmetric key for PASETO tokens. Derived once from `SESSION_AUTH_SECRET` env var
 /// using HKDF-SHA256 (extract-then-expand), or a random key generated at startup.
-static SYMMETRIC_KEY: Lazy<pasetors::keys::SymmetricKey<pasetors::version4::V4>> = Lazy::new(|| {
-    let key_bytes = match std::env::var("SESSION_AUTH_SECRET") {
-        Ok(secret) => {
-            derive_symmetric_key(secret.as_bytes())
-        }
-        Err(_) => {
-            let mut bytes = [0u8; 32];
-            OsRng.fill_bytes(&mut bytes);
-            bytes
-        }
-    };
-    pasetors::keys::SymmetricKey::<pasetors::version4::V4>::from(&key_bytes)
-        .expect("Failed to create PASETO symmetric key")
-});
+static SYMMETRIC_KEY: Lazy<pasetors::keys::SymmetricKey<pasetors::version4::V4>> =
+    Lazy::new(|| {
+        let key_bytes = match std::env::var("SESSION_AUTH_SECRET") {
+            Ok(secret) => derive_symmetric_key(secret.as_bytes()),
+            Err(_) => {
+                let mut bytes = [0u8; 32];
+                OsRng.fill_bytes(&mut bytes);
+                bytes
+            }
+        };
+        pasetors::keys::SymmetricKey::<pasetors::version4::V4>::from(&key_bytes)
+            .expect("Failed to create PASETO symmetric key")
+    });
 
 /// Derive a 32-byte symmetric key from input keying material using HKDF-SHA256.
 ///
@@ -223,10 +217,7 @@ fn derive_symmetric_key(ikm: &[u8]) -> [u8; 32] {
 }
 
 /// Verify a challenge signature and issue a PASETO session token.
-pub fn exchange_signature_for_token(
-    nonce: &str,
-    signature_hex: &str,
-) -> Result<SessionToken> {
+pub fn exchange_signature_for_token(nonce: &str, signature_hex: &str) -> Result<SessionToken> {
     let message = consume_challenge(nonce)?;
     let address = verify_eip191_signature(&message, signature_hex)?;
 
@@ -265,16 +256,14 @@ pub fn exchange_signature_for_token(
         .expiration(&exp_str)
         .map_err(|e| SandboxError::Auth(format!("Failed to set expiration: {e}")))?;
 
-    let token = pasetors::local::encrypt(
-        &*SYMMETRIC_KEY,
-        &paseto_claims,
-        None,
-        None,
-    )
-    .map_err(|e| SandboxError::Auth(format!("Failed to encrypt PASETO token: {e}")))?;
+    let token = pasetors::local::encrypt(&*SYMMETRIC_KEY, &paseto_claims, None, None)
+        .map_err(|e| SandboxError::Auth(format!("Failed to encrypt PASETO token: {e}")))?;
 
     // Store session for server-side validation
-    SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).insert(token.clone(), claims);
+    SESSIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(token.clone(), claims);
 
     Ok(SessionToken {
         token,
@@ -300,14 +289,9 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
         .map_err(|e| SandboxError::Auth(format!("Invalid PASETO token: {e}")))?;
 
     let validation_rules = pasetors::claims::ClaimsValidationRules::new();
-    let trusted = pasetors::local::decrypt(
-        &*SYMMETRIC_KEY,
-        &validation,
-        &validation_rules,
-        None,
-        None,
-    )
-    .map_err(|e| SandboxError::Auth(format!("PASETO decryption failed: {e}")))?;
+    let trusted =
+        pasetors::local::decrypt(&*SYMMETRIC_KEY, &validation, &validation_rules, None, None)
+            .map_err(|e| SandboxError::Auth(format!("PASETO decryption failed: {e}")))?;
 
     let payload = trusted.payload();
     let json: serde_json::Value = serde_json::from_str(payload)
@@ -322,7 +306,9 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
     let iat = json
         .get("iat")
         .and_then(|v| v.as_str())
-        .and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok())
+        .and_then(|s| {
+            time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+        })
         .map(|dt| dt.unix_timestamp() as u64)
         .unwrap_or(0);
 
@@ -332,8 +318,9 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| SandboxError::Auth("Missing expiration in token".into()))?;
 
-    let exp_dt = time::OffsetDateTime::parse(exp_str, &time::format_description::well_known::Rfc3339)
-        .map_err(|e| SandboxError::Auth(format!("Invalid expiration format: {e}")))?;
+    let exp_dt =
+        time::OffsetDateTime::parse(exp_str, &time::format_description::well_known::Rfc3339)
+            .map_err(|e| SandboxError::Auth(format!("Invalid expiration format: {e}")))?;
 
     let expires_at = exp_dt.unix_timestamp() as u64;
 
@@ -351,8 +338,14 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
 /// Remove expired challenges and sessions.
 pub fn gc_sessions() {
     let now = now_secs();
-    CHALLENGES.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, c| c.expires_at > now);
-    SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, s| s.expires_at > now);
+    CHALLENGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, c| c.expires_at > now);
+    SESSIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, s| s.expires_at > now);
 }
 
 /// Extract a Bearer token from an Authorization header value.
@@ -475,7 +468,10 @@ mod tests {
         let result = consume_challenge(&nonce);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("expired"), "Expected 'expired' in error: {err_msg}");
+        assert!(
+            err_msg.contains("expired"),
+            "Expected 'expired' in error: {err_msg}"
+        );
     }
 
     #[test]
@@ -494,11 +490,7 @@ mod tests {
 
         // Sign a message using EIP-191 personal_sign
         let message = "test message for signing";
-        let prefixed = format!(
-            "\x19Ethereum Signed Message:\n{}{}",
-            message.len(),
-            message
-        );
+        let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
         let digest = keccak256(prefixed.as_bytes());
 
         let (signature, recovery_id) = signing_key
@@ -612,14 +604,8 @@ mod tests {
 
     #[test]
     fn extract_bearer() {
-        assert_eq!(
-            extract_bearer_token("Bearer abc123"),
-            Some("abc123")
-        );
-        assert_eq!(
-            extract_bearer_token("bearer xyz"),
-            Some("xyz")
-        );
+        assert_eq!(extract_bearer_token("Bearer abc123"), Some("abc123"));
+        assert_eq!(extract_bearer_token("bearer xyz"), Some("xyz"));
         assert_eq!(extract_bearer_token("Basic abc"), None);
     }
 

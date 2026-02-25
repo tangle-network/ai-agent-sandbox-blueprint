@@ -174,12 +174,18 @@ export default function SandboxDetail() {
 
   // SSH handlers
   const handleSshProvision = useCallback(async () => {
-    if (!sshPublicKey.trim()) return;
+    const key = sshPublicKey.trim();
+    if (!key) return;
+    const validPrefixes = ['ssh-rsa ', 'ssh-ed25519 ', 'ssh-dss ', 'ecdsa-sha2-'];
+    if (!validPrefixes.some((p) => key.startsWith(p))) {
+      setSshError('Invalid SSH key format. Must start with ssh-rsa, ssh-ed25519, or ecdsa-sha2-*');
+      return;
+    }
     setSshBusy(true);
     setSshError(null);
     setSshSuccess(null);
     try {
-      await operatorApiCall('ssh', { username: sshUsername, public_key: sshPublicKey.trim() });
+      await operatorApiCall('ssh', { username: sshUsername, public_key: key });
       setSshKeys((prev) => [...prev, { username: sshUsername, publicKey: sshPublicKey.trim() }]);
       setSshPublicKey('');
       setSshSuccess('SSH key provisioned');

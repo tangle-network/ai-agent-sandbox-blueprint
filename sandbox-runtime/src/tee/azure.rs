@@ -313,8 +313,8 @@ impl AzureSkrBackend {
 
         // Parse image reference. Accepts JSON object format:
         // {"publisher":"...", "offer":"...", "sku":"...", "version":"..."}
-        let image_ref: serde_json::Value =
-            serde_json::from_str(&self.config.vm_image).unwrap_or_else(|_| {
+        let image_ref: serde_json::Value = serde_json::from_str(&self.config.vm_image)
+            .unwrap_or_else(|_| {
                 // Fallback: treat as a custom image ID.
                 serde_json::json!({ "id": self.config.vm_image })
             });
@@ -418,17 +418,12 @@ impl AzureSkrBackend {
                         .bearer_auth(&pip_token)
                         .send()
                         .await
-                        .map_err(|e| {
-                            SandboxError::CloudProvider(format!("Get public IP: {e}"))
-                        })?;
+                        .map_err(|e| SandboxError::CloudProvider(format!("Get public IP: {e}")))?;
 
                     if pip_resp.status().is_success() {
-                        let pip_body: serde_json::Value = pip_resp
-                            .json()
-                            .await
-                            .map_err(|e| {
-                                SandboxError::CloudProvider(format!("Parse public IP: {e}"))
-                            })?;
+                        let pip_body: serde_json::Value = pip_resp.json().await.map_err(|e| {
+                            SandboxError::CloudProvider(format!("Parse public IP: {e}"))
+                        })?;
 
                         if let Some(ip) = pip_body["properties"]["ipAddress"].as_str() {
                             return Ok(ip.to_string());
@@ -583,8 +578,7 @@ impl TeeBackend for AzureSkrBackend {
         // Look up associated resources from metadata.
         let (nic_name, pip_name) = {
             let store = crate::runtime::sandboxes()?;
-            let record = store
-                .find(|r| r.tee_deployment_id.as_deref() == Some(deployment_id))?;
+            let record = store.find(|r| r.tee_deployment_id.as_deref() == Some(deployment_id))?;
             if let Some(record) = record {
                 if let Some(ref meta_json) = record.tee_metadata_json {
                     let meta: serde_json::Value =

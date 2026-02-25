@@ -1218,7 +1218,10 @@ mod session_tests {
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
         let body2: Value = serde_json::from_slice(&requests[1].body).unwrap();
-        assert_eq!(body2["sessionId"], "s-reused", "second request body: {body2}");
+        assert_eq!(
+            body2["sessionId"], "s-reused",
+            "second request body: {body2}"
+        );
         rm(&id);
     }
 
@@ -1252,8 +1255,12 @@ mod session_tests {
             timeout_ms: 0,
         };
 
-        let _a = run_instance_task(&server.uri(), "tok", &id, &req_a).await.unwrap();
-        let _b = run_instance_task(&server.uri(), "tok", &id, &req_b).await.unwrap();
+        let _a = run_instance_task(&server.uri(), "tok", &id, &req_a)
+            .await
+            .unwrap();
+        let _b = run_instance_task(&server.uri(), "tok", &id, &req_b)
+            .await
+            .unwrap();
 
         let requests = server.received_requests().await.unwrap();
         let body_a: Value = serde_json::from_slice(&requests[0].body).unwrap();
@@ -1285,7 +1292,9 @@ mod session_tests {
 
         // Prompt: no session_id in response struct (compile-time guarantee).
         let prompt_resp = run_instance_prompt(
-            &server.uri(), "tok", &id,
+            &server.uri(),
+            "tok",
+            &id,
             &InstancePromptRequest {
                 message: "Hi".to_string(),
                 session_id: String::new(),
@@ -1299,7 +1308,9 @@ mod session_tests {
 
         // Task: has session_id in response.
         let task_resp = run_instance_task(
-            &server.uri(), "tok", &id,
+            &server.uri(),
+            "tok",
+            &id,
             &InstanceTaskRequest {
                 prompt: "Do it".to_string(),
                 session_id: String::new(),
@@ -1339,15 +1350,8 @@ mod snapshot_tests {
             .await;
 
         let id = insert_sandbox(&server.uri(), "tok");
-        let result = run_instance_snapshot(
-            &server.uri(),
-            "tok",
-            &id,
-            "s3://bucket/snap",
-            true,
-            true,
-        )
-        .await;
+        let result =
+            run_instance_snapshot(&server.uri(), "tok", &id, "s3://bucket/snap", true, true).await;
 
         assert!(result.is_ok(), "snapshot should succeed: {result:?}");
         rm(&id);
@@ -1355,15 +1359,7 @@ mod snapshot_tests {
 
     #[tokio::test]
     async fn snapshot_empty_destination_rejected() {
-        let result = run_instance_snapshot(
-            "http://unused",
-            "tok",
-            "sb-1",
-            "",
-            true,
-            false,
-        )
-        .await;
+        let result = run_instance_snapshot("http://unused", "tok", "sb-1", "", true, false).await;
 
         assert!(result.is_err());
         assert!(

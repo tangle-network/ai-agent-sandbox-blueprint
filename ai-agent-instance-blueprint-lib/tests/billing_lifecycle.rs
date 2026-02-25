@@ -14,7 +14,7 @@ use ai_agent_instance_blueprint_lib::billing::{
 };
 use blueprint_sdk::alloy::primitives::{Address, U256};
 use blueprint_sdk::alloy::sol_types::{SolCall, SolValue};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use wiremock::matchers::method;
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
@@ -182,7 +182,10 @@ async fn test_check_escrow_exhausted() {
     mount_rpc_mocks(&server, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
 
     let status = billing::check_escrow(&config).await.unwrap();
-    assert!(!status.sufficient, "balance=0 < rate should be insufficient");
+    assert!(
+        !status.sufficient,
+        "balance=0 < rate should be insufficient"
+    );
     assert_eq!(status.balance, U256::ZERO);
     assert_eq!(status.rate, rate);
 }
@@ -200,7 +203,10 @@ async fn test_check_escrow_free_service() {
     .await;
 
     let status = billing::check_escrow(&config).await.unwrap();
-    assert!(status.sufficient, "rate=0 (free) should always be sufficient");
+    assert!(
+        status.sufficient,
+        "rate=0 (free) should always be sufficient"
+    );
     assert_eq!(status.rate, U256::ZERO);
 }
 
@@ -268,7 +274,12 @@ async fn test_tick_sufficient_keeps_counter_zero() {
 
     let rate = U256::from(100u64);
     // balance=1000, rate=100 → 10 periods remaining, above low_balance_multiplier(3)
-    mount_rpc_mocks(&server, &encode_escrow(U256::from(1000u64)), &encode_config(rate)).await;
+    mount_rpc_mocks(
+        &server,
+        &encode_escrow(U256::from(1000u64)),
+        &encode_config(rate),
+    )
+    .await;
 
     let watchdog = EscrowWatchdog::new(config);
     let result = watchdog.tick().await;
@@ -380,7 +391,11 @@ async fn test_tick_rpc_error_does_not_increment() {
     let result = watchdog.tick().await;
 
     assert!(matches!(result, WatchdogTickResult::TransientError(_)));
-    assert_eq!(watchdog.failure_count(), 0, "RPC error should not increment counter");
+    assert_eq!(
+        watchdog.failure_count(),
+        0,
+        "RPC error should not increment counter"
+    );
 }
 
 /// Insufficient → insufficient → RPC error → insufficient: counter should be 3
@@ -395,11 +410,17 @@ async fn test_tick_rpc_error_between_failures_preserves_counter() {
 
     // Tick 1: insufficient
     mount_rpc_mocks(&server, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 1, .. }));
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::Insufficient { consecutive: 1, .. }
+    ));
     assert_eq!(watchdog.failure_count(), 1);
 
     // Tick 2: insufficient
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 2, .. }));
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::Insufficient { consecutive: 2, .. }
+    ));
     assert_eq!(watchdog.failure_count(), 2);
 
     // Tick 3: RPC error (reset mocks to return 500)
@@ -408,13 +429,23 @@ async fn test_tick_rpc_error_between_failures_preserves_counter() {
         .respond_with(ResponseTemplate::new(500).set_body_string("rpc down"))
         .mount(&server)
         .await;
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::TransientError(_)));
-    assert_eq!(watchdog.failure_count(), 2, "RPC error must not change counter");
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::TransientError(_)
+    ));
+    assert_eq!(
+        watchdog.failure_count(),
+        2,
+        "RPC error must not change counter"
+    );
 
     // Tick 4: insufficient again — counter continues from 2, now 3
     server.reset().await;
     mount_rpc_mocks(&server, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 3, .. }));
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::Insufficient { consecutive: 3, .. }
+    ));
     assert_eq!(watchdog.failure_count(), 3);
 }
 
@@ -474,15 +505,27 @@ async fn test_tick_deprovision_fires_at_exact_threshold() {
 
     // Tick 1: insufficient (1/2)
     let r1 = watchdog.tick().await;
-    assert!(matches!(r1, WatchdogTickResult::Insufficient { consecutive: 1, threshold: 2 }));
+    assert!(matches!(
+        r1,
+        WatchdogTickResult::Insufficient {
+            consecutive: 1,
+            threshold: 2
+        }
+    ));
 
     // Tick 2: deprovision (2/2)
     let r2 = watchdog.tick().await;
-    assert_eq!(r2, WatchdogTickResult::DeprovisionRequired { consecutive: 2 });
+    assert_eq!(
+        r2,
+        WatchdogTickResult::DeprovisionRequired { consecutive: 2 }
+    );
 
     // Tick 3: still deprovision (counter keeps incrementing past threshold)
     let r3 = watchdog.tick().await;
-    assert_eq!(r3, WatchdogTickResult::DeprovisionRequired { consecutive: 3 });
+    assert_eq!(
+        r3,
+        WatchdogTickResult::DeprovisionRequired { consecutive: 3 }
+    );
 }
 
 /// Free service: even with zero balance, tick always returns Sufficient.
@@ -516,14 +559,27 @@ async fn test_tick_full_mixed_scenario() {
     let watchdog = EscrowWatchdog::new(config);
 
     // 1. Sufficient (balance=5000, rate=1000 → 5 periods, above multiplier=3)
-    mount_rpc_mocks(&server, &encode_escrow(U256::from(5000u64)), &encode_config(rate)).await;
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::Sufficient { previous_failures: 0 }));
+    mount_rpc_mocks(
+        &server,
+        &encode_escrow(U256::from(5000u64)),
+        &encode_config(rate),
+    )
+    .await;
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::Sufficient {
+            previous_failures: 0
+        }
+    ));
     assert_eq!(watchdog.failure_count(), 0);
 
     // 2. Insufficient (counter=1)
     server.reset().await;
     mount_rpc_mocks(&server, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 1, .. }));
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::Insufficient { consecutive: 1, .. }
+    ));
 
     // 3. RPC error (counter stays 1)
     server.reset().await;
@@ -531,26 +587,51 @@ async fn test_tick_full_mixed_scenario() {
         .respond_with(ResponseTemplate::new(500))
         .mount(&server)
         .await;
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::TransientError(_)));
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::TransientError(_)
+    ));
     assert_eq!(watchdog.failure_count(), 1);
 
     // 4. Insufficient (counter=2)
     server.reset().await;
     mount_rpc_mocks(&server, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 2, .. }));
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::Insufficient { consecutive: 2, .. }
+    ));
 
     // 5. Sufficient — recovery (resets counter, balance=5000 → 5 periods, above multiplier)
     server.reset().await;
-    mount_rpc_mocks(&server, &encode_escrow(U256::from(5000u64)), &encode_config(rate)).await;
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::Sufficient { previous_failures: 2 }));
+    mount_rpc_mocks(
+        &server,
+        &encode_escrow(U256::from(5000u64)),
+        &encode_config(rate),
+    )
+    .await;
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::Sufficient {
+            previous_failures: 2
+        }
+    ));
     assert_eq!(watchdog.failure_count(), 0);
 
     // 6-8. Insufficient x3 → deprovision (fresh counter)
     server.reset().await;
     mount_rpc_mocks(&server, &encode_escrow(U256::ZERO), &encode_config(rate)).await;
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 1, .. }));
-    assert!(matches!(watchdog.tick().await, WatchdogTickResult::Insufficient { consecutive: 2, .. }));
-    assert_eq!(watchdog.tick().await, WatchdogTickResult::DeprovisionRequired { consecutive: 3 });
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::Insufficient { consecutive: 1, .. }
+    ));
+    assert!(matches!(
+        watchdog.tick().await,
+        WatchdogTickResult::Insufficient { consecutive: 2, .. }
+    ));
+    assert_eq!(
+        watchdog.tick().await,
+        WatchdogTickResult::DeprovisionRequired { consecutive: 3 }
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -580,7 +661,11 @@ async fn test_tick_low_balance_warning() {
             previous_failures: 0,
         }
     );
-    assert_eq!(watchdog.failure_count(), 0, "low balance is still sufficient — counter stays 0");
+    assert_eq!(
+        watchdog.failure_count(),
+        0,
+        "low balance is still sufficient — counter stays 0"
+    );
 }
 
 /// Balance = exactly rate with multiplier=3 → LowBalance (1 period remaining).
@@ -686,7 +771,11 @@ async fn test_tick_low_balance_after_recovery() {
             previous_failures: 2,
         }
     );
-    assert_eq!(watchdog.failure_count(), 0, "counter resets even on low balance");
+    assert_eq!(
+        watchdog.failure_count(),
+        0,
+        "counter resets even on low balance"
+    );
 }
 
 /// Free service (rate=0) → no low-balance warning regardless of multiplier.

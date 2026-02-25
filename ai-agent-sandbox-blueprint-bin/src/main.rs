@@ -185,32 +185,32 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .unwrap_or(false);
 
     let bridge = match env.bridge().await {
-        Ok(b) => {
-            match b.ping().await {
-                Ok(()) => {
-                    info!("Connected to Blueprint Manager bridge");
-                    Some(b)
-                }
-                Err(e) => {
-                    if allow_standalone {
-                        warn!("Bridge ping failed ({e}), ALLOW_STANDALONE=true — running without proxy");
-                        None
-                    } else {
-                        return Err(blueprint_sdk::Error::Other(
-                            format!("BPM bridge ping failed: {e}. Set ALLOW_STANDALONE=true for dev mode."),
-                        ));
-                    }
+        Ok(b) => match b.ping().await {
+            Ok(()) => {
+                info!("Connected to Blueprint Manager bridge");
+                Some(b)
+            }
+            Err(e) => {
+                if allow_standalone {
+                    warn!(
+                        "Bridge ping failed ({e}), ALLOW_STANDALONE=true — running without proxy"
+                    );
+                    None
+                } else {
+                    return Err(blueprint_sdk::Error::Other(format!(
+                        "BPM bridge ping failed: {e}. Set ALLOW_STANDALONE=true for dev mode."
+                    )));
                 }
             }
-        }
+        },
         Err(e) => {
             if allow_standalone {
                 warn!("No BPM bridge ({e}), ALLOW_STANDALONE=true — running without proxy");
                 None
             } else {
-                return Err(blueprint_sdk::Error::Other(
-                    format!("BPM bridge unavailable: {e}. Set ALLOW_STANDALONE=true for dev mode."),
-                ));
+                return Err(blueprint_sdk::Error::Other(format!(
+                    "BPM bridge unavailable: {e}. Set ALLOW_STANDALONE=true for dev mode."
+                )));
             }
         }
     };
@@ -224,9 +224,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .unwrap_or(9090);
 
     let (api_port, bind_addr) = if let Some(ref b) = bridge {
-        let port = b.request_port(Some(preferred_port)).await.map_err(|e| {
-            blueprint_sdk::Error::Other(format!("BPM port allocation failed: {e}"))
-        })?;
+        let port = b
+            .request_port(Some(preferred_port))
+            .await
+            .map_err(|e| blueprint_sdk::Error::Other(format!("BPM port allocation failed: {e}")))?;
         info!("BPM allocated port {port} for operator API");
         (port, [127, 0, 0, 1u8])
     } else {
@@ -244,7 +245,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             service_id,
             Some(api_key_prefix.as_str()),
             &upstream_url,
-            &[], // owners managed by BPM based on on-chain service registrants
+            &[],  // owners managed by BPM based on on-chain service registrants
             None, // TLS terminated by BPM proxy
         )
         .await
@@ -273,7 +274,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
         let mut shutdown_rx = api_shutdown.1;
         tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router)
+            if let Err(e) = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.changed().await;
                 })

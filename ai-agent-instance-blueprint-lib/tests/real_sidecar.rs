@@ -1241,7 +1241,10 @@ async fn ai_task_with_session_continuity() {
         result1.error
     );
     assert!(!result1.session_id.is_empty(), "should return a sessionId");
-    assert!(!result1.result.is_empty(), "first result should not be empty");
+    assert!(
+        !result1.result.is_empty(),
+        "first result should not be empty"
+    );
 
     // Second message: reuse the session.
     let req2 = InstanceTaskRequest {
@@ -1267,7 +1270,10 @@ async fn ai_task_with_session_continuity() {
         "second task should succeed: error='{}'",
         result2.error
     );
-    assert!(!result2.result.is_empty(), "second result should not be empty");
+    assert!(
+        !result2.result.is_empty(),
+        "second result should not be empty"
+    );
     assert!(
         !result2.session_id.is_empty(),
         "second response should have sessionId"
@@ -1301,8 +1307,15 @@ async fn ai_task_multiple_independent_sessions() {
             result.success, result.session_id
         );
 
-        assert!(result.success, "task {i} should succeed: error='{}'", result.error);
-        assert!(!result.session_id.is_empty(), "task {i} should return sessionId");
+        assert!(
+            result.success,
+            "task {i} should succeed: error='{}'",
+            result.error
+        );
+        assert!(
+            !result.session_id.is_empty(),
+            "task {i} should return sessionId"
+        );
         session_ids.push(result.session_id);
     }
 
@@ -1334,7 +1347,10 @@ async fn ai_task_with_max_turns() {
         .await
         .expect("task should succeed");
 
-    eprintln!("Task max_turns: success={}, result='{}'", result.success, result.result);
+    eprintln!(
+        "Task max_turns: success={}, result='{}'",
+        result.success, result.result
+    );
     assert!(result.success, "should succeed: error='{}'", result.error);
     assert!(!result.result.is_empty(), "result should not be empty");
 }
@@ -1444,7 +1460,11 @@ async fn ai_agent_writes_and_runs_script() {
         let body: Value = read_resp.json().await.unwrap();
         if body["success"] == true {
             let content = body["data"]["content"].as_str().unwrap_or("");
-            eprintln!("inst_fib.py ({} bytes): {}", content.len(), &content[..content.len().min(300)]);
+            eprintln!(
+                "inst_fib.py ({} bytes): {}",
+                content.len(),
+                &content[..content.len().min(300)]
+            );
             assert!(
                 content.contains("fib")
                     || content.contains("Fib")
@@ -1508,7 +1528,11 @@ async fn ai_agent_full_workflow() {
         let body: Value = js_resp.json().await.unwrap();
         if body["success"] == true {
             let content = body["data"]["content"].as_str().unwrap_or("");
-            eprintln!("inst_calc.js ({} bytes): {}", content.len(), &content[..content.len().min(400)]);
+            eprintln!(
+                "inst_calc.js ({} bytes): {}",
+                content.len(),
+                &content[..content.len().min(400)]
+            );
             assert!(!content.is_empty(), "JS file should have content");
         }
     }

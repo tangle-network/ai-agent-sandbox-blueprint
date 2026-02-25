@@ -387,7 +387,11 @@ pub fn require_sandbox_owner(sandbox_id: &str, caller: &str) -> Result<SandboxRe
 }
 
 /// Validate that `caller` owns the sandbox at `sidecar_url` AND the token matches.
-pub fn require_sidecar_owner_auth(sidecar_url: &str, token: &str, caller: &str) -> Result<SandboxRecord> {
+pub fn require_sidecar_owner_auth(
+    sidecar_url: &str,
+    token: &str,
+    caller: &str,
+) -> Result<SandboxRecord> {
     let record = require_sidecar_auth(sidecar_url, token)?;
     if record.owner.is_empty() || record.owner.eq_ignore_ascii_case(caller) {
         Ok(record)
@@ -468,7 +472,9 @@ async fn create_sidecar_with_token(
         }
     }
     // Default Docker path.
-    create_sidecar_docker(request, token_override).await.map(|r| (r, None))
+    create_sidecar_docker(request, token_override)
+        .await
+        .map(|r| (r, None))
 }
 
 async fn create_sidecar_tee(
@@ -550,20 +556,14 @@ pub fn merge_env_json(base: &str, user: &str) -> String {
     }
     let mut map: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(base).unwrap_or_default();
-    if let Ok(user_map) =
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(user)
-    {
+    if let Ok(user_map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(user) {
         map.extend(user_map);
     }
     serde_json::to_string(&map).unwrap_or_default()
 }
 
 /// Build the `Vec<String>` of `KEY=VALUE` env vars for a Docker container.
-fn build_env_vars(
-    env_json: &str,
-    token: &str,
-    container_port: u16,
-) -> Result<Vec<String>> {
+fn build_env_vars(env_json: &str, token: &str, container_port: u16) -> Result<Vec<String>> {
     let mut env_vars = vec![
         format!("SIDECAR_PORT={container_port}"),
         format!("SIDECAR_AUTH_TOKEN={token}"),
@@ -803,13 +803,46 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         };
         match try_start.await {
             Ok(()) => {
-                let now = crate::util::now_ts();
-                let _ = sandboxes()?.update(&record.id, |r| {
-                    r.state = SandboxState::Running;
-                    r.stopped_at = None;
-                    r.last_activity_at = now;
-                });
-                if !wait_for_sidecar_health(&record.sidecar_url, 30).await {
+                // Re-read port mappings — Docker may assign new host ports after restart.
+                let config = SidecarRuntimeConfig::load();
+                let sidecar_url = match refresh_port_mapping(
+                    builder.client(),
+                    &record.container_id,
+                    config.container_port,
+                    record.ssh_port.is_some(),
+                    &config.public_host,
+                )
+                .await
+                {
+                    Ok((url, sidecar_port, ssh_port)) => {
+                        let now = crate::util::now_ts();
+                        let _ = sandboxes()?.update(&record.id, |r| {
+                            r.state = SandboxState::Running;
+                            r.stopped_at = None;
+                            r.last_activity_at = now;
+                            r.sidecar_url = url.clone();
+                            r.sidecar_port = sidecar_port;
+                            r.ssh_port = ssh_port;
+                        });
+                        url
+                    }
+                    Err(err) => {
+                        blueprint_sdk::info!(
+                            "resume: could not refresh port mapping for sandbox {}: {err}",
+                            record.id
+                        );
+                        // Fall back to stored URL
+                        let now = crate::util::now_ts();
+                        let _ = sandboxes()?.update(&record.id, |r| {
+                            r.state = SandboxState::Running;
+                            r.stopped_at = None;
+                            r.last_activity_at = now;
+                        });
+                        record.sidecar_url.clone()
+                    }
+                };
+
+                if !wait_for_sidecar_health(&sidecar_url, 30).await {
                     blueprint_sdk::info!(
                         "resume: hot start sidecar slow to respond for sandbox {}",
                         record.id
@@ -921,7 +954,8 @@ pub async fn recreate_sidecar_with_env(
     };
 
     // Preserve the original token so existing workflows/references keep working.
-    let (new_record, _attestation) = create_sidecar_with_token(&params, tee, Some(&old_token)).await?;
+    let (new_record, _attestation) =
+        create_sidecar_with_token(&params, tee, Some(&old_token)).await?;
     Ok(new_record)
 }
 
@@ -989,7 +1023,11 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
     let effective_env = record.effective_env_json();
     let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
     let override_config = build_docker_config(
-        &config, ssh_enabled, record.cpu_cores, record.memory_mb, None,
+        &config,
+        ssh_enabled,
+        record.cpu_cores,
+        record.memory_mb,
+        None,
     );
 
     let container_name = format!("sidecar-{}-warm", record.id);
@@ -1054,7 +1092,11 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     let effective_env = record.effective_env_json();
     let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
     let override_config = build_docker_config(
-        &config, ssh_enabled, record.cpu_cores, record.memory_mb, None,
+        &config,
+        ssh_enabled,
+        record.cpu_cores,
+        record.memory_mb,
+        None,
     );
 
     let container_name = format!("sidecar-{}-cold", record.id);
@@ -1119,6 +1161,27 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     Ok(updated)
 }
 
+/// Re-inspect a running container to get its current host port mappings.
+///
+/// After `docker stop` + `docker start`, Docker may assign new random host ports.
+/// Returns `(sidecar_url, sidecar_port, ssh_port)`.
+async fn refresh_port_mapping(
+    client: std::sync::Arc<docktopus::bollard::Docker>,
+    container_id: &str,
+    container_port: u16,
+    ssh_enabled: bool,
+    public_host: &str,
+) -> Result<(String, u16, Option<u16>)> {
+    use docktopus::bollard::container::InspectContainerOptions;
+    let inspect = client
+        .inspect_container(container_id, None::<InspectContainerOptions>)
+        .await
+        .map_err(|err| SandboxError::Docker(format!("Failed to inspect container after restart: {err}")))?;
+    let (sidecar_port, ssh_port) = extract_ports(&inspect, container_port, ssh_enabled)?;
+    let sidecar_url = format!("http://{}:{}", public_host, sidecar_port);
+    Ok((sidecar_url, sidecar_port, ssh_port))
+}
+
 fn extract_ports(
     inspect: &docktopus::bollard::models::ContainerInspectResponse,
     container_port: u16,
@@ -1167,10 +1230,7 @@ mod tee_tests {
 
     fn init() {
         INIT.call_once(|| {
-            let dir = std::env::temp_dir().join(format!(
-                "runtime-tee-test-{}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir().join(format!("runtime-tee-test-{}", std::process::id()));
             std::fs::create_dir_all(&dir).ok();
             unsafe {
                 std::env::set_var("BLUEPRINT_STATE_DIR", dir.to_str().unwrap());
@@ -1246,11 +1306,7 @@ mod tee_tests {
         let (record, _) = create_sidecar(&params, Some(&mock)).await.unwrap();
 
         // Verify the record is in the store
-        let stored = sandboxes()
-            .unwrap()
-            .get(&record.id)
-            .unwrap()
-            .unwrap();
+        let stored = sandboxes().unwrap().get(&record.id).unwrap().unwrap();
         assert_eq!(stored.id, record.id);
         assert_eq!(stored.tee_deployment_id, record.tee_deployment_id);
         assert!(stored.container_id.starts_with("tee-"));
@@ -1259,13 +1315,17 @@ mod tee_tests {
     #[tokio::test]
     async fn create_sidecar_tee_deploy_failure() {
         init();
-        let mock =
-            crate::tee::mock::MockTeeBackend::failing(crate::tee::TeeType::Tdx);
+        let mock = crate::tee::mock::MockTeeBackend::failing(crate::tee::TeeType::Tdx);
         let params = tee_required_params();
 
         let result = create_sidecar(&params, Some(&mock)).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Mock deploy failure"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Mock deploy failure")
+        );
     }
 
     #[tokio::test]
@@ -1280,7 +1340,8 @@ mod tee_tests {
         // Now delete it
         delete_sidecar(&record, Some(&mock)).await.unwrap();
         assert_eq!(
-            mock.destroy_count.load(std::sync::atomic::Ordering::Relaxed),
+            mock.destroy_count
+                .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
     }

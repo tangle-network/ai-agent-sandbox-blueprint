@@ -73,16 +73,15 @@ pub async fn provision_core(
     };
 
     // Best-effort: fetch TEE-bound public key for sealed secret encryption.
-    let tee_public_key_json = if let (Some(dep_id), Some(backend)) =
-        (&record.tee_deployment_id, tee)
-    {
-        match backend.derive_public_key(dep_id).await {
-            Ok(pk) => serde_json::to_string(&pk).unwrap_or_default(),
-            Err(_) => String::new(), // sidecar may not implement this yet
-        }
-    } else {
-        String::new()
-    };
+    let tee_public_key_json =
+        if let (Some(dep_id), Some(backend)) = (&record.tee_deployment_id, tee) {
+            match backend.derive_public_key(dep_id).await {
+                Ok(pk) => serde_json::to_string(&pk).unwrap_or_default(),
+                Err(_) => String::new(), // sidecar may not implement this yet
+            }
+        } else {
+            String::new()
+        };
 
     let output = ProvisionOutput {
         sandbox_id: record.id.clone(),

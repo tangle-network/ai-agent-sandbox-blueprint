@@ -55,8 +55,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     let api_shutdown = tokio::sync::watch::channel(());
     let api_shutdown_tx = api_shutdown.0;
     let api_handle = {
-        let router =
-            sandbox_runtime::operator_api::operator_api_router_with_tee(Some(tee_for_api));
+        let router = sandbox_runtime::operator_api::operator_api_router_with_tee(Some(tee_for_api));
         let addr = std::net::SocketAddr::from(([0, 0, 0, 0u8], api_port));
         info!("Starting operator API on {addr}");
 
@@ -66,7 +65,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
         let mut shutdown_rx = api_shutdown.1;
         tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router)
+            if let Err(e) = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.changed().await;
                 })
@@ -79,7 +81,9 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
     // Auto-provision: read service config from BSM and provision sandbox on startup.
     if let Some(ap_config) =
-        ai_agent_tee_instance_blueprint_lib::auto_provision::AutoProvisionConfig::from_env(service_id)
+        ai_agent_tee_instance_blueprint_lib::auto_provision::AutoProvisionConfig::from_env(
+            service_id,
+        )
     {
         info!("Auto-provision enabled (BSM={})", ap_config.bsm_address);
         let tee = ai_agent_tee_instance_blueprint_lib::tee_backend();
@@ -122,7 +126,8 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
         if let Some(watchdog_config) =
             ai_agent_tee_instance_blueprint_lib::billing::EscrowWatchdogConfig::from_env(
-                service_id, blueprint_id,
+                service_id,
+                blueprint_id,
             )
         {
             if let Err(e) = watchdog_config.validate() {
@@ -133,7 +138,8 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
                 let tangle_contract = watchdog_config.tangle_contract;
                 ai_agent_tee_instance_blueprint_lib::billing::spawn_watchdog(
-                    watchdog_config, watchdog_rx,
+                    watchdog_config,
+                    watchdog_rx,
                 );
                 info!("Escrow watchdog started for service {service_id}");
 
@@ -162,8 +168,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                     ));
 
                 let billing_rx = shutdown_tx.subscribe();
-                let _billing_handle =
-                    SubscriptionBillingKeeper::start(keeper_config, billing_rx);
+                let _billing_handle = SubscriptionBillingKeeper::start(keeper_config, billing_rx);
 
                 info!("Subscription billing keeper started for service {service_id}");
                 Some(shutdown_tx)

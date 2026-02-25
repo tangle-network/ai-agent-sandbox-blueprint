@@ -18,7 +18,9 @@ use blueprint_sdk::{info, warn};
 use std::time::Duration;
 
 use crate::tee::TeeBackend;
-use crate::{IBsmRead, ProvisionRequest, get_instance_sandbox, provision_core, set_instance_sandbox};
+use crate::{
+    IBsmRead, ProvisionRequest, get_instance_sandbox, provision_core, set_instance_sandbox,
+};
 
 /// Configuration for auto-provision from environment.
 #[derive(Debug, Clone)]
@@ -147,10 +149,7 @@ pub async fn run_auto_provision(
     tee: Option<&dyn TeeBackend>,
 ) -> Result<(), String> {
     // Already provisioned?
-    if get_instance_sandbox()
-        .map_err(|e| e.to_string())?
-        .is_some()
-    {
+    if get_instance_sandbox().map_err(|e| e.to_string())?.is_some() {
         info!("Auto-provision: instance already provisioned, skipping");
         return Ok(());
     }
@@ -165,7 +164,10 @@ pub async fn run_auto_provision(
         attempts += 1;
         match read_service_config(&config).await {
             Ok(Some(bytes)) => {
-                info!("Auto-provision: service config found ({} bytes)", bytes.len());
+                info!(
+                    "Auto-provision: service config found ({} bytes)",
+                    bytes.len()
+                );
                 break bytes;
             }
             Ok(None) => {
@@ -183,18 +185,21 @@ pub async fn run_auto_provision(
                 }
             }
             Err(e) => {
-                warn!("Auto-provision: RPC error (attempt {}/{}): {e}", attempts, config.max_attempts);
+                warn!(
+                    "Auto-provision: RPC error (attempt {}/{}): {e}",
+                    attempts, config.max_attempts
+                );
                 if attempts >= config.max_attempts {
-                    return Err(format!("Auto-provision: RPC failed after {} attempts: {e}", config.max_attempts));
+                    return Err(format!(
+                        "Auto-provision: RPC failed after {} attempts: {e}",
+                        config.max_attempts
+                    ));
                 }
             }
         }
 
         // Check if provisioned by another path (e.g., manual JOB_PROVISION)
-        if get_instance_sandbox()
-            .map_err(|e| e.to_string())?
-            .is_some()
-        {
+        if get_instance_sandbox().map_err(|e| e.to_string())?.is_some() {
             info!("Auto-provision: instance was provisioned externally, skipping");
             return Ok(());
         }
@@ -226,10 +231,7 @@ pub async fn run_auto_provision(
     };
 
     // Final check before provisioning (race with manual JOB_PROVISION)
-    if get_instance_sandbox()
-        .map_err(|e| e.to_string())?
-        .is_some()
-    {
+    if get_instance_sandbox().map_err(|e| e.to_string())?.is_some() {
         info!("Auto-provision: instance was provisioned externally, skipping");
         return Ok(());
     }

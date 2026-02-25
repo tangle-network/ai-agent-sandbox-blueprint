@@ -18,12 +18,12 @@ use ai_agent_instance_blueprint_lib::billing::{
 };
 use anyhow::{Context, Result};
 use blueprint_anvil_testing_utils::{
-    missing_tnt_core_artifacts, TangleHarness, LOCAL_BLUEPRINT_ID, LOCAL_SERVICE_ID,
+    LOCAL_BLUEPRINT_ID, LOCAL_SERVICE_ID, TangleHarness, missing_tnt_core_artifacts,
 };
-use blueprint_sdk::alloy::primitives::{keccak256, Address, B256, U256};
+use blueprint_sdk::alloy::primitives::{Address, B256, U256, keccak256};
 use blueprint_sdk::alloy::providers::{Provider, ProviderBuilder};
 use once_cell::sync::Lazy;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::borrow::Cow;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -95,10 +95,7 @@ async fn discover_blueprint_configs_slot<P: Provider>(
 
         set_storage(provider, contract, rate_slot, marker).await?;
 
-        let config = read
-            .getBlueprintConfig(LOCAL_BLUEPRINT_ID)
-            .call()
-            .await;
+        let config = read.getBlueprintConfig(LOCAL_BLUEPRINT_ID).call().await;
 
         // Reset before checking result
         set_storage(provider, contract, rate_slot, U256::ZERO).await?;
@@ -129,10 +126,7 @@ async fn discover_service_escrows_slot<P: Provider>(
 
         set_storage(provider, contract, balance_slot, marker).await?;
 
-        let escrow = read
-            .getServiceEscrow(LOCAL_SERVICE_ID)
-            .call()
-            .await;
+        let escrow = read.getServiceEscrow(LOCAL_SERVICE_ID).call().await;
 
         // Reset
         set_storage(provider, contract, balance_slot, U256::ZERO).await?;
@@ -153,10 +147,7 @@ struct StorageSlots {
     service_escrows: u64,
 }
 
-async fn discover_slots<P: Provider>(
-    provider: &P,
-    contract: Address,
-) -> Result<StorageSlots> {
+async fn discover_slots<P: Provider>(provider: &P, contract: Address) -> Result<StorageSlots> {
     let blueprint_configs = discover_blueprint_configs_slot(provider, contract).await?;
     let service_escrows = discover_service_escrows_slot(provider, contract).await?;
     Ok(StorageSlots {
@@ -240,7 +231,10 @@ async fn test_check_escrow_real_rpc() -> Result<()> {
     let status = billing::check_escrow(&config)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    eprintln!("check_escrow result: sufficient={}, balance={}, rate={}", status.sufficient, status.balance, status.rate);
+    eprintln!(
+        "check_escrow result: sufficient={}, balance={}, rate={}",
+        status.sufficient, status.balance, status.rate
+    );
     Ok(())
 }
 
@@ -292,9 +286,18 @@ async fn test_check_escrow_matches_raw_reads() -> Result<()> {
         escrow.balance >= bp_config.subscriptionRate
     };
 
-    assert_eq!(status.sufficient, expected, "check_escrow should match raw comparison");
-    assert_eq!(status.balance, escrow.balance, "balance should match raw read");
-    assert_eq!(status.rate, bp_config.subscriptionRate, "rate should match raw read");
+    assert_eq!(
+        status.sufficient, expected,
+        "check_escrow should match raw comparison"
+    );
+    assert_eq!(
+        status.balance, escrow.balance,
+        "balance should match raw read"
+    );
+    assert_eq!(
+        status.rate, bp_config.subscriptionRate,
+        "rate should match raw read"
+    );
     Ok(())
 }
 
@@ -541,13 +544,28 @@ async fn test_watchdog_tick_threshold_real_rpc() -> Result<()> {
     let watchdog = EscrowWatchdog::new(config);
 
     let r1 = watchdog.tick().await;
-    assert!(matches!(r1, WatchdogTickResult::Insufficient { consecutive: 1, threshold: 3 }));
+    assert!(matches!(
+        r1,
+        WatchdogTickResult::Insufficient {
+            consecutive: 1,
+            threshold: 3
+        }
+    ));
 
     let r2 = watchdog.tick().await;
-    assert!(matches!(r2, WatchdogTickResult::Insufficient { consecutive: 2, threshold: 3 }));
+    assert!(matches!(
+        r2,
+        WatchdogTickResult::Insufficient {
+            consecutive: 2,
+            threshold: 3
+        }
+    ));
 
     let r3 = watchdog.tick().await;
-    assert_eq!(r3, WatchdogTickResult::DeprovisionRequired { consecutive: 3 });
+    assert_eq!(
+        r3,
+        WatchdogTickResult::DeprovisionRequired { consecutive: 3 }
+    );
     eprintln!("Confirmed: 3 consecutive failures against real RPC → DeprovisionRequired");
     Ok(())
 }
@@ -580,11 +598,22 @@ async fn test_watchdog_full_lifecycle_real_rpc() -> Result<()> {
     let watchdog = EscrowWatchdog::new(config);
 
     // ── Phase 1: Escrow funded (10 ETH) → Sufficient ──
-    set_storage(&provider, harness.tangle_contract, balance_slot, one_eth * U256::from(10)).await?;
+    set_storage(
+        &provider,
+        harness.tangle_contract,
+        balance_slot,
+        one_eth * U256::from(10),
+    )
+    .await?;
     mine_block(&provider).await?;
 
     let r = watchdog.tick().await;
-    assert_eq!(r, WatchdogTickResult::Sufficient { previous_failures: 0 });
+    assert_eq!(
+        r,
+        WatchdogTickResult::Sufficient {
+            previous_failures: 0
+        }
+    );
     eprintln!("Phase 1: funded escrow → Sufficient");
 
     // ── Phase 2: Drain escrow to 0 → 3 ticks → DeprovisionRequired ──
@@ -592,21 +621,41 @@ async fn test_watchdog_full_lifecycle_real_rpc() -> Result<()> {
     mine_block(&provider).await?;
 
     let r = watchdog.tick().await;
-    assert!(matches!(r, WatchdogTickResult::Insufficient { consecutive: 1, .. }));
+    assert!(matches!(
+        r,
+        WatchdogTickResult::Insufficient { consecutive: 1, .. }
+    ));
 
     let r = watchdog.tick().await;
-    assert!(matches!(r, WatchdogTickResult::Insufficient { consecutive: 2, .. }));
+    assert!(matches!(
+        r,
+        WatchdogTickResult::Insufficient { consecutive: 2, .. }
+    ));
 
     let r = watchdog.tick().await;
-    assert_eq!(r, WatchdogTickResult::DeprovisionRequired { consecutive: 3 });
+    assert_eq!(
+        r,
+        WatchdogTickResult::DeprovisionRequired { consecutive: 3 }
+    );
     eprintln!("Phase 2: drained escrow → 3 failures → DeprovisionRequired");
 
     // ── Phase 3: Refund escrow → Sufficient (recovery) ──
-    set_storage(&provider, harness.tangle_contract, balance_slot, one_eth * U256::from(5)).await?;
+    set_storage(
+        &provider,
+        harness.tangle_contract,
+        balance_slot,
+        one_eth * U256::from(5),
+    )
+    .await?;
     mine_block(&provider).await?;
 
     let r = watchdog.tick().await;
-    assert_eq!(r, WatchdogTickResult::Sufficient { previous_failures: 3 });
+    assert_eq!(
+        r,
+        WatchdogTickResult::Sufficient {
+            previous_failures: 3
+        }
+    );
     assert_eq!(watchdog.failure_count(), 0, "recovery must reset counter");
     eprintln!("Phase 3: refunded escrow → recovery, counter reset to 0");
 
@@ -615,7 +664,10 @@ async fn test_watchdog_full_lifecycle_real_rpc() -> Result<()> {
     mine_block(&provider).await?;
 
     let r = watchdog.tick().await;
-    assert!(matches!(r, WatchdogTickResult::Insufficient { consecutive: 1, .. }));
+    assert!(matches!(
+        r,
+        WatchdogTickResult::Insufficient { consecutive: 1, .. }
+    ));
     eprintln!("Phase 4: drained again → fresh counter starts at 1");
 
     Ok(())

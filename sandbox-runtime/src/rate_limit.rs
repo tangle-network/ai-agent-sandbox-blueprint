@@ -108,10 +108,7 @@ impl RateLimiter {
 
     /// Number of tracked IPs (for metrics/debugging).
     pub fn tracked_ips(&self) -> usize {
-        self.buckets
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.buckets.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

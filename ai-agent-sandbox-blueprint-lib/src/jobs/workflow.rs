@@ -61,7 +61,10 @@ pub async fn workflow_trigger(
         .ok_or_else(|| "Workflow not found".to_string())?;
 
     if !entry.owner.is_empty() && !entry.owner.eq_ignore_ascii_case(&caller_hex) {
-        return Err(format!("Caller {caller_hex} does not own workflow {}", request.workflow_id));
+        return Err(format!(
+            "Caller {caller_hex} does not own workflow {}",
+            request.workflow_id
+        ));
     }
 
     if !entry.active {
@@ -94,7 +97,10 @@ pub async fn workflow_cancel(
         .ok_or_else(|| "Workflow not found".to_string())?;
 
     if !entry.owner.is_empty() && !entry.owner.eq_ignore_ascii_case(&caller_hex) {
-        return Err(format!("Caller {caller_hex} does not own workflow {}", request.workflow_id));
+        return Err(format!(
+            "Caller {caller_hex} does not own workflow {}",
+            request.workflow_id
+        ));
     }
 
     let found = workflows()?

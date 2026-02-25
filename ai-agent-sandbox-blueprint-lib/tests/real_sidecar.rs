@@ -1725,7 +1725,8 @@ async fn ai_agent_writes_and_runs_python_script() {
         timeout_ms: 240000,
     };
 
-    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await {
+    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await
+    {
         Ok(r) => r,
         Err(e) => {
             if e.contains("error sending request")
@@ -1807,7 +1808,8 @@ Install pandas with pip first if needed."#;
         timeout_ms: 240000,
     };
 
-    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await {
+    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await
+    {
         Ok(r) => r,
         Err(e) => {
             if e.contains("error sending request")
@@ -1960,7 +1962,8 @@ async fn ai_agent_full_workflow_install_code_execute() {
         timeout_ms: 240000,
     };
 
-    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await {
+    let result = match ai_agent_sandbox_blueprint_lib::run_task_request(&request, AUTH_TOKEN).await
+    {
         Ok(r) => r,
         Err(e) => {
             if e.contains("error sending request")

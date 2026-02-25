@@ -434,16 +434,8 @@ mod tests {
 
     #[test]
     fn test_build_agent_payload_without_profile() {
-        let payload = build_agent_payload(
-            "hello",
-            "sess-1",
-            "claude-haiku",
-            "",
-            0,
-            None,
-            None,
-        )
-        .unwrap();
+        let payload =
+            build_agent_payload("hello", "sess-1", "claude-haiku", "", 0, None, None).unwrap();
 
         let backend = payload.get("backend").unwrap().as_object().unwrap();
         assert_eq!(backend["model"], "claude-haiku");
@@ -453,16 +445,7 @@ mod tests {
     #[test]
     fn test_build_agent_payload_empty_profile_ignored() {
         let empty = json!({});
-        let payload = build_agent_payload(
-            "hello",
-            "",
-            "",
-            "",
-            0,
-            None,
-            Some(&empty),
-        )
-        .unwrap();
+        let payload = build_agent_payload("hello", "", "", "", 0, None, Some(&empty)).unwrap();
 
         // No backend at all since model is empty and profile is empty
         assert!(payload.get("backend").is_none());
@@ -497,7 +480,10 @@ mod tests {
 
         let backend = payload.get("backend").unwrap().as_object().unwrap();
         let p = backend["profile"].as_object().unwrap();
-        assert!(p.get("systemPrompt").is_none(), "Full profile should not have systemPrompt");
+        assert!(
+            p.get("systemPrompt").is_none(),
+            "Full profile should not have systemPrompt"
+        );
         assert!(p.get("resources").is_some());
         assert_eq!(p["permission"]["bash"], "allow");
         assert_eq!(p["memory"]["enabled"], true);

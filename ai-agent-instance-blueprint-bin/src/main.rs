@@ -55,7 +55,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
         let mut shutdown_rx = api_shutdown.1;
         tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router)
+            if let Err(e) = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.changed().await;
                 })
@@ -110,7 +113,8 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
         if let Some(watchdog_config) =
             ai_agent_instance_blueprint_lib::billing::EscrowWatchdogConfig::from_env(
-                service_id, blueprint_id,
+                service_id,
+                blueprint_id,
             )
         {
             if let Err(e) = watchdog_config.validate() {
@@ -122,7 +126,8 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                 // Escrow watchdog: auto-deprovision when escrow is exhausted.
                 let tangle_contract = watchdog_config.tangle_contract;
                 ai_agent_instance_blueprint_lib::billing::spawn_watchdog(
-                    watchdog_config, watchdog_rx,
+                    watchdog_config,
+                    watchdog_rx,
                 );
                 info!("Escrow watchdog started for service {service_id}");
 
@@ -151,8 +156,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                     ));
 
                 let billing_rx = shutdown_tx.subscribe();
-                let _billing_handle =
-                    SubscriptionBillingKeeper::start(keeper_config, billing_rx);
+                let _billing_handle = SubscriptionBillingKeeper::start(keeper_config, billing_rx);
 
                 info!("Subscription billing keeper started for service {service_id}");
                 Some(shutdown_tx)

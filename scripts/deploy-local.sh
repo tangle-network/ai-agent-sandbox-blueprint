@@ -34,6 +34,7 @@ ANVIL_PORT="${ANVIL_PORT:-8645}"
 RPC_URL="${RPC_URL:-http://127.0.0.1:$ANVIL_PORT}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-tangle-sidecar:local}"
 OPERATOR_API_PORT="${OPERATOR_API_PORT:-9100}"
+INSTANCE_OPERATOR_API_PORT="${INSTANCE_OPERATOR_API_PORT:-9200}"
 BASE_RATE="${BASE_RATE:-1000000000000000}" # 1e15 = 0.001 TNT
 
 # Detect Tailscale hostname for external access, fallback to 0.0.0.0
@@ -68,6 +69,7 @@ cleanup() {
     echo "Shutting down..."
     [ -n "${ANVIL_PID:-}" ] && kill "$ANVIL_PID" 2>/dev/null || true
     [ -n "${OPERATOR_PID:-}" ] && kill "$OPERATOR_PID" 2>/dev/null || true
+    [ -n "${INSTANCE_OPERATOR_PID:-}" ] && kill "$INSTANCE_OPERATOR_PID" 2>/dev/null || true
     exit 0
 }
 trap cleanup INT TERM
@@ -83,8 +85,8 @@ parse_deploy() {
     echo "$FORGE_OUTPUT" | grep "DEPLOY_${1}=" | sed "s/.*DEPLOY_${1}=//" | tr -d ' '
 }
 
-# ── [0/10] Start Anvil with Tangle state ────────────────────────────
-echo "[0/10] Starting Anvil with Tangle protocol state..."
+# ── [0/11] Start Anvil with Tangle state ────────────────────────────
+echo "[0/11] Starting Anvil with Tangle protocol state..."
 if [ -f "$ANVIL_STATE" ]; then
     anvil --block-time 2 --host 0.0.0.0 --port "$ANVIL_PORT" \
         --disable-code-size-limit --load-state "$ANVIL_STATE" --silent &
@@ -105,8 +107,8 @@ if ! cast block-number --rpc-url "$RPC_URL" >/dev/null 2>&1; then
 fi
 echo "  Anvil running (PID: $ANVIL_PID)"
 
-# ── [1/10] Deploy contracts + register blueprints on Tangle ─────────
-echo "[1/10] Deploying contracts + registering blueprints on Tangle..."
+# ── [1/11] Deploy contracts + register blueprints on Tangle ─────────
+echo "[1/11] Deploying contracts + registering blueprints on Tangle..."
 # Note: --disable-code-size-limit because AgentSandboxBlueprint exceeds EIP-170 limit
 # (32KB). Anvil doesn't enforce this; a production deploy would need to split it.
 FORGE_OUTPUT=$(forge script "$ROOT_DIR/contracts/script/RegisterBlueprint.s.sol" \
@@ -137,8 +139,8 @@ echo "  Sandbox BSM:       $SANDBOX_BSM (blueprint #$SANDBOX_BLUEPRINT_ID)"
 echo "  Instance BSM:      $INSTANCE_BSM (blueprint #$INSTANCE_BLUEPRINT_ID)"
 echo "  TEE Instance BSM:  $TEE_INSTANCE_BSM (blueprint #$TEE_INSTANCE_BLUEPRINT_ID)"
 
-# ── [2/10] Configure per-job pricing ────────────────────────────────
-echo "[2/10] Configuring per-job pricing (base rate: $BASE_RATE wei)..."
+# ── [2/11] Configure per-job pricing ────────────────────────────────
+echo "[2/11] Configuring per-job pricing (base rate: $BASE_RATE wei)..."
 
 # All 3 blueprints use the same unified ConfigureJobRates script (7 jobs each).
 for BP_LABEL_ID in "Sandbox:$SANDBOX_BLUEPRINT_ID:$SANDBOX_BSM" \
@@ -154,8 +156,8 @@ for BP_LABEL_ID in "Sandbox:$SANDBOX_BLUEPRINT_ID:$SANDBOX_BSM" \
     echo "  $BP_LABEL: 7 job rates configured"
 done
 
-# ── [3/10] Register operators ────────────────────────────────────────
-echo "[3/10] Registering operators on Tangle..."
+# ── [3/11] Register operators ────────────────────────────────────────
+echo "[3/11] Registering operators on Tangle..."
 
 # Derive uncompressed ECDSA public keys (65 bytes, 04 prefix) from private keys
 # registerOperator requires a valid ECDSA key; passing empty 0x fails with InvalidOperatorKey()
@@ -201,8 +203,8 @@ done
 echo "  Operator 1: $OPERATOR1_ADDR → $OPERATOR1_RPC"
 echo "  Operator 2: $OPERATOR2_ADDR → $OPERATOR2_RPC"
 
-# ── [4/10] Request services ──────────────────────────────────────────
-echo "[4/10] Requesting services..."
+# ── [4/11] Request services ──────────────────────────────────────────
+echo "[4/11] Requesting services..."
 
 # Get the next request ID and current service count (state snapshot may already have entries)
 NEXT_REQ=$(cast call "$TANGLE" "serviceRequestCount()(uint64)" --rpc-url "$RPC_URL" 2>&1 | xargs)
@@ -254,8 +256,8 @@ fi
 INSTANCE_REQ_ID=$NEXT_REQ
 echo "  Instance service request #$INSTANCE_REQ_ID submitted (with config)"
 
-# ── [5/10] Operators approve services ────────────────────────────────
-echo "[5/10] Operators approving services..."
+# ── [5/11] Operators approve services ────────────────────────────────
+echo "[5/11] Operators approving services..."
 
 # Approve sandbox service
 cast send "$TANGLE" "approveService(uint64,uint8)" "$SANDBOX_REQ_ID" 100 \
@@ -305,8 +307,8 @@ fi
 echo "  Sandbox service ID: $SANDBOX_SERVICE_ID (verified blueprintId=$SANDBOX_BLUEPRINT_ID)"
 echo "  Instance service ID: $INSTANCE_SERVICE_ID (verified blueprintId=$INSTANCE_BLUEPRINT_ID)"
 
-# ── [6/10] Set operator capacity (Sandbox blueprint) ────────────────
-echo "[6/10] Setting operator capacity..."
+# ── [6/11] Set operator capacity (Sandbox blueprint) ────────────────
+echo "[6/11] Setting operator capacity..."
 
 # The Sandbox BSM needs operator capacity set. onRegister does this when
 # inputs are provided, but for Anvil testing we set it directly.
@@ -328,8 +330,8 @@ OP2_CAP=$(cast call "$SANDBOX_BSM" "operatorMaxCapacity(address)(uint32)" "$OPER
 echo "  Operator 1 capacity: $OP1_CAP"
 echo "  Operator 2 capacity: $OP2_CAP"
 
-# ── [7/10] Setup keystores ──────────────────────────────────────────
-echo "[7/10] Setting up operator keystores..."
+# ── [7/11] Setup keystores ──────────────────────────────────────────
+echo "[7/11] Setting up operator keystores..."
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$SCRIPTS_DIR/data/operator1/keystore" "$SCRIPTS_DIR/data/operator2/keystore"
@@ -352,17 +354,17 @@ else
     echo "  Build it: cd ../blueprint && cargo build -p cargo-tangle --release"
 fi
 
-# ── [8/10] Build operator binary ─────────────────────────────────────
+# ── [8/11] Build operator binaries ────────────────────────────────────
 if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
-    echo "[8/10] Skipping build (SKIP_BUILD=1)"
+    echo "[8/11] Skipping build (SKIP_BUILD=1)"
 else
-    echo "[8/10] Building sandbox operator binary..."
-    cargo build --release -p ai-agent-sandbox-blueprint-bin 2>&1 | tail -3
-    echo "  Binary built"
+    echo "[8/11] Building operator binaries..."
+    cargo build --release -p ai-agent-sandbox-blueprint-bin -p ai-agent-instance-blueprint-bin 2>&1 | tail -3
+    echo "  Binaries built"
 fi
 
-# ── [9/10] Start operator ───────────────────────────────────────────
-echo "[9/10] Starting sandbox operator..."
+# ── [9/11] Start sandbox operator ──────────────────────────────────
+echo "[9/11] Starting sandbox operator..."
 
 export HTTP_RPC_URL="$RPC_URL"
 export WS_RPC_URL="ws://127.0.0.1:$ANVIL_PORT"
@@ -398,10 +400,36 @@ until curl -s -o /dev/null -w '%{http_code}' "http://localhost:$OPERATOR_API_POR
     fi
     sleep 1
 done
-echo "  Operator running (PID: $OPERATOR_PID)"
+echo "  Sandbox operator running (PID: $OPERATOR_PID)"
 
-# ── [10/10] Write env file ──────────────────────────────────────────
-echo "[10/10] Writing .env.local..."
+# ── [10/11] Start instance operator ─────────────────────────────────
+echo "[10/11] Starting instance operator..."
+
+mkdir -p "$SCRIPTS_DIR/data/operator2/data"
+
+# Override env vars for instance operator without polluting the sandbox env
+OPERATOR_API_PORT="$INSTANCE_OPERATOR_API_PORT" \
+BLUEPRINT_ID="$INSTANCE_BLUEPRINT_ID" \
+SERVICE_ID="$INSTANCE_SERVICE_ID" \
+BSM_ADDRESS="$INSTANCE_BSM" \
+DATA_DIR="$SCRIPTS_DIR/data/operator2/data" \
+KEYSTORE_URI="$SCRIPTS_DIR/data/operator2/keystore" \
+"$ROOT_DIR/target/release/ai-agent-instance-blueprint" run --test-mode &
+INSTANCE_OPERATOR_PID=$!
+
+# Wait for instance operator API to be ready
+DEADLINE=$((SECONDS + 30))
+until curl -s -o /dev/null -w '%{http_code}' "http://localhost:$INSTANCE_OPERATOR_API_PORT/api/sandboxes" 2>/dev/null | grep -q '401\|200'; do
+    if [ $SECONDS -ge $DEADLINE ]; then
+        echo "  WARNING: Instance operator API not ready within 30s (may still be starting)"
+        break
+    fi
+    sleep 1
+done
+echo "  Instance operator running (PID: $INSTANCE_OPERATOR_PID)"
+
+# ── [11/11] Write env file ──────────────────────────────────────────
+echo "[11/11] Writing .env.local..."
 
 cat > "$ROOT_DIR/.env.local" <<EOF
 # Generated by deploy-local.sh — do not edit
@@ -429,6 +457,7 @@ INSTANCE_SERVICE_ID=$INSTANCE_SERVICE_ID
 
 # Operator
 OPERATOR_API_PORT=$OPERATOR_API_PORT
+INSTANCE_OPERATOR_API_PORT=$INSTANCE_OPERATOR_API_PORT
 SESSION_AUTH_SECRET=dev-secret-key-do-not-use-in-production
 ALLOW_STANDALONE=true
 CORS_ALLOWED_ORIGINS=*
@@ -460,7 +489,7 @@ VITE_TEE_INSTANCE_BLUEPRINT_ID=$TEE_INSTANCE_BLUEPRINT_ID
 VITE_SANDBOX_SERVICE_ID=$SANDBOX_SERVICE_ID
 VITE_INSTANCE_SERVICE_ID=$INSTANCE_SERVICE_ID
 VITE_OPERATOR_API_URL=http://$PUBLIC_HOST:$OPERATOR_API_PORT
-VITE_INSTANCE_OPERATOR_API_URL=http://$PUBLIC_HOST:9200
+VITE_INSTANCE_OPERATOR_API_URL=http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT
 EOF
     echo "  Wrote ui/.env.local"
 fi
@@ -481,18 +510,22 @@ echo "    Sandbox:   service #$SANDBOX_SERVICE_ID  (2 operators, EventDriven)"
 echo "    Instance:  service #$INSTANCE_SERVICE_ID  (2 operators, Subscription)"
 echo ""
 echo "  Operators:"
-echo "    $OPERATOR1_ADDR → http://$PUBLIC_HOST:$OPERATOR_API_PORT"
-echo "    $OPERATOR2_ADDR → http://$PUBLIC_HOST:$((OPERATOR_API_PORT + 1))"
+echo "    Sandbox:  http://$PUBLIC_HOST:$OPERATOR_API_PORT  (PID: $OPERATOR_PID)"
+echo "    Instance: http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT  (PID: $INSTANCE_OPERATOR_PID)"
 echo ""
 echo "  Accounts:"
 echo "    Deployer: $DEPLOYER_ADDR"
 echo "    User:     $USER_ADDR"
 echo ""
-echo "  API endpoints:"
+echo "  API endpoints (sandbox):"
 echo "    GET  http://$PUBLIC_HOST:$OPERATOR_API_PORT/api/sandboxes"
-echo "    GET  http://$PUBLIC_HOST:$OPERATOR_API_PORT/api/provisions"
 echo "    POST http://$PUBLIC_HOST:$OPERATOR_API_PORT/api/auth/challenge"
 echo "    POST http://$PUBLIC_HOST:$OPERATOR_API_PORT/api/auth/session"
+echo ""
+echo "  API endpoints (instance):"
+echo "    GET  http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT/api/sandboxes"
+echo "    POST http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT/api/sandbox/exec"
+echo "    POST http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT/api/auth/challenge"
 echo ""
 echo "  Next steps:"
 echo "    Start UI:  cd ui && pnpm dev    → http://$PUBLIC_HOST:1338"
