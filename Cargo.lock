@@ -8324,6 +8324,7 @@ name = "sandbox-runtime"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "anyhow",
  "async-trait",
  "aws-config",
  "aws-sdk-ec2",

@@ -21,6 +21,9 @@ pub mod store;
 pub mod tee;
 pub mod util;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
+
 pub use error::SandboxError;
 pub use runtime::{CreateSandboxParams, SandboxRecord, SandboxState};
 pub use tee::{

@@ -5,7 +5,8 @@
 //!   2. Start operator API server
 //!   3. Authenticate via EIP-191 challenge → PASETO session token
 //!   4. Exercise every instance operator API endpoint against the real sidecar
-//!   5. Deprovision via Tangle job
+//!   5. Verify cross-owner tenant isolation
+//!   6. Deprovision via Tangle job
 //!
 //! Run:
 //!   SIDECAR_E2E=1 cargo test -p ai-agent-instance-blueprint-lib \
@@ -24,7 +25,8 @@ use blueprint_anvil_testing_utils::{BlueprintHarness, missing_tnt_core_artifacts
 use blueprint_sdk::alloy::primitives::Bytes;
 use blueprint_sdk::alloy::sol_types::SolValue;
 use once_cell::sync::Lazy;
-use reqwest::Client;
+use sandbox_runtime::e2e_step;
+use sandbox_runtime::test_utils::*;
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
@@ -33,138 +35,7 @@ use tokio::time::timeout;
 const ANVIL_TEST_TIMEOUT: Duration = Duration::from_secs(600);
 const JOB_RESULT_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The key the harness uses to submit jobs. The Caller extractor sees this address,
-/// making it the instance owner.
-const SERVICE_OWNER_KEY_HEX: &str =
-    "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-
 static HARNESS_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
-
-macro_rules! step {
-    ($n:expr, $msg:expr) => {
-        eprintln!("[Step {: >2}] {}", $n, $msg);
-    };
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn keccak256(data: &[u8]) -> [u8; 32] {
-    use tiny_keccak::{Hasher, Keccak};
-    let mut hasher = Keccak::v256();
-    let mut output = [0u8; 32];
-    hasher.update(data);
-    hasher.finalize(&mut output);
-    output
-}
-
-fn setup_sidecar_env() {
-    let image =
-        std::env::var("SIDECAR_IMAGE").unwrap_or_else(|_| "tangle-sidecar:local".to_string());
-    unsafe {
-        std::env::set_var("SIDECAR_IMAGE", &image);
-        std::env::set_var("SIDECAR_PULL_IMAGE", "false");
-        std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
-        std::env::set_var("REQUEST_TIMEOUT_SECS", "60");
-        std::env::set_var("SESSION_AUTH_SECRET", "e2e-instance-test-secret-key");
-    }
-}
-
-fn http() -> Client {
-    Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap()
-}
-
-/// Derive the EVM address for a private key hex string.
-fn address_from_key(key_hex: &str) -> String {
-    use k256::ecdsa::SigningKey;
-    let key_bytes = hex::decode(key_hex).unwrap();
-    let signing_key = SigningKey::from_bytes((&key_bytes[..]).into()).unwrap();
-    let verifying_key = signing_key.verifying_key();
-    let pubkey_bytes = verifying_key.to_encoded_point(false);
-    let pubkey_uncompressed = &pubkey_bytes.as_bytes()[1..];
-    let hash = keccak256(pubkey_uncompressed);
-    format!("0x{}", hex::encode(&hash[12..]))
-}
-
-/// Full auth flow: challenge → EIP-191 sign → PASETO token.
-async fn get_auth_token(api_url: &str, key_hex: &str) -> Result<(String, String)> {
-    use k256::ecdsa::SigningKey;
-
-    let key_bytes = hex::decode(key_hex).unwrap();
-    let signing_key = SigningKey::from_bytes((&key_bytes[..]).into()).unwrap();
-
-    // Step 1: Get challenge
-    let challenge_resp = http()
-        .post(format!("{api_url}/api/auth/challenge"))
-        .send()
-        .await?;
-    assert_eq!(challenge_resp.status(), 200, "challenge should succeed");
-    let challenge: Value = challenge_resp.json().await?;
-    let nonce = challenge["nonce"].as_str().context("nonce")?;
-    let message = challenge["message"].as_str().context("message")?;
-
-    // Step 2: EIP-191 sign
-    let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
-    let digest = keccak256(prefixed.as_bytes());
-    let (signature, recovery_id) = signing_key
-        .sign_prehash_recoverable(&digest)
-        .expect("signing failed");
-    let mut sig_bytes = Vec::with_capacity(65);
-    sig_bytes.extend_from_slice(&signature.to_bytes());
-    sig_bytes.push(recovery_id.to_byte() + 27);
-    let sig_hex = format!("0x{}", hex::encode(&sig_bytes));
-
-    // Step 3: Exchange for session token
-    let session_resp = http()
-        .post(format!("{api_url}/api/auth/session"))
-        .header("content-type", "application/json")
-        .json(&json!({ "nonce": nonce, "signature": sig_hex }))
-        .send()
-        .await?;
-    assert_eq!(session_resp.status(), 200, "session exchange should succeed");
-    let session: Value = session_resp.json().await?;
-    let token = session["token"].as_str().context("token")?.to_string();
-    let address = session["address"].as_str().context("address")?.to_string();
-
-    assert!(token.starts_with("v4.local."), "should be PASETO v4 token");
-    Ok((token, address))
-}
-
-/// Wait for the operator API to respond.
-async fn wait_for_api(url: &str) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if tokio::time::Instant::now() > deadline {
-            anyhow::bail!("Operator API not ready within 10s at {url}");
-        }
-        if let Ok(r) = http().get(format!("{url}/health")).send().await {
-            if r.status().is_success() {
-                return Ok(());
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-/// Wait for sidecar to become healthy.
-async fn wait_for_sidecar(url: &str) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        if tokio::time::Instant::now() > deadline {
-            anyhow::bail!("Sidecar not healthy within 90s at {url}");
-        }
-        if let Ok(resp) = http().get(format!("{url}/health")).send().await {
-            if resp.status().is_success() {
-                return Ok(());
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-}
 
 async fn spawn_harness() -> Result<Option<BlueprintHarness>> {
     match BlueprintHarness::builder(router())
@@ -172,7 +43,7 @@ async fn spawn_harness() -> Result<Option<BlueprintHarness>> {
         .spawn()
         .await
     {
-        Ok(harness) => Ok(Some(harness)),
+        Ok(h) => Ok(Some(h)),
         Err(err) => {
             if missing_tnt_core_artifacts(&err) {
                 eprintln!("Skipping: {err}");
@@ -184,14 +55,14 @@ async fn spawn_harness() -> Result<Option<BlueprintHarness>> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
+// Test: Full instance lifecycle with on-chain verification
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn instance_full_lifecycle_via_operator_api() -> Result<()> {
-    let guard = HARNESS_LOCK.lock().await;
-    let result = timeout(ANVIL_TEST_TIMEOUT, async {
+async fn instance_full_lifecycle() -> Result<()> {
+    let _guard = HARNESS_LOCK.lock().await;
+    timeout(ANVIL_TEST_TIMEOUT, async {
         if std::env::var("SIDECAR_E2E").ok().as_deref() != Some("1") {
             eprintln!("Skipped (set SIDECAR_E2E=1 to enable)");
             return Ok(());
@@ -200,17 +71,17 @@ async fn instance_full_lifecycle_via_operator_api() -> Result<()> {
         let _ = tracing_subscriber::fmt::try_init();
         setup_sidecar_env();
 
+        let owner_address = address_from_key(OWNER_KEY);
+
         // ─── Step 1: Spawn harness ───────────────────────────────────────
-        step!(1, "Spawning BlueprintHarness (Anvil + Runner)...");
+        e2e_step!(1, "Spawning BlueprintHarness (Anvil + Runner)...");
         let Some(harness) = spawn_harness().await? else {
             return Ok(());
         };
-
-        let owner_address = address_from_key(SERVICE_OWNER_KEY_HEX);
         eprintln!("  Owner address: {owner_address}");
 
         // ─── Step 2: Provision instance via Tangle ───────────────────────
-        step!(2, "Submitting JOB_PROVISION via Tangle...");
+        e2e_step!(2, "Submitting JOB_PROVISION via Tangle...");
         let provision_payload = ProvisionRequest {
             name: "e2e-instance".to_string(),
             image: "agent-dev".to_string(),
@@ -237,191 +108,224 @@ async fn instance_full_lifecycle_via_operator_api() -> Result<()> {
             .await?;
         let provision_output = harness
             .wait_for_job_result_with_deadline(provision_sub, JOB_RESULT_TIMEOUT)
-            .await?;
-        let provision_receipt = ProvisionOutput::abi_decode(&provision_output)?;
+            .await
+            .context("provision job result not received")?;
+
+        // Verify on-chain result is valid ABI
+        let provision_receipt = ProvisionOutput::abi_decode(&provision_output)
+            .context("failed to ABI-decode ProvisionOutput from on-chain result")?;
         let sandbox_id = provision_receipt.sandbox_id.clone();
-        let sidecar_url = provision_receipt.sidecar_url.clone();
-        eprintln!("  Instance: id={sandbox_id}, url={sidecar_url}");
+        let initial_sidecar_url = provision_receipt.sidecar_url.clone();
+
+        assert!(!sandbox_id.is_empty(), "sandbox_id should not be empty");
+        assert!(
+            initial_sidecar_url.starts_with("http"),
+            "sidecar_url should be HTTP: {initial_sidecar_url}"
+        );
+        eprintln!("  Provisioned: id={sandbox_id}, url={initial_sidecar_url}");
 
         // ─── Step 3: Boot operator API ───────────────────────────────────
-        step!(3, "Starting operator API server...");
-        let api_app = sandbox_runtime::operator_api::operator_api_router();
-        let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let api_port = api_listener.local_addr()?.port();
-        let _api_handle = tokio::spawn(async move {
-            axum::serve(
-                api_listener,
-                api_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await
-            .ok();
-        });
-        let api_url = format!("http://127.0.0.1:{api_port}");
-        wait_for_api(&api_url).await?;
+        e2e_step!(3, "Starting operator API server...");
+        let (api_url, _api_handle) = spawn_operator_api().await?;
         eprintln!("  API ready at {api_url}");
 
         // ─── Step 4: Wait for sidecar health ─────────────────────────────
-        step!(4, "Waiting for sidecar to become healthy...");
-        wait_for_sidecar(&sidecar_url).await?;
-        eprintln!("  Sidecar healthy at {sidecar_url}");
+        e2e_step!(4, "Waiting for sidecar to become healthy...");
+        wait_for_sidecar(&initial_sidecar_url).await?;
+        eprintln!("  Sidecar healthy");
 
-        // ─── Step 5: Auth flow ───────────────────────────────────────────
-        step!(5, "Authenticating with operator API...");
-        let (token, authed_address) = get_auth_token(&api_url, SERVICE_OWNER_KEY_HEX).await?;
+        // ─── Step 5: Auth as owner ───────────────────────────────────────
+        e2e_step!(5, "Authenticating as owner...");
+        let (token, authed_address) = get_auth_token(&api_url, OWNER_KEY).await?;
+        assert_eq!(
+            authed_address.to_lowercase(),
+            owner_address.to_lowercase(),
+        );
+        let auth = format!("Bearer {token}");
         eprintln!("  Authenticated as {authed_address}");
 
-        let auth = format!("Bearer {token}");
-
         // ─── Step 6: List sandboxes ──────────────────────────────────────
-        step!(6, "Listing sandboxes (should include instance)...");
-        let resp = http()
-            .get(format!("{api_url}/api/sandboxes"))
-            .header("authorization", &auth)
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 200);
-        let body: Value = resp.json().await?;
-        let sandboxes = body["sandboxes"].as_array().context("sandboxes array")?;
-        assert!(
-            sandboxes.iter().any(|s| s["id"] == sandbox_id),
-            "instance sandbox {sandbox_id} should be in list: {body}"
-        );
-        let sb = sandboxes.iter().find(|s| s["id"] == sandbox_id).unwrap();
+        e2e_step!(6, "Listing sandboxes...");
+        let body = api_get(&api_url, "/api/sandboxes", &auth).await?;
+        let sandboxes = body["sandboxes"]
+            .as_array()
+            .context("sandboxes array")?;
+        let sb = sandboxes
+            .iter()
+            .find(|s| s["id"] == sandbox_id)
+            .context("instance sandbox should be in list")?;
         assert_eq!(sb["state"], "running");
-        eprintln!("  Found instance sandbox in list, state=running");
+        eprintln!("  Found instance, state=running");
 
-        // ─── Step 7: Instance exec (singleton endpoint) ──────────────────
-        step!(7, "Executing command via instance operator API...");
-        let resp = http()
-            .post(format!("{api_url}/api/sandbox/exec"))
-            .header("authorization", &auth)
-            .json(&json!({"command": "echo e2e-instance-test-ok"}))
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 200, "instance exec should succeed");
-        let body: Value = resp.json().await?;
-        assert_eq!(body["exit_code"], 0, "exit code should be 0");
+        // ─── Step 7: Exec via singleton endpoint ─────────────────────────
+        e2e_step!(7, "Exec via instance endpoint...");
+        let body = api_post(
+            &api_url,
+            "/api/sandbox/exec",
+            &auth,
+            json!({"command": "echo e2e-instance-ok"}),
+        )
+        .await?;
+        assert_eq!(body["exit_code"], 0);
         assert!(
             body["stdout"]
                 .as_str()
                 .unwrap_or("")
-                .contains("e2e-instance-test-ok"),
-            "stdout should contain test string: {body}"
+                .contains("e2e-instance-ok"),
+            "stdout: {body}"
         );
-        eprintln!("  Instance exec OK: stdout={}", body["stdout"]);
+        eprintln!("  Exec OK");
 
-        // ─── Step 8: Instance SSH provision ──────────────────────────────
-        step!(8, "Provisioning SSH key via instance endpoint...");
-        let ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp9pDAVl8TpDBLVnpXjAIRxMf3K+m6UPlv3VBMbRp2o e2e-instance-test";
-        let resp = http()
-            .post(format!("{api_url}/api/sandbox/ssh"))
-            .header("authorization", &auth)
-            .json(&json!({"username": "agent", "public_key": ssh_key}))
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 200, "SSH provision should succeed: {:?}", resp.text().await);
-        eprintln!("  SSH key provisioned via instance endpoint");
+        // ─── Step 8: SSH provision ───────────────────────────────────────
+        e2e_step!(8, "SSH provision via instance endpoint...");
+        let ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp9pDAVl8TpDBLVnpXjAIRxMf3K+m6UPlv3VBMbRp2o e2e-test";
+        assert_api_status(
+            &api_url,
+            "POST",
+            "/api/sandbox/ssh",
+            &auth,
+            json!({"username": "agent", "public_key": ssh_key}),
+            200,
+        )
+        .await;
+        eprintln!("  SSH provisioned");
 
-        // ─── Step 9: Instance SSH revoke ─────────────────────────────────
-        step!(9, "Revoking SSH key via instance endpoint...");
-        let resp = http()
-            .delete(format!("{api_url}/api/sandbox/ssh"))
-            .header("authorization", &auth)
-            .json(&json!({"username": "agent", "public_key": ssh_key}))
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 200, "SSH revoke should succeed");
-        eprintln!("  SSH key revoked via instance endpoint");
+        // ─── Step 9: SSH revoke ──────────────────────────────────────────
+        e2e_step!(9, "SSH revoke via instance endpoint...");
+        assert_api_status(
+            &api_url,
+            "DELETE",
+            "/api/sandbox/ssh",
+            &auth,
+            json!({"username": "agent", "public_key": ssh_key}),
+            200,
+        )
+        .await;
+        eprintln!("  SSH revoked");
 
-        // ─── Step 10: Instance stop ──────────────────────────────────────
-        step!(10, "Stopping instance via operator API...");
-        let resp = http()
-            .post(format!("{api_url}/api/sandbox/stop"))
-            .header("authorization", &auth)
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 200, "stop should succeed");
-        let body: Value = resp.json().await?;
+        // ─── Step 10: Stop instance ──────────────────────────────────────
+        e2e_step!(10, "Stopping instance...");
+        let body = api_post(&api_url, "/api/sandbox/stop", &auth, json!({})).await?;
         assert_eq!(body["state"], "stopped");
-        eprintln!("  Instance stopped");
+        eprintln!("  Stopped");
 
-        // ─── Step 11: List shows stopped ─────────────────────────────────
-        step!(11, "Verifying stopped state in list...");
-        let resp = http()
-            .get(format!("{api_url}/api/sandboxes"))
-            .header("authorization", &auth)
-            .send()
-            .await?;
-        let body: Value = resp.json().await?;
+        // ─── Step 11: Verify stopped in list ─────────────────────────────
+        e2e_step!(11, "Verifying stopped state...");
+        let body = api_get(&api_url, "/api/sandboxes", &auth).await?;
         let sb = body["sandboxes"]
             .as_array()
             .and_then(|a| a.iter().find(|s| s["id"] == sandbox_id))
-            .context("instance sandbox should still be in list while stopped")?;
+            .context("instance should still be in list")?;
         assert_eq!(sb["state"], "stopped");
-        eprintln!("  List confirms stopped state");
+        eprintln!("  Confirmed stopped");
 
-        // ─── Step 12: Instance resume ────────────────────────────────────
-        step!(12, "Resuming instance via operator API...");
-        let resp = http()
-            .post(format!("{api_url}/api/sandbox/resume"))
-            .header("authorization", &auth)
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 200, "resume should succeed");
-        let body: Value = resp.json().await?;
+        // ─── Step 12: Resume instance ────────────────────────────────────
+        e2e_step!(12, "Resuming instance...");
+        let body = api_post(&api_url, "/api/sandbox/resume", &auth, json!({})).await?;
         assert_eq!(body["state"], "running");
-        eprintln!("  Instance resumed");
+        eprintln!("  Resumed");
 
-        // Wait for sidecar to be healthy again
-        wait_for_sidecar(&sidecar_url).await?;
+        // ─── Step 13: Re-read sidecar URL (Docker assigns new ports) ─────
+        e2e_step!(13, "Re-reading sidecar URL after resume...");
+        let resumed_url = get_instance_sidecar_url(&api_url, &auth).await?;
+        eprintln!("  Post-resume URL: {resumed_url}");
+        if resumed_url != initial_sidecar_url {
+            eprintln!(
+                "  Port changed: {} → {} (expected after Docker restart)",
+                initial_sidecar_url, resumed_url
+            );
+        }
+        wait_for_sidecar(&resumed_url).await?;
 
-        // ─── Step 13: Exec after resume ──────────────────────────────────
-        step!(13, "Exec after resume via instance endpoint...");
-        let resp = http()
-            .post(format!("{api_url}/api/sandbox/exec"))
-            .header("authorization", &auth)
-            .json(&json!({"command": "echo instance-resumed-ok"}))
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 200);
-        let body: Value = resp.json().await?;
-        assert!(body["stdout"].as_str().unwrap_or("").contains("instance-resumed-ok"));
+        // ─── Step 14: Exec after resume ──────────────────────────────────
+        e2e_step!(14, "Exec after resume...");
+        let body = api_post(
+            &api_url,
+            "/api/sandbox/exec",
+            &auth,
+            json!({"command": "echo instance-resumed-ok"}),
+        )
+        .await?;
+        assert_eq!(body["exit_code"], 0);
+        assert!(body["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("instance-resumed-ok"));
         eprintln!("  Exec after resume OK");
 
-        // ─── Step 14: Input validation ───────────────────────────────────
-        step!(14, "Testing input validation on instance endpoints...");
-
-        // Empty command → 400
-        let resp = http()
-            .post(format!("{api_url}/api/sandbox/exec"))
-            .header("authorization", &auth)
-            .json(&json!({"command": ""}))
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 400, "empty command should be rejected");
-
-        // Bad SSH key format → 400
-        let resp = http()
-            .post(format!("{api_url}/api/sandbox/ssh"))
-            .header("authorization", &auth)
-            .json(&json!({"username": "agent", "public_key": "not-a-real-key"}))
-            .send()
-            .await?;
-        assert_eq!(resp.status(), 400, "invalid SSH key should be rejected");
+        // ─── Step 15: Input validation ───────────────────────────────────
+        e2e_step!(15, "Testing input validation...");
+        assert_api_status(
+            &api_url,
+            "POST",
+            "/api/sandbox/exec",
+            &auth,
+            json!({"command": ""}),
+            400,
+        )
+        .await;
+        assert_api_status(
+            &api_url,
+            "POST",
+            "/api/sandbox/ssh",
+            &auth,
+            json!({"username": "agent", "public_key": "not-a-real-key"}),
+            400,
+        )
+        .await;
         eprintln!("  Input validation OK");
 
-        // ─── Step 15: Auth rejection ─────────────────────────────────────
-        step!(15, "Testing auth rejection on instance endpoints...");
+        // ─── Step 16: Auth rejection ─────────────────────────────────────
+        e2e_step!(16, "Testing auth rejection...");
         let resp = http()
             .post(format!("{api_url}/api/sandbox/exec"))
-            .json(&json!({"command": "echo should-fail"}))
+            .json(&json!({"command": "echo fail"}))
             .send()
             .await?;
-        assert_eq!(resp.status(), 401, "missing auth should return 401");
+        assert_eq!(resp.status(), 401, "missing auth → 401");
+
+        let resp = http()
+            .post(format!("{api_url}/api/sandbox/exec"))
+            .header("authorization", "Bearer v4.local.invalid-token-garbage")
+            .json(&json!({"command": "echo fail"}))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), 401, "bad PASETO → 401");
         eprintln!("  Auth rejection OK");
 
-        // ─── Step 16: Deprovision via Tangle ─────────────────────────────
-        step!(16, "Deprovisioning instance via Tangle job...");
+        // ─── Step 17: Cross-owner isolation ──────────────────────────────
+        e2e_step!(17, "Testing cross-owner tenant isolation...");
+        let non_owner_address = address_from_key(NON_OWNER_KEY);
+        let (non_owner_token, addr) = get_auth_token(&api_url, NON_OWNER_KEY).await?;
+        assert_eq!(addr.to_lowercase(), non_owner_address.to_lowercase());
+        let non_owner_auth = format!("Bearer {non_owner_token}");
+
+        // Non-owner should see empty sandbox list
+        let body = api_get(&api_url, "/api/sandboxes", &non_owner_auth).await?;
+        let non_owner_sandboxes = body["sandboxes"]
+            .as_array()
+            .context("sandboxes array")?;
+        assert!(
+            non_owner_sandboxes.is_empty(),
+            "non-owner should see zero sandboxes: {body}"
+        );
+
+        // Non-owner trying singleton exec should be rejected
+        let resp = http()
+            .post(format!("{api_url}/api/sandbox/exec"))
+            .header("authorization", &non_owner_auth)
+            .json(&json!({"command": "echo pwned"}))
+            .send()
+            .await?;
+        assert!(
+            resp.status().is_client_error(),
+            "non-owner exec should fail, got {}",
+            resp.status()
+        );
+        eprintln!("  Cross-owner isolation confirmed");
+
+        // ─── Step 18: Deprovision via Tangle ─────────────────────────────
+        e2e_step!(18, "Deprovisioning via Tangle...");
         let deprovision_payload = JsonResponse {
             json: json!({"action": "deprovision"}).to_string(),
         }
@@ -431,36 +335,101 @@ async fn instance_full_lifecycle_via_operator_api() -> Result<()> {
             .await?;
         let deprovision_output = harness
             .wait_for_job_result_with_deadline(deprovision_sub, JOB_RESULT_TIMEOUT)
-            .await?;
-        let deprovision_receipt = JsonResponse::abi_decode(&deprovision_output)?;
-        let deprovision_json: Value = serde_json::from_str(&deprovision_receipt.json)?;
-        assert_eq!(deprovision_json["deprovisioned"], true);
-        eprintln!("  Instance deprovisioned: {deprovision_json}");
+            .await
+            .context("deprovision job result not received")?;
 
-        // ─── Step 17: Verify gone ────────────────────────────────────────
-        step!(17, "Verifying instance sandbox is gone...");
-        let resp = http()
-            .get(format!("{api_url}/api/sandboxes"))
-            .header("authorization", &auth)
-            .send()
-            .await?;
-        let body: Value = resp.json().await?;
-        let sandboxes = body["sandboxes"].as_array().context("sandboxes array")?;
-        assert!(
-            !sandboxes.iter().any(|s| s["id"] == sandbox_id),
-            "deprovisioned instance should not appear in list"
+        let deprovision_result = JsonResponse::abi_decode(&deprovision_output)
+            .context("failed to decode deprovision result")?;
+        let deprovision_json: Value = serde_json::from_str(&deprovision_result.json)?;
+        assert_eq!(
+            deprovision_json["deprovisioned"], true,
+            "deprovision response: {deprovision_json}"
         );
-        eprintln!("  Instance sandbox confirmed gone from list");
+        eprintln!("  Deprovisioned: {deprovision_json}");
 
-        // ─── Step 18: Shutdown ───────────────────────────────────────────
-        step!(18, "Shutting down harness...");
+        // ─── Step 19: Verify gone ────────────────────────────────────────
+        e2e_step!(19, "Verifying instance gone from list...");
+        let body = api_get(&api_url, "/api/sandboxes", &auth).await?;
+        let remaining = body["sandboxes"]
+            .as_array()
+            .context("sandboxes array")?;
+        assert!(
+            !remaining.iter().any(|s| s["id"] == sandbox_id),
+            "deprovisioned instance should not appear"
+        );
+        eprintln!("  Confirmed gone");
+
+        // ─── Step 20: Shutdown ───────────────────────────────────────────
+        e2e_step!(20, "Shutting down...");
         harness.shutdown().await;
-
-        eprintln!("\n=== All instance E2E operator API tests passed ===");
+        eprintln!("\n=== All instance E2E tests passed (20 steps) ===");
         Ok(())
     })
-    .await;
+    .await
+    .context("instance_full_lifecycle timed out")?
+}
 
-    drop(guard);
-    result.context("instance_full_lifecycle_via_operator_api timed out")?
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP assertion helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+async fn api_get(api_url: &str, path: &str, auth: &str) -> Result<Value> {
+    let resp = http()
+        .get(format!("{api_url}{path}"))
+        .header("authorization", auth)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body: Value = resp.json().await?;
+    anyhow::ensure!(status.is_success(), "GET {path} returned {status}: {body}");
+    Ok(body)
+}
+
+async fn api_post(api_url: &str, path: &str, auth: &str, body: Value) -> Result<Value> {
+    let resp = http()
+        .post(format!("{api_url}{path}"))
+        .header("authorization", auth)
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let resp_body: Value = resp.json().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "POST {path} returned {status}: {resp_body}"
+    );
+    Ok(resp_body)
+}
+
+async fn assert_api_status(
+    api_url: &str,
+    method: &str,
+    path: &str,
+    auth: &str,
+    body: Value,
+    expected_status: u16,
+) {
+    let url = format!("{api_url}{path}");
+    let resp = match method {
+        "POST" => http()
+            .post(&url)
+            .header("authorization", auth)
+            .json(&body)
+            .send()
+            .await,
+        "DELETE" => http()
+            .delete(&url)
+            .header("authorization", auth)
+            .json(&body)
+            .send()
+            .await,
+        _ => panic!("unsupported method: {method}"),
+    };
+    let resp = resp.unwrap_or_else(|e| panic!("{method} {path} failed: {e}"));
+    assert_eq!(
+        resp.status().as_u16(),
+        expected_status,
+        "{method} {path} expected {expected_status}, got {}",
+        resp.status()
+    );
 }
