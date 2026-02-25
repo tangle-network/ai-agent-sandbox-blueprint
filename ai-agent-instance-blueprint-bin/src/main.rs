@@ -59,10 +59,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                 listener,
                 router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
-                .with_graceful_shutdown(async move {
-                    let _ = shutdown_rx.changed().await;
-                })
-                .await
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.changed().await;
+            })
+            .await
             {
                 error!("Operator API error: {e}");
             }

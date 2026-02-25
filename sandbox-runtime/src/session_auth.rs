@@ -256,7 +256,7 @@ pub fn exchange_signature_for_token(nonce: &str, signature_hex: &str) -> Result<
         .expiration(&exp_str)
         .map_err(|e| SandboxError::Auth(format!("Failed to set expiration: {e}")))?;
 
-    let token = pasetors::local::encrypt(&*SYMMETRIC_KEY, &paseto_claims, None, None)
+    let token = pasetors::local::encrypt(&SYMMETRIC_KEY, &paseto_claims, None, None)
         .map_err(|e| SandboxError::Auth(format!("Failed to encrypt PASETO token: {e}")))?;
 
     // Store session for server-side validation
@@ -290,7 +290,7 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
 
     let validation_rules = pasetors::claims::ClaimsValidationRules::new();
     let trusted =
-        pasetors::local::decrypt(&*SYMMETRIC_KEY, &validation, &validation_rules, None, None)
+        pasetors::local::decrypt(&SYMMETRIC_KEY, &validation, &validation_rules, None, None)
             .map_err(|e| SandboxError::Auth(format!("PASETO decryption failed: {e}")))?;
 
     let payload = trusted.payload();
@@ -429,7 +429,7 @@ pub fn create_test_token(address: &str) -> String {
         .unwrap();
     paseto_claims.expiration(&exp_str).unwrap();
 
-    let token = pasetors::local::encrypt(&*SYMMETRIC_KEY, &paseto_claims, None, None).unwrap();
+    let token = pasetors::local::encrypt(&SYMMETRIC_KEY, &paseto_claims, None, None).unwrap();
     SESSIONS.lock().unwrap().insert(token.clone(), claims);
     token
 }

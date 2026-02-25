@@ -673,7 +673,7 @@ async fn create_sidecar_docker(
     };
 
     let override_config = build_docker_config(
-        &config,
+        config,
         request.ssh_enabled,
         request.cpu_cores,
         request.memory_mb,
@@ -1023,7 +1023,7 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
     let effective_env = record.effective_env_json();
     let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
     let override_config = build_docker_config(
-        &config,
+        config,
         ssh_enabled,
         record.cpu_cores,
         record.memory_mb,
@@ -1092,7 +1092,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     let effective_env = record.effective_env_json();
     let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
     let override_config = build_docker_config(
-        &config,
+        config,
         ssh_enabled,
         record.cpu_cores,
         record.memory_mb,
@@ -1176,9 +1176,11 @@ async fn refresh_port_mapping(
     let inspect = client
         .inspect_container(container_id, None::<InspectContainerOptions>)
         .await
-        .map_err(|err| SandboxError::Docker(format!("Failed to inspect container after restart: {err}")))?;
+        .map_err(|err| {
+            SandboxError::Docker(format!("Failed to inspect container after restart: {err}"))
+        })?;
     let (sidecar_port, ssh_port) = extract_ports(&inspect, container_port, ssh_enabled)?;
-    let sidecar_url = format!("http://{}:{}", public_host, sidecar_port);
+    let sidecar_url = format!("http://{public_host}:{sidecar_port}");
     Ok((sidecar_url, sidecar_port, ssh_port))
 }
 

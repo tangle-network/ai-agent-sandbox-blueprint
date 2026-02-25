@@ -57,9 +57,10 @@ fn validate_ssh_public_key(key: &str) -> Result<(), String> {
         ));
     }
     if !SSH_KEY_PREFIXES.iter().any(|p| trimmed.starts_with(p)) {
-        return Err(format!(
+        return Err(
             "public_key must start with a valid SSH key type (e.g., ssh-ed25519, ssh-rsa)"
-        ));
+                .to_string(),
+        );
     }
     // Must have at least type + base64 data
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
@@ -279,9 +280,7 @@ pub fn validate_secrets_map(
         // Estimate value size
         let val_str = val.to_string();
         if val_str.len() > 64 * 1024 {
-            return Err(format!(
-                "secret value for '{key}' exceeds max size (64 KB)"
-            ));
+            return Err(format!("secret value for '{key}' exceeds max size (64 KB)"));
         }
     }
     Ok(())

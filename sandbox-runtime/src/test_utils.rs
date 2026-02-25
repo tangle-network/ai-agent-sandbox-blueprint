@@ -99,10 +99,7 @@ pub async fn api_get(api_url: &str, path: &str, auth: &str) -> Result<Value> {
 
 /// Unauthenticated GET, returning parsed JSON. Fails on non-2xx status.
 pub async fn api_get_unauth(api_url: &str, path: &str) -> Result<Value> {
-    let resp = http()
-        .get(format!("{api_url}{path}"))
-        .send()
-        .await?;
+    let resp = http().get(format!("{api_url}{path}")).send().await?;
     let status = resp.status();
     let body: Value = resp.json().await?;
     anyhow::ensure!(
@@ -158,23 +155,23 @@ pub async fn assert_api_status(
 ) {
     let url = format!("{api_url}{path}");
     let resp = match method {
-        "GET" => http()
-            .get(&url)
-            .header("authorization", auth)
-            .send()
-            .await,
-        "POST" => http()
-            .post(&url)
-            .header("authorization", auth)
-            .json(&body)
-            .send()
-            .await,
-        "DELETE" => http()
-            .delete(&url)
-            .header("authorization", auth)
-            .json(&body)
-            .send()
-            .await,
+        "GET" => http().get(&url).header("authorization", auth).send().await,
+        "POST" => {
+            http()
+                .post(&url)
+                .header("authorization", auth)
+                .json(&body)
+                .send()
+                .await
+        }
+        "DELETE" => {
+            http()
+                .delete(&url)
+                .header("authorization", auth)
+                .json(&body)
+                .send()
+                .await
+        }
         _ => panic!("unsupported method: {method}"),
     };
     let resp = resp.unwrap_or_else(|e| panic!("{method} {path} failed: {e}"));
@@ -346,9 +343,7 @@ pub async fn get_instance_sidecar_url(api_url: &str, auth: &str) -> Result<Strin
     let sandboxes = body["sandboxes"]
         .as_array()
         .context("expected sandboxes array")?;
-    let sb = sandboxes
-        .first()
-        .context("no instance sandbox in list")?;
+    let sb = sandboxes.first().context("no instance sandbox in list")?;
     sb["sidecar_url"]
         .as_str()
         .context("missing sidecar_url on instance record")
@@ -363,8 +358,7 @@ pub async fn get_instance_sidecar_url(api_url: &str, auth: &str) -> Result<Strin
 pub const OWNER_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
 /// Anvil account[1] — used as a non-owner for cross-tenant isolation tests.
-pub const NON_OWNER_KEY: &str =
-    "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+pub const NON_OWNER_KEY: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
 /// Logging macro for test steps.
 #[macro_export]

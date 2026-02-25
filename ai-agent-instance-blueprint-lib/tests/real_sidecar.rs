@@ -1300,7 +1300,7 @@ async fn ai_task_multiple_independent_sessions() {
 
         let result = run_instance_task(&s.url, AUTH_TOKEN, SANDBOX_ID, &request)
             .await
-            .expect(&format!("task {i} should succeed"));
+            .unwrap_or_else(|_| panic!("task {i} should succeed"));
 
         eprintln!(
             "Task {i}: success={}, session_id='{}'",

@@ -459,8 +459,8 @@ impl AzureSkrBackend {
 impl TeeBackend for AzureSkrBackend {
     async fn deploy(&self, params: &TeeDeployParams) -> Result<TeeDeployment> {
         let vm_name = format!("tee-sandbox-{}", params.sandbox_id);
-        let pip_name = format!("{}-pip", vm_name);
-        let nic_name = format!("{}-nic", vm_name);
+        let pip_name = format!("{vm_name}-pip");
+        let nic_name = format!("{vm_name}-nic");
 
         // Create networking resources.
         let pip_id = self.create_public_ip(&pip_name).await?;

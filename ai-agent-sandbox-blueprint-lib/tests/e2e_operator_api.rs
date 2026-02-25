@@ -20,9 +20,9 @@
 //!   - TNT core artifacts (run scripts/fetch-localtestnet-fixtures.sh)
 
 use ai_agent_sandbox_blueprint_lib::{
-    JOB_SANDBOX_CREATE, JOB_SANDBOX_DELETE, JOB_WORKFLOW_CANCEL, JOB_WORKFLOW_CREATE,
-    JsonResponse, SandboxCreateOutput, SandboxCreateRequest, SandboxIdRequest,
-    WorkflowControlRequest, WorkflowCreateRequest, router,
+    JOB_SANDBOX_CREATE, JOB_SANDBOX_DELETE, JOB_WORKFLOW_CANCEL, JOB_WORKFLOW_CREATE, JsonResponse,
+    SandboxCreateOutput, SandboxCreateRequest, SandboxIdRequest, WorkflowControlRequest,
+    WorkflowCreateRequest, router,
 };
 use anyhow::{Context, Result};
 use blueprint_anvil_testing_utils::{BlueprintHarness, missing_tnt_core_artifacts};
@@ -482,8 +482,7 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         eprintln!("  Post-resume URL: {resumed_url}");
         if resumed_url != initial_sidecar_url {
             eprintln!(
-                "  Port changed: {} → {} (expected after Docker restart)",
-                initial_sidecar_url, resumed_url
+                "  Port changed: {initial_sidecar_url} → {resumed_url} (expected after Docker restart)"
             );
         }
         wait_for_sidecar(&resumed_url).await?;
@@ -741,7 +740,10 @@ async fn workflow_create_and_cancel() -> Result<()> {
         let create_result = JsonResponse::abi_decode(&create_output)
             .context("failed to decode workflow create result")?;
         let create_json: Value = serde_json::from_str(&create_result.json)?;
-        assert_eq!(create_json["status"], "active", "workflow should be active: {create_json}");
+        assert_eq!(
+            create_json["status"], "active",
+            "workflow should be active: {create_json}"
+        );
         let workflow_id = create_json["workflowId"]
             .as_u64()
             .context("missing workflowId")?;
@@ -749,10 +751,7 @@ async fn workflow_create_and_cancel() -> Result<()> {
 
         // ─── Step 3: Cancel workflow via Tangle ──────────────────────────
         e2e_step!(3, "Submitting JOB_WORKFLOW_CANCEL...");
-        let cancel_payload = WorkflowControlRequest {
-            workflow_id,
-        }
-        .abi_encode();
+        let cancel_payload = WorkflowControlRequest { workflow_id }.abi_encode();
 
         let cancel_sub = harness
             .submit_job(JOB_WORKFLOW_CANCEL, Bytes::from(cancel_payload))
@@ -765,7 +764,10 @@ async fn workflow_create_and_cancel() -> Result<()> {
         let cancel_result = JsonResponse::abi_decode(&cancel_output)
             .context("failed to decode workflow cancel result")?;
         let cancel_json: Value = serde_json::from_str(&cancel_result.json)?;
-        assert_eq!(cancel_json["status"], "canceled", "workflow should be canceled: {cancel_json}");
+        assert_eq!(
+            cancel_json["status"], "canceled",
+            "workflow should be canceled: {cancel_json}"
+        );
         eprintln!("  Workflow canceled: {cancel_json}");
 
         // ─── Step 4: Shutdown ────────────────────────────────────────────

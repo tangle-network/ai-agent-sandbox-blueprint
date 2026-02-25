@@ -416,8 +416,7 @@ async fn instance_full_lifecycle() -> Result<()> {
         eprintln!("  Post-resume URL: {resumed_url}");
         if resumed_url != initial_sidecar_url {
             eprintln!(
-                "  Port changed: {} → {} (expected after Docker restart)",
-                initial_sidecar_url, resumed_url
+                "  Port changed: {initial_sidecar_url} → {resumed_url} (expected after Docker restart)"
             );
         }
         wait_for_sidecar(&resumed_url).await?;

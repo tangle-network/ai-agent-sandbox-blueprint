@@ -6,6 +6,7 @@
 //! - Session auth (challenge/response + PASETO tokens)
 //! - Sandbox operations (exec, prompt, task, stop, resume, snapshot, SSH)
 
+use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::{
     Json, Router,
@@ -16,7 +17,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use axum::extract::DefaultBodyLimit;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::api_types::*;
@@ -446,7 +446,8 @@ async fn sandbox_exec_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<ExecApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let resp = exec_on_sidecar(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -456,7 +457,8 @@ async fn instance_exec_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<ExecApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let resp = exec_on_sidecar(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -469,7 +471,8 @@ async fn sandbox_prompt_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<PromptApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let (success, response, error, trace_id, _) = agent_on_sidecar(
         &record,
@@ -499,7 +502,8 @@ async fn instance_prompt_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<PromptApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let (success, response, error, trace_id, _) = agent_on_sidecar(
         &record,
@@ -532,7 +536,8 @@ async fn sandbox_task_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<TaskApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let (success, result, error, trace_id, session_id) = agent_on_sidecar(
         &record,
@@ -563,7 +568,8 @@ async fn instance_task_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<TaskApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let (success, result, error, trace_id, session_id) = agent_on_sidecar(
         &record,
@@ -637,8 +643,7 @@ async fn instance_stop_handler(SessionAuth(address): SessionAuth) -> impl IntoRe
 
     // Sync updated state back to instance store.
     if let Ok(Some(updated)) = sandboxes().and_then(|s| s.get(&id)) {
-        let _ = runtime::instance_store()
-            .and_then(|s| s.insert("instance".to_string(), updated));
+        let _ = runtime::instance_store().and_then(|s| s.insert("instance".to_string(), updated));
     }
 
     Ok::<_, (StatusCode, Json<ApiError>)>((
@@ -660,8 +665,7 @@ async fn instance_resume_handler(SessionAuth(address): SessionAuth) -> impl Into
 
     // Sync updated record (port mappings may have changed) back to instance store.
     if let Ok(Some(updated)) = sandboxes().and_then(|s| s.get(&id)) {
-        let _ = runtime::instance_store()
-            .and_then(|s| s.insert("instance".to_string(), updated));
+        let _ = runtime::instance_store().and_then(|s| s.insert("instance".to_string(), updated));
     }
 
     Ok::<_, (StatusCode, Json<ApiError>)>((
@@ -809,7 +813,8 @@ async fn sandbox_ssh_provision_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<SshProvisionApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let resp = run_ssh_provision(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -820,7 +825,8 @@ async fn sandbox_ssh_revoke_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<SshRevokeApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let resp = run_ssh_revoke(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -830,7 +836,8 @@ async fn instance_ssh_provision_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<SshProvisionApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let resp = run_ssh_provision(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -840,7 +847,8 @@ async fn instance_ssh_revoke_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<SshRevokeApiRequest>,
 ) -> impl IntoResponse {
-    req.validate().map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let resp = run_ssh_revoke(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
