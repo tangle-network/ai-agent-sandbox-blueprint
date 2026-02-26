@@ -113,16 +113,24 @@ mod instance_state_tests {
 // We can't test init_tee_backend/tee_backend directly in unit tests because
 // they use a process-global OnceCell — calling init in one test would affect
 // all others. Instead, we verify the API exists and is callable by checking
-// that tee_backend() panics when NOT initialized (the expected behavior).
+// that tee_backend() returns an error when NOT initialized.
 
 mod tee_backend_tests {
     #[test]
-    #[should_panic(expected = "TEE backend not initialized")]
-    fn tee_backend_panics_when_not_initialized() {
-        // This test MUST run in isolation. Because we haven't called
-        // init_tee_backend(), accessing it should panic with the expected message.
-        // Note: if another test in this binary calls init_tee_backend(), this
-        // test may fail — that's by design (global state).
-        let _ = ai_agent_tee_instance_blueprint_lib::tee_backend();
+    fn tee_backend_errors_when_not_initialized() {
+        // Because we haven't called init_tee_backend(), accessing it should
+        // return an error (not panic). Note: if another test in this binary
+        // calls init_tee_backend(), this test may fail — that's by design
+        // (global state).
+        let result = ai_agent_tee_instance_blueprint_lib::tee_backend();
+        assert!(result.is_err());
+        let err_msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error but got Ok"),
+        };
+        assert!(
+            err_msg.contains("TEE backend not initialized"),
+            "Unexpected error: {err_msg}"
+        );
     }
 }

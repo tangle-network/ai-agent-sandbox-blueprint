@@ -64,7 +64,9 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(9090);
 
-    let tee_for_api = ai_agent_tee_instance_blueprint_lib::tee_backend().clone();
+    let tee_for_api = ai_agent_tee_instance_blueprint_lib::tee_backend()
+        .map_err(|e| blueprint_sdk::Error::Other(format!("TEE backend not available: {e}")))?
+        .clone();
     let api_shutdown = tokio::sync::watch::channel(());
     let api_shutdown_tx = api_shutdown.0;
     let api_handle = {
@@ -99,7 +101,8 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         )
     {
         info!("Auto-provision enabled (BSM={})", ap_config.bsm_address);
-        let tee = ai_agent_tee_instance_blueprint_lib::tee_backend();
+        let tee = ai_agent_tee_instance_blueprint_lib::tee_backend()
+            .map_err(|e| blueprint_sdk::Error::Other(format!("TEE backend not available: {e}")))?;
         tokio::spawn(async move {
             match ai_agent_tee_instance_blueprint_lib::auto_provision::run_auto_provision(
                 ap_config,
@@ -243,8 +246,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             }
 
             // Deprovision sandbox + TEE deployment so they don't outlive the service.
-            let tee = ai_agent_tee_instance_blueprint_lib::tee_backend();
-            match ai_agent_tee_instance_blueprint_lib::deprovision_core(Some(tee.as_ref())).await {
+            let tee = ai_agent_tee_instance_blueprint_lib::tee_backend()
+                .ok()
+                .map(|b| b.as_ref() as &dyn sandbox_runtime::tee::TeeBackend);
+            match ai_agent_tee_instance_blueprint_lib::deprovision_core(tee).await {
                 Ok((_, id)) => info!("Shutdown: deprovisioned sandbox {id}"),
                 Err(e) => info!("Shutdown: no sandbox to deprovision ({e})"),
             }

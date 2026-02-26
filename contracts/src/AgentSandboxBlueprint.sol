@@ -221,6 +221,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // JOB METADATA
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Returns all supported job IDs for this blueprint.
     function jobIds() external pure returns (uint8[] memory ids) {
         ids = new uint8[](7);
         ids[0] = JOB_SANDBOX_CREATE;
@@ -232,10 +233,13 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         ids[6] = JOB_DEPROVISION;
     }
 
+    /// @notice Returns true if this blueprint supports the given job ID.
+    /// @param jobId The job ID to check.
     function supportsJob(uint8 jobId) external pure returns (bool) {
         return jobId <= JOB_DEPROVISION;
     }
 
+    /// @notice Returns the total number of on-chain jobs this blueprint supports.
     function jobCount() external pure returns (uint256) {
         return 7;
     }
@@ -244,6 +248,9 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // OPERATOR REGISTRATION
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Registers an operator. In cloud mode, sets capacity from registrationInputs.
+    /// @param operator The operator address being registered.
+    /// @param registrationInputs ABI-encoded uint32 capacity (0 = use default).
     function onRegister(
         address operator,
         bytes calldata registrationInputs
@@ -266,6 +273,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// @notice Prevents operators from unregistering while they hold active resources.
+    /// @param operator The operator address being unregistered.
     function onUnregister(
         address operator
     ) external virtual override onlyFromTangle {
@@ -276,6 +284,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     /// @notice Prevents operators from leaving a service while they have active provisions.
+    /// @param serviceId The service the operator is leaving.
+    /// @param operator The departing operator address.
     function onOperatorLeft(
         uint64 serviceId,
         address operator
@@ -285,6 +295,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     /// @notice Pre-check: denies departure if operator has active provisions for this service.
+    /// @param serviceId The service to check against.
+    /// @param operator The operator requesting to leave.
     function canLeave(
         uint64 serviceId,
         address operator
@@ -298,6 +310,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // SERVICE REQUEST VALIDATION
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Validates a service request. In instance mode, stores pending config.
+    ///         In cloud mode, validates operator selection against restaking state.
+    /// @param requestId Unique identifier for this service request.
+    /// @param requester Address of the service requester.
+    /// @param operators Operator set proposed for this service.
+    /// @param requestInputs ABI-encoded config (instance mode) or SelectionRequest (cloud mode).
     function onRequest(
         uint64 requestId,
         address requester,
@@ -330,8 +348,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // SERVICE LIFECYCLE HOOKS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Called when the service is initialized. Moves pending config
-    ///         to persistent storage keyed by serviceId.
+    /// @notice Called when the service is initialized. In instance mode, stores the service
+    ///         owner and moves pending config to persistent storage keyed by serviceId.
     function onServiceInitialized(
         uint64,              // blueprintId
         uint64 requestId,
@@ -353,6 +371,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     /// @notice Called when the service owner terminates the service.
+    /// @param serviceId The service being terminated.
+    /// @param owner The service owner who initiated termination.
     function onServiceTermination(
         uint64 serviceId,
         address owner
@@ -364,6 +384,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // JOB CALL HOOK — OPERATOR ASSIGNMENT & ROUTING
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Pre-execution hook for job calls. Assigns operators (create) or routes
+    ///         to the sandbox's operator (delete). Enforces mode restrictions.
+    /// @param serviceId The service this job belongs to.
+    /// @param job The job ID being called.
+    /// @param jobCallId Unique identifier for this job call.
+    /// @param inputs ABI-encoded job inputs.
     function onJobCall(
         uint64 serviceId,
         uint8 job,
@@ -395,6 +421,14 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // JOB RESULT HOOK — STATE UPDATES
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Post-execution hook for job results. Updates on-chain state based on
+    ///         operator-submitted results (sandbox registry, workflows, provisions).
+    /// @param serviceId The service this job belongs to.
+    /// @param job The job ID that completed.
+    /// @param jobCallId Unique identifier for this job call.
+    /// @param operator The operator that executed the job.
+    /// @param inputs ABI-encoded original job inputs.
+    /// @param outputs ABI-encoded job outputs from the operator.
     function onJobResult(
         uint64 serviceId,
         uint8 job,
@@ -412,15 +446,15 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         } else if (job == JOB_WORKFLOW_CREATE) {
             if (instanceMode) revert CloudModeOnly();
             WorkflowCreateRequest memory request = abi.decode(inputs, (WorkflowCreateRequest));
-            _upsert_workflow(jobCallId, request);
+            _upsertWorkflow(jobCallId, request);
         } else if (job == JOB_WORKFLOW_TRIGGER) {
             if (instanceMode) revert CloudModeOnly();
             WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
-            _mark_triggered(request.workflow_id);
+            _markTriggered(request.workflow_id);
         } else if (job == JOB_WORKFLOW_CANCEL) {
             if (instanceMode) revert CloudModeOnly();
             WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
-            _cancel_workflow(request.workflow_id);
+            _cancelWorkflow(request.workflow_id);
         } else if (job == JOB_PROVISION) {
             if (!instanceMode) revert InstanceModeOnly();
             _handleProvisionResult(serviceId, operator, outputs);
@@ -432,6 +466,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         }
     }
 
+    /// @notice Returns the number of operator results required to finalize a job (always 1).
     function getRequiredResultCount(uint64, uint8) external pure override returns (uint32) {
         return 1;
     }
@@ -440,19 +475,28 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // ADMIN FUNCTIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Sets the default max sandbox capacity for newly registered operators.
+    /// @param capacity New default capacity value.
     function setDefaultMaxCapacity(uint32 capacity) external onlyBlueprintOwner {
         defaultMaxCapacity = capacity;
     }
 
+    /// @notice Overrides the max sandbox capacity for a specific operator.
+    /// @param operator The operator whose capacity to set.
+    /// @param capacity New capacity value.
     function setOperatorCapacity(address operator, uint32 capacity) external onlyBlueprintOwner {
         operatorMaxCapacity[operator] = capacity;
     }
 
+    /// @notice Toggles instance mode. Cannot be changed while sandboxes or provisions exist.
+    /// @param _mode True for instance mode, false for cloud mode.
     function setInstanceMode(bool _mode) external onlyBlueprintOwner {
         if (totalActiveSandboxes != 0 || totalProvisionedOperators != 0) revert CannotChangeWithActiveResources();
         instanceMode = _mode;
     }
 
+    /// @notice Toggles TEE attestation requirement. Cannot be changed while resources exist.
+    /// @param _required True to require TEE attestation on provision.
     function setTeeRequired(bool _required) external onlyBlueprintOwner {
         if (totalActiveSandboxes != 0 || totalProvisionedOperators != 0) revert CannotChangeWithActiveResources();
         teeRequired = _required;
@@ -462,18 +506,25 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // VIEW FUNCTIONS — CLOUD MODE
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Returns an operator's active sandbox count and max capacity.
+    /// @param operator The operator address to query.
     function getOperatorLoad(address operator) external view returns (uint32 active, uint32 max) {
         return (operatorActiveSandboxes[operator], operatorMaxCapacity[operator]);
     }
 
+    /// @notice Returns the operator assigned to a sandbox.
+    /// @param sandboxId The sandbox identifier string.
     function getSandboxOperator(string calldata sandboxId) external view returns (address) {
         return sandboxOperator[keccak256(bytes(sandboxId))];
     }
 
+    /// @notice Returns true if the given sandbox is currently active.
+    /// @param sandboxId The sandbox identifier string.
     function isSandboxActive(string calldata sandboxId) external view returns (bool) {
         return sandboxActive[keccak256(bytes(sandboxId))];
     }
 
+    /// @notice Returns the total remaining sandbox capacity across all eligible operators.
     function getAvailableCapacity() external view returns (uint32 available) {
         if (address(restaking) == address(0)) return 0;
         uint256 total = restaking.operatorCount();
@@ -489,6 +540,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         }
     }
 
+    /// @notice Returns aggregate stats: total active sandboxes and total operator capacity.
     function getServiceStats() external view returns (uint32 totalSandboxes, uint32 totalCapacity) {
         totalSandboxes = totalActiveSandboxes;
         if (address(restaking) == address(0)) return (totalSandboxes, 0);
@@ -505,22 +557,34 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // VIEW FUNCTIONS — INSTANCE MODE
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Returns true if at least one operator is provisioned for this service.
+    /// @param serviceId The service to check.
     function isProvisioned(uint64 serviceId) external view returns (bool) {
         return instanceOperatorCount[serviceId] > 0;
     }
 
+    /// @notice Returns true if a specific operator is provisioned for this service.
+    /// @param serviceId The service to check.
+    /// @param operator The operator address to check.
     function isOperatorProvisioned(uint64 serviceId, address operator) external view returns (bool) {
         return operatorProvisioned[serviceId][operator];
     }
 
+    /// @notice Returns the number of provisioned operators for a service.
+    /// @param serviceId The service to query.
     function getOperatorCount(uint64 serviceId) external view returns (uint32) {
         return instanceOperatorCount[serviceId];
     }
 
+    /// @notice Returns the TEE attestation hash for an operator on a service.
+    /// @param serviceId The service to query.
+    /// @param operator The operator address.
     function getAttestationHash(uint64 serviceId, address operator) external view returns (bytes32) {
         return operatorAttestationHash[serviceId][operator];
     }
 
+    /// @notice Returns all provisioned operators and their sidecar URLs for a service.
+    /// @param serviceId The service to query.
     function getOperatorEndpoints(uint64 serviceId)
         external
         view
@@ -533,6 +597,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         }
     }
 
+    /// @notice Returns the ABI-encoded sandbox config stored for a service.
+    /// @param serviceId The service to query.
     function getServiceConfig(uint64 serviceId) external view returns (bytes memory) {
         return serviceConfig[serviceId];
     }
@@ -541,10 +607,14 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // WORKFLOW VIEWS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Returns the full config for a workflow.
+    /// @param workflowId The workflow to query.
     function getWorkflow(uint64 workflowId) external view returns (WorkflowConfig memory) {
         return workflows[workflowId];
     }
 
+    /// @notice Returns all workflow IDs, optionally filtered to active-only.
+    /// @param activeOnly When true, only returns IDs of active workflows.
     function getWorkflowIds(bool activeOnly) external view returns (uint64[] memory ids) {
         if (!activeOnly) {
             return workflow_ids;
@@ -573,6 +643,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // PRICING HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Computes per-job pricing rates from a base rate and built-in multipliers.
+    /// @param baseRate The base rate to multiply against each job's price multiplier.
     function getDefaultJobRates(uint256 baseRate)
         external
         pure
@@ -590,6 +662,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         jobIndexes[6] = JOB_DEPROVISION;       rates[6] = baseRate * PRICE_MULT_DEPROVISION;
     }
 
+    /// @notice Returns the price multiplier for a given job ID (0 if unknown).
+    /// @param jobId The job ID to look up.
     function getJobPriceMultiplier(uint8 jobId) external pure returns (uint256) {
         if (jobId == JOB_SANDBOX_CREATE)    return PRICE_MULT_SANDBOX_CREATE;
         if (jobId == JOB_SANDBOX_DELETE)    return PRICE_MULT_SANDBOX_DELETE;
@@ -605,6 +679,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // INTERNAL: CAPACITY-WEIGHTED OPERATOR SELECTION (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Selects an operator weighted by remaining capacity using pseudo-random selection.
+    /// @param serviceId The service ID used as part of the random seed.
     function _selectByCapacity(uint64 serviceId) internal returns (address) {
         if (address(restaking) == address(0)) revert RestakingNotSet();
 
@@ -652,6 +728,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // INTERNAL: SANDBOX CREATE/DELETE RESULT HANDLING (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Processes a sandbox create result: validates the assigned operator, registers
+    ///         the sandbox, and increments capacity counters.
+    /// @param serviceId The service the sandbox belongs to.
+    /// @param jobCallId The job call ID used to look up the pre-assigned operator.
+    /// @param operator The operator that submitted the result.
+    /// @param outputs ABI-encoded (sandboxId, jsonMetadata).
     function _handleCreateResult(
         uint64 serviceId,
         uint64 jobCallId,
@@ -678,6 +760,10 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         emit SandboxCreated(sandboxHash, operator);
     }
 
+    /// @notice Processes a sandbox delete result: verifies operator ownership, removes the
+    ///         sandbox from the registry, and decrements capacity counters.
+    /// @param operator The operator that executed the delete.
+    /// @param inputs ABI-encoded sandbox ID string.
     function _handleDeleteResult(address operator, bytes calldata inputs) internal {
         string memory sandboxId = abi.decode(inputs, (string));
         bytes32 sandboxHash = keccak256(bytes(sandboxId));
@@ -702,6 +788,11 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // INTERNAL: PROVISION/DEPROVISION (instance mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @notice Processes a provision result: registers the operator, stores sidecar URL
+    ///         and TEE attestation hash, increments counters.
+    /// @param serviceId The service being provisioned.
+    /// @param operator The operator that provisioned.
+    /// @param outputs ABI-encoded (sandboxId, sidecarUrl, port, teeAttestationJson).
     function _handleProvisionResult(
         uint64 serviceId,
         address operator,
@@ -738,6 +829,10 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         emit OperatorProvisioned(serviceId, operator, sandboxId, sidecarUrl);
     }
 
+    /// @notice Processes a deprovision result: removes the operator from the service,
+    ///         clears sidecar URL and attestation, decrements counters.
+    /// @param serviceId The service being deprovisioned.
+    /// @param operator The operator being removed.
     function _handleDeprovisionResult(
         uint64 serviceId,
         address operator
@@ -775,7 +870,10 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // INTERNAL: WORKFLOW STORAGE (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function _upsert_workflow(uint64 workflowId, WorkflowCreateRequest memory request) internal {
+    /// @notice Creates or updates a workflow config in storage.
+    /// @param workflowId The workflow ID (derived from jobCallId).
+    /// @param request The workflow creation parameters.
+    function _upsertWorkflow(uint64 workflowId, WorkflowCreateRequest memory request) internal {
         WorkflowConfig storage config = workflows[workflowId];
         if (workflow_index[workflowId] == 0) {
             if (workflow_ids.length >= MAX_WORKFLOWS) revert MaxWorkflowsReached(0);
@@ -795,7 +893,9 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         emit WorkflowStored(workflowId, request.trigger_type, request.trigger_config);
     }
 
-    function _mark_triggered(uint64 workflowId) internal {
+    /// @notice Records a workflow trigger timestamp and emits WorkflowTriggered.
+    /// @param workflowId The workflow that was triggered.
+    function _markTriggered(uint64 workflowId) internal {
         if (workflow_index[workflowId] == 0) revert WorkflowNotFound(workflowId);
         WorkflowConfig storage config = workflows[workflowId];
         config.last_triggered_at = uint64(block.timestamp);
@@ -803,7 +903,9 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         emit WorkflowTriggered(workflowId, uint64(block.timestamp));
     }
 
-    function _cancel_workflow(uint64 workflowId) internal {
+    /// @notice Deactivates a workflow and emits WorkflowCanceled.
+    /// @param workflowId The workflow to cancel.
+    function _cancelWorkflow(uint64 workflowId) internal {
         if (workflow_index[workflowId] == 0) revert WorkflowNotFound(workflowId);
         WorkflowConfig storage config = workflows[workflowId];
         config.active = false;

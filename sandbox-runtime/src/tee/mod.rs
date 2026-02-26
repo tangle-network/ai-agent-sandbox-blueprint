@@ -220,11 +220,17 @@ pub fn init_tee_backend(backend: std::sync::Arc<dyn TeeBackend>) {
     }
 }
 
-/// Get the global TEE backend. Panics if not yet initialized.
-pub fn tee_backend() -> &'static std::sync::Arc<dyn TeeBackend> {
-    TEE_BACKEND
-        .get()
-        .expect("TEE backend not initialized — call init_tee_backend() first")
+/// Get the global TEE backend.
+///
+/// Returns an error if the backend has not been initialized via
+/// [`init_tee_backend`]. Prefer [`try_tee_backend`] when absence is
+/// expected (e.g. non-TEE operators).
+pub fn tee_backend() -> crate::error::Result<&'static std::sync::Arc<dyn TeeBackend>> {
+    TEE_BACKEND.get().ok_or_else(|| {
+        crate::error::SandboxError::Validation(
+            "TEE backend not initialized — call init_tee_backend() first".into(),
+        )
+    })
 }
 
 /// Try to get the global TEE backend, returning `None` if not initialized.

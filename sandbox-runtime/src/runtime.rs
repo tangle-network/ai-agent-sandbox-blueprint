@@ -316,6 +316,7 @@ static INSTANCE_STORE: OnceCell<PersistentStore<SandboxRecord>> = OnceCell::new(
 static DOCKER_BUILDER: AsyncOnceCell<DockerBuilder> = AsyncOnceCell::const_new();
 static IMAGE_PULLED: AsyncOnceCell<()> = AsyncOnceCell::const_new();
 
+/// Access the fleet-mode sandbox store (`sandboxes.json`), initializing it on first call.
 pub fn sandboxes() -> Result<&'static PersistentStore<SandboxRecord>> {
     SANDBOXES
         .get_or_try_init(|| {
@@ -347,6 +348,7 @@ pub fn get_instance_sandbox() -> Result<Option<SandboxRecord>> {
     }))
 }
 
+/// Return the cached Docker client, connecting on first call.
 pub async fn docker_builder() -> Result<&'static DockerBuilder> {
     // Return cached builder if already initialized.
     if let Some(builder) = DOCKER_BUILDER.get() {
@@ -1028,6 +1030,7 @@ async fn create_sidecar_docker(
     finish
 }
 
+/// Stop a running sandbox container, updating its state to `Stopped`.
 pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
     if record.state == SandboxState::Stopped {
         return Err(SandboxError::Validation(
@@ -1069,6 +1072,7 @@ async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
     ready.is_ok()
 }
 
+/// Resume a stopped sandbox, restoring from container, snapshot image, or S3 as available.
 pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
     if record.state == SandboxState::Running {
         return Err(SandboxError::Validation(
@@ -1171,6 +1175,7 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
     )))
 }
 
+/// Permanently destroy a sandbox, removing the container, image, and store entry.
 pub async fn delete_sidecar(
     record: &SandboxRecord,
     tee: Option<&dyn crate::tee::TeeBackend>,

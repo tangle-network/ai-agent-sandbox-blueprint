@@ -929,7 +929,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // REVERT PATH: _mark_triggered FOR NON-EXISTENT WORKFLOW
+    // REVERT PATH: _markTriggered FOR NON-EXISTENT WORKFLOW
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_markTriggeredRevertsForNonExistentWorkflow() public {
@@ -946,7 +946,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // REVERT PATH: _cancel_workflow FOR NON-EXISTENT WORKFLOW
+    // REVERT PATH: _cancelWorkflow FOR NON-EXISTENT WORKFLOW
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_cancelWorkflowRevertsForNonExistentWorkflow() public {

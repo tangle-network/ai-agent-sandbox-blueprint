@@ -162,5 +162,7 @@ export function useSandboxHydration() {
     return () => {
       controller.abort();
     };
-  }, [getSandboxToken, getInstanceToken]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- This is an on-mount effect.
+    // The hydrated ref guarantees it runs at most once, so getToken deps are irrelevant.
+  }, []);
 }

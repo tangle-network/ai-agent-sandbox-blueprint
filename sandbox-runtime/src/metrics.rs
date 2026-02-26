@@ -309,6 +309,17 @@ pub fn metrics() -> &'static OnChainMetrics {
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+/// Predefined histogram bucket upper bounds (milliseconds).
+///
+/// Standard Prometheus-style buckets covering sub-millisecond to multi-second
+/// latencies. The final `u64::MAX` bucket captures everything above 5000ms.
+pub const HISTOGRAM_BUCKETS: [u64; 11] = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, u64::MAX];
+
+/// Human-readable labels for Prometheus `le` tag on each bucket.
+const BUCKET_LABELS: [&str; 11] = [
+    "1", "5", "10", "25", "50", "100", "250", "500", "1000", "5000", "+Inf",
+];
+
 /// Per-endpoint request count and cumulative duration.
 #[derive(Clone)]
 pub struct EndpointStats {
@@ -322,6 +333,8 @@ pub struct EndpointStats {
     pub min_duration_ms: u64,
     /// Maximum observed request duration in milliseconds.
     pub max_duration_ms: u64,
+    /// Histogram bucket counters aligned with [`HISTOGRAM_BUCKETS`].
+    pub histogram: [u64; 11],
 }
 
 impl Default for EndpointStats {
@@ -333,6 +346,7 @@ impl Default for EndpointStats {
             client_errors: 0,
             min_duration_ms: u64::MAX,
             max_duration_ms: 0,
+            histogram: [0; 11],
         }
     }
 }
@@ -369,6 +383,13 @@ impl HttpMetrics {
             entry.total_ms += duration_ms;
             entry.min_duration_ms = std::cmp::min(entry.min_duration_ms, duration_ms);
             entry.max_duration_ms = std::cmp::max(entry.max_duration_ms, duration_ms);
+            // Increment the first histogram bucket whose upper bound >= duration_ms.
+            for (i, &bound) in HISTOGRAM_BUCKETS.iter().enumerate() {
+                if duration_ms <= bound {
+                    entry.histogram[i] += 1;
+                    break;
+                }
+            }
             if is_server_error {
                 entry.errors += 1;
             }
@@ -393,13 +414,14 @@ impl HttpMetrics {
         if snap.is_empty() {
             return String::new();
         }
-        let mut out = String::with_capacity(1024);
+        let mut out = String::with_capacity(2048);
         let _ = writeln!(out, "# TYPE http_requests_total counter");
         let _ = writeln!(out, "# TYPE http_request_duration_ms_total counter");
         let _ = writeln!(out, "# TYPE http_request_errors_total counter");
         let _ = writeln!(out, "# TYPE http_request_client_errors_total counter");
         let _ = writeln!(out, "# TYPE http_request_duration_min_ms gauge");
         let _ = writeln!(out, "# TYPE http_request_duration_max_ms gauge");
+        let _ = writeln!(out, "# TYPE http_request_duration_ms histogram");
         for (path, stats) in &snap {
             let _ = writeln!(
                 out,
@@ -424,6 +446,25 @@ impl HttpMetrics {
                 out,
                 "http_request_duration_max_ms{{path=\"{path}\"}} {}",
                 stats.max_duration_ms
+            );
+            // Histogram buckets (cumulative, as per Prometheus convention).
+            let mut cumulative = 0u64;
+            for (i, label) in BUCKET_LABELS.iter().enumerate() {
+                cumulative += stats.histogram[i];
+                let _ = writeln!(
+                    out,
+                    "http_request_duration_ms_bucket{{le=\"{label}\",path=\"{path}\"}} {cumulative}",
+                );
+            }
+            let _ = writeln!(
+                out,
+                "http_request_duration_ms_sum{{path=\"{path}\"}} {}",
+                stats.total_ms
+            );
+            let _ = writeln!(
+                out,
+                "http_request_duration_ms_count{{path=\"{path}\"}} {}",
+                stats.count
             );
             if stats.errors > 0 {
                 let _ = writeln!(
