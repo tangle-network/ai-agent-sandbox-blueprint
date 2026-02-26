@@ -1144,7 +1144,11 @@ mod docker {
         assert!(m.active_sandboxes.load(Ordering::Relaxed) >= 1);
 
         stop_sidecar(&record).await.unwrap();
+        // Re-fetch record after stop so resume sees state=Stopped
+        let record = get_sandbox_by_id(&record.id).unwrap();
         resume_sidecar(&record).await.unwrap();
+        // Re-fetch after resume for accurate state in delete
+        let record = get_sandbox_by_id(&record.id).unwrap();
         delete_sidecar(&record, None).await.unwrap();
         rm(&record.id);
     }
