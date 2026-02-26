@@ -60,7 +60,16 @@ pub async fn sidecar_post_json(
     payload: Value,
 ) -> Result<Value> {
     let url = build_url(sidecar_url, path)?;
-    let headers = auth_headers(token)?;
+    let mut headers = auth_headers(token)?;
+
+    // Propagate the operator request ID to the sidecar so that sidecar logs
+    // can be correlated with the originating operator API request.
+    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
+        if let Ok(val) = HeaderValue::from_str(&rid) {
+            headers.insert("x-request-id", val);
+        }
+    }
+
     let (_, body) = send_json(Method::POST, url, Some(payload), headers).await?;
     serde_json::from_str(&body)
         .map_err(|err| SandboxError::Http(format!("Invalid sidecar response JSON: {err}")))

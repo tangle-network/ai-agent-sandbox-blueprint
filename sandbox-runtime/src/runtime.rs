@@ -400,6 +400,62 @@ where
     }
 }
 
+/// Generic retry helper for Docker operations.
+///
+/// Retries `f` up to `max_retries` times with exponential backoff starting at
+/// `backoff_ms`. On each failure (except the last), a warning is logged and the
+/// operation is retried after sleeping.
+async fn retry_docker<F, Fut, T>(
+    op_name: &str,
+    max_retries: u32,
+    backoff_ms: u64,
+    f: F,
+) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut last_err = None;
+    for attempt in 0..=max_retries {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                if attempt < max_retries {
+                    tracing::warn!(
+                        op = op_name,
+                        attempt = attempt + 1,
+                        error = %e,
+                        "Docker operation failed, retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms * (attempt as u64 + 1)))
+                        .await;
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
+/// Start a container with a single retry on transient failure.
+///
+/// Container starts occasionally fail due to Docker daemon contention or
+/// transient resource issues. A single retry with 500ms backoff handles the
+/// common case without adding excessive latency.
+async fn start_container_with_retry(container: &mut Container) -> Result<()> {
+    match docker_timeout("start_container", container.start(false)).await {
+        Ok(()) => Ok(()),
+        Err(first_err) => {
+            tracing::warn!(
+                error = %first_err,
+                "Container start failed, retrying after 500ms"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            docker_timeout("start_container_retry", container.start(false)).await
+        }
+    }
+}
+
 /// Best-effort removal of an orphaned container after a partial creation failure.
 async fn cleanup_orphaned_container(builder: &DockerBuilder, container_id: &str) {
     tracing::warn!(
@@ -683,12 +739,18 @@ pub fn require_sidecar_auth(sidecar_url: &str, token: &str) -> Result<SandboxRec
 
 /// Ensure the sidecar image is available locally. Pulls once on first call
 /// if `SIDECAR_PULL_IMAGE` is true. Subsequent calls are no-ops.
+///
+/// Image pulls are retried up to 2 times with 1-second backoff to handle
+/// transient registry errors.
 async fn ensure_image_pulled(builder: &DockerBuilder, image: &str) -> Result<()> {
     IMAGE_PULLED
         .get_or_try_init(|| async {
             let config = SidecarRuntimeConfig::load();
             if config.pull_image {
-                docker_timeout("pull_image", builder.pull_image(image, None)).await?;
+                retry_docker("pull_image", 2, 1000, || {
+                    docker_timeout("pull_image", builder.pull_image(image, None))
+                })
+                .await?;
             }
             Ok::<(), SandboxError>(())
         })
@@ -956,7 +1018,7 @@ async fn create_sidecar_docker(
         .env(env_vars)
         .config_override(override_config);
 
-    docker_timeout("start_container", container.start(false)).await?;
+    start_container_with_retry(&mut container).await?;
 
     let container_id = container
         .id()
@@ -1088,7 +1150,7 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
                 Container::from_id(builder.client(), &record.container_id),
             )
             .await?;
-            docker_timeout("start_container", container.start(false)).await?;
+            start_container_with_retry(&mut container).await?;
             Ok::<(), SandboxError>(())
         };
         match try_start.await {
@@ -1332,7 +1394,7 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .env(env_vars)
         .config_override(override_config);
 
-    docker_timeout("start_container", container.start(false)).await?;
+    start_container_with_retry(&mut container).await?;
 
     let container_id = container
         .id()
@@ -1411,7 +1473,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         .env(env_vars)
         .config_override(override_config);
 
-    docker_timeout("start_container", container.start(false)).await?;
+    start_container_with_retry(&mut container).await?;
 
     let container_id = container
         .id()

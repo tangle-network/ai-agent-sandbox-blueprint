@@ -8,6 +8,10 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
+/// Global lock for tests that access the shared INSTANCE_STORE singleton.
+/// Must be used by ALL test functions that call set/get/clear_instance_sandbox().
+static INSTANCE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn init() {
     INIT.call_once(|| {
         let dir = std::env::temp_dir().join(format!("tee-instance-bp-test-{}", std::process::id()));
@@ -84,6 +88,7 @@ mod instance_state_tests {
     #[test]
     fn instance_store_initializes_through_tee_lib() {
         init();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = instance_store();
         assert!(store.is_ok());
     }
@@ -91,7 +96,8 @@ mod instance_state_tests {
     #[test]
     fn get_instance_returns_none_when_empty() {
         init();
-        let _ = clear_instance_sandbox();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before assertion");
         let result = get_instance_sandbox().unwrap();
         assert!(result.is_none());
     }
@@ -99,7 +105,8 @@ mod instance_state_tests {
     #[test]
     fn require_instance_fails_when_not_provisioned() {
         init();
-        let _ = clear_instance_sandbox();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before assertion");
         let result = require_instance_sandbox();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not provisioned"));

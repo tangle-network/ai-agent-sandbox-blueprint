@@ -715,7 +715,7 @@ mod instance_state_tests {
     fn get_instance_sandbox_returns_none_when_empty() {
         init();
         let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = clear_instance_sandbox();
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before assertion");
         let result = get_instance_sandbox().unwrap();
         assert!(result.is_none());
     }
@@ -724,7 +724,7 @@ mod instance_state_tests {
     fn require_instance_sandbox_errors_when_empty() {
         init();
         let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = clear_instance_sandbox();
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before assertion");
         let result = require_instance_sandbox();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not provisioned"));
@@ -1414,7 +1414,7 @@ mod provision_guard_tests {
     fn already_provisioned_guard() {
         init();
         let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = clear_instance_sandbox();
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before test");
 
         // Set a sandbox record.
         let record = SandboxRecord {
@@ -1465,7 +1465,7 @@ mod provision_guard_tests {
     fn deprovision_clears_instance_store() {
         init();
         let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = clear_instance_sandbox();
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before test");
 
         let record = SandboxRecord {
             id: "to-deprovision".to_string(),
