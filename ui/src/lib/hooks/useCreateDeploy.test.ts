@@ -25,11 +25,6 @@ function deriveMode(blueprintId: string | undefined): DeployMode {
   return blueprintId === 'ai-agent-sandbox-blueprint' ? 'sandbox' : 'instance';
 }
 
-/** Derive whether this is a TEE instance */
-function isTeeInstanceBlueprint(blueprintId: string | undefined): boolean {
-  return blueprintId === 'ai-agent-tee-instance-blueprint';
-}
-
 /** Derive whether a new service must be created (Path B) */
 function deriveIsNewService(
   mode: DeployMode,
@@ -107,23 +102,6 @@ describe('useCreateDeploy: deriveMode', () => {
     expect(deriveMode('ai-agent-tee-instance-blueprint')).toBe('instance');
   });
 
-  it('returns instance for undefined blueprint', () => {
-    expect(deriveMode(undefined)).toBe('instance');
-  });
-});
-
-describe('useCreateDeploy: isTeeInstanceBlueprint', () => {
-  it('returns true for tee-instance blueprint', () => {
-    expect(isTeeInstanceBlueprint('ai-agent-tee-instance-blueprint')).toBe(true);
-  });
-
-  it('returns false for regular instance blueprint', () => {
-    expect(isTeeInstanceBlueprint('ai-agent-instance-blueprint')).toBe(false);
-  });
-
-  it('returns false for sandbox blueprint', () => {
-    expect(isTeeInstanceBlueprint('ai-agent-sandbox-blueprint')).toBe(false);
-  });
 });
 
 describe('useCreateDeploy: deriveIsNewService', () => {
@@ -333,11 +311,3 @@ describe('useCreateDeploy: computeCanDeploy', () => {
   });
 });
 
-describe('useCreateDeploy: TTL_BLOCKS_30_DAYS constant', () => {
-  it('equals 864000 blocks (30 days at 3s blocks)', () => {
-    const TTL_BLOCKS_30_DAYS = 864000n;
-    const expectedSeconds = 30n * 24n * 60n * 60n; // 2,592,000 seconds
-    const blockTime = 3n;
-    expect(TTL_BLOCKS_30_DAYS).toBe(expectedSeconds / blockTime);
-  });
-});

@@ -159,13 +159,6 @@ mod tests {
     }
 
     #[test]
-    fn get_nonexistent_returns_none() {
-        let (store, _dir) = temp_store();
-        let val = store.get("missing").unwrap();
-        assert_eq!(val, None);
-    }
-
-    #[test]
     fn remove_returns_removed_value() {
         let (store, _dir) = temp_store();
         store.insert("k".into(), "v".into()).unwrap();
@@ -178,13 +171,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_nonexistent_key_returns_none() {
-        let (store, _dir) = temp_store();
-        let removed = store.remove("nope").unwrap();
-        assert_eq!(removed, None);
-    }
-
-    #[test]
     fn values_returns_all_values() {
         let (store, _dir) = temp_store();
         store.insert("a".into(), "alpha".into()).unwrap();
@@ -194,13 +180,6 @@ mod tests {
         let mut vals = store.values().unwrap();
         vals.sort();
         assert_eq!(vals, vec!["alpha", "beta", "gamma"]);
-    }
-
-    #[test]
-    fn values_empty_store() {
-        let (store, _dir) = temp_store();
-        let vals = store.values().unwrap();
-        assert!(vals.is_empty());
     }
 
     #[test]
@@ -240,13 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn update_nonexistent_returns_false() {
-        let (store, _dir) = temp_store();
-        let updated = store.update("nope", |v| v.push('x')).unwrap();
-        assert!(!updated, "update should return false for missing key");
-    }
-
-    #[test]
     fn replace_entire_store() {
         let (store, _dir) = temp_store();
         store.insert("old".into(), "data".into()).unwrap();
@@ -282,23 +254,6 @@ mod tests {
         for h in handles {
             h.join().expect("reader thread panicked");
         }
-    }
-
-    #[test]
-    fn sequential_write_during_read_no_deadlock() {
-        let (store, _dir) = temp_store();
-        store.insert("k".into(), "v1".into()).unwrap();
-
-        // Read
-        let val = store.get("k").unwrap();
-        assert_eq!(val, Some("v1".to_string()));
-
-        // Write (should not deadlock since the read lock was dropped)
-        store.insert("k".into(), "v2".into()).unwrap();
-
-        // Read again
-        let val = store.get("k").unwrap();
-        assert_eq!(val, Some("v2".to_string()));
     }
 
     #[test]

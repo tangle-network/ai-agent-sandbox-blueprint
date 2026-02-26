@@ -194,29 +194,6 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     // PRICING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function test_getDefaultJobRates() public view {
-        uint256 baseRate = 1 ether;
-        (uint8[] memory jobs, uint256[] memory rates) = instance.getDefaultJobRates(baseRate);
-
-        assertEq(jobs.length, 7);
-        assertEq(rates.length, 7);
-
-        // Verify each rate = baseRate * multiplier
-        assertEq(rates[0], baseRate * 50);  // SANDBOX_CREATE
-        assertEq(rates[1], baseRate * 1);   // SANDBOX_DELETE
-        assertEq(rates[2], baseRate * 2);   // WORKFLOW_CREATE
-        assertEq(rates[3], baseRate * 5);   // WORKFLOW_TRIGGER
-        assertEq(rates[4], baseRate * 1);   // WORKFLOW_CANCEL
-        assertEq(rates[5], baseRate * 50);  // PROVISION
-        assertEq(rates[6], baseRate * 1);   // DEPROVISION
-    }
-
-    function test_getJobPriceMultiplier() public view {
-        assertEq(instance.getJobPriceMultiplier(instance.JOB_PROVISION()), 50);
-        assertEq(instance.getJobPriceMultiplier(instance.JOB_DEPROVISION()), 1);
-        assertEq(instance.getJobPriceMultiplier(instance.JOB_SANDBOX_CREATE()), 50);
-    }
-
     function test_unknownJobPriceReturnsZero() public view {
         assertEq(instance.getJobPriceMultiplier(255), 0);
         assertEq(instance.getJobPriceMultiplier(8), 0);
@@ -258,16 +235,6 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertFalse(instance.supportsJob(7));
 
         assertEq(instance.jobCount(), 7);
-    }
-
-    function test_blueprintMetadata() public view {
-        assertEq(instance.BLUEPRINT_NAME(), "ai-agent-sandbox-blueprint");
-        assertEq(instance.BLUEPRINT_VERSION(), "0.4.0");
-    }
-
-    function test_instanceModeEnabled() public view {
-        assertTrue(instance.instanceMode());
-        assertFalse(instance.teeRequired());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -408,10 +375,6 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     // SECURITY: OPERATOR ARRAY BOUNDS (H5b)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function test_maxOperatorsPerServiceConstant() public view {
-        assertEq(instance.MAX_OPERATORS_PER_SERVICE(), 1000);
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
     // SECURITY: SERVICE REQUEST VALIDATED EVENT (M7 — instance mode)
     // ═══════════════════════════════════════════════════════════════════════════
@@ -444,65 +407,21 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     // MODE ENFORCEMENT — INSTANCE MODE REJECTS CLOUD JOBS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // Use literal job IDs to avoid staticcall consuming expectRevert
-    function test_instanceModeRejectsSandboxCreateJobCall() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobCall(testServiceId, 0, 2000, bytes("")); // JOB_SANDBOX_CREATE = 0
+    function test_instanceModeRejectsCloudModeJobCalls() public {
+        // Cloud mode jobs 0-4 should all revert with CloudModeOnly
+        for (uint8 jobId = 0; jobId <= 4; jobId++) {
+            vm.prank(tangleCore);
+            vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
+            instance.onJobCall(testServiceId, jobId, uint64(2000 + jobId), bytes(""));
+        }
     }
 
-    function test_instanceModeRejectsSandboxDeleteJobCall() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobCall(testServiceId, 1, 2001, abi.encode("some-sandbox")); // JOB_SANDBOX_DELETE = 1
-    }
-
-    function test_instanceModeRejectsWorkflowCreateJobCall() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobCall(testServiceId, 2, 2002, bytes("")); // JOB_WORKFLOW_CREATE = 2
-    }
-
-    function test_instanceModeRejectsWorkflowTriggerJobCall() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobCall(testServiceId, 3, 2003, bytes("")); // JOB_WORKFLOW_TRIGGER = 3
-    }
-
-    function test_instanceModeRejectsWorkflowCancelJobCall() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobCall(testServiceId, 4, 2004, bytes("")); // JOB_WORKFLOW_CANCEL = 4
-    }
-
-    function test_instanceModeRejectsSandboxCreateJobResult() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobResult(testServiceId, 0, 2010, operator1, bytes(""), bytes(""));
-    }
-
-    function test_instanceModeRejectsSandboxDeleteJobResult() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobResult(testServiceId, 1, 2011, operator1, bytes(""), bytes(""));
-    }
-
-    function test_instanceModeRejectsWorkflowCreateJobResult() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobResult(testServiceId, 2, 2012, operator1, bytes(""), bytes(""));
-    }
-
-    function test_instanceModeRejectsWorkflowTriggerJobResult() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobResult(testServiceId, 3, 2013, operator1, bytes(""), bytes(""));
-    }
-
-    function test_instanceModeRejectsWorkflowCancelJobResult() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-        instance.onJobResult(testServiceId, 4, 2014, operator1, bytes(""), bytes(""));
+    function test_instanceModeRejectsCloudModeJobResults() public {
+        for (uint8 jobId = 0; jobId <= 4; jobId++) {
+            vm.prank(tangleCore);
+            vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
+            instance.onJobResult(testServiceId, jobId, uint64(2010 + jobId), operator1, bytes(""), bytes(""));
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

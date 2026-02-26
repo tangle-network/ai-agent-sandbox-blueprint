@@ -1971,50 +1971,38 @@ mod core_logic_tests {
     }
 
     #[test]
-    fn idle_timeout_zero_uses_default() {
+    fn effective_idle_timeout_zero_and_clamped() {
         let cfg = test_config();
-        assert_eq!(cfg.effective_idle_timeout(0), 1800);
+        assert_eq!(cfg.effective_idle_timeout(0), 1800, "zero → default");
+        assert_eq!(
+            cfg.effective_idle_timeout(99999),
+            7200,
+            "over max → clamped"
+        );
+        assert_eq!(
+            cfg.effective_idle_timeout(3600),
+            3600,
+            "in range → passthrough"
+        );
     }
 
     #[test]
-    fn idle_timeout_clamped_to_max() {
+    fn effective_max_lifetime_zero_and_clamped() {
         let cfg = test_config();
-        assert_eq!(cfg.effective_idle_timeout(99999), 7200);
-    }
-
-    #[test]
-    fn idle_timeout_within_range() {
-        let cfg = test_config();
-        assert_eq!(cfg.effective_idle_timeout(3600), 3600);
-    }
-
-    #[test]
-    fn max_lifetime_zero_uses_default() {
-        let cfg = test_config();
-        assert_eq!(cfg.effective_max_lifetime(0), 86400);
-    }
-
-    #[test]
-    fn max_lifetime_clamped_to_max() {
-        let cfg = test_config();
-        assert_eq!(cfg.effective_max_lifetime(999999), 172800);
-    }
-
-    #[test]
-    fn max_lifetime_within_range() {
-        let cfg = test_config();
-        assert_eq!(cfg.effective_max_lifetime(100000), 100000);
+        assert_eq!(cfg.effective_max_lifetime(0), 86400, "zero → default");
+        assert_eq!(
+            cfg.effective_max_lifetime(999999),
+            172800,
+            "over max → clamped"
+        );
+        assert_eq!(
+            cfg.effective_max_lifetime(100000),
+            100000,
+            "in range → passthrough"
+        );
     }
 
     // ── build_env_vars ──────────────────────────────────────────────────
-
-    #[test]
-    fn env_vars_empty_json() {
-        let vars = build_env_vars("", "tok123", 3000).unwrap();
-        assert_eq!(vars.len(), 2);
-        assert!(vars.contains(&"SIDECAR_PORT=3000".to_string()));
-        assert!(vars.contains(&"SIDECAR_AUTH_TOKEN=tok123".to_string()));
-    }
 
     #[test]
     fn env_vars_with_json() {

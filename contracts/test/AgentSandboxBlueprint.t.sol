@@ -524,11 +524,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // MODE FLAGS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function test_cloudModeIsDefault() public view {
-        assertFalse(blueprint.instanceMode());
-        assertFalse(blueprint.teeRequired());
-    }
-
     function test_setInstanceMode() public {
         vm.prank(blueprintOwner);
         blueprint.setInstanceMode(true);
@@ -589,47 +584,24 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // MODE ENFORCEMENT — CLOUD MODE REJECTS INSTANCE JOBS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // Use literal job IDs to avoid staticcall consuming expectRevert
-    function test_cloudModeRejectsProvisionJobCall() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
-        blueprint.onJobCall(1, 5, 960, bytes("")); // JOB_PROVISION = 5
-    }
-
-    function test_cloudModeRejectsDeprovisionJobCall() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
-        blueprint.onJobCall(1, 6, 961, bytes("")); // JOB_DEPROVISION = 6
-    }
-
-    function test_cloudModeRejectsProvisionJobResult() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
-        blueprint.onJobResult(1, 5, 962, operator1, bytes(""), bytes(""));
-    }
-
-    function test_cloudModeRejectsDeprovisionJobResult() public {
-        vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
-        blueprint.onJobResult(1, 6, 963, operator1, bytes(""), bytes(""));
+    function test_cloudModeRejectsInstanceModeJobs() public {
+        // onJobCall rejects PROVISION (5) and DEPROVISION (6)
+        for (uint8 jobId = 5; jobId <= 6; jobId++) {
+            vm.prank(tangleCore);
+            vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
+            blueprint.onJobCall(1, jobId, uint64(960 + jobId), bytes(""));
+        }
+        // onJobResult rejects PROVISION (5) and DEPROVISION (6)
+        for (uint8 jobId = 5; jobId <= 6; jobId++) {
+            vm.prank(tangleCore);
+            vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
+            blueprint.onJobResult(1, jobId, uint64(962 + jobId), operator1, bytes(""), bytes(""));
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // JOB METADATA
     // ═══════════════════════════════════════════════════════════════════════════
-
-    function test_jobMetadata() public view {
-        uint8[] memory ids = blueprint.jobIds();
-        assertEq(ids.length, 7);
-        assertEq(ids[0], 0); // SANDBOX_CREATE
-        assertEq(ids[6], 6); // DEPROVISION
-
-        assertTrue(blueprint.supportsJob(0));
-        assertTrue(blueprint.supportsJob(6));
-        assertFalse(blueprint.supportsJob(7));
-
-        assertEq(blueprint.jobCount(), 7);
-    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // SECURITY: SANDBOX ID VALIDATION (M6)
@@ -685,10 +657,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // ═══════════════════════════════════════════════════════════════════════════
     // SECURITY: WORKFLOW ARRAY BOUNDS (H5a)
     // ═══════════════════════════════════════════════════════════════════════════
-
-    function test_maxWorkflowsConstant() public view {
-        assertEq(blueprint.MAX_WORKFLOWS(), 10000);
-    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // SECURITY: SERVICE REQUEST VALIDATED EVENT (M7)

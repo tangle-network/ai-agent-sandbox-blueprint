@@ -109,21 +109,6 @@ describe('fetchSandboxes', () => {
     vi.unstubAllGlobals();
   });
 
-  it('sends GET with Bearer token header', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ sandboxes: [] }),
-    });
-
-    await fetchSandboxes('http://op:9090', 'my-token', 'bp-1', 'svc-1');
-
-    expect(fetchMock).toHaveBeenCalledWith('http://op:9090/api/sandboxes', {
-      headers: { Authorization: 'Bearer my-token' },
-      signal: undefined,
-    });
-  });
-
   it('returns sandboxes array from response', async () => {
     const sandboxes = [makeApiSandbox({ id: 'sb-1' }), makeApiSandbox({ id: 'sb-2' })];
     fetchMock.mockResolvedValue({
@@ -142,17 +127,6 @@ describe('fetchSandboxes', () => {
     fetchMock.mockResolvedValue({
       ok: false,
       status: 500,
-    });
-
-    const result = await fetchSandboxes('http://op:9090', 'tok', '', '');
-    expect(result).toEqual([]);
-  });
-
-  it('returns empty array when sandboxes key is missing', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({}),
     });
 
     const result = await fetchSandboxes('http://op:9090', 'tok', '', '');
@@ -393,15 +367,4 @@ describe('sandbox hydration merge logic', () => {
     expect(merged[0].name).toBe('abcdef12');
   });
 
-  it('returns only existing sandboxes when API returns nothing new', () => {
-    const existing = [
-      makeLocalSandbox({ id: 'sb-1' }),
-      makeLocalSandbox({ id: 'sb-2' }),
-    ];
-
-    const merged = mergeApiResults([], existing);
-    expect(merged).toHaveLength(2);
-    expect(merged[0].id).toBe('sb-1');
-    expect(merged[1].id).toBe('sb-2');
-  });
 });

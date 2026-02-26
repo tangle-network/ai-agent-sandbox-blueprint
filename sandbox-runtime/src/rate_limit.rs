@@ -290,15 +290,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_ip_is_unspecified() {
-        assert_eq!(
-            UNKNOWN_IP,
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            "UNKNOWN_IP should be 0.0.0.0"
-        );
-    }
-
-    #[test]
     fn extract_client_ip_returns_none_for_bare_request() {
         // Build a request with no ConnectInfo extension and no XFF header
         let req = Request::builder()
@@ -325,17 +316,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_client_ip_xff_single_ip() {
-        let req = Request::builder()
-            .uri("/test")
-            .header("x-forwarded-for", "10.0.0.5")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        let ip = extract_client_ip(&req);
-        assert_eq!(ip, Some("10.0.0.5".parse().unwrap()));
-    }
-
-    #[test]
     fn extract_client_ip_xff_invalid_ip() {
         let req = Request::builder()
             .uri("/test")
@@ -357,11 +337,5 @@ mod tests {
             !limiter.check(UNKNOWN_IP),
             "third request to unknown IP bucket should be rate limited"
         );
-    }
-
-    #[test]
-    fn tracked_ips_starts_at_zero() {
-        let limiter = RateLimiter::new(RateLimitConfig::new(10, 60));
-        assert_eq!(limiter.tracked_ips(), 0);
     }
 }

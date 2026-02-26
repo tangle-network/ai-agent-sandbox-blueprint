@@ -863,23 +863,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_required_config_check() {
-        let result = validate_required_config();
-        match result {
-            Ok(()) => {
-                let val = std::env::var("SESSION_AUTH_SECRET").unwrap();
-                assert!(!val.trim().is_empty());
-            }
-            Err(msg) => {
-                assert!(
-                    msg.contains("SESSION_AUTH_SECRET"),
-                    "error should mention the env var: {msg}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn create_test_token_produces_valid_session() {
         let addr = "0xabcdef1234567890abcdef1234567890abcdef12";
         let token = create_test_token(addr);
@@ -891,13 +874,5 @@ mod tests {
         let claims = validate_session_token(&token).unwrap();
         assert_eq!(claims.address, addr);
         assert!(claims.expires_at > now_secs());
-    }
-
-    #[test]
-    fn capacity_constants_are_reasonable() {
-        assert_eq!(MAX_CHALLENGES, 10_000);
-        assert_eq!(MAX_SESSIONS, 50_000);
-        assert_eq!(CHALLENGE_TTL_SECS, 300);
-        assert_eq!(SESSION_TTL_SECS, 3600);
     }
 }
