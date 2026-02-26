@@ -737,20 +737,16 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     function _mark_triggered(uint64 workflowId) internal {
+        require(workflow_index[workflowId] != 0, "Workflow does not exist");
         WorkflowConfig storage config = workflows[workflowId];
-        if (workflow_index[workflowId] == 0) {
-            return;
-        }
         config.last_triggered_at = uint64(block.timestamp);
         config.updated_at = uint64(block.timestamp);
         emit WorkflowTriggered(workflowId, uint64(block.timestamp));
     }
 
     function _cancel_workflow(uint64 workflowId) internal {
+        require(workflow_index[workflowId] != 0, "Workflow does not exist");
         WorkflowConfig storage config = workflows[workflowId];
-        if (workflow_index[workflowId] == 0) {
-            return;
-        }
         config.active = false;
         config.updated_at = uint64(block.timestamp);
         emit WorkflowCanceled(workflowId, uint64(block.timestamp));

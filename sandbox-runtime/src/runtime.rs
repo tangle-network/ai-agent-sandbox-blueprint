@@ -592,7 +592,12 @@ pub fn get_sandbox_by_url_opt(sidecar_url: &str) -> Option<SandboxRecord> {
 /// Validate that `caller` owns the sandbox, returning the record on success.
 pub fn require_sandbox_owner(sandbox_id: &str, caller: &str) -> Result<SandboxRecord> {
     let record = get_sandbox_by_id(sandbox_id)?;
-    if record.owner.is_empty() || record.owner.eq_ignore_ascii_case(caller) {
+    if record.owner.is_empty() {
+        return Err(SandboxError::Auth(format!(
+            "Sandbox '{sandbox_id}' has no owner configured"
+        )));
+    }
+    if record.owner.eq_ignore_ascii_case(caller) {
         Ok(record)
     } else {
         Err(SandboxError::Auth(format!(
@@ -608,7 +613,10 @@ pub fn require_sidecar_owner_auth(
     caller: &str,
 ) -> Result<SandboxRecord> {
     let record = require_sidecar_auth(sidecar_url, token)?;
-    if record.owner.is_empty() || record.owner.eq_ignore_ascii_case(caller) {
+    if record.owner.is_empty() {
+        return Err(SandboxError::Auth("Sandbox has no owner configured".into()));
+    }
+    if record.owner.eq_ignore_ascii_case(caller) {
         Ok(record)
     } else {
         Err(SandboxError::Auth(format!(
@@ -623,7 +631,10 @@ pub fn require_sidecar_owner_auth(
 /// the sidecar token is looked up from the stored `SandboxRecord`.
 pub fn require_sandbox_owner_by_url(sidecar_url: &str, caller: &str) -> Result<SandboxRecord> {
     let record = get_sandbox_by_url(sidecar_url)?;
-    if record.owner.is_empty() || record.owner.eq_ignore_ascii_case(caller) {
+    if record.owner.is_empty() {
+        return Err(SandboxError::Auth("Sandbox has no owner configured".into()));
+    }
+    if record.owner.eq_ignore_ascii_case(caller) {
         Ok(record)
     } else {
         Err(SandboxError::Auth(format!(

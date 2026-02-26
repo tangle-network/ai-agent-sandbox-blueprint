@@ -296,7 +296,13 @@ fn resolve_instance(caller: &str) -> Result<SandboxRecord, (StatusCode, Json<Api
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Instance not provisioned"))?;
 
-    if !record.owner.is_empty() && !record.owner.eq_ignore_ascii_case(caller) {
+    if record.owner.is_empty() {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "Instance has no owner configured",
+        ));
+    }
+    if !record.owner.eq_ignore_ascii_case(caller) {
         return Err(api_error(
             StatusCode::FORBIDDEN,
             "Not authorized for this instance",
