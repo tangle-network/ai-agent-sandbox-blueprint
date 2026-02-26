@@ -25,6 +25,7 @@ export function useOperatorAuth(apiUrl?: string) {
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sessionRef = useRef<OperatorSession | null>(null);
+  const inflightRef = useRef<Promise<string | null> | null>(null);
 
   const isValid = useCallback(() => {
     if (!sessionRef.current) return false;
@@ -34,46 +35,57 @@ export function useOperatorAuth(apiUrl?: string) {
 
   const getToken = useCallback(async (forceRefresh = false): Promise<string | null> => {
     if (!forceRefresh && isValid()) return sessionRef.current!.token;
+    // Deduplicate concurrent calls
+    if (inflightRef.current && !forceRefresh) return inflightRef.current;
     if (forceRefresh) sessionRef.current = null;
     if (!address) return null;
 
-    setIsAuthenticating(true);
-    setError(null);
+    const promise = (async () => {
+      setIsAuthenticating(true);
+      setError(null);
 
+      try {
+        // Step 1: Get challenge
+        const challengeRes = await fetch(`${baseUrl}/api/auth/challenge`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address }),
+        });
+        if (!challengeRes.ok) {
+          throw new Error(`Challenge failed: ${await challengeRes.text()}`);
+        }
+        const { message, nonce } = await challengeRes.json();
+
+        // Step 2: Sign with wallet
+        const signature = await signMessageAsync({ message });
+
+        // Step 3: Create session
+        const sessionRes = await fetch(`${baseUrl}/api/auth/session`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address, signature, challenge: message, nonce }),
+        });
+        if (!sessionRes.ok) {
+          throw new Error(`Session creation failed: ${await sessionRes.text()}`);
+        }
+        const { token, expires_at } = await sessionRes.json();
+
+        sessionRef.current = { token, expiresAt: expires_at };
+        return token;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Auth failed';
+        setError(msg);
+        return null;
+      } finally {
+        setIsAuthenticating(false);
+      }
+    })();
+
+    inflightRef.current = promise;
     try {
-      // Step 1: Get challenge
-      const challengeRes = await fetch(`${baseUrl}/api/auth/challenge`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address }),
-      });
-      if (!challengeRes.ok) {
-        throw new Error(`Challenge failed: ${await challengeRes.text()}`);
-      }
-      const { message, nonce } = await challengeRes.json();
-
-      // Step 2: Sign with wallet
-      const signature = await signMessageAsync({ message });
-
-      // Step 3: Create session
-      const sessionRes = await fetch(`${baseUrl}/api/auth/session`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address, signature, challenge: message, nonce }),
-      });
-      if (!sessionRes.ok) {
-        throw new Error(`Session creation failed: ${await sessionRes.text()}`);
-      }
-      const { token, expires_at } = await sessionRes.json();
-
-      sessionRef.current = { token, expiresAt: expires_at };
-      return token;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Auth failed';
-      setError(msg);
-      return null;
+      return await promise;
     } finally {
-      setIsAuthenticating(false);
+      inflightRef.current = null;
     }
   }, [address, baseUrl, isValid, signMessageAsync]);
 

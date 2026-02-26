@@ -547,7 +547,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertEq(blueprint.totalActiveSandboxes(), 1);
 
         vm.prank(blueprintOwner);
-        vm.expectRevert("Cannot change mode with active sandboxes");
+        vm.expectRevert("Cannot change mode with active resources");
         blueprint.setInstanceMode(true);
     }
 
@@ -557,7 +557,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertEq(blueprint.totalActiveSandboxes(), 1);
 
         vm.prank(blueprintOwner);
-        vm.expectRevert("Cannot change TEE requirement with active sandboxes");
+        vm.expectRevert("Cannot change mode with active resources");
         blueprint.setTeeRequired(true);
     }
 
@@ -720,6 +720,34 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         vm.prank(tangleCore);
         blueprint.onRequest(2, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UNKNOWN JOB ID REVERTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_unknownJobIdRevertsOnJobCall() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Unknown job ID");
+        blueprint.onJobCall(1, 7, 970, bytes(""));
+    }
+
+    function test_unknownJobIdRevertsOnJobCallHighId() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Unknown job ID");
+        blueprint.onJobCall(1, 255, 971, bytes(""));
+    }
+
+    function test_unknownJobIdRevertsOnJobResult() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Unknown job ID");
+        blueprint.onJobResult(1, 7, 972, operator1, bytes(""), bytes(""));
+    }
+
+    function test_unknownJobIdRevertsOnJobResultHighId() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Unknown job ID");
+        blueprint.onJobResult(1, 255, 973, operator1, bytes(""), bytes(""));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

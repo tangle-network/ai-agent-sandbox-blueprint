@@ -505,6 +505,101 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // UNKNOWN JOB ID REVERTS (INSTANCE MODE)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_unknownJobIdRevertsOnJobCallInstanceMode() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Unknown job ID");
+        instance.onJobCall(testServiceId, 7, 3000, bytes(""));
+    }
+
+    function test_unknownJobIdRevertsOnJobResultInstanceMode() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Unknown job ID");
+        instance.onJobResult(testServiceId, 7, 3001, operator1, bytes(""), bytes(""));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // totalProvisionedOperators COUNTER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_totalProvisionedOperatorsIncrementsOnProvision() public {
+        assertEq(instance.totalProvisionedOperators(), 0);
+
+        _provisionOperator(operator1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        _provisionOperator(operator2);
+        assertEq(instance.totalProvisionedOperators(), 2);
+    }
+
+    function test_totalProvisionedOperatorsDecrementsOnDeprovision() public {
+        _provisionOperator(operator1);
+        _provisionOperator(operator2);
+        assertEq(instance.totalProvisionedOperators(), 2);
+
+        // Deprovision operator1
+        uint64 callId = 3010;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        // Deprovision operator2
+        callId = 3011;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator2, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertEq(instance.totalProvisionedOperators(), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // setInstanceMode / setTeeRequired GUARD WITH PROVISIONED OPERATORS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_setInstanceModeRevertsWithProvisionedOperators() public {
+        _provisionOperator(operator1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        vm.prank(blueprintOwner);
+        vm.expectRevert("Cannot change mode with active resources");
+        instance.setInstanceMode(false);
+    }
+
+    function test_setTeeRequiredRevertsWithProvisionedOperators() public {
+        _provisionOperator(operator1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        vm.prank(blueprintOwner);
+        vm.expectRevert("Cannot change mode with active resources");
+        instance.setTeeRequired(true);
+    }
+
+    function test_setInstanceModeSucceedsAfterFullDeprovision() public {
+        _provisionOperator(operator1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        // Deprovision
+        uint64 callId = 3020;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertEq(instance.totalProvisionedOperators(), 0);
+
+        // Now mode change should succeed
+        vm.prank(blueprintOwner);
+        instance.setInstanceMode(false);
+        assertFalse(instance.instanceMode());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // SECURITY: DOUBLE INITIALIZATION WITH DIFFERENT OWNERS (P5)
     // ═══════════════════════════════════════════════════════════════════════════
 

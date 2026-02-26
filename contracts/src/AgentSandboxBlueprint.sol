@@ -136,6 +136,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     mapping(uint64 => address[]) internal _serviceOperators;
     mapping(uint64 => mapping(address => uint256)) internal _operatorIndex;
     mapping(uint64 => mapping(address => string)) public operatorSidecarUrl;
+    uint256 public totalProvisionedOperators;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // SERVICE CONFIG STORAGE (instance mode)
@@ -338,6 +339,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             require(!instanceMode, "Not available in instance mode");
         } else if (job == JOB_PROVISION || job == JOB_DEPROVISION) {
             require(instanceMode, "Not available in cloud mode");
+        } else {
+            revert("Unknown job ID");
         }
     }
 
@@ -377,6 +380,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         } else if (job == JOB_DEPROVISION) {
             require(instanceMode, "Not available in cloud mode");
             _handleDeprovisionResult(serviceId, operator);
+        } else {
+            revert("Unknown job ID");
         }
     }
 
@@ -397,12 +402,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     function setInstanceMode(bool _mode) external onlyBlueprintOwner {
-        require(totalActiveSandboxes == 0, "Cannot change mode with active sandboxes");
+        require(totalActiveSandboxes == 0 && totalProvisionedOperators == 0, "Cannot change mode with active resources");
         instanceMode = _mode;
     }
 
     function setTeeRequired(bool _required) external onlyBlueprintOwner {
-        require(totalActiveSandboxes == 0, "Cannot change TEE requirement with active sandboxes");
+        require(totalActiveSandboxes == 0 && totalProvisionedOperators == 0, "Cannot change mode with active resources");
         teeRequired = _required;
     }
 
@@ -661,6 +666,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
         operatorProvisioned[serviceId][operator] = true;
         instanceOperatorCount[serviceId]++;
+        totalProvisionedOperators++;
 
         operatorSidecarUrl[serviceId][operator] = sidecarUrl;
         require(_serviceOperators[serviceId].length < MAX_OPERATORS_PER_SERVICE, "Max operators per service reached");
@@ -685,6 +691,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
         operatorProvisioned[serviceId][operator] = false;
         instanceOperatorCount[serviceId]--;
+        totalProvisionedOperators--;
 
         // Swap-and-pop to remove operator from enumerable list
         uint256 index = _operatorIndex[serviceId][operator];

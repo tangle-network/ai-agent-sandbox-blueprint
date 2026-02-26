@@ -49,7 +49,10 @@ pub async fn wipe_secrets(
 /// Validate that the caller (identified by session address) owns the sandbox.
 pub fn validate_secret_access(sandbox_id: &str, caller_address: &str) -> Result<SandboxRecord> {
     let record = get_sandbox_by_id(sandbox_id)?;
-    if record.owner.is_empty() || record.owner.eq_ignore_ascii_case(caller_address) {
+    if record.owner.is_empty() {
+        return Err(SandboxError::Auth("Sandbox has no owner configured".into()));
+    }
+    if record.owner.eq_ignore_ascii_case(caller_address) {
         Ok(record)
     } else {
         Err(SandboxError::Auth(format!(

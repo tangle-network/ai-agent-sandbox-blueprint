@@ -350,11 +350,19 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         });
 
         // Spawn session GC background task (expired challenges + sessions cleanup)
+        let mut gc_session_shutdown = api_shutdown_tx.subscribe();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
             loop {
-                interval.tick().await;
-                sandbox_runtime::session_auth::gc_sessions();
+                tokio::select! {
+                    _ = interval.tick() => {
+                        sandbox_runtime::session_auth::gc_sessions();
+                    }
+                    _ = gc_session_shutdown.changed() => {
+                        info!("Session GC shutting down");
+                        break;
+                    }
+                }
             }
         });
     }

@@ -1,5 +1,6 @@
 import { useParams, Link } from 'react-router';
 import { lazy, Suspense, useState, useCallback, useMemo } from 'react';
+import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '~/components/motion/AnimatedPage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card';
@@ -147,6 +148,7 @@ export default function SandboxDetail() {
       updateSandboxStatus(decodedId, 'stopped');
     } catch (e) {
       console.error('Stop failed:', e);
+      toast.error('Failed to stop sandbox');
     }
   }, [decodedId, operatorApiCall]);
 
@@ -156,10 +158,12 @@ export default function SandboxDetail() {
       updateSandboxStatus(decodedId, 'running');
     } catch (e) {
       console.error('Resume failed:', e);
+      toast.error('Failed to resume sandbox');
     }
   }, [decodedId, operatorApiCall]);
 
   const handleDelete = useCallback(async () => {
+    if (!window.confirm('Are you sure you want to permanently delete this sandbox? This action is irreversible and will submit an on-chain transaction.')) return;
     const hash = await submitJob({
       serviceId,
       jobId: JOB_IDS.SANDBOX_DELETE,
@@ -179,6 +183,7 @@ export default function SandboxDetail() {
       });
     } catch (e) {
       console.error('Snapshot failed:', e);
+      toast.error('Failed to snapshot sandbox');
     }
   }, [operatorApiCall]);
 
@@ -244,6 +249,7 @@ export default function SandboxDetail() {
   }, [secretsJson, operatorApiCall]);
 
   const handleWipeSecrets = useCallback(async () => {
+    if (!window.confirm('Are you sure you want to wipe all secrets? This will restart the sandbox without any injected secrets.')) return;
     setSecretsBusy(true);
     setSecretsError(null);
     setSecretsSuccess(null);
