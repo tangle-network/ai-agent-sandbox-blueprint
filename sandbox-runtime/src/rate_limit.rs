@@ -148,19 +148,45 @@ pub fn auth_limiter() -> &'static RateLimiter {
 // ---------------------------------------------------------------------------
 
 /// Extract client IP from ConnectInfo or x-forwarded-for header.
+///
+/// Security: XFF is only trusted when ConnectInfo shows the connection came
+/// from a loopback or private IP (i.e., through a reverse proxy like BPM).
+/// Direct connections from public IPs use the socket address directly,
+/// preventing XFF spoofing from bypassing rate limits.
 fn extract_client_ip(req: &Request) -> Option<IpAddr> {
-    // Try ConnectInfo first (direct connections)
-    req.extensions()
+    let connect_ip = req
+        .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip())
-        .or_else(|| {
-            // Fall back to x-forwarded-for (behind reverse proxy)
+        .map(|ci| ci.0.ip());
+
+    match connect_ip {
+        Some(ip) if is_trusted_proxy(ip) => {
+            // Connection from loopback/private IP — trust XFF header
             req.headers()
                 .get("x-forwarded-for")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.split(',').next())
                 .and_then(|s| s.trim().parse().ok())
-        })
+                .or(Some(ip))
+        }
+        Some(ip) => Some(ip), // Direct connection — use socket IP, ignore XFF
+        None => {
+            // No ConnectInfo (e.g., test/oneshot) — XFF as last resort
+            req.headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .and_then(|s| s.trim().parse().ok())
+        }
+    }
+}
+
+/// Returns true if the IP is a loopback or private address (trusted proxy).
+fn is_trusted_proxy(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
 }
 
 /// Sentinel IP used for rate limiting when the client IP cannot be determined.

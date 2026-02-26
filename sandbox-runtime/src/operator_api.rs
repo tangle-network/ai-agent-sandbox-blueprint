@@ -191,6 +191,30 @@ async fn create_session(Json(req): Json<SessionRequest>) -> impl IntoResponse {
     }
 }
 
+/// Revoke the current session token.
+async fn revoke_session(headers: HeaderMap) -> impl IntoResponse {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(session_auth::extract_bearer_token);
+
+    match token {
+        Some(t) => {
+            let revoked = session_auth::revoke_session(t);
+            if revoked {
+                (StatusCode::OK, Json(json!({"revoked": true}))).into_response()
+            } else {
+                (
+                    StatusCode::OK,
+                    Json(json!({"revoked": false, "message": "Token not found in session store"})),
+                )
+                    .into_response()
+            }
+        }
+        None => api_error(StatusCode::BAD_REQUEST, "Missing Authorization header").into_response(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Secret provisioning endpoints (2-phase)
 // ---------------------------------------------------------------------------
@@ -1151,7 +1175,10 @@ pub fn operator_api_router_with_tee(
     // Auth endpoints: 10 req/min per IP (stricter to prevent brute-force)
     let auth_routes = Router::new()
         .route("/api/auth/challenge", post(create_challenge))
-        .route("/api/auth/session", post(create_session))
+        .route(
+            "/api/auth/session",
+            post(create_session).delete(revoke_session),
+        )
         .layer(middleware::from_fn(rate_limit::auth_rate_limit));
 
     // Health, metrics & provision progress: rate-limited but unauthenticated

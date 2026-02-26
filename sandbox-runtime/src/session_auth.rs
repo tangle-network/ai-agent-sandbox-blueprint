@@ -358,6 +358,25 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
     })
 }
 
+/// Revoke a specific session token, removing it from the in-memory store.
+/// Returns `true` if the token was found and removed.
+pub fn revoke_session(token: &str) -> bool {
+    SESSIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(token)
+        .is_some()
+}
+
+/// Revoke all sessions for a specific address.
+/// Returns the number of sessions revoked.
+pub fn revoke_sessions_for_address(address: &str) -> usize {
+    let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let before = sessions.len();
+    sessions.retain(|_, s| !s.address.eq_ignore_ascii_case(address));
+    before - sessions.len()
+}
+
 /// Remove expired challenges and sessions.
 pub fn gc_sessions() {
     let now = now_secs();
