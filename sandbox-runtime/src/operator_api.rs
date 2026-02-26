@@ -131,7 +131,12 @@ struct SessionRequest {
 }
 
 async fn create_challenge() -> impl IntoResponse {
-    let challenge = session_auth::create_challenge();
+    let challenge = match session_auth::create_challenge() {
+        Ok(c) => c,
+        Err(e) => {
+            return api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response();
+        }
+    };
     match serde_json::to_value(challenge) {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -144,6 +149,9 @@ async fn create_session(Json(req): Json<SessionRequest>) -> impl IntoResponse {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
             Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
+        Err(crate::error::SandboxError::Unavailable(msg)) => {
+            api_error(StatusCode::SERVICE_UNAVAILABLE, msg).into_response()
+        }
         Err(e) => api_error(StatusCode::UNAUTHORIZED, e.to_string()).into_response(),
     }
 }
@@ -999,7 +1007,13 @@ async fn http_metrics_middleware(
     req: axum::extract::Request,
     next: middleware::Next,
 ) -> impl IntoResponse {
-    let path = req.uri().path().to_string();
+    // Prefer the route template (e.g. "/api/sandboxes/:sandbox_id/exec") to avoid
+    // high-cardinality metric keys from dynamic path segments like sandbox IDs.
+    let path = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
     let start = std::time::Instant::now();
     let response = next.run(req).await;
     let duration_ms = start.elapsed().as_millis() as u64;

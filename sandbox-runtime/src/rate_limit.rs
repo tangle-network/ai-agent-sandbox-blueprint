@@ -20,7 +20,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -160,18 +160,21 @@ fn extract_client_ip(req: &Request) -> Option<IpAddr> {
         })
 }
 
+/// Sentinel IP used for rate limiting when the client IP cannot be determined.
+/// All requests with unknown IPs share this single bucket, preventing bypass.
+const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
 /// Rate-limiting middleware for read (GET) endpoints.
 /// Allows 120 requests per minute per IP.
 pub async fn read_rate_limit(request: Request, next: Next) -> Response {
-    if let Some(ip) = extract_client_ip(&request) {
-        if !read_limiter().check(ip) {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                [("retry-after", "60")],
-                "Rate limit exceeded",
-            )
-                .into_response();
-        }
+    let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
+    if !read_limiter().check(ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", "60")],
+            "Rate limit exceeded",
+        )
+            .into_response();
     }
     next.run(request).await
 }
@@ -179,15 +182,14 @@ pub async fn read_rate_limit(request: Request, next: Next) -> Response {
 /// Rate-limiting middleware for write (POST/PUT/DELETE) endpoints.
 /// Allows 30 requests per minute per IP.
 pub async fn write_rate_limit(request: Request, next: Next) -> Response {
-    if let Some(ip) = extract_client_ip(&request) {
-        if !write_limiter().check(ip) {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                [("retry-after", "60")],
-                "Rate limit exceeded",
-            )
-                .into_response();
-        }
+    let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
+    if !write_limiter().check(ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", "60")],
+            "Rate limit exceeded",
+        )
+            .into_response();
     }
     next.run(request).await
 }
@@ -195,15 +197,14 @@ pub async fn write_rate_limit(request: Request, next: Next) -> Response {
 /// Rate-limiting middleware for auth endpoints.
 /// Allows 10 requests per minute per IP to prevent brute-force attacks.
 pub async fn auth_rate_limit(request: Request, next: Next) -> Response {
-    if let Some(ip) = extract_client_ip(&request) {
-        if !auth_limiter().check(ip) {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                [("retry-after", "60")],
-                "Rate limit exceeded",
-            )
-                .into_response();
-        }
+    let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
+    if !auth_limiter().check(ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", "60")],
+            "Rate limit exceeded",
+        )
+            .into_response();
     }
     next.run(request).await
 }

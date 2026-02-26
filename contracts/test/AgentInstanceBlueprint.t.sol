@@ -440,6 +440,71 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // MODE ENFORCEMENT — INSTANCE MODE REJECTS CLOUD JOBS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Use literal job IDs to avoid staticcall consuming expectRevert
+    function test_instanceModeRejectsSandboxCreateJobCall() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobCall(testServiceId, 0, 2000, bytes("")); // JOB_SANDBOX_CREATE = 0
+    }
+
+    function test_instanceModeRejectsSandboxDeleteJobCall() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobCall(testServiceId, 1, 2001, abi.encode("some-sandbox")); // JOB_SANDBOX_DELETE = 1
+    }
+
+    function test_instanceModeRejectsWorkflowCreateJobCall() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobCall(testServiceId, 2, 2002, bytes("")); // JOB_WORKFLOW_CREATE = 2
+    }
+
+    function test_instanceModeRejectsWorkflowTriggerJobCall() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobCall(testServiceId, 3, 2003, bytes("")); // JOB_WORKFLOW_TRIGGER = 3
+    }
+
+    function test_instanceModeRejectsWorkflowCancelJobCall() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobCall(testServiceId, 4, 2004, bytes("")); // JOB_WORKFLOW_CANCEL = 4
+    }
+
+    function test_instanceModeRejectsSandboxCreateJobResult() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobResult(testServiceId, 0, 2010, operator1, bytes(""), bytes(""));
+    }
+
+    function test_instanceModeRejectsSandboxDeleteJobResult() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobResult(testServiceId, 1, 2011, operator1, bytes(""), bytes(""));
+    }
+
+    function test_instanceModeRejectsWorkflowCreateJobResult() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobResult(testServiceId, 2, 2012, operator1, bytes(""), bytes(""));
+    }
+
+    function test_instanceModeRejectsWorkflowTriggerJobResult() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobResult(testServiceId, 3, 2013, operator1, bytes(""), bytes(""));
+    }
+
+    function test_instanceModeRejectsWorkflowCancelJobResult() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in instance mode");
+        instance.onJobResult(testServiceId, 4, 2014, operator1, bytes(""), bytes(""));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // SECURITY: DOUBLE INITIALIZATION WITH DIFFERENT OWNERS (P5)
     // ═══════════════════════════════════════════════════════════════════════════
 

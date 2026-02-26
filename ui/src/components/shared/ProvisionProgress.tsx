@@ -55,8 +55,10 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
   // ── Timeout tracking ──
   const [elapsedMs, setElapsedMs] = useState(0);
   const [isTimedOut, setIsTimedOut] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   const startTimeRef = useRef<number>(Date.now());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const firedRef = useRef(false);
 
   const isTerminal = isReady || isFailed || isTimedOut;
 
@@ -86,25 +88,31 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
         timerRef.current = null;
       }
     };
-  }, [callId, isTerminal]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [callId, isTerminal, retryCount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset timeout state when callId changes (e.g. on retry from parent)
   useEffect(() => {
     setElapsedMs(0);
     setIsTimedOut(false);
+    firedRef.current = false;
     startTimeRef.current = Date.now();
   }, [callId]);
 
   const handleRetry = useCallback(() => {
     setElapsedMs(0);
     setIsTimedOut(false);
+    firedRef.current = false;
     startTimeRef.current = Date.now();
+    setRetryCount(c => c + 1);
   }, []);
 
-  // Notify parent when ready
-  if (isReady && sandboxId && sidecarUrl && onReady) {
-    onReady(sandboxId, sidecarUrl);
-  }
+  // Notify parent when ready (fire only once)
+  useEffect(() => {
+    if (isReady && sandboxId && sidecarUrl && onReady && !firedRef.current) {
+      firedRef.current = true;
+      onReady(sandboxId, sidecarUrl);
+    }
+  }, [isReady, sandboxId, sidecarUrl, onReady]);
 
   if (!callId) return null;
 

@@ -541,6 +541,79 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertTrue(blueprint.teeRequired());
     }
 
+    function test_setInstanceModeRevertsWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 950, operator1, "sandbox-guard");
+        assertEq(blueprint.totalActiveSandboxes(), 1);
+
+        vm.prank(blueprintOwner);
+        vm.expectRevert("Cannot change mode with active sandboxes");
+        blueprint.setInstanceMode(true);
+    }
+
+    function test_setTeeRequiredRevertsWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 951, operator1, "sandbox-tee-guard");
+        assertEq(blueprint.totalActiveSandboxes(), 1);
+
+        vm.prank(blueprintOwner);
+        vm.expectRevert("Cannot change TEE requirement with active sandboxes");
+        blueprint.setTeeRequired(true);
+    }
+
+    function test_setInstanceModeSucceedsWhenNoActiveSandboxes() public {
+        assertEq(blueprint.totalActiveSandboxes(), 0);
+
+        vm.prank(blueprintOwner);
+        blueprint.setInstanceMode(true);
+        assertTrue(blueprint.instanceMode());
+
+        vm.prank(blueprintOwner);
+        blueprint.setInstanceMode(false);
+        assertFalse(blueprint.instanceMode());
+    }
+
+    function test_setTeeRequiredSucceedsWhenNoActiveSandboxes() public {
+        assertEq(blueprint.totalActiveSandboxes(), 0);
+
+        vm.prank(blueprintOwner);
+        blueprint.setTeeRequired(true);
+        assertTrue(blueprint.teeRequired());
+
+        vm.prank(blueprintOwner);
+        blueprint.setTeeRequired(false);
+        assertFalse(blueprint.teeRequired());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MODE ENFORCEMENT — CLOUD MODE REJECTS INSTANCE JOBS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Use literal job IDs to avoid staticcall consuming expectRevert
+    function test_cloudModeRejectsProvisionJobCall() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in cloud mode");
+        blueprint.onJobCall(1, 5, 960, bytes("")); // JOB_PROVISION = 5
+    }
+
+    function test_cloudModeRejectsDeprovisionJobCall() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in cloud mode");
+        blueprint.onJobCall(1, 6, 961, bytes("")); // JOB_DEPROVISION = 6
+    }
+
+    function test_cloudModeRejectsProvisionJobResult() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in cloud mode");
+        blueprint.onJobResult(1, 5, 962, operator1, bytes(""), bytes(""));
+    }
+
+    function test_cloudModeRejectsDeprovisionJobResult() public {
+        vm.prank(tangleCore);
+        vm.expectRevert("Not available in cloud mode");
+        blueprint.onJobResult(1, 6, 963, operator1, bytes(""), bytes(""));
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // JOB METADATA
     // ═══════════════════════════════════════════════════════════════════════════

@@ -17,6 +17,8 @@ pub enum SandboxError {
     Storage(String),
     /// Cloud provider API error (AWS, GCP, Azure).
     CloudProvider(String),
+    /// Service temporarily unavailable (capacity exceeded, overloaded).
+    Unavailable(String),
 }
 
 impl fmt::Display for SandboxError {
@@ -29,6 +31,7 @@ impl fmt::Display for SandboxError {
             SandboxError::NotFound(msg) => write!(f, "not found: {msg}"),
             SandboxError::Storage(msg) => write!(f, "storage error: {msg}"),
             SandboxError::CloudProvider(msg) => write!(f, "cloud provider error: {msg}"),
+            SandboxError::Unavailable(msg) => write!(f, "service unavailable: {msg}"),
         }
     }
 }

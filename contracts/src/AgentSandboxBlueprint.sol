@@ -323,17 +323,22 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         bytes calldata inputs
     ) external payable override onlyFromTangle {
         if (job == JOB_SANDBOX_CREATE) {
+            require(!instanceMode, "Not available in instance mode");
             address selected = _selectByCapacity(serviceId);
             _createAssignments[serviceId][jobCallId] = selected;
             emit OperatorAssigned(serviceId, jobCallId, selected);
         } else if (job == JOB_SANDBOX_DELETE) {
+            require(!instanceMode, "Not available in instance mode");
             string memory sandboxId = abi.decode(inputs, (string));
             bytes32 sandboxHash = keccak256(bytes(sandboxId));
             address routed = sandboxOperator[sandboxHash];
             if (routed == address(0)) revert SandboxNotFound(sandboxHash);
             emit OperatorRouted(serviceId, jobCallId, routed);
+        } else if (job == JOB_WORKFLOW_CREATE || job == JOB_WORKFLOW_TRIGGER || job == JOB_WORKFLOW_CANCEL) {
+            require(!instanceMode, "Not available in instance mode");
+        } else if (job == JOB_PROVISION || job == JOB_DEPROVISION) {
+            require(instanceMode, "Not available in cloud mode");
         }
-        // Workflow and instance jobs: no on-chain routing needed.
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -349,21 +354,28 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         bytes calldata outputs
     ) external payable override onlyFromTangle {
         if (job == JOB_SANDBOX_CREATE) {
+            require(!instanceMode, "Not available in instance mode");
             _handleCreateResult(serviceId, jobCallId, operator, outputs);
         } else if (job == JOB_SANDBOX_DELETE) {
+            require(!instanceMode, "Not available in instance mode");
             _handleDeleteResult(operator, inputs);
         } else if (job == JOB_WORKFLOW_CREATE) {
+            require(!instanceMode, "Not available in instance mode");
             WorkflowCreateRequest memory request = abi.decode(inputs, (WorkflowCreateRequest));
             _upsert_workflow(jobCallId, request);
         } else if (job == JOB_WORKFLOW_TRIGGER) {
+            require(!instanceMode, "Not available in instance mode");
             WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
             _mark_triggered(request.workflow_id);
         } else if (job == JOB_WORKFLOW_CANCEL) {
+            require(!instanceMode, "Not available in instance mode");
             WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
             _cancel_workflow(request.workflow_id);
         } else if (job == JOB_PROVISION) {
+            require(instanceMode, "Not available in cloud mode");
             _handleProvisionResult(serviceId, operator, outputs);
         } else if (job == JOB_DEPROVISION) {
+            require(instanceMode, "Not available in cloud mode");
             _handleDeprovisionResult(serviceId, operator);
         }
     }
@@ -385,10 +397,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     function setInstanceMode(bool _mode) external onlyBlueprintOwner {
+        require(totalActiveSandboxes == 0, "Cannot change mode with active sandboxes");
         instanceMode = _mode;
     }
 
     function setTeeRequired(bool _required) external onlyBlueprintOwner {
+        require(totalActiveSandboxes == 0, "Cannot change TEE requirement with active sandboxes");
         teeRequired = _required;
     }
 

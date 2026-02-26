@@ -28,6 +28,10 @@ use crate::error::{Result, SandboxError};
 const CHALLENGE_TTL_SECS: u64 = 300;
 /// Session token TTL in seconds (1 hour).
 const SESSION_TTL_SECS: u64 = 3600;
+/// Maximum number of pending challenges to prevent memory exhaustion.
+const MAX_CHALLENGES: usize = 10_000;
+/// Maximum number of active sessions to prevent memory exhaustion.
+const MAX_SESSIONS: usize = 50_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,7 +80,10 @@ fn now_secs() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Generate a random challenge nonce for EIP-191 signing.
-pub fn create_challenge() -> Challenge {
+///
+/// Returns an error if the challenge store is at capacity ([`MAX_CHALLENGES`]),
+/// preventing memory exhaustion from unauthenticated requests.
+pub fn create_challenge() -> Result<Challenge> {
     let mut nonce_bytes = [0u8; 32];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = hex::encode(nonce_bytes);
@@ -93,12 +100,15 @@ pub fn create_challenge() -> Challenge {
         expires_at: now + CHALLENGE_TTL_SECS,
     };
 
-    CHALLENGES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(nonce, challenge.clone());
+    let mut map = CHALLENGES.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= MAX_CHALLENGES {
+        return Err(SandboxError::Unavailable(
+            "Challenge capacity exceeded, try again later".into(),
+        ));
+    }
+    map.insert(nonce, challenge.clone());
 
-    challenge
+    Ok(challenge)
 }
 
 /// Consume and validate a challenge nonce. Returns the challenge message if valid.
@@ -267,11 +277,16 @@ pub fn exchange_signature_for_token(nonce: &str, signature_hex: &str) -> Result<
     let token = pasetors::local::encrypt(&SYMMETRIC_KEY, &paseto_claims, None, None)
         .map_err(|e| SandboxError::Auth(format!("Failed to encrypt PASETO token: {e}")))?;
 
-    // Store session for server-side validation
-    SESSIONS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(token.clone(), claims);
+    // Store session for server-side validation (with capacity check)
+    {
+        let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+        if sessions.len() >= MAX_SESSIONS {
+            return Err(SandboxError::Unavailable(
+                "Session capacity exceeded, try again later".into(),
+            ));
+        }
+        sessions.insert(token.clone(), claims);
+    }
 
     Ok(SessionToken {
         token,
@@ -473,7 +488,7 @@ mod tests {
 
     #[test]
     fn challenge_lifecycle() {
-        let challenge = create_challenge();
+        let challenge = create_challenge().unwrap();
         assert!(!challenge.nonce.is_empty());
         assert!(challenge.message.contains(&challenge.nonce));
         assert!(challenge.expires_at > now_secs());
@@ -556,7 +571,7 @@ mod tests {
         let expected_address = format!("0x{}", hex::encode(&address_hash[12..]));
 
         // Step 1: Create challenge
-        let challenge = create_challenge();
+        let challenge = create_challenge().unwrap();
 
         // Step 2: Sign the challenge message
         let prefixed = format!(

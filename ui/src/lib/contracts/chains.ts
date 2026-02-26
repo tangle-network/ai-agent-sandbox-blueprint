@@ -54,11 +54,11 @@ configureNetworks<SandboxAddresses>({
     label: 'Tangle Testnet',
     shortLabel: 'Testnet',
     addresses: {
-      sandboxBlueprint: '0x0000000000000000000000000000000000000000' as Address,
-      instanceBlueprint: '0x0000000000000000000000000000000000000000' as Address,
-      teeInstanceBlueprint: '0x0000000000000000000000000000000000000000' as Address,
-      jobs: '0x0000000000000000000000000000000000000000' as Address,
-      services: '0x0000000000000000000000000000000000000000' as Address,
+      sandboxBlueprint: (import.meta.env.VITE_TESTNET_SANDBOX_BSM ?? '0x0000000000000000000000000000000000000000') as Address,
+      instanceBlueprint: (import.meta.env.VITE_TESTNET_INSTANCE_BSM ?? '0x0000000000000000000000000000000000000000') as Address,
+      teeInstanceBlueprint: (import.meta.env.VITE_TESTNET_TEE_INSTANCE_BSM ?? '0x0000000000000000000000000000000000000000') as Address,
+      jobs: (import.meta.env.VITE_TESTNET_JOBS_ADDRESS ?? '0x0000000000000000000000000000000000000000') as Address,
+      services: (import.meta.env.VITE_TESTNET_SERVICES_ADDRESS ?? '0x0000000000000000000000000000000000000000') as Address,
     },
   },
   [tangleMainnet.id]: {
@@ -67,11 +67,11 @@ configureNetworks<SandboxAddresses>({
     label: 'Tangle Mainnet',
     shortLabel: 'Mainnet',
     addresses: {
-      sandboxBlueprint: '0x0000000000000000000000000000000000000000' as Address,
-      instanceBlueprint: '0x0000000000000000000000000000000000000000' as Address,
-      teeInstanceBlueprint: '0x0000000000000000000000000000000000000000' as Address,
-      jobs: '0x0000000000000000000000000000000000000000' as Address,
-      services: '0x0000000000000000000000000000000000000000' as Address,
+      sandboxBlueprint: (import.meta.env.VITE_MAINNET_SANDBOX_BSM ?? '0x0000000000000000000000000000000000000000') as Address,
+      instanceBlueprint: (import.meta.env.VITE_MAINNET_INSTANCE_BSM ?? '0x0000000000000000000000000000000000000000') as Address,
+      teeInstanceBlueprint: (import.meta.env.VITE_MAINNET_TEE_INSTANCE_BSM ?? '0x0000000000000000000000000000000000000000') as Address,
+      jobs: (import.meta.env.VITE_MAINNET_JOBS_ADDRESS ?? '0x0000000000000000000000000000000000000000') as Address,
+      services: (import.meta.env.VITE_MAINNET_SERVICES_ADDRESS ?? '0x0000000000000000000000000000000000000000') as Address,
     },
   },
 });
@@ -87,15 +87,20 @@ export function isContractDeployed(address: string | undefined): boolean {
   return address.toLowerCase() !== ZERO_ADDRESS;
 }
 
-/** Check if the core contracts (jobs, services, blueprint BSM) are deployed for the current network. */
-export function areContractsDeployed(): boolean {
+/** Check if the core contracts (jobs, services, blueprint BSM) are deployed for a given network.
+ *  If chainId is provided, checks that specific network.
+ *  Otherwise falls back to checking if ANY network has deployed contracts. */
+export function areContractsDeployed(chainId?: number): boolean {
   const nets = getNetworks<SandboxAddresses>();
-  // Check the first available network's addresses
-  for (const key of Object.keys(nets)) {
-    const net = nets[key as unknown as keyof typeof nets];
-    if (net?.addresses) {
-      return isContractDeployed(net.addresses.jobs) && isContractDeployed(net.addresses.services);
-    }
+  if (chainId) {
+    const net = Object.values(nets).find(n => n?.chain?.id === chainId);
+    if (!net?.addresses) return false;
+    return isContractDeployed(net.addresses.jobs) && isContractDeployed(net.addresses.services);
   }
-  return false;
+  // Fallback: check all networks, return true if ANY has deployed contracts
+  return Object.values(nets).some(net =>
+    net?.addresses &&
+    isContractDeployed(net.addresses.jobs) &&
+    isContractDeployed(net.addresses.services),
+  );
 }
