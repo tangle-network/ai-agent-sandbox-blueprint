@@ -314,7 +314,10 @@ use std::sync::Mutex;
 pub struct EndpointStats {
     pub count: u64,
     pub total_ms: u64,
+    /// Count of 5xx server errors.
     pub errors: u64,
+    /// Count of 4xx client errors.
+    pub client_errors: u64,
 }
 
 /// Tracks per-endpoint HTTP latency and request counts.
@@ -335,14 +338,23 @@ impl HttpMetrics {
         }
     }
 
-    /// Record a request for `path` with given duration and status.
-    pub fn record(&self, path: &str, duration_ms: u64, is_error: bool) {
+    /// Record a request for `path` with given duration and error classification.
+    pub fn record(
+        &self,
+        path: &str,
+        duration_ms: u64,
+        is_server_error: bool,
+        is_client_error: bool,
+    ) {
         if let Ok(mut map) = self.endpoints.lock() {
             let entry = map.entry(path.to_string()).or_default();
             entry.count += 1;
             entry.total_ms += duration_ms;
-            if is_error {
+            if is_server_error {
                 entry.errors += 1;
+            }
+            if is_client_error {
+                entry.client_errors += 1;
             }
         }
     }
@@ -366,6 +378,7 @@ impl HttpMetrics {
         let _ = writeln!(out, "# TYPE http_requests_total counter");
         let _ = writeln!(out, "# TYPE http_request_duration_ms_total counter");
         let _ = writeln!(out, "# TYPE http_request_errors_total counter");
+        let _ = writeln!(out, "# TYPE http_request_client_errors_total counter");
         for (path, stats) in &snap {
             let _ = writeln!(
                 out,
@@ -384,7 +397,18 @@ impl HttpMetrics {
                     stats.errors
                 );
             }
+            if stats.client_errors > 0 {
+                let _ = writeln!(
+                    out,
+                    "http_request_client_errors_total{{path=\"{path}\"}} {}",
+                    stats.client_errors
+                );
+            }
         }
+        // Rate-limit rejection counter (global, not per-endpoint)
+        let rl = rate_limit_rejections().load(Ordering::Relaxed);
+        let _ = writeln!(out, "# TYPE rate_limit_rejections_total counter");
+        let _ = writeln!(out, "rate_limit_rejections_total {rl}");
         out
     }
 }
@@ -395,4 +419,16 @@ static HTTP_METRICS: once_cell::sync::Lazy<HttpMetrics> =
 /// Returns the global HTTP metrics tracker.
 pub fn http_metrics() -> &'static HttpMetrics {
     &HTTP_METRICS
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rate-limit rejection counter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Global counter of requests rejected by rate limiting.
+static RATE_LIMIT_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the global rate-limit rejection counter.
+pub fn rate_limit_rejections() -> &'static AtomicU64 {
+    &RATE_LIMIT_REJECTIONS
 }

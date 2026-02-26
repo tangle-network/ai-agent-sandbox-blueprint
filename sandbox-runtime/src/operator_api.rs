@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::api_types::*;
 use crate::http::sidecar_post_json;
 use crate::metrics;
@@ -27,6 +29,39 @@ use crate::rate_limit;
 use crate::runtime::{self, SandboxRecord, SandboxState, sandboxes};
 use crate::secret_provisioning;
 use crate::session_auth::{self, SessionAuth};
+
+// ---------------------------------------------------------------------------
+// Request ID middleware
+// ---------------------------------------------------------------------------
+
+/// Monotonic counter for generating unique request IDs.
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Unique identifier attached to every request for correlation in logs and
+/// response headers.
+#[derive(Clone, Debug)]
+pub struct RequestId(pub String);
+
+/// Middleware that assigns a unique `x-request-id` to every request.
+///
+/// The ID is inserted into request extensions (so handlers can access it via
+/// `Extension<RequestId>`) and echoed back in the `x-request-id` response
+/// header for client-side correlation.
+async fn request_id_middleware(
+    mut req: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    let id = format!(
+        "req-{:016x}",
+        REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    tracing::debug!(request_id = %id, method = %req.method(), uri = %req.uri(), "incoming request");
+    req.extensions_mut().insert(RequestId(id.clone()));
+    let mut res = next.run(req).await;
+    res.headers_mut()
+        .insert("x-request-id", id.parse().unwrap());
+    res
+}
 
 // ---------------------------------------------------------------------------
 // Error response
@@ -1023,8 +1058,10 @@ async fn http_metrics_middleware(
     let start = std::time::Instant::now();
     let response = next.run(req).await;
     let duration_ms = start.elapsed().as_millis() as u64;
-    let is_error = response.status().is_server_error();
-    metrics::http_metrics().record(&path, duration_ms, is_error);
+    let status = response.status();
+    let is_server_error = status.is_server_error();
+    let is_client_error = status.is_client_error();
+    metrics::http_metrics().record(&path, duration_ms, is_server_error, is_client_error);
     response
 }
 
@@ -1158,6 +1195,8 @@ pub fn operator_api_router_with_tee(
         .layer(middleware::from_fn(http_metrics_middleware))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
+        // Outermost layer: assign a unique request ID before anything else runs.
+        .layer(middleware::from_fn(request_id_middleware))
 }
 
 #[cfg(test)]

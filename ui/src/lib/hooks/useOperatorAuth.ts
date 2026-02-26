@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAccount, useSignMessage } from 'wagmi';
 
 const OPERATOR_API_URL = import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090';
@@ -26,6 +26,11 @@ export function useOperatorAuth(apiUrl?: string) {
   const [error, setError] = useState<string | null>(null);
   const sessionRef = useRef<OperatorSession | null>(null);
   const inflightRef = useRef<Promise<string | null> | null>(null);
+
+  // Clear stale session when wallet address changes
+  useEffect(() => {
+    sessionRef.current = null;
+  }, [address]);
 
   const isValid = useCallback(() => {
     if (!sessionRef.current) return false;

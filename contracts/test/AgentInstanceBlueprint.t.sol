@@ -600,6 +600,69 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // OPERATOR UNREGISTER / LEAVE TESTS (instance mode)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onUnregisterSucceedsWithNoProvisions() public {
+        // No active sandboxes in instance mode (counter stays 0)
+        vm.prank(tangleCore);
+        instance.onUnregister(operator1);
+    }
+
+    function test_onOperatorLeftRevertsWithActiveProvisions() public {
+        _provisionOperator(operator1);
+
+        vm.prank(tangleCore);
+        vm.expectRevert("Cannot leave with active provisions");
+        instance.onOperatorLeft(testServiceId, operator1);
+    }
+
+    function test_onOperatorLeftSucceedsWithNoProvisions() public {
+        vm.prank(tangleCore);
+        instance.onOperatorLeft(testServiceId, operator1);
+    }
+
+    function test_onOperatorLeftSucceedsAfterDeprovision() public {
+        _provisionOperator(operator1);
+
+        // Deprovision
+        uint64 callId = 4050;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertFalse(instance.isOperatorProvisioned(testServiceId, operator1));
+
+        // Now leaving should succeed
+        vm.prank(tangleCore);
+        instance.onOperatorLeft(testServiceId, operator1);
+    }
+
+    function test_canLeaveReturnsFalseWithActiveProvisions() public {
+        _provisionOperator(operator1);
+        assertFalse(instance.canLeave(testServiceId, operator1));
+    }
+
+    function test_canLeaveReturnsTrueWithNoProvisions() public {
+        assertTrue(instance.canLeave(testServiceId, operator1));
+    }
+
+    function test_canLeaveReturnsTrueAfterDeprovision() public {
+        _provisionOperator(operator1);
+        assertFalse(instance.canLeave(testServiceId, operator1));
+
+        // Deprovision
+        uint64 callId = 4060;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertTrue(instance.canLeave(testServiceId, operator1));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // SECURITY: DOUBLE INITIALIZATION WITH DIFFERENT OWNERS (P5)
     // ═══════════════════════════════════════════════════════════════════════════
 

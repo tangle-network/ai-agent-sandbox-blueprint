@@ -9,7 +9,7 @@
  * so the consuming component only needs to render based on `status` + `provision`.
  */
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { tangleServicesAbi } from '~/lib/contracts/abi';
@@ -72,6 +72,21 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   const mode: DeployMode = blueprint?.id === 'ai-agent-sandbox-blueprint' ? 'sandbox' : 'instance';
   const isTeeInstance = blueprint?.id === 'ai-agent-tee-instance-blueprint';
   const isInstanceMode = mode === 'instance';
+
+  // Store latest values in refs to avoid stale closures in useEffect hooks.
+  // These change on every keystroke, but the effects should only fire on their
+  // specific trigger deps (callId, serviceConfirmed, instanceProvision).
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
+
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+
+  const infraRef = useRef(infra);
+  infraRef.current = infra;
+
+  const isTeeInstanceRef = useRef(isTeeInstance);
+  isTeeInstanceRef.current = isTeeInstance;
 
   // Path A: submitJob (sandbox, or instance with existing service)
   const {
@@ -144,9 +159,9 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   // Update store when submitJob callId is parsed from receipt
   useEffect(() => {
     if (callId != null) {
-      const name = String(values.name || '');
+      const name = String(valuesRef.current.name || '');
       if (!name) return;
-      if (mode === 'sandbox') {
+      if (modeRef.current === 'sandbox') {
         updateSandboxStatus(name, 'creating', { callId });
       } else {
         updateInstanceStatus(name, 'creating', { callId });
@@ -157,29 +172,30 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   // Add instance to store when requestService confirms
   useEffect(() => {
     if (serviceConfirmed && isInstanceMode) {
-      const name = String(values.name || '');
+      const v = valuesRef.current;
+      const name = String(v.name || '');
       if (!name) return;
       addInstance({
         id: name,
         name,
-        image: String(values.image || ''),
-        cpuCores: Number(values.cpuCores) || 2,
-        memoryMb: Number(values.memoryMb) || 2048,
-        diskGb: Number(values.diskGb) || 10,
+        image: String(v.image || ''),
+        cpuCores: Number(v.cpuCores) || 2,
+        memoryMb: Number(v.memoryMb) || 2048,
+        diskGb: Number(v.diskGb) || 10,
         createdAt: Date.now(),
-        blueprintId: infra.blueprintId,
-        serviceId: infra.serviceId || '',
-        teeEnabled: isTeeInstance,
+        blueprintId: infraRef.current.blueprintId,
+        serviceId: infraRef.current.serviceId || '',
+        teeEnabled: isTeeInstanceRef.current,
         status: 'creating',
         txHash: serviceTxHash,
       });
     }
-  }, [serviceConfirmed]);
+  }, [serviceConfirmed, isInstanceMode, serviceTxHash]);
 
   // Update store when instance provision event arrives
   useEffect(() => {
     if (instanceProvision) {
-      const name = String(values.name || '');
+      const name = String(valuesRef.current.name || '');
       if (name) {
         updateInstanceStatus(name, 'running', {
           id: instanceProvision.sandboxId,

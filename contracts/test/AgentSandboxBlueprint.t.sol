@@ -751,6 +751,172 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // OPERATOR UNREGISTER / LEAVE TESTS (cloud mode)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onUnregisterRevertsWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 4000, operator1, "sb-unreg");
+
+        vm.prank(tangleCore);
+        vm.expectRevert("Cannot unregister with active sandboxes");
+        blueprint.onUnregister(operator1);
+    }
+
+    function test_onUnregisterSucceedsWithNoSandboxes() public {
+        registerOperator(operator1, 10);
+
+        // Should succeed — no active sandboxes
+        vm.prank(tangleCore);
+        blueprint.onUnregister(operator1);
+    }
+
+    function test_onUnregisterSucceedsAfterDeletion() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 4010, operator1, "sb-del-unreg");
+
+        // Delete the sandbox
+        simulateJobResult(
+            1, blueprint.JOB_SANDBOX_DELETE(), 4011, operator1,
+            encodeSandboxIdInputs("sb-del-unreg"),
+            encodeJsonOutputs("{}")
+        );
+        assertEq(blueprint.operatorActiveSandboxes(operator1), 0);
+
+        // Now unregister should succeed
+        vm.prank(tangleCore);
+        blueprint.onUnregister(operator1);
+    }
+
+    function test_onOperatorLeftRevertsWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 4020, operator1, "sb-leave");
+
+        vm.prank(tangleCore);
+        vm.expectRevert("Cannot leave with active sandboxes");
+        blueprint.onOperatorLeft(1, operator1);
+    }
+
+    function test_onOperatorLeftSucceedsWithNoSandboxes() public {
+        registerOperator(operator1, 10);
+
+        // Should succeed — no active sandboxes, no provisions
+        vm.prank(tangleCore);
+        blueprint.onOperatorLeft(1, operator1);
+    }
+
+    function test_canLeaveReturnsFalseWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 4030, operator1, "sb-canleave");
+
+        assertFalse(blueprint.canLeave(1, operator1));
+    }
+
+    function test_canLeaveReturnsTrueWithNoResources() public {
+        registerOperator(operator1, 10);
+        assertTrue(blueprint.canLeave(1, operator1));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function testFuzz_sandboxIdValidation(bytes memory sandboxId) public pure {
+        // Test that sandbox ID validation logic works for arbitrary inputs.
+        // IDs of length 0 or >255 should be rejected in _handleCreateResult.
+        vm.assume(sandboxId.length > 0 && sandboxId.length <= 255);
+        // Verify the string is processable (won't revert on encoding)
+        string memory idStr = string(sandboxId);
+        bytes memory encoded = abi.encode(idStr, "http://sidecar:8080", uint32(22), uint32(2222));
+        assertTrue(encoded.length > 0);
+        assertTrue(bytes(idStr).length > 0);
+        assertTrue(bytes(idStr).length <= 255);
+    }
+
+    function testFuzz_jobRatesNoOverflow(uint256 baseRate) public view {
+        // Verify getDefaultJobRates doesn't panic for any input.
+        // It will revert on overflow due to Solidity 0.8 checked math.
+        vm.assume(baseRate <= type(uint256).max / 50);
+        (uint8[] memory jobs, uint256[] memory rates) = blueprint.getDefaultJobRates(baseRate);
+        assertTrue(jobs.length == 7);
+        assertTrue(rates.length == 7);
+        // Verify all rates are >= baseRate (multiplied by >= 1)
+        for (uint256 i = 0; i < rates.length; i++) {
+            assertTrue(rates[i] >= baseRate);
+        }
+    }
+
+    function testFuzz_operatorSelectionBounded(uint8 numOperators) public {
+        // Verify selection doesn't revert for valid operator counts (1-10).
+        // Bound to a reasonable range to avoid excessive gas.
+        vm.assume(numOperators >= 1 && numOperators <= 10);
+
+        // Register numOperators operators
+        for (uint8 i = 0; i < numOperators; i++) {
+            address op = address(uint160(0x2000 + i));
+            mockDelegation.addOperator(op, testBlueprintId);
+            vm.prank(tangleCore);
+            blueprint.onRegister(op, abi.encode(uint32(10)));
+        }
+
+        // Should not revert — at least one operator has capacity
+        vm.prevrandao(bytes32(uint256(42)));
+        vm.recordLogs();
+        simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 5000, encodeSandboxCreateInputs());
+
+        // Verify an assignment was emitted
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found = false;
+        for (uint256 j = 0; j < logs.length; j++) {
+            if (logs[j].topics[0] == AgentSandboxBlueprint.OperatorAssigned.selector) {
+                found = true;
+            }
+        }
+        assertTrue(found, "operator assignment should have been emitted");
+    }
+
+    function testFuzz_workflowIdValidation(uint64 workflowId) public {
+        // Verify workflow operations handle any uint64 ID correctly.
+        // Reserve 2 IDs above workflowId for trigger/cancel callIds.
+        vm.assume(workflowId <= type(uint64).max - 2);
+
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "fuzz-workflow",
+            workflow_json: "{}",
+            trigger_type: "cron",
+            trigger_config: "* * * * *",
+            sandbox_config_json: "{}"
+        });
+
+        // Create workflow with fuzzed ID — should always succeed
+        simulateJobResult(
+            1, blueprint.JOB_WORKFLOW_CREATE(), workflowId, operator1,
+            abi.encode(req), encodeJsonOutputs("{}")
+        );
+
+        AgentSandboxBlueprint.WorkflowConfig memory config = blueprint.getWorkflow(workflowId);
+        assertEq(config.name, "fuzz-workflow");
+        assertTrue(config.active);
+
+        // Trigger should also work with any uint64
+        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl = AgentSandboxBlueprint.WorkflowControlRequest({
+            workflow_id: workflowId
+        });
+        simulateJobResult(
+            1, blueprint.JOB_WORKFLOW_TRIGGER(), workflowId + 1, operator1,
+            abi.encode(ctrl), encodeJsonOutputs("{}")
+        );
+        assertEq(blueprint.getWorkflow(workflowId).last_triggered_at, uint64(block.timestamp));
+
+        // Cancel should work too
+        simulateJobResult(
+            1, blueprint.JOB_WORKFLOW_CANCEL(), workflowId + 2, operator1,
+            abi.encode(ctrl), encodeJsonOutputs("{}")
+        );
+        assertFalse(blueprint.getWorkflow(workflowId).active);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 

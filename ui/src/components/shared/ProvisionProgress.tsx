@@ -62,7 +62,8 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
 
   const isTerminal = isReady || isFailed || isTimedOut;
 
-  // Start / stop the elapsed-time ticker
+  // Start / stop the elapsed-time ticker.
+  // Uses startTimeRef exclusively so elapsedMs is not a dependency.
   useEffect(() => {
     if (!callId || isTerminal) {
       if (timerRef.current) {
@@ -72,10 +73,9 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
       return;
     }
 
-    startTimeRef.current = Date.now() - elapsedMs;
+    startTimeRef.current = Date.now();
     timerRef.current = setInterval(() => {
-      const now = Date.now();
-      const elapsed = now - startTimeRef.current;
+      const elapsed = Date.now() - startTimeRef.current;
       setElapsedMs(elapsed);
       if (elapsed >= PROVISION_TIMEOUT_MS) {
         setIsTimedOut(true);
@@ -88,7 +88,7 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
         timerRef.current = null;
       }
     };
-  }, [callId, isTerminal, retryCount]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [callId, isTerminal, retryCount]);
 
   // Reset timeout state when callId changes (e.g. on retry from parent)
   useEffect(() => {

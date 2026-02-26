@@ -488,6 +488,7 @@ mod tests {
 
     #[test]
     fn challenge_lifecycle() {
+        let _guard = CAPACITY_LOCK.lock().unwrap();
         let challenge = create_challenge().unwrap();
         assert!(!challenge.nonce.is_empty());
         assert!(challenge.message.contains(&challenge.nonce));
@@ -504,6 +505,11 @@ mod tests {
 
     #[test]
     fn challenge_expiry() {
+        let _guard = CAPACITY_LOCK.lock().unwrap();
+        // Clear any leftover challenges from capacity tests to avoid
+        // hitting the capacity cap when inserting our test challenge.
+        CHALLENGES.lock().unwrap().clear();
+
         // Insert a challenge directly with an expired timestamp
         let nonce = "expired-test-nonce".to_string();
         let challenge = Challenge {
@@ -559,6 +565,7 @@ mod tests {
 
     #[test]
     fn token_roundtrip() {
+        let _guard = CAPACITY_LOCK.lock().unwrap();
         use k256::ecdsa::SigningKey;
 
         let signing_key = SigningKey::random(&mut OsRng);
@@ -620,6 +627,11 @@ mod tests {
 
     #[test]
     fn gc_sessions_cleans_expired() {
+        let _guard = CAPACITY_LOCK.lock().unwrap();
+        // Clear maps to avoid capacity interference from other tests
+        CHALLENGES.lock().unwrap().clear();
+        SESSIONS.lock().unwrap().clear();
+
         // Insert an expired challenge
         let expired_nonce = format!("gc-test-{}", now_secs());
         CHALLENGES.lock().unwrap().insert(
@@ -688,5 +700,162 @@ mod tests {
             hkdf_key, keccak_hash,
             "HKDF output must differ from raw Keccak256"
         );
+    }
+
+    /// Serialization mutex for tests that mutate the global CHALLENGES / SESSIONS
+    /// maps to extreme sizes. Prevents parallel tests from observing a full map.
+    static CAPACITY_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn challenge_capacity_blocks_when_full() {
+        let _guard = CAPACITY_LOCK.lock().unwrap();
+
+        {
+            let mut map = CHALLENGES.lock().unwrap();
+            for i in 0..MAX_CHALLENGES {
+                map.insert(
+                    format!("cap-ch-{i}"),
+                    Challenge {
+                        nonce: format!("cap-ch-{i}"),
+                        message: "cap".into(),
+                        expires_at: now_secs() + 600,
+                    },
+                );
+            }
+        }
+
+        let result = create_challenge();
+
+        // Clean up before assertions
+        CHALLENGES
+            .lock()
+            .unwrap()
+            .retain(|k, _| !k.starts_with("cap-ch-"));
+
+        assert!(result.is_err(), "should fail when at capacity");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("Challenge capacity exceeded"),
+            "error should mention capacity: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn gc_restores_challenge_capacity_after_expiry() {
+        let _guard = CAPACITY_LOCK.lock().unwrap();
+
+        {
+            let mut map = CHALLENGES.lock().unwrap();
+            for i in 0..MAX_CHALLENGES {
+                map.insert(
+                    format!("gc-ch-{i}"),
+                    Challenge {
+                        nonce: format!("gc-ch-{i}"),
+                        message: "expired".into(),
+                        expires_at: now_secs().saturating_sub(1),
+                    },
+                );
+            }
+        }
+
+        gc_sessions();
+
+        let result = create_challenge();
+
+        if let Ok(ref c) = result {
+            CHALLENGES.lock().unwrap().remove(&c.nonce);
+        }
+
+        assert!(result.is_ok(), "should succeed after GC frees capacity");
+    }
+
+    #[test]
+    fn session_capacity_blocks_when_full() {
+        let _guard = CAPACITY_LOCK.lock().unwrap();
+
+        {
+            let mut map = SESSIONS.lock().unwrap();
+            for i in 0..MAX_SESSIONS {
+                map.insert(
+                    format!("cap-sess-{i}"),
+                    SessionClaims {
+                        address: "0xdead".into(),
+                        issued_at: now_secs(),
+                        expires_at: now_secs() + 600,
+                    },
+                );
+            }
+        }
+
+        use k256::ecdsa::SigningKey;
+        let signing_key = SigningKey::random(&mut OsRng);
+        let challenge = create_challenge().unwrap();
+        let prefixed = format!(
+            "\x19Ethereum Signed Message:\n{}{}",
+            challenge.message.len(),
+            challenge.message
+        );
+        let digest = keccak256(prefixed.as_bytes());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(&digest)
+            .expect("signing failed");
+        let mut sig_bytes = Vec::with_capacity(65);
+        sig_bytes.extend_from_slice(&signature.to_bytes());
+        sig_bytes.push(recovery_id.to_byte() + 27);
+        let sig_hex = format!("0x{}", hex::encode(&sig_bytes));
+
+        let result = exchange_signature_for_token(&challenge.nonce, &sig_hex);
+
+        // Clean up before assertions
+        SESSIONS
+            .lock()
+            .unwrap()
+            .retain(|k, _| !k.starts_with("cap-sess-"));
+
+        assert!(result.is_err(), "should fail when sessions are at capacity");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("Session capacity exceeded"),
+            "error should mention session capacity: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn validate_required_config_check() {
+        let result = validate_required_config();
+        match result {
+            Ok(()) => {
+                let val = std::env::var("SESSION_AUTH_SECRET").unwrap();
+                assert!(!val.trim().is_empty());
+            }
+            Err(msg) => {
+                assert!(
+                    msg.contains("SESSION_AUTH_SECRET"),
+                    "error should mention the env var: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn create_test_token_produces_valid_session() {
+        let addr = "0xabcdef1234567890abcdef1234567890abcdef12";
+        let token = create_test_token(addr);
+        assert!(
+            token.starts_with("v4.local."),
+            "test token should be a PASETO v4 local token"
+        );
+
+        let claims = validate_session_token(&token).unwrap();
+        assert_eq!(claims.address, addr);
+        assert!(claims.expires_at > now_secs());
+    }
+
+    #[test]
+    fn capacity_constants_are_reasonable() {
+        assert_eq!(MAX_CHALLENGES, 10_000);
+        assert_eq!(MAX_SESSIONS, 50_000);
+        assert_eq!(CHALLENGE_TTL_SECS, 300);
+        assert_eq!(SESSION_TTL_SECS, 3600);
     }
 }

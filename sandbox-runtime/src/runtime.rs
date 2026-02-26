@@ -825,6 +825,8 @@ fn build_docker_config(
     memory_mb: u64,
     labels: Option<HashMap<String, String>>,
 ) -> BollardConfig<String> {
+    // Security: ports bound to 127.0.0.1 only — not exposed to external network.
+    // Inter-container isolation requires Docker daemon --icc=false configuration.
     let mut port_bindings = PortMap::new();
     port_bindings.insert(
         format!("{}/tcp", config.container_port),
@@ -1657,6 +1659,7 @@ mod tee_tests {
 #[cfg(test)]
 mod seal_tests {
     use super::*;
+    use base64::Engine;
 
     #[test]
     fn seal_unseal_roundtrip() {
@@ -1729,6 +1732,66 @@ mod seal_tests {
         assert_eq!(record.token, "my-token");
         assert_eq!(record.base_env_json, r#"{"KEY":"val"}"#);
         assert_eq!(record.user_env_json, r#"{"USER":"x"}"#);
+    }
+
+    #[test]
+    fn unseal_corrupted_ciphertext_returns_error() {
+        // Valid prefix but garbage base64 payload (nonce + corrupted ciphertext)
+        let corrupted = format!(
+            "{ENC_PREFIX}{}",
+            base64::engine::general_purpose::STANDARD
+                .encode(b"123456789012XXXX_corrupted_data_here")
+        );
+        let result = unseal_field(&corrupted);
+        assert!(result.is_err(), "corrupted ciphertext should fail");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("decrypt failed"),
+            "error should mention decrypt failure: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn seal_produces_different_ciphertext_each_time() {
+        let plaintext = "determinism-test";
+        let sealed1 = seal_field(plaintext).unwrap();
+        let sealed2 = seal_field(plaintext).unwrap();
+        assert_ne!(
+            sealed1, sealed2,
+            "each seal call should use a random nonce, producing different output"
+        );
+
+        // Both should decrypt back to the same plaintext
+        assert_eq!(unseal_field(&sealed1).unwrap(), plaintext);
+        assert_eq!(unseal_field(&sealed2).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn unseal_short_ciphertext_returns_error() {
+        // Prefix present but payload too short to contain a 12-byte nonce
+        let short = format!(
+            "{ENC_PREFIX}{}",
+            base64::engine::general_purpose::STANDARD.encode(b"short")
+        );
+        let result = unseal_field(&short);
+        assert!(result.is_err(), "too-short ciphertext should fail");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("too short"),
+            "error should mention 'too short': {err_msg}"
+        );
+    }
+
+    #[test]
+    fn unseal_invalid_base64_returns_error() {
+        let bad = format!("{ENC_PREFIX}!!!not-valid-base64!!!");
+        let result = unseal_field(&bad);
+        assert!(result.is_err(), "invalid base64 should fail");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("base64"),
+            "error should mention base64: {err_msg}"
+        );
     }
 }
 

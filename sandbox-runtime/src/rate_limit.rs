@@ -22,7 +22,10 @@ use axum::{
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+use crate::metrics;
 
 /// Configuration for a rate limiter.
 #[derive(Clone, Debug)]
@@ -169,6 +172,7 @@ const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 pub async fn read_rate_limit(request: Request, next: Next) -> Response {
     let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
     if !read_limiter().check(ip) {
+        metrics::rate_limit_rejections().fetch_add(1, Ordering::Relaxed);
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [("retry-after", "60")],
@@ -184,6 +188,7 @@ pub async fn read_rate_limit(request: Request, next: Next) -> Response {
 pub async fn write_rate_limit(request: Request, next: Next) -> Response {
     let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
     if !write_limiter().check(ip) {
+        metrics::rate_limit_rejections().fetch_add(1, Ordering::Relaxed);
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [("retry-after", "60")],
@@ -199,6 +204,7 @@ pub async fn write_rate_limit(request: Request, next: Next) -> Response {
 pub async fn auth_rate_limit(request: Request, next: Next) -> Response {
     let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
     if !auth_limiter().check(ip) {
+        metrics::rate_limit_rejections().fetch_add(1, Ordering::Relaxed);
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [("retry-after", "60")],
@@ -255,5 +261,81 @@ mod tests {
         limiter.check(other);
         // ip1 entry should have been GC'd — only ip2 remains
         assert_eq!(limiter.tracked_ips(), 1);
+    }
+
+    #[test]
+    fn unknown_ip_is_unspecified() {
+        assert_eq!(
+            UNKNOWN_IP,
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            "UNKNOWN_IP should be 0.0.0.0"
+        );
+    }
+
+    #[test]
+    fn extract_client_ip_returns_none_for_bare_request() {
+        // Build a request with no ConnectInfo extension and no XFF header
+        let req = Request::builder()
+            .uri("/test")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, None, "should return None when no IP source is present");
+    }
+
+    #[test]
+    fn extract_client_ip_from_xff_header() {
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "192.168.1.42, 10.0.0.1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let ip = extract_client_ip(&req);
+        assert_eq!(
+            ip,
+            Some("192.168.1.42".parse().unwrap()),
+            "should extract the first IP from XFF"
+        );
+    }
+
+    #[test]
+    fn extract_client_ip_xff_single_ip() {
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.5")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, Some("10.0.0.5".parse().unwrap()));
+    }
+
+    #[test]
+    fn extract_client_ip_xff_invalid_ip() {
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "not-an-ip")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, None, "invalid XFF should return None");
+    }
+
+    #[test]
+    fn unknown_ip_bucket_rate_limits() {
+        // All requests without a discernible IP share the UNKNOWN_IP bucket.
+        let limiter = RateLimiter::new(RateLimitConfig::new(2, 60));
+
+        assert!(limiter.check(UNKNOWN_IP));
+        assert!(limiter.check(UNKNOWN_IP));
+        assert!(
+            !limiter.check(UNKNOWN_IP),
+            "third request to unknown IP bucket should be rate limited"
+        );
+    }
+
+    #[test]
+    fn tracked_ips_starts_at_zero() {
+        let limiter = RateLimiter::new(RateLimitConfig::new(10, 60));
+        assert_eq!(limiter.tracked_ips(), 0);
     }
 }

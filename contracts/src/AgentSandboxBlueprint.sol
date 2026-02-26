@@ -248,6 +248,48 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // OPERATOR UNREGISTRATION & DEPARTURE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Prevents operators from unregistering while they hold active resources.
+    function onUnregister(
+        address operator
+    ) external virtual override onlyFromTangle {
+        require(
+            operatorActiveSandboxes[operator] == 0,
+            "Cannot unregister with active sandboxes"
+        );
+        // Note: We cannot iterate all services here since the base interface
+        // only provides the operator address. Instance-mode provisions are
+        // checked via onOperatorLeft (per-service) and canLeave.
+    }
+
+    /// @notice Prevents operators from leaving a service while they have active provisions.
+    function onOperatorLeft(
+        uint64 serviceId,
+        address operator
+    ) external virtual override onlyFromTangle {
+        require(
+            operatorActiveSandboxes[operator] == 0,
+            "Cannot leave with active sandboxes"
+        );
+        require(
+            !operatorProvisioned[serviceId][operator],
+            "Cannot leave with active provisions"
+        );
+    }
+
+    /// @notice Pre-check: denies departure if operator has active provisions for this service.
+    function canLeave(
+        uint64 serviceId,
+        address operator
+    ) external view virtual override returns (bool) {
+        if (operatorActiveSandboxes[operator] > 0) return false;
+        if (operatorProvisioned[serviceId][operator]) return false;
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // SERVICE REQUEST VALIDATION
     // ═══════════════════════════════════════════════════════════════════════════
 
