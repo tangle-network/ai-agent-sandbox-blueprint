@@ -390,6 +390,14 @@ pub fn gc_sessions() {
         .retain(|_, s| s.expires_at > now);
 }
 
+/// Clear all challenges and sessions. Test-only — prevents cross-test
+/// pollution when capacity tests fill the global maps.
+#[cfg(test)]
+pub fn clear_all_for_testing() {
+    CHALLENGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
 /// Extract a Bearer token from an Authorization header value.
 pub fn extract_bearer_token(auth_header: &str) -> Option<&str> {
     auth_header

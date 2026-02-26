@@ -1396,6 +1396,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_challenge_returns_nonce() {
+        // Clear global maps to avoid capacity collisions with parallel tests
+        crate::session_auth::clear_all_for_testing();
+
         let response = app()
             .oneshot(
                 Request::builder()
@@ -1417,6 +1420,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_session_invalid_sig() {
+        // Clear global maps to avoid capacity collisions with parallel tests
+        crate::session_auth::clear_all_for_testing();
+
         // First get a challenge
         let response = app()
             .clone()
