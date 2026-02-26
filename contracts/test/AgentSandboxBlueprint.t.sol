@@ -547,7 +547,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertEq(blueprint.totalActiveSandboxes(), 1);
 
         vm.prank(blueprintOwner);
-        vm.expectRevert("Cannot change mode with active resources");
+        vm.expectRevert(AgentSandboxBlueprint.CannotChangeWithActiveResources.selector);
         blueprint.setInstanceMode(true);
     }
 
@@ -557,7 +557,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertEq(blueprint.totalActiveSandboxes(), 1);
 
         vm.prank(blueprintOwner);
-        vm.expectRevert("Cannot change mode with active resources");
+        vm.expectRevert(AgentSandboxBlueprint.CannotChangeWithActiveResources.selector);
         blueprint.setTeeRequired(true);
     }
 
@@ -592,25 +592,25 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // Use literal job IDs to avoid staticcall consuming expectRevert
     function test_cloudModeRejectsProvisionJobCall() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in cloud mode");
+        vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
         blueprint.onJobCall(1, 5, 960, bytes("")); // JOB_PROVISION = 5
     }
 
     function test_cloudModeRejectsDeprovisionJobCall() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in cloud mode");
+        vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
         blueprint.onJobCall(1, 6, 961, bytes("")); // JOB_DEPROVISION = 6
     }
 
     function test_cloudModeRejectsProvisionJobResult() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in cloud mode");
+        vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
         blueprint.onJobResult(1, 5, 962, operator1, bytes(""), bytes(""));
     }
 
     function test_cloudModeRejectsDeprovisionJobResult() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in cloud mode");
+        vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
         blueprint.onJobResult(1, 6, 963, operator1, bytes(""), bytes(""));
     }
 
@@ -640,7 +640,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 900, encodeSandboxCreateInputs());
 
         vm.prank(tangleCore);
-        vm.expectRevert("Sandbox ID must not be empty");
+        vm.expectRevert(AgentSandboxBlueprint.EmptySandboxId.selector);
         blueprint.onJobResult(
             1, 0, 900, operator1,
             encodeSandboxCreateInputs(),
@@ -660,7 +660,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         string memory longId = string(longBytes);
 
         vm.prank(tangleCore);
-        vm.expectRevert("Sandbox ID too long");
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.SandboxIdTooLong.selector, 256));
         blueprint.onJobResult(
             1, 0, 901, operator1,
             encodeSandboxCreateInputs(),
@@ -728,25 +728,25 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
     function test_unknownJobIdRevertsOnJobCall() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Unknown job ID");
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
         blueprint.onJobCall(1, 7, 970, bytes(""));
     }
 
     function test_unknownJobIdRevertsOnJobCallHighId() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Unknown job ID");
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 255));
         blueprint.onJobCall(1, 255, 971, bytes(""));
     }
 
     function test_unknownJobIdRevertsOnJobResult() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Unknown job ID");
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
         blueprint.onJobResult(1, 7, 972, operator1, bytes(""), bytes(""));
     }
 
     function test_unknownJobIdRevertsOnJobResultHighId() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Unknown job ID");
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 255));
         blueprint.onJobResult(1, 255, 973, operator1, bytes(""), bytes(""));
     }
 
@@ -759,7 +759,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         _createSandbox(1, 4000, operator1, "sb-unreg");
 
         vm.prank(tangleCore);
-        vm.expectRevert("Cannot unregister with active sandboxes");
+        vm.expectRevert(AgentSandboxBlueprint.CannotLeaveWithActiveResources.selector);
         blueprint.onUnregister(operator1);
     }
 
@@ -793,7 +793,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         _createSandbox(1, 4020, operator1, "sb-leave");
 
         vm.prank(tangleCore);
-        vm.expectRevert("Cannot leave with active sandboxes");
+        vm.expectRevert(AgentSandboxBlueprint.CannotLeaveWithActiveResources.selector);
         blueprint.onOperatorLeft(1, operator1);
     }
 
@@ -914,6 +914,70 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             abi.encode(ctrl), encodeJsonOutputs("{}")
         );
         assertFalse(blueprint.getWorkflow(workflowId).active);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: onRequest WITH ZERO OPERATORS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onRequestRevertsWithZeroOperators() public {
+        address[] memory operators = new address[](0);
+
+        vm.prank(tangleCore);
+        vm.expectRevert(AgentSandboxBlueprint.ZeroOperatorsInRequest.selector);
+        blueprint.onRequest(1, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: _mark_triggered FOR NON-EXISTENT WORKFLOW
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_markTriggeredRevertsForNonExistentWorkflow() public {
+        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl = AgentSandboxBlueprint.WorkflowControlRequest({
+            workflow_id: 99999
+        });
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.WorkflowNotFound.selector, uint64(99999)));
+        blueprint.onJobResult(
+            1, 3, 5000, operator1, // JOB_WORKFLOW_TRIGGER = 3
+            abi.encode(ctrl), encodeJsonOutputs("{}")
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: _cancel_workflow FOR NON-EXISTENT WORKFLOW
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_cancelWorkflowRevertsForNonExistentWorkflow() public {
+        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl = AgentSandboxBlueprint.WorkflowControlRequest({
+            workflow_id: 88888
+        });
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.WorkflowNotFound.selector, uint64(88888)));
+        blueprint.onJobResult(
+            1, 4, 5001, operator1, // JOB_WORKFLOW_CANCEL = 4
+            abi.encode(ctrl), encodeJsonOutputs("{}")
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: setOperatorCapacity BY NON-OWNER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_setOperatorCapacityRevertsForNonOwner() public {
+        registerOperator(operator1, 50);
+
+        vm.prank(operator1);
+        vm.expectRevert();
+        blueprint.setOperatorCapacity(operator1, 200);
+    }
+
+    function test_setDefaultMaxCapacityRevertsForNonOwner() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        blueprint.setDefaultMaxCapacity(500);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

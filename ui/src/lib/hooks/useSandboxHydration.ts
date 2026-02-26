@@ -2,9 +2,7 @@ import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { useOperatorAuth } from './useOperatorAuth';
 import { sandboxListStore, type LocalSandbox } from '~/lib/stores/sandboxes';
-
-const OPERATOR_API_URL = import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090';
-const INSTANCE_OPERATOR_API_URL = import.meta.env.VITE_INSTANCE_OPERATOR_API_URL ?? '';
+import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
 
 interface ApiSandbox {
   id: string;
@@ -22,10 +20,12 @@ async function fetchSandboxes(
   blueprintId: string,
   serviceId: string,
   getToken?: (forceRefresh: boolean) => Promise<string | null>,
+  signal?: AbortSignal,
 ): Promise<ApiSandbox[]> {
   const url = `${baseUrl}/api/sandboxes`;
   let res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
+    signal,
   });
 
   // Auto-retry once on 401 (expired PASETO token)
@@ -34,6 +34,7 @@ async function fetchSandboxes(
     if (freshToken) {
       res = await fetch(url, {
         headers: { Authorization: `Bearer ${freshToken}` },
+        signal,
       });
     }
   }
@@ -59,6 +60,9 @@ export function useSandboxHydration() {
     if (hydrated.current) return;
     hydrated.current = true;
 
+    const controller = new AbortController();
+    const { signal } = controller;
+
     (async () => {
       const results: ApiSandbox[] = [];
       let hadError = false;
@@ -66,6 +70,7 @@ export function useSandboxHydration() {
       // Fetch from sandbox operator
       try {
         const sandboxToken = await getSandboxToken();
+        if (signal.aborted) return;
         if (sandboxToken) {
           const sandboxes = await fetchSandboxes(
             OPERATOR_API_URL,
@@ -73,10 +78,12 @@ export function useSandboxHydration() {
             import.meta.env.VITE_SANDBOX_BLUEPRINT_ID ?? '',
             import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '',
             getSandboxToken,
+            signal,
           );
           results.push(...sandboxes);
         }
       } catch (e) {
+        if (signal.aborted) return;
         hadError = true;
         console.warn('Sandbox operator hydration failed:', e);
       }
@@ -85,6 +92,7 @@ export function useSandboxHydration() {
       if (INSTANCE_OPERATOR_API_URL) {
         try {
           const instanceToken = await getInstanceToken();
+          if (signal.aborted) return;
           if (instanceToken) {
             const instances = await fetchSandboxes(
               INSTANCE_OPERATOR_API_URL,
@@ -92,13 +100,17 @@ export function useSandboxHydration() {
               import.meta.env.VITE_INSTANCE_BLUEPRINT_ID ?? '',
               import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '',
               getInstanceToken,
+              signal,
             );
             results.push(...instances);
           }
         } catch (e) {
+          if (signal.aborted) return;
           console.warn('Instance operator hydration failed:', e);
         }
       }
+
+      if (signal.aborted) return;
 
       // Surface error to user if sandbox operator is unreachable
       if (hadError && results.length === 0) {
@@ -146,5 +158,9 @@ export function useSandboxHydration() {
         sandboxListStore.set([...newSandboxes, ...updated]);
       }
     })();
+
+    return () => {
+      controller.abort();
+    };
   }, [getSandboxToken, getInstanceToken]);
 }

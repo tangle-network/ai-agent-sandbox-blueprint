@@ -22,12 +22,16 @@ pub fn state_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("blueprint-state"));
 
     if !dir.exists() {
-        std::fs::create_dir_all(&dir).ok();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::error!(path = %dir.display(), error = %e, "Failed to create state directory");
+        }
         // Restrict directory permissions: only owner can read/write/traverse.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+            if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
+                tracing::warn!(path = %dir.display(), error = %e, "Failed to set state directory permissions");
+            }
         }
     }
 
@@ -41,6 +45,10 @@ pub fn state_dir() -> PathBuf {
 /// read-modify-write races across multiple tokio tasks (reaper, GC,
 /// API handlers). Read operations acquire a shared read lock; write
 /// operations acquire an exclusive write lock.
+///
+/// **Limitation**: No OS-level file locking (flock/fcntl) is applied.
+/// Two operator processes sharing the same `BLUEPRINT_STATE_DIR` can
+/// corrupt the JSON store. Each operator must use a unique state directory.
 pub struct PersistentStore<V> {
     db: RwLock<LocalDatabase<V>>,
 }

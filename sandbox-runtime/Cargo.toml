@@ -44,7 +44,8 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 
 # Operator API
 axum = "0.8"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["cors", "timeout", "trace"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

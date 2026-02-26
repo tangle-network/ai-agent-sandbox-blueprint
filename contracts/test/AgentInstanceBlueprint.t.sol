@@ -384,7 +384,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         instance.onRequest(2, blueprintOwner, operators, config, 0, address(0), 0);
 
         vm.prank(tangleCore);
-        vm.expectRevert("Service already initialized");
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.ServiceAlreadyInitialized.selector, testServiceId));
         instance.onServiceInitialized(testBlueprintId, 2, testServiceId, blueprintOwner, permittedCallers, 0);
     }
 
@@ -447,61 +447,61 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     // Use literal job IDs to avoid staticcall consuming expectRevert
     function test_instanceModeRejectsSandboxCreateJobCall() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobCall(testServiceId, 0, 2000, bytes("")); // JOB_SANDBOX_CREATE = 0
     }
 
     function test_instanceModeRejectsSandboxDeleteJobCall() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobCall(testServiceId, 1, 2001, abi.encode("some-sandbox")); // JOB_SANDBOX_DELETE = 1
     }
 
     function test_instanceModeRejectsWorkflowCreateJobCall() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobCall(testServiceId, 2, 2002, bytes("")); // JOB_WORKFLOW_CREATE = 2
     }
 
     function test_instanceModeRejectsWorkflowTriggerJobCall() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobCall(testServiceId, 3, 2003, bytes("")); // JOB_WORKFLOW_TRIGGER = 3
     }
 
     function test_instanceModeRejectsWorkflowCancelJobCall() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobCall(testServiceId, 4, 2004, bytes("")); // JOB_WORKFLOW_CANCEL = 4
     }
 
     function test_instanceModeRejectsSandboxCreateJobResult() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobResult(testServiceId, 0, 2010, operator1, bytes(""), bytes(""));
     }
 
     function test_instanceModeRejectsSandboxDeleteJobResult() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobResult(testServiceId, 1, 2011, operator1, bytes(""), bytes(""));
     }
 
     function test_instanceModeRejectsWorkflowCreateJobResult() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobResult(testServiceId, 2, 2012, operator1, bytes(""), bytes(""));
     }
 
     function test_instanceModeRejectsWorkflowTriggerJobResult() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobResult(testServiceId, 3, 2013, operator1, bytes(""), bytes(""));
     }
 
     function test_instanceModeRejectsWorkflowCancelJobResult() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Not available in instance mode");
+        vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
         instance.onJobResult(testServiceId, 4, 2014, operator1, bytes(""), bytes(""));
     }
 
@@ -511,13 +511,13 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
 
     function test_unknownJobIdRevertsOnJobCallInstanceMode() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Unknown job ID");
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
         instance.onJobCall(testServiceId, 7, 3000, bytes(""));
     }
 
     function test_unknownJobIdRevertsOnJobResultInstanceMode() public {
         vm.prank(tangleCore);
-        vm.expectRevert("Unknown job ID");
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
         instance.onJobResult(testServiceId, 7, 3001, operator1, bytes(""), bytes(""));
     }
 
@@ -568,7 +568,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(instance.totalProvisionedOperators(), 1);
 
         vm.prank(blueprintOwner);
-        vm.expectRevert("Cannot change mode with active resources");
+        vm.expectRevert(AgentSandboxBlueprint.CannotChangeWithActiveResources.selector);
         instance.setInstanceMode(false);
     }
 
@@ -577,7 +577,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(instance.totalProvisionedOperators(), 1);
 
         vm.prank(blueprintOwner);
-        vm.expectRevert("Cannot change mode with active resources");
+        vm.expectRevert(AgentSandboxBlueprint.CannotChangeWithActiveResources.selector);
         instance.setTeeRequired(true);
     }
 
@@ -614,7 +614,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         _provisionOperator(operator1);
 
         vm.prank(tangleCore);
-        vm.expectRevert("Cannot leave with active provisions");
+        vm.expectRevert(AgentSandboxBlueprint.CannotLeaveWithActiveResources.selector);
         instance.onOperatorLeft(testServiceId, operator1);
     }
 
@@ -715,6 +715,121 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: ADMIN FUNCTIONS REVERT FOR NON-OWNER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_setDefaultMaxCapacityRevertsForNonOwnerInstanceMode() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        instance.setDefaultMaxCapacity(500);
+    }
+
+    function test_setOperatorCapacityRevertsForNonOwnerInstanceMode() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        instance.setOperatorCapacity(operator1, 200);
+    }
+
+    function test_setInstanceModeRevertsForNonOwner() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        instance.setInstanceMode(false);
+    }
+
+    function test_setTeeRequiredRevertsForNonOwner() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        instance.setTeeRequired(true);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: PROVISION WITH EMPTY SANDBOX ID
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onRequestRevertsWithZeroOperatorsInstanceMode() public {
+        address[] memory operators = new address[](0);
+
+        vm.prank(tangleCore);
+        vm.expectRevert(AgentSandboxBlueprint.ZeroOperatorsInRequest.selector);
+        instance.onRequest(1, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS: PROVISION/DEPROVISION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function testFuzz_provisionWithArbitrarySandboxId(string calldata sandboxId) public {
+        // Skip empty strings — they are valid in instance mode (no on-chain length check for provision)
+        // Provision encodes sandbox ID in outputs and stores sidecar URL
+        uint64 callId = 9000;
+        simulateJobCall(testServiceId, instance.JOB_PROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId,
+            instance.JOB_PROVISION(),
+            callId,
+            operator1,
+            bytes(""),
+            abi.encode(sandboxId, "http://sidecar:8080", uint32(2222), "")
+        );
+
+        assertTrue(instance.isOperatorProvisioned(testServiceId, operator1));
+        assertEq(instance.getOperatorCount(testServiceId), 1);
+        assertEq(instance.operatorSidecarUrl(testServiceId, operator1), "http://sidecar:8080");
+    }
+
+    function testFuzz_provisionDeprovisionSequence(uint8 numOps) public {
+        // Bound to a reasonable range: 1 to 10 operators
+        vm.assume(numOps >= 1 && numOps <= 10);
+
+        address[] memory ops = new address[](numOps);
+
+        // Provision all operators
+        for (uint8 i = 0; i < numOps; i++) {
+            address op = address(uint160(0x3000 + i));
+            ops[i] = op;
+            uint64 callId = uint64(10000 + i);
+            simulateJobCall(testServiceId, instance.JOB_PROVISION(), callId, bytes(""));
+            simulateJobResult(
+                testServiceId,
+                instance.JOB_PROVISION(),
+                callId,
+                op,
+                bytes(""),
+                abi.encode(
+                    string(abi.encodePacked("sb-fuzz-", vm.toString(i))),
+                    string(abi.encodePacked("http://op", vm.toString(i), ":8080")),
+                    uint32(2222 + i),
+                    ""
+                )
+            );
+            assertTrue(instance.isOperatorProvisioned(testServiceId, op));
+        }
+
+        assertEq(instance.getOperatorCount(testServiceId), uint32(numOps));
+        assertEq(instance.totalProvisionedOperators(), uint256(numOps));
+
+        // Deprovision all operators in reverse order
+        for (uint256 i = numOps; i > 0; i--) {
+            address op = ops[i - 1];
+            uint64 callId = uint64(20000 + i);
+            simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+            simulateJobResult(
+                testServiceId,
+                instance.JOB_DEPROVISION(),
+                callId,
+                op,
+                bytes(""),
+                encodeJsonOutputs("{}")
+            );
+            assertFalse(instance.isOperatorProvisioned(testServiceId, op));
+        }
+
+        assertEq(instance.getOperatorCount(testServiceId), 0);
+        assertEq(instance.totalProvisionedOperators(), 0);
+        assertFalse(instance.isProvisioned(testServiceId));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // SECURITY: DOUBLE INITIALIZATION WITH DIFFERENT OWNERS (P5)
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -739,7 +854,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         instance.onRequest(2, attacker, operators, config, 0, address(0), 0);
 
         vm.prank(tangleCore);
-        vm.expectRevert("Service already initialized");
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.ServiceAlreadyInitialized.selector, testServiceId));
         instance.onServiceInitialized(testBlueprintId, 2, testServiceId, attacker, permittedCallers, 0);
 
         // Verify owner unchanged

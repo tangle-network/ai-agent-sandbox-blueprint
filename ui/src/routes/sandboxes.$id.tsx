@@ -1,5 +1,5 @@
 import { useParams, Link } from 'react-router';
-import { lazy, Suspense, useState, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '~/components/motion/AnimatedPage';
@@ -29,9 +29,7 @@ const TerminalView = lazy(() =>
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets';
 
-/** Operator API base URL for sandbox lifecycle operations. */
-const OPERATOR_API_URL = import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090';
-const INSTANCE_OPERATOR_API_URL = import.meta.env.VITE_INSTANCE_OPERATOR_API_URL ?? 'http://localhost:9200';
+import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
 
 interface SshKey {
   username: string;
@@ -65,13 +63,33 @@ export default function SandboxDetail() {
   const [secretsError, setSecretsError] = useState<string | null>(null);
   const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
 
+  // Track setTimeout IDs so they can be cleared on unmount
+  const timeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  useEffect(() => {
+    return () => {
+      for (const id of timeoutsRef.current) {
+        clearTimeout(id);
+      }
+      timeoutsRef.current.clear();
+    };
+  }, []);
+
+  /** Schedule a timeout and track it for cleanup on unmount. */
+  const scheduleDismiss = useCallback((fn: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      timeoutsRef.current.delete(id);
+      fn();
+    }, ms);
+    timeoutsRef.current.add(id);
+  }, []);
+
   const serviceId = BigInt(sb?.serviceId ?? '1');
 
   // Resolve correct operator API URL (instance blueprints run on a different port)
   const instanceBpId = import.meta.env.VITE_INSTANCE_BLUEPRINT_ID;
   const teeBpId = import.meta.env.VITE_TEE_INSTANCE_BLUEPRINT_ID;
   const isInstance = sb ? (sb.blueprintId === instanceBpId || sb.blueprintId === teeBpId) : false;
-  const operatorUrl = isInstance ? INSTANCE_OPERATOR_API_URL : OPERATOR_API_URL;
+  const operatorUrl = isInstance ? (INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL) : OPERATOR_API_URL;
 
   // Sidecar auth for PTY terminal and chat (direct connection)
   const sidecarUrl = sb?.sidecarUrl ?? '';
@@ -204,13 +222,13 @@ export default function SandboxDetail() {
       setSshKeys((prev) => [...prev, { username: sshUsername, publicKey: sshPublicKey.trim() }]);
       setSshPublicKey('');
       setSshSuccess('SSH key provisioned');
-      setTimeout(() => setSshSuccess(null), 3000);
+      scheduleDismiss(() => setSshSuccess(null), 3000);
     } catch (e) {
       setSshError(e instanceof Error ? e.message : 'Failed to provision SSH key');
     } finally {
       setSshBusy(false);
     }
-  }, [sshUsername, sshPublicKey, operatorApiCall]);
+  }, [sshUsername, sshPublicKey, operatorApiCall, scheduleDismiss]);
 
   const handleSshRevoke = useCallback(async (key: SshKey) => {
     setSshBusy(true);
@@ -220,13 +238,13 @@ export default function SandboxDetail() {
       await operatorApiCall('ssh', { username: key.username, public_key: key.publicKey }, { method: 'DELETE' });
       setSshKeys((prev) => prev.filter((k) => k.publicKey !== key.publicKey));
       setSshSuccess('SSH key revoked');
-      setTimeout(() => setSshSuccess(null), 3000);
+      scheduleDismiss(() => setSshSuccess(null), 3000);
     } catch (e) {
       setSshError(e instanceof Error ? e.message : 'Failed to revoke SSH key');
     } finally {
       setSshBusy(false);
     }
-  }, [operatorApiCall]);
+  }, [operatorApiCall, scheduleDismiss]);
 
   // Secrets handlers
   const handleInjectSecrets = useCallback(async () => {
@@ -240,13 +258,13 @@ export default function SandboxDetail() {
       }
       await operatorApiCall('secrets', { env_json: parsed });
       setSecretsSuccess('Secrets injected');
-      setTimeout(() => setSecretsSuccess(null), 3000);
+      scheduleDismiss(() => setSecretsSuccess(null), 3000);
     } catch (e) {
       setSecretsError(e instanceof Error ? e.message : 'Failed to inject secrets');
     } finally {
       setSecretsBusy(false);
     }
-  }, [secretsJson, operatorApiCall]);
+  }, [secretsJson, operatorApiCall, scheduleDismiss]);
 
   const handleWipeSecrets = useCallback(async () => {
     if (!window.confirm('Are you sure you want to wipe all secrets? This will restart the sandbox without any injected secrets.')) return;
@@ -256,13 +274,13 @@ export default function SandboxDetail() {
     try {
       await operatorApiCall('secrets', undefined, { method: 'DELETE' });
       setSecretsSuccess('Secrets wiped');
-      setTimeout(() => setSecretsSuccess(null), 3000);
+      scheduleDismiss(() => setSecretsSuccess(null), 3000);
     } catch (e) {
       setSecretsError(e instanceof Error ? e.message : 'Failed to wipe secrets');
     } finally {
       setSecretsBusy(false);
     }
-  }, [operatorApiCall]);
+  }, [operatorApiCall, scheduleDismiss]);
 
   if (!sb) {
     return (

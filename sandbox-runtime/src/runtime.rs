@@ -175,13 +175,16 @@ impl SidecarRuntimeConfig {
 
             // Validate critical configuration values.
             if image.trim().is_empty() {
-                panic!("SIDECAR_IMAGE must not be empty");
+                tracing::error!("SIDECAR_IMAGE must not be empty");
+                std::process::exit(1);
             }
             if container_port == 0 {
-                panic!("SIDECAR_HTTP_PORT must be > 0");
+                tracing::error!("SIDECAR_HTTP_PORT must be > 0");
+                std::process::exit(1);
             }
             if timeout == 0 {
-                panic!("REQUEST_TIMEOUT_SECS must be > 0");
+                tracing::error!("REQUEST_TIMEOUT_SECS must be > 0");
+                std::process::exit(1);
             }
 
             tracing::info!(
@@ -381,8 +384,13 @@ where
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(DEFAULT_DOCKER_TIMEOUT_SECS);
 
-    match tokio::time::timeout(Duration::from_secs(timeout_secs), future).await {
-        Ok(Ok(result)) => Ok(result),
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(timeout_secs), future).await;
+    let duration_ms = start.elapsed().as_millis();
+    tracing::debug!(op = %op_name, duration_ms = %duration_ms, "docker operation completed");
+
+    match result {
+        Ok(Ok(value)) => Ok(value),
         Ok(Err(e)) => Err(SandboxError::Docker(format!("{op_name} failed: {e}"))),
         Err(_) => Err(SandboxError::Docker(format!(
             "{op_name} timed out after {timeout_secs}s"

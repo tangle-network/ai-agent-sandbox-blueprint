@@ -64,6 +64,28 @@ async fn request_id_middleware(
 }
 
 // ---------------------------------------------------------------------------
+// Security headers middleware
+// ---------------------------------------------------------------------------
+
+/// Middleware that adds security headers to every response.
+///
+/// Applied headers:
+/// - `X-Content-Type-Options: nosniff` — prevent MIME-type sniffing
+/// - `X-Frame-Options: DENY` — disallow framing (clickjacking protection)
+/// - `Cache-Control: no-store` — prevent caching of API responses
+async fn security_headers_middleware(
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    headers.insert("x-frame-options", "DENY".parse().unwrap());
+    headers.insert("cache-control", "no-store".parse().unwrap());
+    res
+}
+
+// ---------------------------------------------------------------------------
 // Error response
 // ---------------------------------------------------------------------------
 
@@ -1219,8 +1241,14 @@ pub fn operator_api_router_with_tee(
 
     router
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1 MB max request body
+        .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn(http_metrics_middleware))
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(tower::limit::ConcurrencyLimitLayer::new(64))
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(120),
+        ))
         .layer(cors)
         // Outermost layer: assign a unique request ID before anything else runs.
         .layer(middleware::from_fn(request_id_middleware))
@@ -1396,7 +1424,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_challenge_returns_nonce() {
-        // Clear global maps to avoid capacity collisions with parallel tests
+        let _guard = crate::session_auth::capacity_test_lock_async().await;
         crate::session_auth::clear_all_for_testing();
 
         let response = app()
@@ -1420,7 +1448,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_session_invalid_sig() {
-        // Clear global maps to avoid capacity collisions with parallel tests
+        let _guard = crate::session_auth::capacity_test_lock_async().await;
         crate::session_auth::clear_all_for_testing();
 
         // First get a challenge

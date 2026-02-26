@@ -63,6 +63,9 @@ interface UseCreateDeployOpts {
   validate: () => boolean;
 }
 
+/** ~30 days at 3s blocks */
+const TTL_BLOCKS_30_DAYS = 864000n;
+
 // ── Hook ──
 
 export function useCreateDeploy({ blueprint, job, values, infra, validate }: UseCreateDeployOpts) {
@@ -263,13 +266,17 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
           ops,
           args as `0x${string}`,
           [address as Address],
-          864000n, // ~30 days at 3s blocks
+          TTL_BLOCKS_30_DAYS,
           '0x0000000000000000000000000000000000000000' as Address,
           0n,
         ],
       });
-    } catch (err: any) {
-      setServiceError(err?.shortMessage ?? err?.message ?? 'Service creation failed');
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? (err as Error & { shortMessage?: string }).shortMessage ?? err.message
+          : String(err);
+      setServiceError(message || 'Service creation failed');
     }
   }, [job, values, infra, validate, isNewService, submitJob, address, operators, requestServiceWrite, mode, isTeeInstance]);
 

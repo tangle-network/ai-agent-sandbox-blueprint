@@ -398,6 +398,25 @@ pub fn clear_all_for_testing() {
     SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
+/// Shared lock backing both sync and async capacity-test guards.
+#[cfg(test)]
+static CAPACITY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Acquire the shared capacity-test mutex (sync variant for `#[test]`).
+/// Hold the returned guard for the duration of any test that creates
+/// challenges or sessions to prevent races with capacity-exhaustion tests.
+#[cfg(test)]
+pub fn capacity_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    CAPACITY_LOCK.blocking_lock()
+}
+
+/// Async variant of [`capacity_test_lock`] for `#[tokio::test]` functions.
+/// Can be held across `.await` points without triggering clippy warnings.
+#[cfg(test)]
+pub async fn capacity_test_lock_async() -> tokio::sync::MutexGuard<'static, ()> {
+    CAPACITY_LOCK.lock().await
+}
+
 /// Extract a Bearer token from an Authorization header value.
 pub fn extract_bearer_token(auth_header: &str) -> Option<&str> {
     auth_header
@@ -515,7 +534,7 @@ mod tests {
 
     #[test]
     fn challenge_lifecycle() {
-        let _guard = CAPACITY_LOCK.lock().unwrap();
+        let _guard = capacity_test_lock();
         let challenge = create_challenge().unwrap();
         assert!(!challenge.nonce.is_empty());
         assert!(challenge.message.contains(&challenge.nonce));
@@ -532,7 +551,7 @@ mod tests {
 
     #[test]
     fn challenge_expiry() {
-        let _guard = CAPACITY_LOCK.lock().unwrap();
+        let _guard = capacity_test_lock();
         // Clear any leftover challenges from capacity tests to avoid
         // hitting the capacity cap when inserting our test challenge.
         CHALLENGES.lock().unwrap().clear();
@@ -592,7 +611,7 @@ mod tests {
 
     #[test]
     fn token_roundtrip() {
-        let _guard = CAPACITY_LOCK.lock().unwrap();
+        let _guard = capacity_test_lock();
         use k256::ecdsa::SigningKey;
 
         let signing_key = SigningKey::random(&mut OsRng);
@@ -654,7 +673,7 @@ mod tests {
 
     #[test]
     fn gc_sessions_cleans_expired() {
-        let _guard = CAPACITY_LOCK.lock().unwrap();
+        let _guard = capacity_test_lock();
         // Clear maps to avoid capacity interference from other tests
         CHALLENGES.lock().unwrap().clear();
         SESSIONS.lock().unwrap().clear();
@@ -729,13 +748,9 @@ mod tests {
         );
     }
 
-    /// Serialization mutex for tests that mutate the global CHALLENGES / SESSIONS
-    /// maps to extreme sizes. Prevents parallel tests from observing a full map.
-    static CAPACITY_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn challenge_capacity_blocks_when_full() {
-        let _guard = CAPACITY_LOCK.lock().unwrap();
+        let _guard = capacity_test_lock();
 
         {
             let mut map = CHALLENGES.lock().unwrap();
@@ -769,7 +784,7 @@ mod tests {
 
     #[test]
     fn gc_restores_challenge_capacity_after_expiry() {
-        let _guard = CAPACITY_LOCK.lock().unwrap();
+        let _guard = capacity_test_lock();
 
         {
             let mut map = CHALLENGES.lock().unwrap();
@@ -798,7 +813,7 @@ mod tests {
 
     #[test]
     fn session_capacity_blocks_when_full() {
-        let _guard = CAPACITY_LOCK.lock().unwrap();
+        let _guard = capacity_test_lock();
 
         {
             let mut map = SESSIONS.lock().unwrap();

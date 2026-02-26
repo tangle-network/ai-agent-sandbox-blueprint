@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAccount, useSignMessage } from 'wagmi';
-
-const OPERATOR_API_URL = import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090';
+import { OPERATOR_API_URL } from '~/lib/config';
 
 interface OperatorSession {
   token: string;

@@ -185,11 +185,25 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     error OperatorMismatch(address expected, address actual);
     error SandboxNotFound(bytes32 sandboxHash);
     error SandboxAlreadyExists(bytes32 sandboxHash);
+    error EmptySandboxId();
+    error SandboxIdTooLong(uint256 length);
+    error WorkflowNotFound(uint64 workflowId);
+    error MaxWorkflowsReached(uint64 serviceId);
 
     // Instance errors
     error AlreadyProvisioned(uint64 serviceId, address operator);
     error NotProvisioned(uint64 serviceId, address operator);
     error MissingTeeAttestation(uint64 serviceId, address operator);
+    error MaxOperatorsReached(uint64 serviceId);
+
+    // Mode errors
+    error CloudModeOnly();
+    error InstanceModeOnly();
+    error UnknownJobId(uint8 jobId);
+    error CannotChangeWithActiveResources();
+    error CannotLeaveWithActiveResources();
+    error ZeroOperatorsInRequest();
+    error ServiceAlreadyInitialized(uint64 serviceId);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // CONSTRUCTOR
@@ -255,10 +269,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     function onUnregister(
         address operator
     ) external virtual override onlyFromTangle {
-        require(
-            operatorActiveSandboxes[operator] == 0,
-            "Cannot unregister with active sandboxes"
-        );
+        if (operatorActiveSandboxes[operator] != 0) revert CannotLeaveWithActiveResources();
         // Note: We cannot iterate all services here since the base interface
         // only provides the operator address. Instance-mode provisions are
         // checked via onOperatorLeft (per-service) and canLeave.
@@ -269,14 +280,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         uint64 serviceId,
         address operator
     ) external virtual override onlyFromTangle {
-        require(
-            operatorActiveSandboxes[operator] == 0,
-            "Cannot leave with active sandboxes"
-        );
-        require(
-            !operatorProvisioned[serviceId][operator],
-            "Cannot leave with active provisions"
-        );
+        if (operatorActiveSandboxes[operator] != 0) revert CannotLeaveWithActiveResources();
+        if (operatorProvisioned[serviceId][operator]) revert CannotLeaveWithActiveResources();
     }
 
     /// @notice Pre-check: denies departure if operator has active provisions for this service.
@@ -306,7 +311,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         paymentAsset;
         paymentAmount;
 
-        require(operators.length >= 1, "At least 1 operator required");
+        if (operators.length == 0) revert ZeroOperatorsInRequest();
 
         if (instanceMode) {
             // Store sandbox config for retrieval in onServiceInitialized
@@ -336,7 +341,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         uint64               // ttl
     ) external override onlyFromTangle {
         if (instanceMode) {
-            require(serviceOwner[serviceId] == address(0), "Service already initialized");
+            if (serviceOwner[serviceId] != address(0)) revert ServiceAlreadyInitialized(serviceId);
             serviceOwner[serviceId] = owner;
             bytes memory cfg = _pendingRequestConfig[requestId];
             if (cfg.length > 0) {
@@ -366,23 +371,23 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         bytes calldata inputs
     ) external payable override onlyFromTangle {
         if (job == JOB_SANDBOX_CREATE) {
-            require(!instanceMode, "Not available in instance mode");
+            if (instanceMode) revert CloudModeOnly();
             address selected = _selectByCapacity(serviceId);
             _createAssignments[serviceId][jobCallId] = selected;
             emit OperatorAssigned(serviceId, jobCallId, selected);
         } else if (job == JOB_SANDBOX_DELETE) {
-            require(!instanceMode, "Not available in instance mode");
+            if (instanceMode) revert CloudModeOnly();
             string memory sandboxId = abi.decode(inputs, (string));
             bytes32 sandboxHash = keccak256(bytes(sandboxId));
             address routed = sandboxOperator[sandboxHash];
             if (routed == address(0)) revert SandboxNotFound(sandboxHash);
             emit OperatorRouted(serviceId, jobCallId, routed);
         } else if (job == JOB_WORKFLOW_CREATE || job == JOB_WORKFLOW_TRIGGER || job == JOB_WORKFLOW_CANCEL) {
-            require(!instanceMode, "Not available in instance mode");
+            if (instanceMode) revert CloudModeOnly();
         } else if (job == JOB_PROVISION || job == JOB_DEPROVISION) {
-            require(instanceMode, "Not available in cloud mode");
+            if (!instanceMode) revert InstanceModeOnly();
         } else {
-            revert("Unknown job ID");
+            revert UnknownJobId(job);
         }
     }
 
@@ -399,31 +404,31 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         bytes calldata outputs
     ) external payable override onlyFromTangle {
         if (job == JOB_SANDBOX_CREATE) {
-            require(!instanceMode, "Not available in instance mode");
+            if (instanceMode) revert CloudModeOnly();
             _handleCreateResult(serviceId, jobCallId, operator, outputs);
         } else if (job == JOB_SANDBOX_DELETE) {
-            require(!instanceMode, "Not available in instance mode");
+            if (instanceMode) revert CloudModeOnly();
             _handleDeleteResult(operator, inputs);
         } else if (job == JOB_WORKFLOW_CREATE) {
-            require(!instanceMode, "Not available in instance mode");
+            if (instanceMode) revert CloudModeOnly();
             WorkflowCreateRequest memory request = abi.decode(inputs, (WorkflowCreateRequest));
             _upsert_workflow(jobCallId, request);
         } else if (job == JOB_WORKFLOW_TRIGGER) {
-            require(!instanceMode, "Not available in instance mode");
+            if (instanceMode) revert CloudModeOnly();
             WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
             _mark_triggered(request.workflow_id);
         } else if (job == JOB_WORKFLOW_CANCEL) {
-            require(!instanceMode, "Not available in instance mode");
+            if (instanceMode) revert CloudModeOnly();
             WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
             _cancel_workflow(request.workflow_id);
         } else if (job == JOB_PROVISION) {
-            require(instanceMode, "Not available in cloud mode");
+            if (!instanceMode) revert InstanceModeOnly();
             _handleProvisionResult(serviceId, operator, outputs);
         } else if (job == JOB_DEPROVISION) {
-            require(instanceMode, "Not available in cloud mode");
+            if (!instanceMode) revert InstanceModeOnly();
             _handleDeprovisionResult(serviceId, operator);
         } else {
-            revert("Unknown job ID");
+            revert UnknownJobId(job);
         }
     }
 
@@ -444,12 +449,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     function setInstanceMode(bool _mode) external onlyBlueprintOwner {
-        require(totalActiveSandboxes == 0 && totalProvisionedOperators == 0, "Cannot change mode with active resources");
+        if (totalActiveSandboxes != 0 || totalProvisionedOperators != 0) revert CannotChangeWithActiveResources();
         instanceMode = _mode;
     }
 
     function setTeeRequired(bool _required) external onlyBlueprintOwner {
-        require(totalActiveSandboxes == 0 && totalProvisionedOperators == 0, "Cannot change mode with active resources");
+        if (totalActiveSandboxes != 0 || totalProvisionedOperators != 0) revert CannotChangeWithActiveResources();
         teeRequired = _required;
     }
 
@@ -624,6 +629,10 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
         if (count == 0 || totalWeight == 0) revert NoAvailableCapacity();
 
+        // NOTE: block.prevrandao is proposer-influenceable. This is an accepted
+        // trade-off for operator selection: operators are trusted service providers,
+        // not adversarial bidders. A commit-reveal scheme would add complexity
+        // without meaningful security benefit in this threat model.
         uint256 rand = uint256(keccak256(abi.encode(block.prevrandao, serviceId, _selectionNonce)));
         _selectionNonce++;
         uint256 pick = rand % totalWeight;
@@ -653,8 +662,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         if (assigned != operator) revert OperatorMismatch(assigned, operator);
 
         (string memory sandboxId,) = abi.decode(outputs, (string, string));
-        require(bytes(sandboxId).length > 0, "Sandbox ID must not be empty");
-        require(bytes(sandboxId).length <= 255, "Sandbox ID too long");
+        if (bytes(sandboxId).length == 0) revert EmptySandboxId();
+        if (bytes(sandboxId).length > 255) revert SandboxIdTooLong(bytes(sandboxId).length);
         bytes32 sandboxHash = keccak256(bytes(sandboxId));
 
         if (sandboxOperator[sandboxHash] != address(0)) revert SandboxAlreadyExists(sandboxHash);
@@ -715,7 +724,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         totalProvisionedOperators++;
 
         operatorSidecarUrl[serviceId][operator] = sidecarUrl;
-        require(_serviceOperators[serviceId].length < MAX_OPERATORS_PER_SERVICE, "Max operators per service reached");
+        if (_serviceOperators[serviceId].length >= MAX_OPERATORS_PER_SERVICE) revert MaxOperatorsReached(serviceId);
         _serviceOperators[serviceId].push(operator);
         _operatorIndex[serviceId][operator] = _serviceOperators[serviceId].length; // 1-indexed
 
@@ -769,7 +778,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     function _upsert_workflow(uint64 workflowId, WorkflowCreateRequest memory request) internal {
         WorkflowConfig storage config = workflows[workflowId];
         if (workflow_index[workflowId] == 0) {
-            require(workflow_ids.length < MAX_WORKFLOWS, "Max workflows reached");
+            if (workflow_ids.length >= MAX_WORKFLOWS) revert MaxWorkflowsReached(0);
             workflow_ids.push(workflowId);
             workflow_index[workflowId] = workflow_ids.length;
             config.created_at = uint64(block.timestamp);
@@ -787,7 +796,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     function _mark_triggered(uint64 workflowId) internal {
-        require(workflow_index[workflowId] != 0, "Workflow does not exist");
+        if (workflow_index[workflowId] == 0) revert WorkflowNotFound(workflowId);
         WorkflowConfig storage config = workflows[workflowId];
         config.last_triggered_at = uint64(block.timestamp);
         config.updated_at = uint64(block.timestamp);
@@ -795,7 +804,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     function _cancel_workflow(uint64 workflowId) internal {
-        require(workflow_index[workflowId] != 0, "Workflow does not exist");
+        if (workflow_index[workflowId] == 0) revert WorkflowNotFound(workflowId);
         WorkflowConfig storage config = workflows[workflowId];
         config.active = false;
         config.updated_at = uint64(block.timestamp);
