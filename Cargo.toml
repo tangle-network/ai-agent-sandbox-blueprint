@@ -15,3 +15,10 @@ authors = ["Drew Stone"]
 edition = "2024"
 description = "AI Agent Sandbox Blueprint"
 license = "MIT OR Apache-2.0"
+
+# Reduce debug build sizes (~60-70% smaller binaries)
+[profile.dev]
+split-debuginfo = "unpacked"  # separate debug info from binaries
+
+[profile.dev.package."*"]
+debug = 1  # line tables only for dependencies (not full DWARF)

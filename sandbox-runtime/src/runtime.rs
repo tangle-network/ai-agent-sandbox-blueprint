@@ -173,6 +173,17 @@ impl SidecarRuntimeConfig {
                 .ok()
                 .filter(|v| !v.trim().is_empty());
 
+            // Validate critical configuration values.
+            if image.trim().is_empty() {
+                panic!("SIDECAR_IMAGE must not be empty");
+            }
+            if container_port == 0 {
+                panic!("SIDECAR_HTTP_PORT must be > 0");
+            }
+            if timeout == 0 {
+                panic!("REQUEST_TIMEOUT_SECS must be > 0");
+            }
+
             tracing::info!(
                 image = %image,
                 host = %public_host,
@@ -334,20 +345,24 @@ pub fn get_instance_sandbox() -> Result<Option<SandboxRecord>> {
 }
 
 pub async fn docker_builder() -> Result<&'static DockerBuilder> {
-    DOCKER_BUILDER
-        .get_or_try_init(|| async {
-            let config = SidecarRuntimeConfig::load();
-            let builder = match config.docker_host.as_deref() {
-                Some(host) => DockerBuilder::with_address(host).await.map_err(|err| {
-                    SandboxError::Docker(format!("Failed to connect to docker at {host}: {err}"))
-                })?,
-                None => DockerBuilder::new().await.map_err(|err| {
-                    SandboxError::Docker(format!("Failed to connect to docker: {err}"))
-                })?,
-            };
-            Ok(builder)
-        })
-        .await
+    // Return cached builder if already initialized.
+    if let Some(builder) = DOCKER_BUILDER.get() {
+        return Ok(builder);
+    }
+    // Build a new connection. If this fails, the error is returned but NOT
+    // cached, so subsequent calls will retry instead of being permanently
+    // broken by a transient Docker outage.
+    let config = SidecarRuntimeConfig::load();
+    let builder = match config.docker_host.as_deref() {
+        Some(host) => DockerBuilder::with_address(host).await.map_err(|err| {
+            SandboxError::Docker(format!("Failed to connect to Docker at {host}: {err}"))
+        })?,
+        None => DockerBuilder::new()
+            .await
+            .map_err(|err| SandboxError::Docker(format!("Failed to connect to Docker: {err}")))?,
+    };
+    // If another task raced us, use theirs; otherwise cache ours.
+    Ok(DOCKER_BUILDER.get_or_init(|| async { builder }).await)
 }
 
 /// Default timeout for Docker operations (seconds).
@@ -754,12 +769,18 @@ pub fn merge_env_json(base: &str, user: &str) -> String {
     if user_trimmed.is_empty() || user_trimmed == "{}" {
         return base.to_string();
     }
-    let mut map: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(base).unwrap_or_default();
+    let mut map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(base)
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "Failed to parse base_env_json, using empty map");
+            serde_json::Map::new()
+        });
     if let Ok(user_map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(user) {
         map.extend(user_map);
     }
-    serde_json::to_string(&map).unwrap_or_default()
+    serde_json::to_string(&map).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "Failed to serialize merged env JSON, returning empty");
+        "{}".to_string()
+    })
 }
 
 /// Build the `Vec<String>` of `KEY=VALUE` env vars for a Docker container.
@@ -822,6 +843,12 @@ fn build_docker_config(
         cap_drop: Some(vec!["ALL".to_string()]),
         cap_add: Some(vec!["SYS_PTRACE".to_string()]),
         security_opt: Some(vec!["no-new-privileges=true".to_string()]),
+        pids_limit: Some(512),
+        readonly_rootfs: Some(true),
+        tmpfs: Some(HashMap::from([
+            ("/tmp".to_string(), "rw,noexec,nosuid,size=512m".to_string()),
+            ("/run".to_string(), "rw,noexec,nosuid,size=64m".to_string()),
+        ])),
         ..Default::default()
     };
     if cpu_cores > 0 {
@@ -963,6 +990,11 @@ async fn create_sidecar_docker(
 }
 
 pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
+    if record.state == SandboxState::Stopped {
+        return Err(SandboxError::Validation(
+            "Sandbox is already stopped".into(),
+        ));
+    }
     let builder = docker_builder().await?;
     let mut container = docker_timeout(
         "load_container",
@@ -999,6 +1031,11 @@ async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
 }
 
 pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
+    if record.state == SandboxState::Running {
+        return Err(SandboxError::Validation(
+            "Sandbox is already running".into(),
+        ));
+    }
     // Tier 1 (Hot): container still exists -> docker start
     if record.container_removed_at.is_none() {
         let builder = docker_builder().await?;

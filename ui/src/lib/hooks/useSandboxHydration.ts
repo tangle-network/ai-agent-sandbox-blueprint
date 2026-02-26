@@ -16,13 +16,29 @@ interface ApiSandbox {
   last_activity_at: number;
 }
 
-async function fetchSandboxes(baseUrl: string, token: string): Promise<ApiSandbox[]> {
-  const res = await fetch(`${baseUrl}/api/sandboxes`, {
+async function fetchSandboxes(
+  baseUrl: string,
+  token: string,
+  blueprintId: string,
+  serviceId: string,
+  getToken?: (forceRefresh: boolean) => Promise<string | null>,
+): Promise<ApiSandbox[]> {
+  const url = `${baseUrl}/api/sandboxes`;
+  let res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    throw new Error(`Operator API returned ${res.status}`);
+
+  // Auto-retry once on 401 (expired PASETO token)
+  if (res.status === 401 && getToken) {
+    const freshToken = await getToken(true);
+    if (freshToken) {
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${freshToken}` },
+      });
+    }
   }
+
+  if (!res.ok) return [];
   const data = await res.json();
   return data.sandboxes ?? [];
 }
@@ -51,7 +67,13 @@ export function useSandboxHydration() {
       try {
         const sandboxToken = await getSandboxToken();
         if (sandboxToken) {
-          const sandboxes = await fetchSandboxes(OPERATOR_API_URL, sandboxToken);
+          const sandboxes = await fetchSandboxes(
+            OPERATOR_API_URL,
+            sandboxToken,
+            import.meta.env.VITE_SANDBOX_BLUEPRINT_ID ?? '',
+            import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '',
+            getSandboxToken,
+          );
           results.push(...sandboxes);
         }
       } catch (e) {
@@ -64,7 +86,13 @@ export function useSandboxHydration() {
         try {
           const instanceToken = await getInstanceToken();
           if (instanceToken) {
-            const instances = await fetchSandboxes(INSTANCE_OPERATOR_API_URL, instanceToken);
+            const instances = await fetchSandboxes(
+              INSTANCE_OPERATOR_API_URL,
+              instanceToken,
+              import.meta.env.VITE_INSTANCE_BLUEPRINT_ID ?? '',
+              import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '',
+              getInstanceToken,
+            );
             results.push(...instances);
           }
         } catch (e) {

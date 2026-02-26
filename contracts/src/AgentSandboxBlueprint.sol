@@ -65,6 +65,13 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     uint256 public constant PRICE_MULT_DEPROVISION = 1;
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // ARRAY BOUNDS (storage griefing prevention)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    uint256 public constant MAX_WORKFLOWS = 10000;
+    uint32 public constant MAX_OPERATORS_PER_SERVICE = 1000;
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // OPERATOR CAPACITY STATE (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -165,6 +172,9 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     event ServiceTerminationReceived(uint64 indexed serviceId, address indexed owner);
     event ServiceConfigStored(uint64 indexed serviceId, uint64 indexed requestId);
 
+    // Request validation events
+    event ServiceRequestValidated(uint64 indexed requestId, address requester, uint32 operatorCount);
+
     // ═══════════════════════════════════════════════════════════════════════════
     // ERRORS
     // ═══════════════════════════════════════════════════════════════════════════
@@ -249,7 +259,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         address paymentAsset,
         uint256 paymentAmount
     ) external payable override onlyFromTangle {
-        requester;
         ttl;
         paymentAsset;
         paymentAmount;
@@ -265,6 +274,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             SelectionRequest memory selection = _decodeSelectionRequest(requestInputs);
             _validateOperatorSelection(operators, selection);
         }
+
+        emit ServiceRequestValidated(requestId, requester, uint32(operators.length));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -282,6 +293,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         uint64               // ttl
     ) external override onlyFromTangle {
         if (instanceMode) {
+            require(serviceOwner[serviceId] == address(0), "Service already initialized");
             serviceOwner[serviceId] = owner;
             bytes memory cfg = _pendingRequestConfig[requestId];
             if (cfg.length > 0) {
@@ -580,6 +592,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         if (assigned != operator) revert OperatorMismatch(assigned, operator);
 
         (string memory sandboxId,) = abi.decode(outputs, (string, string));
+        require(bytes(sandboxId).length > 0, "Sandbox ID must not be empty");
+        require(bytes(sandboxId).length <= 255, "Sandbox ID too long");
         bytes32 sandboxHash = keccak256(bytes(sandboxId));
 
         if (sandboxOperator[sandboxHash] != address(0)) revert SandboxAlreadyExists(sandboxHash);
@@ -635,6 +649,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         instanceOperatorCount[serviceId]++;
 
         operatorSidecarUrl[serviceId][operator] = sidecarUrl;
+        require(_serviceOperators[serviceId].length < MAX_OPERATORS_PER_SERVICE, "Max operators per service reached");
         _serviceOperators[serviceId].push(operator);
         _operatorIndex[serviceId][operator] = _serviceOperators[serviceId].length; // 1-indexed
 
@@ -683,6 +698,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     function _upsert_workflow(uint64 workflowId, WorkflowCreateRequest memory request) internal {
         WorkflowConfig storage config = workflows[workflowId];
         if (workflow_index[workflowId] == 0) {
+            require(workflow_ids.length < MAX_WORKFLOWS, "Max workflows reached");
             workflow_ids.push(workflowId);
             workflow_index[workflowId] = workflow_ids.length;
             config.created_at = uint64(block.timestamp);

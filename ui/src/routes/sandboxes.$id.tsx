@@ -115,14 +115,24 @@ export default function SandboxDetail() {
       : `/api/sandboxes/${encodeURIComponent(decodedId)}/${action}`;
     const url = `${operatorUrl}${path}`;
 
-    const res = await fetch(url, {
-      method: opts?.method ?? 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: body ? JSON.stringify(body) : '{}',
-    });
+    const doFetch = (bearerToken: string) =>
+      fetch(url, {
+        method: opts?.method ?? 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${bearerToken}`,
+        },
+        body: body ? JSON.stringify(body) : '{}',
+      });
+
+    let res = await doFetch(token);
+
+    // Auto-retry once on 401 (expired PASETO token)
+    if (res.status === 401) {
+      const freshToken = await getOperatorToken(true);
+      if (!freshToken) throw new Error('Re-authentication failed');
+      res = await doFetch(freshToken);
+    }
 
     if (!res.ok) {
       const text = await res.text();

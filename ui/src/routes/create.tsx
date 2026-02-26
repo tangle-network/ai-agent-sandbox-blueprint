@@ -395,7 +395,7 @@ function DeployStep({
   const memoryMb = Number(values.memoryMb) || 2048;
   const diskGb = Number(values.diskGb) || 10;
   const costDisplay = hasProvisionRfq ? provisionPriceFormatted : `~${formatCost(provisionEstimate)}`;
-  const { status, txHash, error, isNewService, isInstanceMode, hasValidService, operators, operatorsLoading, provision, callId } = deploy;
+  const { status, txHash, error, isNewService, isInstanceMode, hasValidService, operators, operatorsLoading, provision, callId, contractsDeployed } = deploy;
   const isSandbox = !isInstanceMode;
   const isActive = status !== 'idle';
   const isComplete = status === 'confirmed' || status === 'ready';
@@ -543,6 +543,23 @@ function DeployStep({
               </p>
             </div>
             <Button variant="secondary" size="sm" onClick={onOpenInfra}>Settings</Button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Contracts not deployed warning ── */}
+      {!contractsDeployed && status === 'idle' && (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
+          <div className="flex items-center gap-3">
+            <div className="i-ph:warning-circle text-lg text-amber-400" />
+            <div className="flex-1">
+              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+                Contracts not yet deployed on this network
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
+                Please switch to a supported network where the blueprint contracts have been deployed.
+              </p>
+            </div>
           </div>
         </div>
       )}

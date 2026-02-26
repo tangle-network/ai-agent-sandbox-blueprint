@@ -559,6 +559,97 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: SANDBOX ID VALIDATION (M6)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_createResultRevertsEmptySandboxId() public {
+        registerOperator(operator1, 10);
+        simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 900, encodeSandboxCreateInputs());
+
+        vm.prank(tangleCore);
+        vm.expectRevert("Sandbox ID must not be empty");
+        blueprint.onJobResult(
+            1, 0, 900, operator1,
+            encodeSandboxCreateInputs(),
+            encodeSandboxCreateOutputs("", "{}")
+        );
+    }
+
+    function test_createResultRevertsTooLongSandboxId() public {
+        registerOperator(operator1, 10);
+        simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 901, encodeSandboxCreateInputs());
+
+        // Build a 256-character string (exceeds 255 limit)
+        bytes memory longBytes = new bytes(256);
+        for (uint256 i = 0; i < 256; i++) {
+            longBytes[i] = "a";
+        }
+        string memory longId = string(longBytes);
+
+        vm.prank(tangleCore);
+        vm.expectRevert("Sandbox ID too long");
+        blueprint.onJobResult(
+            1, 0, 901, operator1,
+            encodeSandboxCreateInputs(),
+            encodeSandboxCreateOutputs(longId, "{}")
+        );
+    }
+
+    function test_createResultAccepts255CharSandboxId() public {
+        registerOperator(operator1, 10);
+
+        // Build a 255-character string (exactly at limit)
+        bytes memory maxBytes = new bytes(255);
+        for (uint256 i = 0; i < 255; i++) {
+            maxBytes[i] = "b";
+        }
+        string memory maxId = string(maxBytes);
+
+        _createSandbox(1, 902, operator1, maxId);
+        assertTrue(blueprint.isSandboxActive(maxId));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: WORKFLOW ARRAY BOUNDS (H5a)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_maxWorkflowsConstant() public view {
+        assertEq(blueprint.MAX_WORKFLOWS(), 10000);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: SERVICE REQUEST VALIDATED EVENT (M7)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onRequestEmitsServiceRequestValidated() public {
+        registerOperator(operator1, 10);
+
+        address[] memory operators = new address[](1);
+        operators[0] = operator1;
+
+        vm.expectEmit(true, false, false, true);
+        emit AgentSandboxBlueprint.ServiceRequestValidated(1, blueprintOwner, 1);
+
+        vm.prank(tangleCore);
+        blueprint.onRequest(1, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    function test_onRequestEmitsServiceRequestValidatedMultipleOperators() public {
+        registerOperator(operator1, 10);
+        registerOperator(operator2, 10);
+
+        address[] memory operators = new address[](2);
+        operators[0] = operator1;
+        operators[1] = operator2;
+
+        vm.expectEmit(true, false, false, true);
+        emit AgentSandboxBlueprint.ServiceRequestValidated(2, blueprintOwner, 2);
+
+        vm.prank(tangleCore);
+        blueprint.onRequest(2, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 

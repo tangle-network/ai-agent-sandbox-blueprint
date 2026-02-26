@@ -365,6 +365,28 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(stored, config);
     }
 
+    function test_doubleServiceInitializedReverts() public {
+        // First initialization
+        bytes memory config = abi.encode("config-data");
+        address[] memory operators = new address[](1);
+        operators[0] = operator1;
+
+        vm.prank(tangleCore);
+        instance.onRequest(1, blueprintOwner, operators, config, 0, address(0), 0);
+
+        address[] memory permittedCallers = new address[](0);
+        vm.prank(tangleCore);
+        instance.onServiceInitialized(testBlueprintId, 1, testServiceId, blueprintOwner, permittedCallers, 0);
+
+        // Second initialization for the same serviceId should revert
+        vm.prank(tangleCore);
+        instance.onRequest(2, blueprintOwner, operators, config, 0, address(0), 0);
+
+        vm.prank(tangleCore);
+        vm.expectRevert("Service already initialized");
+        instance.onServiceInitialized(testBlueprintId, 2, testServiceId, blueprintOwner, permittedCallers, 0);
+    }
+
     function test_serviceConfigEmitsEvent() public {
         bytes memory config = abi.encode("config-data");
         address[] memory operators = new address[](1);
@@ -379,5 +401,73 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         address[] memory permittedCallers = new address[](0);
         vm.prank(tangleCore);
         instance.onServiceInitialized(testBlueprintId, 1, testServiceId, blueprintOwner, permittedCallers, 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: OPERATOR ARRAY BOUNDS (H5b)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_maxOperatorsPerServiceConstant() public view {
+        assertEq(instance.MAX_OPERATORS_PER_SERVICE(), 1000);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: SERVICE REQUEST VALIDATED EVENT (M7 — instance mode)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onRequestEmitsServiceRequestValidatedInstanceMode() public {
+        address[] memory operators = new address[](1);
+        operators[0] = operator1;
+
+        vm.expectEmit(true, false, false, true);
+        emit AgentSandboxBlueprint.ServiceRequestValidated(1, blueprintOwner, 1);
+
+        vm.prank(tangleCore);
+        instance.onRequest(1, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    function test_onRequestEmitsServiceRequestValidatedWithConfig() public {
+        bytes memory config = abi.encode("config-data");
+        address[] memory operators = new address[](2);
+        operators[0] = operator1;
+        operators[1] = operator2;
+
+        vm.expectEmit(true, false, false, true);
+        emit AgentSandboxBlueprint.ServiceRequestValidated(5, blueprintOwner, 2);
+
+        vm.prank(tangleCore);
+        instance.onRequest(5, blueprintOwner, operators, config, 0, address(0), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: DOUBLE INITIALIZATION WITH DIFFERENT OWNERS (P5)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_doubleServiceInitializedDifferentOwnerReverts() public {
+        bytes memory config = abi.encode("config");
+        address[] memory operators = new address[](1);
+        operators[0] = operator1;
+
+        // First init with blueprintOwner
+        vm.prank(tangleCore);
+        instance.onRequest(1, blueprintOwner, operators, config, 0, address(0), 0);
+
+        address[] memory permittedCallers = new address[](0);
+        vm.prank(tangleCore);
+        instance.onServiceInitialized(testBlueprintId, 1, testServiceId, blueprintOwner, permittedCallers, 0);
+
+        assertEq(instance.serviceOwner(testServiceId), blueprintOwner);
+
+        // Second init with different owner — should revert, not overwrite
+        address attacker = address(0xDEAD);
+        vm.prank(tangleCore);
+        instance.onRequest(2, attacker, operators, config, 0, address(0), 0);
+
+        vm.prank(tangleCore);
+        vm.expectRevert("Service already initialized");
+        instance.onServiceInitialized(testBlueprintId, 2, testServiceId, attacker, permittedCallers, 0);
+
+        // Verify owner unchanged
+        assertEq(instance.serviceOwner(testServiceId), blueprintOwner);
     }
 }

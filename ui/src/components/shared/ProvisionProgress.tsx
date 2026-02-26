@@ -1,3 +1,4 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { cn } from '~/lib/utils';
 import {
   useProvisionProgress,
@@ -19,9 +20,21 @@ const PHASE_ORDER: ProvisionPhase[] = [
   'ready',
 ];
 
+/** Timeout after 5 minutes of polling with no terminal result. */
+const PROVISION_TIMEOUT_MS = 300_000;
+
 function phaseIndex(phase: ProvisionPhase): number {
   const idx = PHASE_ORDER.indexOf(phase);
   return idx >= 0 ? idx : -1;
+}
+
+/** Format elapsed milliseconds as "Xm Ys". */
+function formatElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min === 0) return `${sec}s`;
+  return `${min}m ${sec.toString().padStart(2, '0')}s`;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,6 +52,55 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
   const { status, phase, progressPct, message, isReady, isFailed, sandboxId, sidecarUrl } =
     useProvisionProgress({ callId, apiUrl });
 
+  // ── Timeout tracking ──
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [isTimedOut, setIsTimedOut] = useState(false);
+  const startTimeRef = useRef<number>(Date.now());
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const isTerminal = isReady || isFailed || isTimedOut;
+
+  // Start / stop the elapsed-time ticker
+  useEffect(() => {
+    if (!callId || isTerminal) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      return;
+    }
+
+    startTimeRef.current = Date.now() - elapsedMs;
+    timerRef.current = setInterval(() => {
+      const now = Date.now();
+      const elapsed = now - startTimeRef.current;
+      setElapsedMs(elapsed);
+      if (elapsed >= PROVISION_TIMEOUT_MS) {
+        setIsTimedOut(true);
+      }
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [callId, isTerminal]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset timeout state when callId changes (e.g. on retry from parent)
+  useEffect(() => {
+    setElapsedMs(0);
+    setIsTimedOut(false);
+    startTimeRef.current = Date.now();
+  }, [callId]);
+
+  const handleRetry = useCallback(() => {
+    setElapsedMs(0);
+    setIsTimedOut(false);
+    startTimeRef.current = Date.now();
+  }, []);
+
   // Notify parent when ready
   if (isReady && sandboxId && sidecarUrl && onReady) {
     onReady(sandboxId, sidecarUrl);
@@ -47,12 +109,15 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
   if (!callId) return null;
 
   const currentIdx = phase ? phaseIndex(phase) : -1;
+  const showTimeout = isTimedOut && !isReady && !isFailed;
 
   return (
     <div className={cn('rounded-xl border border-neutral-800 bg-neutral-900/60 p-4', className)}>
       {/* Header */}
       <div className="flex items-center gap-2 mb-3">
-        {isFailed ? (
+        {showTimeout ? (
+          <div className="i-ph:warning-circle w-5 h-5 text-amber-400" />
+        ) : isFailed ? (
           <div className="i-ph:warning-circle w-5 h-5 text-red-400" />
         ) : isReady ? (
           <div className="i-ph:check-circle w-5 h-5 text-green-400" />
@@ -60,9 +125,17 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
           <div className="i-ph:circle-notch w-5 h-5 text-blue-400 animate-spin" />
         )}
         <span className="text-sm font-medium text-neutral-200">
-          {phase ? getPhaseLabel(phase) : 'Waiting...'}
+          {showTimeout
+            ? 'Provisioning timed out'
+            : phase ? getPhaseLabel(phase) : 'Waiting...'}
         </span>
-        {message && phase !== 'ready' && phase !== 'failed' && (
+        {/* Elapsed time indicator while polling */}
+        {!isTerminal && (
+          <span className="text-xs text-neutral-500 ml-auto">
+            Waiting for operator... ({formatElapsed(elapsedMs)})
+          </span>
+        )}
+        {!showTimeout && message && phase !== 'ready' && phase !== 'failed' && isTerminal && (
           <span className="text-xs text-neutral-500 ml-auto">{message}</span>
         )}
       </div>
@@ -72,9 +145,9 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
         <div
           className={cn(
             'h-full rounded-full transition-all duration-500',
-            isFailed ? 'bg-red-500' : isReady ? 'bg-green-500' : 'bg-blue-500',
+            showTimeout ? 'bg-amber-500' : isFailed ? 'bg-red-500' : isReady ? 'bg-green-500' : 'bg-blue-500',
           )}
-          style={{ width: `${progressPct}%` }}
+          style={{ width: `${showTimeout ? 100 : progressPct}%` }}
         />
       </div>
 
@@ -83,7 +156,7 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
         {PHASE_ORDER.map((p, i) => {
           const isActive = i === currentIdx;
           const isDone = currentIdx > i || (isReady && i <= currentIdx);
-          const isFail = isFailed && i === currentIdx;
+          const isFail = (isFailed || showTimeout) && i === currentIdx;
 
           return (
             <div key={p} className="flex flex-col items-center gap-1 flex-1">
@@ -92,7 +165,7 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
                   'w-2 h-2 rounded-full transition-colors',
                   isDone && 'bg-green-500',
                   isActive && !isFail && 'bg-blue-400 animate-pulse',
-                  isFail && 'bg-red-400',
+                  isFail && (showTimeout ? 'bg-amber-400' : 'bg-red-400'),
                   !isDone && !isActive && 'bg-neutral-700',
                 )}
               />
@@ -109,8 +182,25 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
         })}
       </div>
 
+      {/* Timeout message */}
+      {showTimeout && (
+        <div className="mt-3 p-2 rounded bg-amber-900/20 border border-amber-900/40">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-amber-400">
+              Provisioning timed out. The operator may be offline. Please try again.
+            </p>
+            <button
+              onClick={handleRetry}
+              className="ml-3 shrink-0 px-3 py-1 text-xs font-medium text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Error message */}
-      {isFailed && message && (
+      {isFailed && !showTimeout && message && (
         <div className="mt-3 p-2 rounded bg-red-900/20 border border-red-900/40">
           <p className="text-xs text-red-400">{message}</p>
         </div>

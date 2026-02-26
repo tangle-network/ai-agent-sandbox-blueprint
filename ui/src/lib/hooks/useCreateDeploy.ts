@@ -20,7 +20,7 @@ import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { addInstance, updateInstanceStatus } from '~/lib/stores/instances';
 import type { BlueprintDefinition, JobDefinition } from '~/lib/blueprints';
-import type { SandboxAddresses } from '~/lib/contracts/chains';
+import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
 import type { InfraConfig } from '~/lib/stores/infra';
 import type { Address } from 'viem';
 
@@ -267,11 +267,16 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
   // ── Computed flags ──
 
+  // Check if contracts are deployed on the current network
+  const addrs = getAddresses<SandboxAddresses>();
+  const contractsDeployed = isContractDeployed(addrs.jobs) && isContractDeployed(addrs.services);
+
   const canDeploy = !!(
     job &&
     values.name &&
     address &&
     status === 'idle' &&
+    contractsDeployed &&
     (mode === 'sandbox' ? hasValidService : true) &&
     (!isNewService || (operators.length > 0 && !operatorsLoading))
   );
@@ -290,6 +295,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
     isInstanceMode,
     isTeeInstance,
     hasValidService,
+    contractsDeployed,
     canDeploy,
     // Actions
     deploy,

@@ -186,11 +186,19 @@ const HKDF_INFO: &[u8] = b"session-auth-symmetric-key-v1";
 
 /// Symmetric key for PASETO tokens. Derived once from `SESSION_AUTH_SECRET` env var
 /// using HKDF-SHA256 (extract-then-expand), or a random key generated at startup.
+///
+/// **Warning**: When `SESSION_AUTH_SECRET` is not set, a random key is generated.
+/// This means sessions will not survive a restart. Use [`validate_required_config`]
+/// early in `main()` to enforce the secret is set in production.
 static SYMMETRIC_KEY: Lazy<pasetors::keys::SymmetricKey<pasetors::version4::V4>> =
     Lazy::new(|| {
         let key_bytes = match std::env::var("SESSION_AUTH_SECRET") {
             Ok(secret) => derive_symmetric_key(secret.as_bytes()),
             Err(_) => {
+                tracing::error!(
+                    "SESSION_AUTH_SECRET is not set — using random key. \
+                 Sessions will NOT survive restart. Set this env var in production."
+                );
                 let mut bytes = [0u8; 32];
                 OsRng.fill_bytes(&mut bytes);
                 bytes
@@ -354,6 +362,31 @@ pub fn extract_bearer_token(auth_header: &str) -> Option<&str> {
         .strip_prefix("Bearer ")
         .or_else(|| auth_header.strip_prefix("bearer "))
         .map(|t| t.trim())
+}
+
+// ---------------------------------------------------------------------------
+// Configuration validation
+// ---------------------------------------------------------------------------
+
+/// Validate that required configuration for session auth is present.
+///
+/// Checks that `SESSION_AUTH_SECRET` is set and non-empty. Without this,
+/// PASETO tokens use a random key that changes on restart, silently breaking
+/// all existing sessions.
+///
+/// Call this early in each binary's `main()` — in production it should be
+/// treated as a hard error; in test mode, log a warning and continue.
+pub fn validate_required_config() -> std::result::Result<(), String> {
+    match std::env::var("SESSION_AUTH_SECRET") {
+        Ok(val) if !val.trim().is_empty() => Ok(()),
+        Ok(_) => Err("SESSION_AUTH_SECRET is set but empty. \
+             Provide a non-empty secret for stable session auth."
+            .to_string()),
+        Err(_) => Err("SESSION_AUTH_SECRET is not set. \
+             Sessions will use a random key and break on restart. \
+             Set this env var before starting the operator."
+            .to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------

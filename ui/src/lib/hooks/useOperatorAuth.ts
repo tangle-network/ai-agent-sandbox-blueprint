@@ -32,8 +32,9 @@ export function useOperatorAuth(apiUrl?: string) {
     return sessionRef.current.expiresAt * 1000 > Date.now() + 60_000;
   }, []);
 
-  const getToken = useCallback(async (): Promise<string | null> => {
-    if (isValid()) return sessionRef.current!.token;
+  const getToken = useCallback(async (forceRefresh = false): Promise<string | null> => {
+    if (!forceRefresh && isValid()) return sessionRef.current!.token;
+    if (forceRefresh) sessionRef.current = null;
     if (!address) return null;
 
     setIsAuthenticating(true);

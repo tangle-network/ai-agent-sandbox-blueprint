@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 pub use blueprint_sdk::stores::local_database::{Error as StoreError, LocalDatabase};
 
@@ -35,8 +36,13 @@ pub fn state_dir() -> PathBuf {
 
 /// Convenience wrapper that bridges `LocalDatabase` to our `SandboxError` types.
 /// Keys are serialized to strings for storage.
+///
+/// All operations are protected by a `RwLock` to prevent concurrent
+/// read-modify-write races across multiple tokio tasks (reaper, GC,
+/// API handlers). Read operations acquire a shared read lock; write
+/// operations acquire an exclusive write lock.
 pub struct PersistentStore<V> {
-    db: LocalDatabase<V>,
+    db: RwLock<LocalDatabase<V>>,
 }
 
 impl<V> PersistentStore<V>
@@ -45,40 +51,70 @@ where
 {
     pub fn open(path: PathBuf) -> Result<Self> {
         let db = LocalDatabase::open(path)?;
-        Ok(Self { db })
+        Ok(Self {
+            db: RwLock::new(db),
+        })
     }
 
     pub fn get(&self, key: &str) -> Result<Option<V>> {
-        Ok(self.db.get(key)?)
+        let db = self
+            .db
+            .read()
+            .map_err(|_| SandboxError::Storage("PersistentStore RwLock poisoned (read)".into()))?;
+        Ok(db.get(key)?)
     }
 
     pub fn find<F>(&self, predicate: F) -> Result<Option<V>>
     where
         F: Fn(&V) -> bool,
     {
-        Ok(self.db.find(predicate)?)
+        let db = self
+            .db
+            .read()
+            .map_err(|_| SandboxError::Storage("PersistentStore RwLock poisoned (read)".into()))?;
+        Ok(db.find(predicate)?)
     }
 
     pub fn values(&self) -> Result<Vec<V>> {
-        Ok(self.db.values()?)
+        let db = self
+            .db
+            .read()
+            .map_err(|_| SandboxError::Storage("PersistentStore RwLock poisoned (read)".into()))?;
+        Ok(db.values()?)
     }
 
     pub fn insert(&self, key: String, value: V) -> Result<()> {
-        Ok(self.db.set(&key, value)?)
+        let db = self
+            .db
+            .write()
+            .map_err(|_| SandboxError::Storage("PersistentStore RwLock poisoned (write)".into()))?;
+        Ok(db.set(&key, value)?)
     }
 
     pub fn remove(&self, key: &str) -> Result<Option<V>> {
-        Ok(self.db.remove(key)?)
+        let db = self
+            .db
+            .write()
+            .map_err(|_| SandboxError::Storage("PersistentStore RwLock poisoned (write)".into()))?;
+        Ok(db.remove(key)?)
     }
 
     pub fn update<F>(&self, key: &str, f: F) -> Result<bool>
     where
         F: FnOnce(&mut V),
     {
-        Ok(self.db.update(key, f)?)
+        let db = self
+            .db
+            .write()
+            .map_err(|_| SandboxError::Storage("PersistentStore RwLock poisoned (write)".into()))?;
+        Ok(db.update(key, f)?)
     }
 
     pub fn replace(&self, map: HashMap<String, V>) -> Result<()> {
-        Ok(self.db.replace(map)?)
+        let db = self
+            .db
+            .write()
+            .map_err(|_| SandboxError::Storage("PersistentStore RwLock poisoned (write)".into()))?;
+        Ok(db.replace(map)?)
     }
 }

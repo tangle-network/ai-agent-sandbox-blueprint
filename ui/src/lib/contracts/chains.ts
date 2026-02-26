@@ -78,3 +78,24 @@ configureNetworks<SandboxAddresses>({
 
 /** Backwards-compatible accessor — use getNetworks<SandboxAddresses>() for typed access. */
 export const networks = getNetworks<SandboxAddresses>();
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+/** Check if a contract address is non-zero (i.e., actually deployed). */
+export function isContractDeployed(address: string | undefined): boolean {
+  if (!address) return false;
+  return address.toLowerCase() !== ZERO_ADDRESS;
+}
+
+/** Check if the core contracts (jobs, services, blueprint BSM) are deployed for the current network. */
+export function areContractsDeployed(): boolean {
+  const nets = getNetworks<SandboxAddresses>();
+  // Check the first available network's addresses
+  for (const key of Object.keys(nets)) {
+    const net = nets[key as unknown as keyof typeof nets];
+    if (net?.addresses) {
+      return isContractDeployed(net.addresses.jobs) && isContractDeployed(net.addresses.services);
+    }
+  }
+  return false;
+}

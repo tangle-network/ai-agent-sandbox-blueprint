@@ -14,6 +14,7 @@ interface ImportMetaEnv {
   readonly VITE_SANDBOX_SERVICE_ID: string;
   readonly VITE_INSTANCE_SERVICE_ID: string;
   readonly VITE_OPERATOR_API_URL: string;
+  readonly VITE_INSTANCE_OPERATOR_API_URL: string;
 }
 
 interface ImportMeta {

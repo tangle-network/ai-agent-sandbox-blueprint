@@ -17,6 +17,19 @@ use blueprint_sdk::{error, info, warn};
 async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
 
+    // Validate required auth config — SESSION_AUTH_SECRET must be set in production.
+    let is_test_mode = std::env::args().any(|a| a == "--test-mode")
+        || std::env::var("TEST_MODE")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+    if let Err(msg) = sandbox_runtime::session_auth::validate_required_config() {
+        if is_test_mode {
+            warn!("Config validation (test mode): {msg}");
+        } else {
+            return Err(blueprint_sdk::Error::Other(msg));
+        }
+    }
+
     // ── TEE backend ──────────────────────────────────────────────────────
     let backend = sandbox_runtime::tee::backend_factory::backend_from_env()
         .map_err(|e| blueprint_sdk::Error::Other(format!("Failed to create TEE backend: {e}")))?;
@@ -111,6 +124,15 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             loop {
                 interval.tick().await;
                 ai_agent_tee_instance_blueprint_lib::reaper::reaper_tick().await;
+            }
+        });
+
+        // Spawn session GC background task (expired challenges + sessions cleanup)
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                sandbox_runtime::session_auth::gc_sessions();
             }
         });
     }
