@@ -20,6 +20,7 @@ use serde_json::{Map, Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use crate::api_types::*;
 use crate::http::sidecar_post_json;
@@ -29,6 +30,20 @@ use crate::rate_limit;
 use crate::runtime::{self, SandboxRecord, SandboxState, sandboxes};
 use crate::secret_provisioning;
 use crate::session_auth::{self, SessionAuth};
+
+// ---------------------------------------------------------------------------
+// Per-operation sidecar call timeouts
+// ---------------------------------------------------------------------------
+
+/// Timeout for exec (shell command) calls to the sidecar.
+const SIDECAR_EXEC_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for prompt/task (LLM agent) calls to the sidecar.
+/// These are longer because LLM inference can be slow.
+const SIDECAR_AGENT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Timeout for other sidecar calls (snapshot, SSH provisioning, etc.).
+const SIDECAR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ---------------------------------------------------------------------------
 // Request ID middleware
@@ -483,8 +498,26 @@ fn build_agent_payload(
     Value::Object(payload)
 }
 
+/// Parsed agent response from the sidecar (used by both prompt and task).
+struct AgentResponse {
+    success: bool,
+    response: String,
+    error: String,
+    trace_id: String,
+    session_id: String,
+    /// Duration reported by the sidecar (milliseconds), if available.
+    duration_ms: u64,
+    /// Input tokens consumed, if reported by the sidecar.
+    input_tokens: u32,
+    /// Output tokens produced, if reported by the sidecar.
+    output_tokens: u32,
+}
+
 /// Parse agent response from sidecar (used by both prompt and task).
-fn parse_agent_response(parsed: &Value) -> (bool, String, String, String, String) {
+///
+/// Extracts usage metrics (`duration_ms`, `input_tokens`, `output_tokens`)
+/// from the sidecar JSON when present, falling back to zero.
+fn parse_agent_response(parsed: &Value) -> AgentResponse {
     let success = parsed
         .get("success")
         .and_then(Value::as_bool)
@@ -525,28 +558,88 @@ fn parse_agent_response(parsed: &Value) -> (bool, String, String, String, String
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    (success, response, error, trace_id, session_id)
+
+    // Extract usage metrics from the sidecar response.
+    // The sidecar may report these at the top level or nested under "usage"/"data.usage".
+    let usage = parsed
+        .get("usage")
+        .or_else(|| parsed.get("data").and_then(|d| d.get("usage")));
+
+    let duration_ms = parsed
+        .get("duration_ms")
+        .or_else(|| parsed.get("durationMs"))
+        .or_else(|| usage.and_then(|u| u.get("duration_ms")))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    let input_tokens = usage
+        .and_then(|u| {
+            u.get("input_tokens")
+                .or_else(|| u.get("inputTokens"))
+                .or_else(|| u.get("prompt_tokens"))
+        })
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    let output_tokens = usage
+        .and_then(|u| {
+            u.get("output_tokens")
+                .or_else(|| u.get("outputTokens"))
+                .or_else(|| u.get("completion_tokens"))
+        })
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    AgentResponse {
+        success,
+        response,
+        error,
+        trace_id,
+        session_id,
+        duration_ms,
+        input_tokens,
+        output_tokens,
+    }
 }
 
 /// Execute a sidecar operation and return the result, touching the sandbox activity.
+///
+/// Applies [`SIDECAR_EXEC_TIMEOUT`] to prevent runaway commands from holding
+/// the connection indefinitely.
 async fn exec_on_sidecar(
     record: &SandboxRecord,
     req: &ExecApiRequest,
 ) -> Result<ExecApiResponse, (StatusCode, Json<ApiError>)> {
     let payload = build_exec_payload(&req.command, &req.cwd, &req.env_json, req.timeout_ms);
-    let parsed = sidecar_post_json(
-        &record.sidecar_url,
-        "/terminals/commands",
-        &record.token,
-        payload,
+    let parsed = tokio::time::timeout(
+        SIDECAR_EXEC_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/terminals/commands",
+            &record.token,
+            payload,
+        ),
     )
     .await
+    .map_err(|_| {
+        api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!(
+                "Sidecar exec timed out after {}s",
+                SIDECAR_EXEC_TIMEOUT.as_secs()
+            ),
+        )
+    })?
     .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
     runtime::touch_sandbox(&record.id);
     Ok(parse_exec_response(&parsed))
 }
 
 /// Run a prompt/task on the sidecar agent.
+///
+/// Applies [`SIDECAR_AGENT_TIMEOUT`] as the outer deadline for the HTTP call.
+/// The sidecar may also enforce its own internal `timeout_ms` from the payload,
+/// but this ensures the operator never waits longer than the configured limit.
 async fn agent_on_sidecar(
     record: &SandboxRecord,
     message: &str,
@@ -555,7 +648,7 @@ async fn agent_on_sidecar(
     context_json: &str,
     timeout_ms: u64,
     max_turns: Option<u64>,
-) -> Result<(bool, String, String, String, String), (StatusCode, Json<ApiError>)> {
+) -> Result<AgentResponse, (StatusCode, Json<ApiError>)> {
     let payload = build_agent_payload(
         message,
         session_id,
@@ -564,9 +657,21 @@ async fn agent_on_sidecar(
         timeout_ms,
         max_turns,
     );
-    let parsed = sidecar_post_json(&record.sidecar_url, "/agents/run", &record.token, payload)
-        .await
-        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let parsed = tokio::time::timeout(
+        SIDECAR_AGENT_TIMEOUT,
+        sidecar_post_json(&record.sidecar_url, "/agents/run", &record.token, payload),
+    )
+    .await
+    .map_err(|_| {
+        api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!(
+                "Sidecar agent call timed out after {}s",
+                SIDECAR_AGENT_TIMEOUT.as_secs()
+            ),
+        )
+    })?
+    .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
     runtime::touch_sandbox(&record.id);
     Ok(parse_agent_response(&parsed))
 }
@@ -606,7 +711,7 @@ async fn sandbox_prompt_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    let (success, response, error, trace_id, _) = agent_on_sidecar(
+    let ar = agent_on_sidecar(
         &record,
         &req.message,
         &req.session_id,
@@ -616,16 +721,17 @@ async fn sandbox_prompt_handler(
         None,
     )
     .await?;
+    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
         Json(PromptApiResponse {
-            success,
-            response,
-            error,
-            trace_id,
-            duration_ms: 0,
-            input_tokens: 0,
-            output_tokens: 0,
+            success: ar.success,
+            response: ar.response,
+            error: ar.error,
+            trace_id: ar.trace_id,
+            duration_ms: ar.duration_ms,
+            input_tokens: ar.input_tokens,
+            output_tokens: ar.output_tokens,
         }),
     ))
 }
@@ -637,7 +743,7 @@ async fn instance_prompt_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
-    let (success, response, error, trace_id, _) = agent_on_sidecar(
+    let ar = agent_on_sidecar(
         &record,
         &req.message,
         &req.session_id,
@@ -647,16 +753,17 @@ async fn instance_prompt_handler(
         None,
     )
     .await?;
+    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
         Json(PromptApiResponse {
-            success,
-            response,
-            error,
-            trace_id,
-            duration_ms: 0,
-            input_tokens: 0,
-            output_tokens: 0,
+            success: ar.success,
+            response: ar.response,
+            error: ar.error,
+            trace_id: ar.trace_id,
+            duration_ms: ar.duration_ms,
+            input_tokens: ar.input_tokens,
+            output_tokens: ar.output_tokens,
         }),
     ))
 }
@@ -671,7 +778,7 @@ async fn sandbox_task_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    let (success, result, error, trace_id, session_id) = agent_on_sidecar(
+    let ar = agent_on_sidecar(
         &record,
         &req.prompt,
         &req.session_id,
@@ -681,17 +788,18 @@ async fn sandbox_task_handler(
         Some(req.max_turns),
     )
     .await?;
+    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
         Json(TaskApiResponse {
-            success,
-            result,
-            error,
-            trace_id,
-            session_id,
-            duration_ms: 0,
-            input_tokens: 0,
-            output_tokens: 0,
+            success: ar.success,
+            result: ar.response,
+            error: ar.error,
+            trace_id: ar.trace_id,
+            session_id: ar.session_id,
+            duration_ms: ar.duration_ms,
+            input_tokens: ar.input_tokens,
+            output_tokens: ar.output_tokens,
         }),
     ))
 }
@@ -703,7 +811,7 @@ async fn instance_task_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
-    let (success, result, error, trace_id, session_id) = agent_on_sidecar(
+    let ar = agent_on_sidecar(
         &record,
         &req.prompt,
         &req.session_id,
@@ -713,17 +821,18 @@ async fn instance_task_handler(
         Some(req.max_turns),
     )
     .await?;
+    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
         Json(TaskApiResponse {
-            success,
-            result,
-            error,
-            trace_id,
-            session_id,
-            duration_ms: 0,
-            input_tokens: 0,
-            output_tokens: 0,
+            success: ar.success,
+            result: ar.response,
+            error: ar.error,
+            trace_id: ar.trace_id,
+            session_id: ar.session_id,
+            duration_ms: ar.duration_ms,
+            input_tokens: ar.input_tokens,
+            output_tokens: ar.output_tokens,
         }),
     ))
 }
@@ -829,13 +938,25 @@ async fn run_snapshot(
     )
     .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let result = sidecar_post_json(
-        &record.sidecar_url,
-        "/terminals/commands",
-        &record.token,
-        payload,
+    let result = tokio::time::timeout(
+        SIDECAR_DEFAULT_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/terminals/commands",
+            &record.token,
+            payload,
+        ),
     )
     .await
+    .map_err(|_| {
+        api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!(
+                "Sidecar snapshot timed out after {}s",
+                SIDECAR_DEFAULT_TIMEOUT.as_secs()
+            ),
+        )
+    })?
     .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
     runtime::touch_sandbox(&record.id);
     Ok(SnapshotApiResponse {
@@ -902,13 +1023,25 @@ async fn run_ssh_provision(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let command = build_ssh_provision_command(&username, &req.public_key);
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let result = sidecar_post_json(
-        &record.sidecar_url,
-        "/terminals/commands",
-        &record.token,
-        payload,
+    let result = tokio::time::timeout(
+        SIDECAR_DEFAULT_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/terminals/commands",
+            &record.token,
+            payload,
+        ),
     )
     .await
+    .map_err(|_| {
+        api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!(
+                "Sidecar SSH provision timed out after {}s",
+                SIDECAR_DEFAULT_TIMEOUT.as_secs()
+            ),
+        )
+    })?
     .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
     runtime::touch_sandbox(&record.id);
     Ok(SshApiResponse {
@@ -925,13 +1058,25 @@ async fn run_ssh_revoke(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let command = build_ssh_revoke_cmd(&username, &req.public_key);
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let result = sidecar_post_json(
-        &record.sidecar_url,
-        "/terminals/commands",
-        &record.token,
-        payload,
+    let result = tokio::time::timeout(
+        SIDECAR_DEFAULT_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/terminals/commands",
+            &record.token,
+            payload,
+        ),
     )
     .await
+    .map_err(|_| {
+        api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!(
+                "Sidecar SSH revoke timed out after {}s",
+                SIDECAR_DEFAULT_TIMEOUT.as_secs()
+            ),
+        )
+    })?
     .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
     runtime::touch_sandbox(&record.id);
     Ok(SshApiResponse {
@@ -1094,13 +1239,15 @@ async fn http_metrics_middleware(
     req: axum::extract::Request,
     next: middleware::Next,
 ) -> impl IntoResponse {
-    // Prefer the route template (e.g. "/api/sandboxes/:sandbox_id/exec") to avoid
+    // Prefer the route template (e.g. "/api/sandboxes/{sandbox_id}/exec") to avoid
     // high-cardinality metric keys from dynamic path segments like sandbox IDs.
+    // When no route matches (404 paths), use a fixed "unmatched" label to prevent
+    // unbounded cardinality from scanners probing arbitrary URLs.
     let path = req
         .extensions()
         .get::<axum::extract::MatchedPath>()
         .map(|m| m.as_str().to_string())
-        .unwrap_or_else(|| req.uri().path().to_string());
+        .unwrap_or_else(|| "unmatched".to_string());
     let start = std::time::Instant::now();
     let response = next.run(req).await;
     let duration_ms = start.elapsed().as_millis() as u64;
