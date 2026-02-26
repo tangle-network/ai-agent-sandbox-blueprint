@@ -498,4 +498,333 @@ mod tests {
         };
         assert!(req.validate().is_ok());
     }
+
+    // ── Boundary tests: validate_required ─────────────────────────────
+
+    #[test]
+    fn validate_required_single_char_valid() {
+        assert!(validate_required("f", "x", 100).is_ok());
+    }
+
+    #[test]
+    fn validate_required_tabs_only() {
+        assert!(validate_required("f", "\t\t", 100).is_err());
+    }
+
+    #[test]
+    fn validate_required_mixed_whitespace() {
+        assert!(validate_required("f", " \t\n\r ", 100).is_err());
+    }
+
+    #[test]
+    fn validate_required_one_byte_under_limit() {
+        let s = "a".repeat(99);
+        assert!(validate_required("f", &s, 100).is_ok());
+    }
+
+    #[test]
+    fn validate_required_error_includes_field_name() {
+        let err = validate_required("myField", "", 100).unwrap_err();
+        assert!(
+            err.contains("myField"),
+            "error should include field name: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_required_over_limit_error_includes_max() {
+        let s = "a".repeat(101);
+        let err = validate_required("f", &s, 100).unwrap_err();
+        assert!(
+            err.contains("100"),
+            "error should include max length: {err}"
+        );
+    }
+
+    // ── Boundary tests: validate_ssh_public_key ───────────────────────
+
+    #[test]
+    fn ssh_key_whitespace_only() {
+        assert!(validate_ssh_public_key("   \t\n  ").is_err());
+    }
+
+    #[test]
+    fn ssh_key_valid_prefix_missing_key_data() {
+        // Has valid prefix (with trailing space) but no base64 data after it
+        assert!(
+            validate_ssh_public_key("ssh-ed25519 ").is_err(),
+            "key with valid prefix but only whitespace data should fail"
+        );
+    }
+
+    #[test]
+    fn ssh_key_prefix_without_trailing_space() {
+        // "ssh-ed25519" without trailing space — won't match any prefix in SSH_KEY_PREFIXES
+        assert!(validate_ssh_public_key("ssh-ed25519AAAA").is_err());
+    }
+
+    #[test]
+    fn ssh_key_at_max_length() {
+        // Build a key that is exactly MAX_SSH_KEY_LEN bytes
+        let prefix = "ssh-rsa ";
+        let data_len = MAX_SSH_KEY_LEN - prefix.len();
+        let key = format!("{prefix}{}", "A".repeat(data_len));
+        assert_eq!(key.len(), MAX_SSH_KEY_LEN);
+        assert!(validate_ssh_public_key(&key).is_ok());
+    }
+
+    #[test]
+    fn ssh_key_one_byte_over_max() {
+        let prefix = "ssh-rsa ";
+        let data_len = MAX_SSH_KEY_LEN - prefix.len() + 1;
+        let key = format!("{prefix}{}", "A".repeat(data_len));
+        assert_eq!(key.len(), MAX_SSH_KEY_LEN + 1);
+        assert!(validate_ssh_public_key(&key).is_err());
+    }
+
+    #[test]
+    fn ssh_key_all_valid_prefixes_accepted() {
+        for prefix in SSH_KEY_PREFIXES {
+            let key = format!("{prefix}AAAAB3NzaC1yc2EAAAATest");
+            assert!(
+                validate_ssh_public_key(&key).is_ok(),
+                "prefix '{prefix}' should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn ssh_key_with_comment_field() {
+        // type + data + comment (3 parts) — should be valid
+        assert!(
+            validate_ssh_public_key("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest user@host").is_ok()
+        );
+    }
+
+    // ── Boundary tests: validate_username ─────────────────────────────
+
+    #[test]
+    fn username_whitespace_only_defaults_ok() {
+        // Trimmed to empty, which defaults to "agent"
+        assert!(validate_username("   ").is_ok());
+    }
+
+    #[test]
+    fn username_single_char() {
+        assert!(validate_username("a").is_ok());
+    }
+
+    #[test]
+    fn username_with_slash() {
+        assert!(validate_username("user/name").is_err());
+    }
+
+    #[test]
+    fn username_with_semicolon() {
+        assert!(validate_username("user;name").is_err());
+    }
+
+    #[test]
+    fn username_with_backtick() {
+        assert!(validate_username("user`cmd`").is_err());
+    }
+
+    #[test]
+    fn username_with_dollar() {
+        assert!(validate_username("$HOME").is_err());
+    }
+
+    #[test]
+    fn username_with_unicode() {
+        assert!(validate_username("us\u{00e9}r").is_err());
+    }
+
+    #[test]
+    fn username_dots_and_dashes_only() {
+        assert!(validate_username(".-._-.").is_ok());
+    }
+
+    #[test]
+    fn username_exactly_one_over_limit() {
+        let name = "a".repeat(MAX_USERNAME_LEN + 1);
+        let err = validate_username(&name).unwrap_err();
+        assert!(
+            err.contains(&MAX_USERNAME_LEN.to_string()),
+            "error should mention max length: {err}"
+        );
+    }
+
+    // ── Boundary tests: validate_secrets_map ──────────────────────────
+
+    #[test]
+    fn secrets_exactly_at_max_keys() {
+        let mut map = serde_json::Map::new();
+        for i in 0..MAX_SECRET_KEYS {
+            map.insert(format!("key{i}"), json!("val"));
+        }
+        assert!(validate_secrets_map(&map).is_ok());
+    }
+
+    #[test]
+    fn secrets_one_over_max_keys() {
+        let mut map = serde_json::Map::new();
+        for i in 0..=MAX_SECRET_KEYS {
+            map.insert(format!("key{i}"), json!("val"));
+        }
+        assert!(validate_secrets_map(&map).is_err());
+    }
+
+    #[test]
+    fn secrets_key_exactly_256_chars() {
+        let mut map = serde_json::Map::new();
+        map.insert("k".repeat(256), json!("val"));
+        assert!(validate_secrets_map(&map).is_ok());
+    }
+
+    #[test]
+    fn secrets_key_257_chars() {
+        let mut map = serde_json::Map::new();
+        map.insert("k".repeat(257), json!("val"));
+        assert!(validate_secrets_map(&map).is_err());
+    }
+
+    #[test]
+    fn secrets_value_exactly_at_64kb() {
+        let mut map = serde_json::Map::new();
+        // JSON serialization of a string adds quotes, so the raw string
+        // needs to be under 64KB when serialized via .to_string().
+        // A string of length N serializes to N+2 bytes (quotes). Use 64*1024 - 2.
+        let val = "x".repeat(64 * 1024 - 2);
+        map.insert("key".into(), json!(val));
+        assert!(
+            validate_secrets_map(&map).is_ok(),
+            "value at exactly 64KB serialized should be accepted"
+        );
+    }
+
+    #[test]
+    fn secrets_value_over_64kb() {
+        let mut map = serde_json::Map::new();
+        map.insert("key".into(), json!("x".repeat(64 * 1024 + 1)));
+        assert!(validate_secrets_map(&map).is_err());
+    }
+
+    #[test]
+    fn secrets_non_string_value_accepted() {
+        let mut map = serde_json::Map::new();
+        map.insert("port".into(), json!(8080));
+        map.insert("debug".into(), json!(true));
+        map.insert("config".into(), json!({"nested": "value"}));
+        assert!(validate_secrets_map(&map).is_ok());
+    }
+
+    #[test]
+    fn secrets_single_key_valid() {
+        let mut map = serde_json::Map::new();
+        map.insert("ONLY_KEY".into(), json!("val"));
+        assert!(validate_secrets_map(&map).is_ok());
+    }
+
+    // ── Boundary tests: Request-level validation ──────────────────────
+
+    #[test]
+    fn exec_request_whitespace_command() {
+        let req = ExecApiRequest {
+            command: "   \n\t  ".into(),
+            cwd: String::new(),
+            env_json: String::new(),
+            timeout_ms: 0,
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn exec_request_at_max_length() {
+        let req = ExecApiRequest {
+            command: "x".repeat(MAX_TEXT_LEN),
+            cwd: String::new(),
+            env_json: String::new(),
+            timeout_ms: 0,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn exec_request_over_max_length() {
+        let req = ExecApiRequest {
+            command: "x".repeat(MAX_TEXT_LEN + 1),
+            cwd: String::new(),
+            env_json: String::new(),
+            timeout_ms: 0,
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn prompt_request_empty_message() {
+        let req = PromptApiRequest {
+            message: String::new(),
+            session_id: String::new(),
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn prompt_request_over_max_length() {
+        let req = PromptApiRequest {
+            message: "m".repeat(MAX_TEXT_LEN + 1),
+            session_id: String::new(),
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn task_request_empty_prompt() {
+        let req = TaskApiRequest {
+            prompt: String::new(),
+            session_id: String::new(),
+            max_turns: 0,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn task_request_over_max_length() {
+        let req = TaskApiRequest {
+            prompt: "p".repeat(MAX_TEXT_LEN + 1),
+            session_id: String::new(),
+            max_turns: 0,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn ssh_revoke_validates_same_as_provision() {
+        let req = SshRevokeApiRequest {
+            username: "bad user!".into(),
+            public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest".into(),
+        };
+        assert!(
+            req.validate().is_err(),
+            "revoke should also validate username"
+        );
+
+        let req = SshRevokeApiRequest {
+            username: "agent".into(),
+            public_key: "not-a-key".into(),
+        };
+        assert!(req.validate().is_err(), "revoke should also validate key");
+    }
 }

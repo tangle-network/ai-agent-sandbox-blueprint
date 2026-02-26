@@ -1819,6 +1819,58 @@ mod seal_tests {
             "error should mention base64: {err_msg}"
         );
     }
+
+    #[test]
+    fn seal_large_value() {
+        // 1 MB plaintext — verifies no size-related panics or truncation
+        let plaintext = "A".repeat(1024 * 1024);
+        let sealed = seal_field(&plaintext).unwrap();
+        assert!(sealed.starts_with(ENC_PREFIX), "should have enc prefix");
+        // Ciphertext + nonce + base64 overhead makes it larger
+        assert!(
+            sealed.len() > plaintext.len(),
+            "sealed form should be larger than plaintext"
+        );
+
+        let unsealed = unseal_field(&sealed).unwrap();
+        assert_eq!(
+            unsealed.len(),
+            plaintext.len(),
+            "unsealed length should match original"
+        );
+        assert_eq!(unsealed, plaintext, "unsealed value should match original");
+    }
+
+    #[test]
+    fn unseal_tampered_ciphertext() {
+        // Seal a real value, then flip a byte in the ciphertext portion
+        let plaintext = "sensitive-data-that-must-not-silently-corrupt";
+        let sealed = seal_field(plaintext).unwrap();
+
+        // Decode, tamper, re-encode
+        let encoded = &sealed[ENC_PREFIX.len()..];
+        let mut blob = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        // Flip a byte in the ciphertext portion (past the 12-byte nonce)
+        assert!(blob.len() > 13, "blob should be longer than nonce");
+        blob[13] ^= 0xFF;
+        let tampered = format!(
+            "{ENC_PREFIX}{}",
+            base64::engine::general_purpose::STANDARD.encode(&blob)
+        );
+
+        let result = unseal_field(&tampered);
+        assert!(
+            result.is_err(),
+            "tampered ciphertext must fail authentication, not return corrupted data"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("decrypt failed"),
+            "error should mention decrypt failure: {err_msg}"
+        );
+    }
 }
 
 #[cfg(test)]
