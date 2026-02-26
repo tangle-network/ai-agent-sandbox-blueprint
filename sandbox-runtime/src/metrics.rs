@@ -310,7 +310,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// Per-endpoint request count and cumulative duration.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct EndpointStats {
     pub count: u64,
     pub total_ms: u64,
@@ -318,6 +318,23 @@ pub struct EndpointStats {
     pub errors: u64,
     /// Count of 4xx client errors.
     pub client_errors: u64,
+    /// Minimum observed request duration in milliseconds.
+    pub min_duration_ms: u64,
+    /// Maximum observed request duration in milliseconds.
+    pub max_duration_ms: u64,
+}
+
+impl Default for EndpointStats {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            total_ms: 0,
+            errors: 0,
+            client_errors: 0,
+            min_duration_ms: u64::MAX,
+            max_duration_ms: 0,
+        }
+    }
 }
 
 /// Tracks per-endpoint HTTP latency and request counts.
@@ -350,6 +367,8 @@ impl HttpMetrics {
             let entry = map.entry(path.to_string()).or_default();
             entry.count += 1;
             entry.total_ms += duration_ms;
+            entry.min_duration_ms = std::cmp::min(entry.min_duration_ms, duration_ms);
+            entry.max_duration_ms = std::cmp::max(entry.max_duration_ms, duration_ms);
             if is_server_error {
                 entry.errors += 1;
             }
@@ -379,6 +398,8 @@ impl HttpMetrics {
         let _ = writeln!(out, "# TYPE http_request_duration_ms_total counter");
         let _ = writeln!(out, "# TYPE http_request_errors_total counter");
         let _ = writeln!(out, "# TYPE http_request_client_errors_total counter");
+        let _ = writeln!(out, "# TYPE http_request_duration_min_ms gauge");
+        let _ = writeln!(out, "# TYPE http_request_duration_max_ms gauge");
         for (path, stats) in &snap {
             let _ = writeln!(
                 out,
@@ -389,6 +410,20 @@ impl HttpMetrics {
                 out,
                 "http_request_duration_ms_total{{path=\"{path}\"}} {}",
                 stats.total_ms
+            );
+            let min_val = if stats.count == 0 {
+                0
+            } else {
+                stats.min_duration_ms
+            };
+            let _ = writeln!(
+                out,
+                "http_request_duration_min_ms{{path=\"{path}\"}} {min_val}",
+            );
+            let _ = writeln!(
+                out,
+                "http_request_duration_max_ms{{path=\"{path}\"}} {}",
+                stats.max_duration_ms
             );
             if stats.errors > 0 {
                 let _ = writeln!(

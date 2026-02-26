@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import "./helpers/InstanceSetup.sol";
 
 contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
+    using stdStorage for StdStorage;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PROVISION FLOW
@@ -660,6 +661,57 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         );
 
         assertTrue(instance.canLeave(testServiceId, operator1));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SAFE DECREMENT — DEPROVISION SUCCEEDS EVEN IF COUNTER IS ALREADY 0
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Verifies that _handleDeprovisionResult does not revert if
+    ///         instanceOperatorCount or totalProvisionedOperators is somehow 0.
+    ///         Uses stdstore to force the counters to 0 after provisioning,
+    ///         then deprovisions. Without the safe decrement pattern this would
+    ///         underflow and revert under Solidity 0.8 checked arithmetic.
+    function test_deprovisionSucceedsWhenCounterAlreadyZero() public {
+        _provisionOperator(operator1);
+
+        // Sanity: counters should be 1
+        assertEq(instance.getOperatorCount(testServiceId), 1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        // Force instanceOperatorCount[testServiceId] to 0
+        stdstore
+            .target(address(instance))
+            .sig("instanceOperatorCount(uint64)")
+            .with_key(uint256(testServiceId))
+            .checked_write(uint256(0));
+
+        // Force totalProvisionedOperators to 0
+        stdstore
+            .target(address(instance))
+            .sig("totalProvisionedOperators()")
+            .checked_write(uint256(0));
+
+        // Verify forced to 0
+        assertEq(instance.getOperatorCount(testServiceId), 0);
+        assertEq(instance.totalProvisionedOperators(), 0);
+
+        // Deprovision should succeed (no underflow revert)
+        uint64 callId = 7000;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId,
+            instance.JOB_DEPROVISION(),
+            callId,
+            operator1,
+            bytes(""),
+            encodeJsonOutputs("{}")
+        );
+
+        // Counters remain 0 (clamped, not underflowed)
+        assertEq(instance.getOperatorCount(testServiceId), 0);
+        assertEq(instance.totalProvisionedOperators(), 0);
+        assertFalse(instance.isOperatorProvisioned(testServiceId, operator1));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

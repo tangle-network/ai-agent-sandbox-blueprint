@@ -917,6 +917,63 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // SAFE DECREMENT — DELETION SUCCEEDS EVEN IF COUNTER IS ALREADY 0
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Verifies that _handleDeleteResult does not revert if
+    ///         operatorActiveSandboxes or totalActiveSandboxes is somehow 0.
+    ///         Uses vm.store to force the counters to 0 after a sandbox has
+    ///         been created, then deletes the sandbox. Without the safe
+    ///         decrement pattern (if > 0) this would underflow and revert
+    ///         under Solidity 0.8 checked arithmetic.
+    function test_deleteSucceedsWhenCounterAlreadyZero() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 6000, operator1, "sb-safe-dec");
+
+        // Sanity: counters should be 1
+        assertEq(blueprint.operatorActiveSandboxes(operator1), 1);
+        assertEq(blueprint.totalActiveSandboxes(), 1);
+
+        // Force operatorActiveSandboxes[operator1] to 0 via vm.store.
+        // operatorActiveSandboxes is mapping(address => uint32) at base slot 6.
+        // Mapping slot = keccak256(abi.encode(key, baseSlot)).
+        bytes32 opActiveSlot = keccak256(abi.encode(operator1, uint256(6)));
+        vm.store(address(blueprint), opActiveSlot, bytes32(uint256(0)));
+
+        // Force totalActiveSandboxes to 0. It's a uint32 at slot 7, offset 4.
+        // Slot 7 is packed: [defaultMaxCapacity (uint32 @ offset 0), totalActiveSandboxes (uint32 @ offset 4)].
+        // Preserve defaultMaxCapacity (100) while zeroing totalActiveSandboxes.
+        bytes32 slot7 = vm.load(address(blueprint), bytes32(uint256(7)));
+        // Zero out bytes 4-7 (totalActiveSandboxes) while keeping bytes 0-3 (defaultMaxCapacity).
+        // In EVM storage, lower offsets are stored in lower-order bytes of the 32-byte word.
+        bytes32 mask = bytes32(uint256(0xFFFFFFFF)); // keep lowest 4 bytes (defaultMaxCapacity)
+        bytes32 newSlot7 = slot7 & mask;
+        vm.store(address(blueprint), bytes32(uint256(7)), newSlot7);
+
+        // Verify forced to 0
+        assertEq(blueprint.operatorActiveSandboxes(operator1), 0);
+        assertEq(blueprint.totalActiveSandboxes(), 0);
+        // Verify defaultMaxCapacity is preserved
+        assertEq(blueprint.defaultMaxCapacity(), 100);
+
+        // Delete should succeed (no underflow revert) thanks to safe decrement
+        simulateJobResult(
+            1,
+            blueprint.JOB_SANDBOX_DELETE(),
+            6001,
+            operator1,
+            encodeSandboxIdInputs("sb-safe-dec"),
+            encodeJsonOutputs("{\"deleted\":true}")
+        );
+
+        // Counters remain 0 (clamped, not underflowed)
+        assertEq(blueprint.operatorActiveSandboxes(operator1), 0);
+        assertEq(blueprint.totalActiveSandboxes(), 0);
+        assertFalse(blueprint.isSandboxActive("sb-safe-dec"));
+        assertEq(blueprint.getSandboxOperator("sb-safe-dec"), address(0));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 

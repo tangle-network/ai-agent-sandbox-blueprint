@@ -679,8 +679,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
         delete sandboxOperator[sandboxHash];
         sandboxActive[sandboxHash] = false;
-        operatorActiveSandboxes[operator]--;
-        totalActiveSandboxes--;
+        if (operatorActiveSandboxes[operator] > 0) {
+            operatorActiveSandboxes[operator]--;
+        }
+        if (totalActiveSandboxes > 0) {
+            totalActiveSandboxes--;
+        }
 
         emit SandboxDeleted(sandboxHash, operator);
     }
@@ -732,8 +736,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         if (!operatorProvisioned[serviceId][operator]) revert NotProvisioned(serviceId, operator);
 
         operatorProvisioned[serviceId][operator] = false;
-        instanceOperatorCount[serviceId]--;
-        totalProvisionedOperators--;
+        if (instanceOperatorCount[serviceId] > 0) {
+            instanceOperatorCount[serviceId]--;
+        }
+        if (totalProvisionedOperators > 0) {
+            totalProvisionedOperators--;
+        }
 
         // Swap-and-pop to remove operator from enumerable list
         uint256 index = _operatorIndex[serviceId][operator];

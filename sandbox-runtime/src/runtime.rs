@@ -517,27 +517,45 @@ fn unseal_field(stored: &str) -> Result<String> {
 
 /// Encrypt sensitive fields in a `SandboxRecord` before persisting.
 pub fn seal_record(record: &mut SandboxRecord) {
-    if let Ok(sealed) = seal_field(&record.token) {
-        record.token = sealed;
+    match seal_field(&record.token) {
+        Ok(sealed) => record.token = sealed,
+        Err(e) => {
+            tracing::error!(field = "token", error = %e, "Failed to encrypt field — storing plaintext")
+        }
     }
-    if let Ok(sealed) = seal_field(&record.base_env_json) {
-        record.base_env_json = sealed;
+    match seal_field(&record.base_env_json) {
+        Ok(sealed) => record.base_env_json = sealed,
+        Err(e) => {
+            tracing::error!(field = "base_env_json", error = %e, "Failed to encrypt field — storing plaintext")
+        }
     }
-    if let Ok(sealed) = seal_field(&record.user_env_json) {
-        record.user_env_json = sealed;
+    match seal_field(&record.user_env_json) {
+        Ok(sealed) => record.user_env_json = sealed,
+        Err(e) => {
+            tracing::error!(field = "user_env_json", error = %e, "Failed to encrypt field — storing plaintext")
+        }
     }
 }
 
 /// Decrypt sensitive fields in a `SandboxRecord` after reading from store.
 pub fn unseal_record(record: &mut SandboxRecord) {
-    if let Ok(plain) = unseal_field(&record.token) {
-        record.token = plain;
+    match unseal_field(&record.token) {
+        Ok(plain) => record.token = plain,
+        Err(e) => {
+            tracing::error!(field = "token", error = %e, "Failed to decrypt field — returning raw value")
+        }
     }
-    if let Ok(plain) = unseal_field(&record.base_env_json) {
-        record.base_env_json = plain;
+    match unseal_field(&record.base_env_json) {
+        Ok(plain) => record.base_env_json = plain,
+        Err(e) => {
+            tracing::error!(field = "base_env_json", error = %e, "Failed to decrypt field — returning raw value")
+        }
     }
-    if let Ok(plain) = unseal_field(&record.user_env_json) {
-        record.user_env_json = plain;
+    match unseal_field(&record.user_env_json) {
+        Ok(plain) => record.user_env_json = plain,
+        Err(e) => {
+            tracing::error!(field = "user_env_json", error = %e, "Failed to decrypt field — returning raw value")
+        }
     }
 }
 

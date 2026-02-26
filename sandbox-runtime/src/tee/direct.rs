@@ -37,22 +37,30 @@ impl TeeBackend for DirectTeeBackend {
     async fn deploy(&self, _params: &TeeDeployParams) -> Result<TeeDeployment> {
         // TODO: Launch a Docker container with TEE device passthrough,
         // or start a Gramine-shielded container, then extract attestation.
-        unimplemented!("DirectTeeBackend::deploy — implement for your TEE hardware")
+        Err(crate::error::SandboxError::Validation(
+            "DirectTeeBackend::deploy not implemented — configure your TEE hardware".into(),
+        ))
     }
 
     async fn attestation(&self, _deployment_id: &str) -> Result<AttestationReport> {
         // TODO: Query your local attestation service for a fresh report.
-        unimplemented!("DirectTeeBackend::attestation — implement for your TEE hardware")
+        Err(crate::error::SandboxError::Validation(
+            "DirectTeeBackend::attestation not implemented — configure your TEE hardware".into(),
+        ))
     }
 
     async fn stop(&self, _deployment_id: &str) -> Result<()> {
         // TODO: Stop the TEE-isolated container.
-        unimplemented!("DirectTeeBackend::stop — implement for your TEE hardware")
+        Err(crate::error::SandboxError::Validation(
+            "DirectTeeBackend::stop not implemented — configure your TEE hardware".into(),
+        ))
     }
 
     async fn destroy(&self, _deployment_id: &str) -> Result<()> {
         // TODO: Remove the TEE-isolated container and clean up resources.
-        unimplemented!("DirectTeeBackend::destroy — implement for your TEE hardware")
+        Err(crate::error::SandboxError::Validation(
+            "DirectTeeBackend::destroy not implemented — configure your TEE hardware".into(),
+        ))
     }
 
     fn tee_type(&self) -> TeeType {
