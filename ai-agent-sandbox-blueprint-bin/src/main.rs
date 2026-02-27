@@ -64,6 +64,13 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         }
     }
 
+    // QoS metrics provider is stored here for deferred spawn (after api_shutdown_tx exists).
+    #[cfg(feature = "qos")]
+    let mut qos_deferred: Option<(
+        std::sync::Arc<dyn blueprint_qos::metrics::types::MetricsProvider>,
+        u64,
+    )> = None;
+
     // Optionally start QoS background service (heartbeat + metrics collection + on-chain reporting)
     #[cfg(feature = "qos")]
     {
@@ -129,35 +136,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                         }
                     }
 
-                    // Spawn a background task that periodically pushes sandbox metrics
-                    // from the lib's atomic counters to the QoS on-chain provider.
-                    // Uses a shutdown channel to exit cleanly when the operator shuts down.
+                    // Store QoS provider + interval for deferred spawn (after
+                    // api_shutdown_tx is created — see below).
                     if let Some(provider) = qos_service.provider() {
-                        let interval_secs = metrics_interval;
-                        let mut qos_shutdown = api_shutdown_tx.subscribe();
-                        tokio::spawn(async move {
-                            use blueprint_qos::metrics::types::MetricsProvider;
-
-                            let mut interval = tokio::time::interval(
-                                std::time::Duration::from_secs(interval_secs),
-                            );
-                            loop {
-                                tokio::select! {
-                                    _ = interval.tick() => {
-                                        let snapshot =
-                                            ai_agent_sandbox_blueprint_lib::metrics::metrics()
-                                                .snapshot();
-                                        for (key, value) in snapshot {
-                                            provider.add_on_chain_metric(key, value).await;
-                                        }
-                                    }
-                                    _ = qos_shutdown.changed() => {
-                                        info!("QoS metrics loop shutting down");
-                                        break;
-                                    }
-                                }
-                            }
-                        });
+                        qos_deferred = Some((provider, metrics_interval));
                     }
                 }
                 Err(e) => {
@@ -370,6 +352,32 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                     }
                     _ = gc_session_shutdown.changed() => {
                         info!("Session GC shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    // Spawn deferred QoS metrics loop now that api_shutdown_tx exists
+    #[cfg(feature = "qos")]
+    if let Some((provider, interval_secs)) = qos_deferred {
+        let mut qos_shutdown = api_shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            use blueprint_qos::metrics::types::MetricsProvider;
+
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let snapshot =
+                            ai_agent_sandbox_blueprint_lib::metrics::metrics().snapshot();
+                        for (key, value) in snapshot {
+                            provider.add_on_chain_metric(key, value).await;
+                        }
+                    }
+                    _ = qos_shutdown.changed() => {
+                        info!("QoS metrics loop shutting down");
                         break;
                     }
                 }

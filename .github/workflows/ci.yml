@@ -67,6 +67,9 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --tests --examples -- -D warnings
 
+      - name: Run Clippy (QoS feature)
+        run: cargo clippy -p ai-agent-sandbox-blueprint-bin --features qos --tests -- -D warnings
+
   test:
     timeout-minutes: 90
     name: Unit tests

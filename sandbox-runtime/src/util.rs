@@ -96,7 +96,9 @@ pub fn shell_escape(value: &str) -> String {
 ///
 /// Rejects:
 /// - Non-HTTPS/S3 schemes (file://, ftp://, gopher://, etc.)
-/// - Private/loopback IP addresses (169.254.x.x, 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x)
+/// - Private/loopback IP addresses (IPv4 and IPv6)
+/// - IPv4-mapped IPv6 addresses (`::ffff:10.0.0.1`)
+/// - IPv6 unique-local (`fc00::/7`) and link-local (`fe80::/10`)
 /// - `localhost` hostname
 fn validate_snapshot_destination(destination: &str) -> Result<()> {
     let trimmed = destination.trim();
@@ -113,15 +115,23 @@ fn validate_snapshot_destination(destination: &str) -> Result<()> {
         ));
     }
 
-    // Extract the host portion (between :// and the next / or end)
+    // Extract the host portion. Handle IPv6 bracket notation: [::1]
     let after_scheme = &trimmed["https://".len()..];
-    let host = after_scheme
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("");
+    let host = if after_scheme.starts_with('[') {
+        // IPv6 bracket notation: [::1]:port/path
+        after_scheme
+            .find(']')
+            .map(|end| &after_scheme[1..end])
+            .unwrap_or("")
+    } else {
+        after_scheme
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or("")
+    };
 
     // Block localhost
     if host.eq_ignore_ascii_case("localhost") {
@@ -130,17 +140,32 @@ fn validate_snapshot_destination(destination: &str) -> Result<()> {
         ));
     }
 
-    // Block private/link-local IP addresses
+    // Block private/link-local/internal IP addresses (IPv4 and IPv6)
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        let is_private = match ip {
+        let is_internal = match ip {
             std::net::IpAddr::V4(v4) => {
-                v4.is_loopback() || v4.is_private() || v4.is_link_local()
-                    // Cloud metadata: 169.254.169.254
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    // Cloud metadata: 169.254.x.x
                     || v4.octets()[0] == 169
             }
-            std::net::IpAddr::V6(v6) => v6.is_loopback(),
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    // Unique-local (fc00::/7)
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00
+                    // Link-local (fe80::/10)
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+                    // IPv4-mapped IPv6 (::ffff:x.x.x.x) — check the embedded v4
+                    || v6.to_ipv4_mapped().is_some_and(|v4| {
+                        v4.is_loopback()
+                            || v4.is_private()
+                            || v4.is_link_local()
+                            || v4.octets()[0] == 169
+                    })
+            }
         };
-        if is_private {
+        if is_internal {
             return Err(SandboxError::Validation(
                 "Snapshot destination must not target private/internal IP addresses".into(),
             ));
@@ -324,6 +349,53 @@ mod tests {
     fn build_snapshot_command_rejects_link_local() {
         let result = build_snapshot_command("https://169.254.169.254/snap", true, true);
         assert!(result.is_err());
+    }
+
+    // ── IPv6 SSRF prevention ────────────────────────────────────────────
+
+    #[test]
+    fn build_snapshot_command_rejects_ipv6_loopback() {
+        let result = build_snapshot_command("https://[::1]/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_ipv6_unique_local() {
+        let result = build_snapshot_command("https://[fc00::1]/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_ipv6_link_local() {
+        let result = build_snapshot_command("https://[fe80::1]/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_ipv4_mapped_ipv6_private() {
+        // ::ffff:10.0.0.1 — IPv4-mapped IPv6 with private IPv4
+        let result = build_snapshot_command("https://[::ffff:10.0.0.1]/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_ipv4_mapped_ipv6_loopback() {
+        let result = build_snapshot_command("https://[::ffff:127.0.0.1]/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_ipv4_mapped_ipv6_metadata() {
+        // ::ffff:169.254.169.254 — cloud metadata via IPv4-mapped IPv6
+        let result = build_snapshot_command("https://[::ffff:169.254.169.254]/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_allows_ipv6_public() {
+        // 2001:db8:: is documentation range, but not private/loopback
+        let result = build_snapshot_command("https://[2607:f8b0:4004:800::200e]/snap", true, true);
+        assert!(result.is_ok());
     }
 
     // ── normalize_username ──────────────────────────────────────────────
