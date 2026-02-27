@@ -335,10 +335,13 @@ pub fn instance_store() -> Result<&'static PersistentStore<SandboxRecord>> {
 
 /// Get the instance-mode singleton sandbox, if provisioned.
 pub fn get_instance_sandbox() -> Result<Option<SandboxRecord>> {
-    Ok(instance_store()?.get("instance")?.map(|mut r| {
-        unseal_record(&mut r);
-        r
-    }))
+    match instance_store()?.get("instance")? {
+        Some(mut r) => {
+            unseal_record(&mut r)?;
+            Ok(Some(r))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Return the cached Docker client, connecting on first call.
@@ -589,25 +592,17 @@ pub fn seal_record(record: &mut SandboxRecord) -> Result<()> {
 }
 
 /// Decrypt sensitive fields in a `SandboxRecord` after reading from store.
-pub fn unseal_record(record: &mut SandboxRecord) {
-    match unseal_field(&record.token) {
-        Ok(plain) => record.token = plain,
-        Err(e) => {
-            tracing::error!(field = "token", error = %e, "Failed to decrypt field — returning raw value")
-        }
-    }
-    match unseal_field(&record.base_env_json) {
-        Ok(plain) => record.base_env_json = plain,
-        Err(e) => {
-            tracing::error!(field = "base_env_json", error = %e, "Failed to decrypt field — returning raw value")
-        }
-    }
-    match unseal_field(&record.user_env_json) {
-        Ok(plain) => record.user_env_json = plain,
-        Err(e) => {
-            tracing::error!(field = "user_env_json", error = %e, "Failed to decrypt field — returning raw value")
-        }
-    }
+///
+/// Returns an error if any field fails to decrypt. This prevents passing
+/// garbled ciphertext to sidecars as credentials or environment variables.
+pub fn unseal_record(record: &mut SandboxRecord) -> Result<()> {
+    record.token = unseal_field(&record.token)
+        .map_err(|e| SandboxError::Storage(format!("unseal token: {e}")))?;
+    record.base_env_json = unseal_field(&record.base_env_json)
+        .map_err(|e| SandboxError::Storage(format!("unseal base_env_json: {e}")))?;
+    record.user_env_json = unseal_field(&record.user_env_json)
+        .map_err(|e| SandboxError::Storage(format!("unseal user_env_json: {e}")))?;
+    Ok(())
 }
 
 fn next_sandbox_id() -> String {
@@ -618,7 +613,7 @@ pub fn get_sandbox_by_id(id: &str) -> Result<SandboxRecord> {
     let mut record = sandboxes()?
         .get(id)?
         .ok_or_else(|| SandboxError::NotFound(format!("Sandbox '{id}' not found")))?;
-    unseal_record(&mut record);
+    unseal_record(&mut record)?;
     Ok(record)
 }
 
@@ -629,7 +624,7 @@ pub fn get_sandbox_by_url(sidecar_url: &str) -> Result<SandboxRecord> {
         .ok_or_else(|| {
             SandboxError::NotFound(format!("Sandbox not found for URL: {sidecar_url}"))
         })?;
-    unseal_record(&mut record);
+    unseal_record(&mut record)?;
     Ok(record)
 }
 
@@ -651,10 +646,7 @@ pub fn get_sandbox_by_url_opt(sidecar_url: &str) -> Option<SandboxRecord> {
             .find(|record| record.sidecar_url == url)
             .ok()
             .flatten()
-            .map(|mut r| {
-                unseal_record(&mut r);
-                r
-            })
+            .and_then(|mut r| unseal_record(&mut r).ok().map(|()| r))
     })
 }
 
@@ -1806,7 +1798,7 @@ mod seal_tests {
         assert!(record.base_env_json.starts_with(ENC_PREFIX));
         assert!(record.user_env_json.starts_with(ENC_PREFIX));
 
-        unseal_record(&mut record);
+        unseal_record(&mut record).unwrap();
         assert_eq!(record.token, "my-token");
         assert_eq!(record.base_env_json, r#"{"KEY":"val"}"#);
         assert_eq!(record.user_env_json, r#"{"USER":"x"}"#);

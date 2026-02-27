@@ -193,7 +193,7 @@ mod tests {
             map.insert(
                 id.clone(),
                 BreakerEntry {
-                    marked_at: Instant::now() - std::time::Duration::from_secs(60),
+                    marked_at: Instant::now() - std::time::Duration::from_secs(31),
                     probing: false,
                 },
             );
@@ -223,7 +223,7 @@ mod tests {
             map.insert(
                 id.clone(),
                 BreakerEntry {
-                    marked_at: Instant::now() - std::time::Duration::from_secs(60),
+                    marked_at: Instant::now() - std::time::Duration::from_secs(31),
                     probing: false,
                 },
             );

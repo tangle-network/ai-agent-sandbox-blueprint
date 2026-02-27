@@ -27,7 +27,10 @@ pub async fn reaper_tick() {
     };
 
     for mut record in records {
-        crate::runtime::unseal_record(&mut record);
+        if let Err(e) = crate::runtime::unseal_record(&mut record) {
+            tracing::error!(id = %record.id, error = %e, "Failed to unseal record in reaper — skipping");
+            continue;
+        }
         if record.state != SandboxState::Running {
             continue;
         }

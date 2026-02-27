@@ -166,7 +166,7 @@ async fn list_sandboxes(SessionAuth(address): SessionAuth) -> impl IntoResponse 
         Ok(records) => {
             let summaries: Vec<SandboxSummary> = records
                 .iter()
-                .filter(|r| r.owner.is_empty() || r.owner.eq_ignore_ascii_case(&address))
+                .filter(|r| !r.owner.is_empty() && r.owner.eq_ignore_ascii_case(&address))
                 .map(SandboxSummary::from)
                 .collect();
             (
@@ -345,8 +345,7 @@ async fn health() -> impl IntoResponse {
 
     let (status, code) = match (docker_ok, store_ok) {
         (true, true) => ("ok", StatusCode::OK),
-        (false, false) => ("unhealthy", StatusCode::SERVICE_UNAVAILABLE),
-        _ => ("degraded", StatusCode::OK),
+        _ => ("degraded", StatusCode::SERVICE_UNAVAILABLE),
     };
 
     let check = |ok: bool| {

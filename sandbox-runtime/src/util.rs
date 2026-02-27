@@ -100,8 +100,17 @@ pub fn shell_escape(value: &str) -> String {
 /// - IPv4-mapped IPv6 addresses (`::ffff:10.0.0.1`)
 /// - IPv6 unique-local (`fc00::/7`) and link-local (`fe80::/10`)
 /// - `localhost` hostname
+const MAX_SNAPSHOT_URL_LEN: usize = 2048;
+
 fn validate_snapshot_destination(destination: &str) -> Result<()> {
     let trimmed = destination.trim();
+
+    if trimmed.len() > MAX_SNAPSHOT_URL_LEN {
+        return Err(SandboxError::Validation(format!(
+            "Snapshot destination URL too long ({} bytes, max {MAX_SNAPSHOT_URL_LEN})",
+            trimmed.len()
+        )));
+    }
 
     // Allow s3:// URIs (handled by the sidecar's S3 client, not curl)
     if trimmed.starts_with("s3://") {

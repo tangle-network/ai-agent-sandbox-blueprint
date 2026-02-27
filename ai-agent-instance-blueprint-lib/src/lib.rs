@@ -153,10 +153,13 @@ pub fn instance_store() -> error::Result<&'static store::PersistentStore<Sandbox
 
 /// Get the provisioned sandbox record for this instance, if any.
 pub fn get_instance_sandbox() -> error::Result<Option<SandboxRecord>> {
-    Ok(instance_store()?.get(INSTANCE_KEY)?.map(|mut r| {
-        sandbox_runtime::runtime::unseal_record(&mut r);
-        r
-    }))
+    match instance_store()?.get(INSTANCE_KEY)? {
+        Some(mut r) => {
+            sandbox_runtime::runtime::unseal_record(&mut r)?;
+            Ok(Some(r))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Get the provisioned sandbox or return an error if not yet provisioned.
