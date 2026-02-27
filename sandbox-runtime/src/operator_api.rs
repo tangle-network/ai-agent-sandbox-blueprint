@@ -614,56 +614,65 @@ fn parse_agent_response(parsed: &Value) -> AgentResponse {
     }
 }
 
-/// Execute a sidecar operation and return the result, touching the sandbox activity.
+/// Call a sidecar endpoint with circuit-breaker integration and timeout.
 ///
-/// Applies [`SIDECAR_EXEC_TIMEOUT`] to prevent runaway commands from holding
-/// the connection indefinitely.
+/// This is the single entry point for all sidecar HTTP calls. It:
+/// 1. Checks the circuit breaker (returns 503 if in cooldown)
+/// 2. Sends the request with the given timeout
+/// 3. Marks the sidecar healthy/unhealthy based on the outcome
+/// 4. Touches the sandbox activity timestamp on success
+async fn sidecar_call(
+    record: &SandboxRecord,
+    path: &str,
+    payload: Value,
+    timeout: Duration,
+    op_name: &str,
+) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    circuit_breaker::check_health(&record.id)
+        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+
+    let result = tokio::time::timeout(
+        timeout,
+        sidecar_post_json(&record.sidecar_url, path, &record.token, payload),
+    )
+    .await;
+
+    match result {
+        Err(_) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+            ))
+        }
+        Ok(Err(e)) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()))
+        }
+        Ok(Ok(parsed)) => {
+            circuit_breaker::mark_healthy(&record.id);
+            runtime::touch_sandbox(&record.id);
+            Ok(parsed)
+        }
+    }
+}
+
 async fn exec_on_sidecar(
     record: &SandboxRecord,
     req: &ExecApiRequest,
 ) -> Result<ExecApiResponse, (StatusCode, Json<ApiError>)> {
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let payload = build_exec_payload(&req.command, &req.cwd, &req.env_json, req.timeout_ms);
-    let result = tokio::time::timeout(
+    let parsed = sidecar_call(
+        record,
+        "/terminals/commands",
+        payload,
         SIDECAR_EXEC_TIMEOUT,
-        sidecar_post_json(
-            &record.sidecar_url,
-            "/terminals/commands",
-            &record.token,
-            payload,
-        ),
+        "exec",
     )
-    .await;
-    match &result {
-        Err(_) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(
-                StatusCode::GATEWAY_TIMEOUT,
-                format!(
-                    "Sidecar exec timed out after {}s",
-                    SIDECAR_EXEC_TIMEOUT.as_secs()
-                ),
-            ));
-        }
-        Ok(Err(e)) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
-        }
-        Ok(Ok(_)) => {
-            circuit_breaker::mark_healthy(&record.id);
-        }
-    }
-    let parsed = result.unwrap().unwrap();
-    runtime::touch_sandbox(&record.id);
+    .await?;
     Ok(parse_exec_response(&parsed))
 }
 
-/// Run a prompt/task on the sidecar agent.
-///
-/// Applies [`SIDECAR_AGENT_TIMEOUT`] as the outer deadline for the HTTP call.
-/// The sidecar may also enforce its own internal `timeout_ms` from the payload,
-/// but this ensures the operator never waits longer than the configured limit.
 async fn agent_on_sidecar(
     record: &SandboxRecord,
     message: &str,
@@ -673,8 +682,6 @@ async fn agent_on_sidecar(
     timeout_ms: u64,
     max_turns: Option<u64>,
 ) -> Result<AgentResponse, (StatusCode, Json<ApiError>)> {
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let payload = build_agent_payload(
         message,
         session_id,
@@ -683,32 +690,14 @@ async fn agent_on_sidecar(
         timeout_ms,
         max_turns,
     );
-    let result = tokio::time::timeout(
+    let parsed = sidecar_call(
+        record,
+        "/agents/run",
+        payload,
         SIDECAR_AGENT_TIMEOUT,
-        sidecar_post_json(&record.sidecar_url, "/agents/run", &record.token, payload),
+        "agent",
     )
-    .await;
-    match &result {
-        Err(_) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(
-                StatusCode::GATEWAY_TIMEOUT,
-                format!(
-                    "Sidecar agent call timed out after {}s",
-                    SIDECAR_AGENT_TIMEOUT.as_secs()
-                ),
-            ));
-        }
-        Ok(Err(e)) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
-        }
-        Ok(Ok(_)) => {
-            circuit_breaker::mark_healthy(&record.id);
-        }
-    }
-    let parsed = result.unwrap().unwrap();
-    runtime::touch_sandbox(&record.id);
+    .await?;
     Ok(parse_agent_response(&parsed))
 }
 
@@ -968,8 +957,6 @@ async fn run_snapshot(
     record: &SandboxRecord,
     req: &SnapshotApiRequest,
 ) -> Result<SnapshotApiResponse, (StatusCode, Json<ApiError>)> {
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     if req.destination.trim().is_empty() {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
@@ -983,37 +970,14 @@ async fn run_snapshot(
     )
     .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let result = tokio::time::timeout(
+    let parsed = sidecar_call(
+        record,
+        "/terminals/commands",
+        payload,
         SIDECAR_DEFAULT_TIMEOUT,
-        sidecar_post_json(
-            &record.sidecar_url,
-            "/terminals/commands",
-            &record.token,
-            payload,
-        ),
+        "snapshot",
     )
-    .await;
-    match &result {
-        Err(_) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(
-                StatusCode::GATEWAY_TIMEOUT,
-                format!(
-                    "Sidecar snapshot timed out after {}s",
-                    SIDECAR_DEFAULT_TIMEOUT.as_secs()
-                ),
-            ));
-        }
-        Ok(Err(e)) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
-        }
-        Ok(Ok(_)) => {
-            circuit_breaker::mark_healthy(&record.id);
-        }
-    }
-    let parsed = result.unwrap().unwrap();
-    runtime::touch_sandbox(&record.id);
+    .await?;
     Ok(SnapshotApiResponse {
         success: true,
         result: parsed,
@@ -1074,43 +1038,18 @@ async fn run_ssh_provision(
     record: &SandboxRecord,
     req: &SshProvisionApiRequest,
 ) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let username = crate::util::normalize_username(&req.username)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let command = build_ssh_provision_command(&username, &req.public_key);
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let result = tokio::time::timeout(
+    let parsed = sidecar_call(
+        record,
+        "/terminals/commands",
+        payload,
         SIDECAR_DEFAULT_TIMEOUT,
-        sidecar_post_json(
-            &record.sidecar_url,
-            "/terminals/commands",
-            &record.token,
-            payload,
-        ),
+        "ssh-provision",
     )
-    .await;
-    match &result {
-        Err(_) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(
-                StatusCode::GATEWAY_TIMEOUT,
-                format!(
-                    "Sidecar SSH provision timed out after {}s",
-                    SIDECAR_DEFAULT_TIMEOUT.as_secs()
-                ),
-            ));
-        }
-        Ok(Err(e)) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
-        }
-        Ok(Ok(_)) => {
-            circuit_breaker::mark_healthy(&record.id);
-        }
-    }
-    let parsed = result.unwrap().unwrap();
-    runtime::touch_sandbox(&record.id);
+    .await?;
     Ok(SshApiResponse {
         success: true,
         result: parsed,
@@ -1121,43 +1060,18 @@ async fn run_ssh_revoke(
     record: &SandboxRecord,
     req: &SshRevokeApiRequest,
 ) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let username = crate::util::normalize_username(&req.username)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let command = build_ssh_revoke_cmd(&username, &req.public_key);
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let result = tokio::time::timeout(
+    let parsed = sidecar_call(
+        record,
+        "/terminals/commands",
+        payload,
         SIDECAR_DEFAULT_TIMEOUT,
-        sidecar_post_json(
-            &record.sidecar_url,
-            "/terminals/commands",
-            &record.token,
-            payload,
-        ),
+        "ssh-revoke",
     )
-    .await;
-    match &result {
-        Err(_) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(
-                StatusCode::GATEWAY_TIMEOUT,
-                format!(
-                    "Sidecar SSH revoke timed out after {}s",
-                    SIDECAR_DEFAULT_TIMEOUT.as_secs()
-                ),
-            ));
-        }
-        Ok(Err(e)) => {
-            circuit_breaker::mark_unhealthy(&record.id);
-            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
-        }
-        Ok(Ok(_)) => {
-            circuit_breaker::mark_healthy(&record.id);
-        }
-    }
-    let parsed = result.unwrap().unwrap();
-    runtime::touch_sandbox(&record.id);
+    .await?;
     Ok(SshApiResponse {
         success: true,
         result: parsed,

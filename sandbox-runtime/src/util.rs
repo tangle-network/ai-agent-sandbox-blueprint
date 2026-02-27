@@ -179,3 +179,300 @@ pub fn build_snapshot_command(
  rm -f \"$tmp\""
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── shell_escape ────────────────────────────────────────────────────
+
+    #[test]
+    fn shell_escape_empty_string() {
+        assert_eq!(shell_escape(""), "''");
+    }
+
+    #[test]
+    fn shell_escape_normal_string() {
+        assert_eq!(shell_escape("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_escape_string_with_single_quotes() {
+        // Each embedded ' becomes '"'"'
+        assert_eq!(shell_escape("it's"), "'it'\"'\"'s'");
+    }
+
+    #[test]
+    fn shell_escape_special_chars() {
+        let input = "hello world; rm -rf /";
+        let escaped = shell_escape(input);
+        assert!(escaped.starts_with('\''));
+        assert!(escaped.ends_with('\''));
+        // The semicolon and spaces are safely inside quotes
+        assert!(escaped.contains("hello world; rm -rf /"));
+    }
+
+    #[test]
+    fn shell_escape_multiple_single_quotes() {
+        let input = "a'b'c";
+        let escaped = shell_escape(input);
+        assert_eq!(escaped, "'a'\"'\"'b'\"'\"'c'");
+    }
+
+    // ── build_snapshot_command ───────────────────────────────────────────
+
+    #[test]
+    fn build_snapshot_command_valid_https() {
+        let result = build_snapshot_command("https://example.com/snap.tar.gz", true, true);
+        assert!(result.is_ok());
+        let cmd = result.unwrap();
+        assert!(cmd.contains("/home/agent"));
+        assert!(cmd.contains("/var/lib/sidecar"));
+        assert!(cmd.contains("example.com"));
+    }
+
+    #[test]
+    fn build_snapshot_command_valid_s3() {
+        let result = build_snapshot_command("s3://my-bucket/snap.tar.gz", true, false);
+        assert!(result.is_ok());
+        let cmd = result.unwrap();
+        assert!(cmd.contains("/home/agent"));
+        assert!(!cmd.contains("/var/lib/sidecar"));
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_private_ip() {
+        let result = build_snapshot_command("https://192.168.1.1/snap", true, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("private"));
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_10_network() {
+        let result = build_snapshot_command("https://10.0.0.1/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_172_private() {
+        let result = build_snapshot_command("https://172.16.0.1/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_localhost() {
+        let result = build_snapshot_command("https://localhost/snap", true, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("localhost"));
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_loopback_ip() {
+        let result = build_snapshot_command("https://127.0.0.1/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_http() {
+        let result = build_snapshot_command("http://example.com/snap", true, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("https://") || err.contains("s3://"));
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_file_scheme() {
+        let result = build_snapshot_command("file:///etc/passwd", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_ftp_scheme() {
+        let result = build_snapshot_command("ftp://example.com/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_empty_paths() {
+        let result = build_snapshot_command("https://example.com/snap", false, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("workspace or state"));
+    }
+
+    #[test]
+    fn build_snapshot_command_workspace_only() {
+        let result = build_snapshot_command("https://example.com/snap", true, false);
+        assert!(result.is_ok());
+        let cmd = result.unwrap();
+        assert!(cmd.contains("/home/agent"));
+        assert!(!cmd.contains("/var/lib/sidecar"));
+    }
+
+    #[test]
+    fn build_snapshot_command_state_only() {
+        let result = build_snapshot_command("https://example.com/snap", false, true);
+        assert!(result.is_ok());
+        let cmd = result.unwrap();
+        assert!(!cmd.contains("/home/agent"));
+        assert!(cmd.contains("/var/lib/sidecar"));
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_link_local() {
+        let result = build_snapshot_command("https://169.254.169.254/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    // ── normalize_username ──────────────────────────────────────────────
+
+    #[test]
+    fn normalize_username_empty_defaults_to_root() {
+        assert_eq!(normalize_username("").unwrap(), "root");
+    }
+
+    #[test]
+    fn normalize_username_whitespace_defaults_to_root() {
+        assert_eq!(normalize_username("   ").unwrap(), "root");
+    }
+
+    #[test]
+    fn normalize_username_valid() {
+        assert_eq!(normalize_username("alice").unwrap(), "alice");
+    }
+
+    #[test]
+    fn normalize_username_with_dash_underscore_dot() {
+        assert_eq!(
+            normalize_username("my-user_name.1").unwrap(),
+            "my-user_name.1"
+        );
+    }
+
+    #[test]
+    fn normalize_username_rejects_at_symbol() {
+        assert!(normalize_username("user@host").is_err());
+    }
+
+    #[test]
+    fn normalize_username_rejects_spaces() {
+        assert!(normalize_username("user name").is_err());
+    }
+
+    #[test]
+    fn normalize_username_rejects_semicolon() {
+        assert!(normalize_username("user;evil").is_err());
+    }
+
+    #[test]
+    fn normalize_username_rejects_slash() {
+        assert!(normalize_username("../root").is_err());
+    }
+
+    // ── parse_json_object ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_json_object_empty_string() {
+        let result = parse_json_object("", "test").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_json_object_whitespace_only() {
+        let result = parse_json_object("   ", "test").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_json_object_valid_object() {
+        let result = parse_json_object(r#"{"key": "value"}"#, "test").unwrap();
+        assert!(result.is_some());
+        let val = result.unwrap();
+        assert_eq!(val["key"], "value");
+    }
+
+    #[test]
+    fn parse_json_object_rejects_array() {
+        let result = parse_json_object("[1, 2, 3]", "test");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must be a JSON object"));
+    }
+
+    #[test]
+    fn parse_json_object_rejects_string() {
+        let result = parse_json_object(r#""hello""#, "test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_json_object_invalid_json() {
+        let result = parse_json_object("{bad json}", "test");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not valid JSON"));
+    }
+
+    // ── merge_metadata ──────────────────────────────────────────────────
+
+    #[test]
+    fn merge_metadata_no_image_no_stack() {
+        let metadata = Some(serde_json::json!({"existing": true}));
+        let result = merge_metadata(metadata.clone(), "", "").unwrap();
+        // Returns original metadata unchanged
+        assert_eq!(result, metadata);
+    }
+
+    #[test]
+    fn merge_metadata_none_with_no_image_no_stack() {
+        let result = merge_metadata(None, "", "").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn merge_metadata_with_image() {
+        let result = merge_metadata(None, "ubuntu:22.04", "").unwrap();
+        assert!(result.is_some());
+        let val = result.unwrap();
+        assert_eq!(val["image"], "ubuntu:22.04");
+        assert!(val.get("stack").is_none());
+    }
+
+    #[test]
+    fn merge_metadata_with_stack() {
+        let result = merge_metadata(None, "", "python").unwrap();
+        assert!(result.is_some());
+        let val = result.unwrap();
+        assert_eq!(val["stack"], "python");
+        assert!(val.get("image").is_none());
+    }
+
+    #[test]
+    fn merge_metadata_with_both() {
+        let existing = Some(serde_json::json!({"version": 1}));
+        let result = merge_metadata(existing, "ubuntu:22.04", "python").unwrap();
+        assert!(result.is_some());
+        let val = result.unwrap();
+        assert_eq!(val["image"], "ubuntu:22.04");
+        assert_eq!(val["stack"], "python");
+        assert_eq!(val["version"], 1);
+    }
+
+    #[test]
+    fn merge_metadata_non_object_errors() {
+        let metadata = Some(serde_json::json!([1, 2, 3]));
+        let result = merge_metadata(metadata, "ubuntu:22.04", "");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must be a JSON object"));
+    }
+
+    #[test]
+    fn merge_metadata_string_value_errors() {
+        let metadata = Some(serde_json::json!("just a string"));
+        let result = merge_metadata(metadata, "img", "");
+        assert!(result.is_err());
+    }
+}

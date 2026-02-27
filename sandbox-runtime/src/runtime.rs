@@ -173,19 +173,12 @@ impl SidecarRuntimeConfig {
                 .ok()
                 .filter(|v| !v.trim().is_empty());
 
-            // Validate critical configuration values.
-            if image.trim().is_empty() {
-                tracing::error!("SIDECAR_IMAGE must not be empty");
-                std::process::exit(1);
-            }
-            if container_port == 0 {
-                tracing::error!("SIDECAR_HTTP_PORT must be > 0");
-                std::process::exit(1);
-            }
-            if timeout == 0 {
-                tracing::error!("REQUEST_TIMEOUT_SECS must be > 0");
-                std::process::exit(1);
-            }
+            // Validate critical configuration values. Panics are intentional here —
+            // these represent unrecoverable startup misconfigurations. Unlike process::exit,
+            // panic! unwinds the stack and runs destructors.
+            assert!(!image.trim().is_empty(), "SIDECAR_IMAGE must not be empty");
+            assert!(container_port > 0, "SIDECAR_HTTP_PORT must be > 0");
+            assert!(timeout > 0, "REQUEST_TIMEOUT_SECS must be > 0");
 
             tracing::info!(
                 image = %image,

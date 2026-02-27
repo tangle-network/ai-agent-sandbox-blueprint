@@ -74,3 +74,87 @@ pub async fn sidecar_post_json(
     serde_json::from_str(&body)
         .map_err(|err| SandboxError::Http(format!("Invalid sidecar response JSON: {err}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── build_url ───────────────────────────────────────────────────────
+
+    #[test]
+    fn build_url_normal() {
+        let url = build_url("http://localhost:8080", "/api/test").unwrap();
+        assert_eq!(url.as_str(), "http://localhost:8080/api/test");
+    }
+
+    #[test]
+    fn build_url_trailing_slash_on_base() {
+        let url = build_url("http://localhost:8080/", "/api/test").unwrap();
+        assert_eq!(url.as_str(), "http://localhost:8080/api/test");
+    }
+
+    #[test]
+    fn build_url_no_leading_slash_on_path() {
+        let url = build_url("http://localhost:8080", "api/test").unwrap();
+        assert_eq!(url.as_str(), "http://localhost:8080/api/test");
+    }
+
+    #[test]
+    fn build_url_empty_path() {
+        let url = build_url("http://localhost:8080", "").unwrap();
+        assert_eq!(url.as_str(), "http://localhost:8080/");
+    }
+
+    #[test]
+    fn build_url_with_port_and_nested_path() {
+        let url = build_url("https://example.com:9443", "/v1/sandboxes/create").unwrap();
+        assert_eq!(url.as_str(), "https://example.com:9443/v1/sandboxes/create");
+    }
+
+    #[test]
+    fn build_url_invalid_base() {
+        let result = build_url("not-a-url", "/api/test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_url_base_with_path_prefix() {
+        // When the base already has a path segment, join should resolve relative to it
+        let url = build_url("http://localhost:8080/prefix/", "api/test").unwrap();
+        assert_eq!(url.as_str(), "http://localhost:8080/prefix/api/test");
+    }
+
+    // ── auth_headers ────────────────────────────────────────────────────
+
+    #[test]
+    fn auth_headers_contains_bearer_token() {
+        let headers = auth_headers("my-secret-token").unwrap();
+        let auth = headers.get(AUTHORIZATION).unwrap();
+        assert_eq!(auth.to_str().unwrap(), "Bearer my-secret-token");
+    }
+
+    #[test]
+    fn auth_headers_contains_content_type() {
+        let headers = auth_headers("token").unwrap();
+        let ct = headers.get(CONTENT_TYPE).unwrap();
+        assert_eq!(ct.to_str().unwrap(), "application/json");
+    }
+
+    #[test]
+    fn auth_headers_with_complex_token() {
+        let token = "v4.local.abcdef1234567890-complex.token";
+        let headers = auth_headers(token).unwrap();
+        let auth = headers.get(AUTHORIZATION).unwrap();
+        assert_eq!(
+            auth.to_str().unwrap(),
+            "Bearer v4.local.abcdef1234567890-complex.token"
+        );
+    }
+
+    #[test]
+    fn auth_headers_rejects_invalid_token_chars() {
+        // Header values cannot contain certain control characters
+        let result = auth_headers("token\x00with\x01nulls");
+        assert!(result.is_err());
+    }
+}
