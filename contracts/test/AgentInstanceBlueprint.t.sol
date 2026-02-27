@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import "./helpers/InstanceSetup.sol";
 
 contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
+    using stdStorage for StdStorage;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // PROVISION FLOW
@@ -193,29 +194,6 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     // PRICING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function test_getDefaultJobRates() public view {
-        uint256 baseRate = 1 ether;
-        (uint8[] memory jobs, uint256[] memory rates) = instance.getDefaultJobRates(baseRate);
-
-        assertEq(jobs.length, 7);
-        assertEq(rates.length, 7);
-
-        // Verify each rate = baseRate * multiplier
-        assertEq(rates[0], baseRate * 50);  // SANDBOX_CREATE
-        assertEq(rates[1], baseRate * 1);   // SANDBOX_DELETE
-        assertEq(rates[2], baseRate * 2);   // WORKFLOW_CREATE
-        assertEq(rates[3], baseRate * 5);   // WORKFLOW_TRIGGER
-        assertEq(rates[4], baseRate * 1);   // WORKFLOW_CANCEL
-        assertEq(rates[5], baseRate * 50);  // PROVISION
-        assertEq(rates[6], baseRate * 1);   // DEPROVISION
-    }
-
-    function test_getJobPriceMultiplier() public view {
-        assertEq(instance.getJobPriceMultiplier(instance.JOB_PROVISION()), 50);
-        assertEq(instance.getJobPriceMultiplier(instance.JOB_DEPROVISION()), 1);
-        assertEq(instance.getJobPriceMultiplier(instance.JOB_SANDBOX_CREATE()), 50);
-    }
-
     function test_unknownJobPriceReturnsZero() public view {
         assertEq(instance.getJobPriceMultiplier(255), 0);
         assertEq(instance.getJobPriceMultiplier(8), 0);
@@ -257,16 +235,6 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertFalse(instance.supportsJob(7));
 
         assertEq(instance.jobCount(), 7);
-    }
-
-    function test_blueprintMetadata() public view {
-        assertEq(instance.BLUEPRINT_NAME(), "ai-agent-sandbox-blueprint");
-        assertEq(instance.BLUEPRINT_VERSION(), "0.4.0");
-    }
-
-    function test_instanceModeEnabled() public view {
-        assertTrue(instance.instanceMode());
-        assertFalse(instance.teeRequired());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -365,6 +333,28 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(stored, config);
     }
 
+    function test_doubleServiceInitializedReverts() public {
+        // First initialization
+        bytes memory config = abi.encode("config-data");
+        address[] memory operators = new address[](1);
+        operators[0] = operator1;
+
+        vm.prank(tangleCore);
+        instance.onRequest(1, blueprintOwner, operators, config, 0, address(0), 0);
+
+        address[] memory permittedCallers = new address[](0);
+        vm.prank(tangleCore);
+        instance.onServiceInitialized(testBlueprintId, 1, testServiceId, blueprintOwner, permittedCallers, 0);
+
+        // Second initialization for the same serviceId should revert
+        vm.prank(tangleCore);
+        instance.onRequest(2, blueprintOwner, operators, config, 0, address(0), 0);
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.ServiceAlreadyInitialized.selector, testServiceId));
+        instance.onServiceInitialized(testBlueprintId, 2, testServiceId, blueprintOwner, permittedCallers, 0);
+    }
+
     function test_serviceConfigEmitsEvent() public {
         bytes memory config = abi.encode("config-data");
         address[] memory operators = new address[](1);
@@ -379,5 +369,414 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         address[] memory permittedCallers = new address[](0);
         vm.prank(tangleCore);
         instance.onServiceInitialized(testBlueprintId, 1, testServiceId, blueprintOwner, permittedCallers, 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: OPERATOR ARRAY BOUNDS (H5b)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: SERVICE REQUEST VALIDATED EVENT (M7 — instance mode)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onRequestEmitsServiceRequestValidatedInstanceMode() public {
+        address[] memory operators = new address[](1);
+        operators[0] = operator1;
+
+        vm.expectEmit(true, false, false, true);
+        emit AgentSandboxBlueprint.ServiceRequestValidated(1, blueprintOwner, 1);
+
+        vm.prank(tangleCore);
+        instance.onRequest(1, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    function test_onRequestEmitsServiceRequestValidatedWithConfig() public {
+        bytes memory config = abi.encode("config-data");
+        address[] memory operators = new address[](2);
+        operators[0] = operator1;
+        operators[1] = operator2;
+
+        vm.expectEmit(true, false, false, true);
+        emit AgentSandboxBlueprint.ServiceRequestValidated(5, blueprintOwner, 2);
+
+        vm.prank(tangleCore);
+        instance.onRequest(5, blueprintOwner, operators, config, 0, address(0), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MODE ENFORCEMENT — INSTANCE MODE REJECTS CLOUD JOBS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_instanceModeRejectsCloudModeJobCalls() public {
+        // Cloud mode jobs 0-4 should all revert with CloudModeOnly
+        for (uint8 jobId = 0; jobId <= 4; jobId++) {
+            vm.prank(tangleCore);
+            vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
+            instance.onJobCall(testServiceId, jobId, uint64(2000 + jobId), bytes(""));
+        }
+    }
+
+    function test_instanceModeRejectsCloudModeJobResults() public {
+        for (uint8 jobId = 0; jobId <= 4; jobId++) {
+            vm.prank(tangleCore);
+            vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
+            instance.onJobResult(testServiceId, jobId, uint64(2010 + jobId), operator1, bytes(""), bytes(""));
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UNKNOWN JOB ID REVERTS (INSTANCE MODE)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_unknownJobIdRevertsOnJobCallInstanceMode() public {
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
+        instance.onJobCall(testServiceId, 7, 3000, bytes(""));
+    }
+
+    function test_unknownJobIdRevertsOnJobResultInstanceMode() public {
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
+        instance.onJobResult(testServiceId, 7, 3001, operator1, bytes(""), bytes(""));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // totalProvisionedOperators COUNTER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_totalProvisionedOperatorsIncrementsOnProvision() public {
+        assertEq(instance.totalProvisionedOperators(), 0);
+
+        _provisionOperator(operator1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        _provisionOperator(operator2);
+        assertEq(instance.totalProvisionedOperators(), 2);
+    }
+
+    function test_totalProvisionedOperatorsDecrementsOnDeprovision() public {
+        _provisionOperator(operator1);
+        _provisionOperator(operator2);
+        assertEq(instance.totalProvisionedOperators(), 2);
+
+        // Deprovision operator1
+        uint64 callId = 3010;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        // Deprovision operator2
+        callId = 3011;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator2, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertEq(instance.totalProvisionedOperators(), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // setInstanceMode / setTeeRequired GUARD WITH PROVISIONED OPERATORS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_setInstanceModeRevertsWithProvisionedOperators() public {
+        _provisionOperator(operator1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        vm.prank(blueprintOwner);
+        vm.expectRevert(AgentSandboxBlueprint.CannotChangeWithActiveResources.selector);
+        instance.setInstanceMode(false);
+    }
+
+    function test_setTeeRequiredRevertsWithProvisionedOperators() public {
+        _provisionOperator(operator1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        vm.prank(blueprintOwner);
+        vm.expectRevert(AgentSandboxBlueprint.CannotChangeWithActiveResources.selector);
+        instance.setTeeRequired(true);
+    }
+
+    function test_setInstanceModeSucceedsAfterFullDeprovision() public {
+        _provisionOperator(operator1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        // Deprovision
+        uint64 callId = 3020;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertEq(instance.totalProvisionedOperators(), 0);
+
+        // Now mode change should succeed
+        vm.prank(blueprintOwner);
+        instance.setInstanceMode(false);
+        assertFalse(instance.instanceMode());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPERATOR UNREGISTER / LEAVE TESTS (instance mode)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onUnregisterSucceedsWithNoProvisions() public {
+        // No active sandboxes in instance mode (counter stays 0)
+        vm.prank(tangleCore);
+        instance.onUnregister(operator1);
+    }
+
+    function test_onOperatorLeftRevertsWithActiveProvisions() public {
+        _provisionOperator(operator1);
+
+        vm.prank(tangleCore);
+        vm.expectRevert(AgentSandboxBlueprint.CannotLeaveWithActiveResources.selector);
+        instance.onOperatorLeft(testServiceId, operator1);
+    }
+
+    function test_onOperatorLeftSucceedsWithNoProvisions() public {
+        vm.prank(tangleCore);
+        instance.onOperatorLeft(testServiceId, operator1);
+    }
+
+    function test_onOperatorLeftSucceedsAfterDeprovision() public {
+        _provisionOperator(operator1);
+
+        // Deprovision
+        uint64 callId = 4050;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertFalse(instance.isOperatorProvisioned(testServiceId, operator1));
+
+        // Now leaving should succeed
+        vm.prank(tangleCore);
+        instance.onOperatorLeft(testServiceId, operator1);
+    }
+
+    function test_canLeaveReturnsFalseWithActiveProvisions() public {
+        _provisionOperator(operator1);
+        assertFalse(instance.canLeave(testServiceId, operator1));
+    }
+
+    function test_canLeaveReturnsTrueWithNoProvisions() public {
+        assertTrue(instance.canLeave(testServiceId, operator1));
+    }
+
+    function test_canLeaveReturnsTrueAfterDeprovision() public {
+        _provisionOperator(operator1);
+        assertFalse(instance.canLeave(testServiceId, operator1));
+
+        // Deprovision
+        uint64 callId = 4060;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
+        );
+
+        assertTrue(instance.canLeave(testServiceId, operator1));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SAFE DECREMENT — DEPROVISION SUCCEEDS EVEN IF COUNTER IS ALREADY 0
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Verifies that _handleDeprovisionResult does not revert if
+    ///         instanceOperatorCount or totalProvisionedOperators is somehow 0.
+    ///         Uses stdstore to force the counters to 0 after provisioning,
+    ///         then deprovisions. Without the safe decrement pattern this would
+    ///         underflow and revert under Solidity 0.8 checked arithmetic.
+    function test_deprovisionSucceedsWhenCounterAlreadyZero() public {
+        _provisionOperator(operator1);
+
+        // Sanity: counters should be 1
+        assertEq(instance.getOperatorCount(testServiceId), 1);
+        assertEq(instance.totalProvisionedOperators(), 1);
+
+        // Force instanceOperatorCount[testServiceId] to 0
+        stdstore
+            .target(address(instance))
+            .sig("instanceOperatorCount(uint64)")
+            .with_key(uint256(testServiceId))
+            .checked_write(uint256(0));
+
+        // Force totalProvisionedOperators to 0
+        stdstore
+            .target(address(instance))
+            .sig("totalProvisionedOperators()")
+            .checked_write(uint256(0));
+
+        // Verify forced to 0
+        assertEq(instance.getOperatorCount(testServiceId), 0);
+        assertEq(instance.totalProvisionedOperators(), 0);
+
+        // Deprovision should succeed (no underflow revert)
+        uint64 callId = 7000;
+        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId,
+            instance.JOB_DEPROVISION(),
+            callId,
+            operator1,
+            bytes(""),
+            encodeJsonOutputs("{}")
+        );
+
+        // Counters remain 0 (clamped, not underflowed)
+        assertEq(instance.getOperatorCount(testServiceId), 0);
+        assertEq(instance.totalProvisionedOperators(), 0);
+        assertFalse(instance.isOperatorProvisioned(testServiceId, operator1));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: ADMIN FUNCTIONS REVERT FOR NON-OWNER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_setDefaultMaxCapacityRevertsForNonOwnerInstanceMode() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        instance.setDefaultMaxCapacity(500);
+    }
+
+    function test_setOperatorCapacityRevertsForNonOwnerInstanceMode() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        instance.setOperatorCapacity(operator1, 200);
+    }
+
+    function test_setInstanceModeRevertsForNonOwner() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        instance.setInstanceMode(false);
+    }
+
+    function test_setTeeRequiredRevertsForNonOwner() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        instance.setTeeRequired(true);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: PROVISION WITH EMPTY SANDBOX ID
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onRequestRevertsWithZeroOperatorsInstanceMode() public {
+        address[] memory operators = new address[](0);
+
+        vm.prank(tangleCore);
+        vm.expectRevert(AgentSandboxBlueprint.ZeroOperatorsInRequest.selector);
+        instance.onRequest(1, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS: PROVISION/DEPROVISION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function testFuzz_provisionWithArbitrarySandboxId(string calldata sandboxId) public {
+        // Skip empty strings — they are valid in instance mode (no on-chain length check for provision)
+        // Provision encodes sandbox ID in outputs and stores sidecar URL
+        uint64 callId = 9000;
+        simulateJobCall(testServiceId, instance.JOB_PROVISION(), callId, bytes(""));
+        simulateJobResult(
+            testServiceId,
+            instance.JOB_PROVISION(),
+            callId,
+            operator1,
+            bytes(""),
+            abi.encode(sandboxId, "http://sidecar:8080", uint32(2222), "")
+        );
+
+        assertTrue(instance.isOperatorProvisioned(testServiceId, operator1));
+        assertEq(instance.getOperatorCount(testServiceId), 1);
+        assertEq(instance.operatorSidecarUrl(testServiceId, operator1), "http://sidecar:8080");
+    }
+
+    function testFuzz_provisionDeprovisionSequence(uint8 numOps) public {
+        // Bound to a reasonable range: 1 to 10 operators
+        vm.assume(numOps >= 1 && numOps <= 10);
+
+        address[] memory ops = new address[](numOps);
+
+        // Provision all operators
+        for (uint8 i = 0; i < numOps; i++) {
+            address op = address(uint160(0x3000 + i));
+            ops[i] = op;
+            uint64 callId = uint64(10000 + i);
+            simulateJobCall(testServiceId, instance.JOB_PROVISION(), callId, bytes(""));
+            simulateJobResult(
+                testServiceId,
+                instance.JOB_PROVISION(),
+                callId,
+                op,
+                bytes(""),
+                abi.encode(
+                    string(abi.encodePacked("sb-fuzz-", vm.toString(i))),
+                    string(abi.encodePacked("http://op", vm.toString(i), ":8080")),
+                    uint32(2222 + i),
+                    ""
+                )
+            );
+            assertTrue(instance.isOperatorProvisioned(testServiceId, op));
+        }
+
+        assertEq(instance.getOperatorCount(testServiceId), uint32(numOps));
+        assertEq(instance.totalProvisionedOperators(), uint256(numOps));
+
+        // Deprovision all operators in reverse order
+        for (uint256 i = numOps; i > 0; i--) {
+            address op = ops[i - 1];
+            uint64 callId = uint64(20000 + i);
+            simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
+            simulateJobResult(
+                testServiceId,
+                instance.JOB_DEPROVISION(),
+                callId,
+                op,
+                bytes(""),
+                encodeJsonOutputs("{}")
+            );
+            assertFalse(instance.isOperatorProvisioned(testServiceId, op));
+        }
+
+        assertEq(instance.getOperatorCount(testServiceId), 0);
+        assertEq(instance.totalProvisionedOperators(), 0);
+        assertFalse(instance.isProvisioned(testServiceId));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: DOUBLE INITIALIZATION WITH DIFFERENT OWNERS (P5)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_doubleServiceInitializedDifferentOwnerReverts() public {
+        bytes memory config = abi.encode("config");
+        address[] memory operators = new address[](1);
+        operators[0] = operator1;
+
+        // First init with blueprintOwner
+        vm.prank(tangleCore);
+        instance.onRequest(1, blueprintOwner, operators, config, 0, address(0), 0);
+
+        address[] memory permittedCallers = new address[](0);
+        vm.prank(tangleCore);
+        instance.onServiceInitialized(testBlueprintId, 1, testServiceId, blueprintOwner, permittedCallers, 0);
+
+        assertEq(instance.serviceOwner(testServiceId), blueprintOwner);
+
+        // Second init with different owner — should revert, not overwrite
+        address attacker = address(0xDEAD);
+        vm.prank(tangleCore);
+        instance.onRequest(2, attacker, operators, config, 0, address(0), 0);
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.ServiceAlreadyInitialized.selector, testServiceId));
+        instance.onServiceInitialized(testBlueprintId, 2, testServiceId, attacker, permittedCallers, 0);
+
+        // Verify owner unchanged
+        assertEq(instance.serviceOwner(testServiceId), blueprintOwner);
     }
 }

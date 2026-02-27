@@ -19,8 +19,8 @@ use docktopus::bollard::container::{
 };
 use docktopus::bollard::models::{HostConfig, PortBinding, PortMap};
 use docktopus::container::Container;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
@@ -385,11 +385,7 @@ async fn full_operator_api_lifecycle() {
     eprintln!("Step 3a OK: got challenge nonce={}", &nonce[..16]);
 
     // 3b: Sign the message with EIP-191.
-    let prefixed = format!(
-        "\x19Ethereum Signed Message:\n{}{}",
-        message.len(),
-        message
-    );
+    let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
     let digest = keccak256(prefixed.as_bytes());
     let (signature, recovery_id) = signing_key
         .sign_prehash_recoverable(&digest)
@@ -414,7 +410,10 @@ async fn full_operator_api_lifecycle() {
     let session: Value = resp.json().await.unwrap();
     let token = session["token"].as_str().unwrap();
     let address = session["address"].as_str().unwrap();
-    assert!(token.starts_with("v4.local."), "should be a PASETO v4 token");
+    assert!(
+        token.starts_with("v4.local."),
+        "should be a PASETO v4 token"
+    );
     assert_eq!(
         address, expected_address,
         "recovered address should match signing key"
@@ -431,12 +430,8 @@ async fn full_operator_api_lifecycle() {
 
     // 3e: Verify extract_session_from_headers works.
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        "authorization",
-        format!("Bearer {token}").parse().unwrap(),
-    );
-    let extracted =
-        sandbox_runtime::operator_api::extract_session_from_headers(&headers).unwrap();
+    headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+    let extracted = sandbox_runtime::operator_api::extract_session_from_headers(&headers).unwrap();
     assert_eq!(extracted.address, expected_address);
     eprintln!("Step 3e OK: extract_session_from_headers works");
 

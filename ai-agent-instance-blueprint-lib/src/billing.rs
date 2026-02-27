@@ -231,8 +231,10 @@ fn write_billing_status(result: &WatchdogTickResult, config: &EscrowWatchdogConf
     });
 
     let path = sandbox_runtime::store::state_dir().join("billing_status.json");
-    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap_or_default())
-    {
+    if let Err(e) = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&value).unwrap_or_default(),
+    ) {
         warn!("escrow-watchdog: failed to write billing status: {e}");
     }
 }

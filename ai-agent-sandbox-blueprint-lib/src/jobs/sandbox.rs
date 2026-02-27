@@ -203,8 +203,13 @@ pub async fn sandbox_snapshot(
         "command": format!("sh -c {}", crate::util::shell_escape(&command)),
     });
 
-    let response =
-        sidecar_post_json(&request.sidecar_url, "/terminals/commands", &record.token, payload).await?;
+    let response = sidecar_post_json(
+        &request.sidecar_url,
+        "/terminals/commands",
+        &record.token,
+        payload,
+    )
+    .await?;
 
     crate::runtime::touch_sandbox(&record.id);
 

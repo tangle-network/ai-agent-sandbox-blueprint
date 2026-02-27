@@ -21,6 +21,7 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 anyhow = "1"
 axum = "0.8"
+sandbox-runtime = { path = "../sandbox-runtime", features = ["test-utils"] }
 blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", branch = "main" }
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
 futures = "0.3"

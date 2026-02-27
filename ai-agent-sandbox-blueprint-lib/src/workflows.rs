@@ -162,7 +162,8 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
                 .map(|sp| json!({ "systemPrompt": sp }))
         });
 
-    let response = run_task_request_with_profile(&request, &token, backend_profile.as_ref()).await?;
+    let response =
+        run_task_request_with_profile(&request, &token, backend_profile.as_ref()).await?;
     let now = now_ts();
     let next_run_at = resolve_next_run(&entry.trigger_type, &entry.trigger_config, Some(now))?;
 
@@ -232,13 +233,10 @@ pub async fn workflow_tick() -> Result<Value, String> {
 
         // Advance next_run_at BEFORE starting the run to prevent duplicate
         // executions when the cron fires faster than the workflow completes.
-        let tentative_next = resolve_next_run(
-            &entry.trigger_type,
-            &entry.trigger_config,
-            Some(now),
-        )
-        .ok()
-        .flatten();
+        let tentative_next =
+            resolve_next_run(&entry.trigger_type, &entry.trigger_config, Some(now))
+                .ok()
+                .flatten();
         workflows()?
             .update(&key, |e| {
                 e.next_run_at = tentative_next;

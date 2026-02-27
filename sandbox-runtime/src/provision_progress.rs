@@ -135,10 +135,7 @@ pub fn update_provision(
 }
 
 /// Update the metadata for a provision.
-pub fn update_provision_metadata(
-    call_id: u64,
-    metadata: serde_json::Value,
-) -> Result<bool> {
+pub fn update_provision_metadata(call_id: u64, metadata: serde_json::Value) -> Result<bool> {
     let key = call_id.to_string();
     provisions()?.update(&key, |entry| {
         entry.metadata = metadata;

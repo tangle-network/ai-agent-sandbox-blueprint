@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useAccount } from 'wagmi';
 import { useStore } from '@nanostores/react';
@@ -79,16 +79,25 @@ export default function CreatePage() {
   const [step, setStep] = useState<WizardStep>(preselected ? 'configure' : 'blueprint');
   const [showInfra, setShowInfra] = useState(false);
 
-  // Auto-set infra for preselected blueprint (from query param)
+  // Refs for values that should not re-trigger the init effect
+  const addressRef = useRef(address);
+  addressRef.current = address;
+  const validateServiceRef = useRef(validateService);
+  validateServiceRef.current = validateService;
+
+  // Auto-set infra for preselected blueprint (from query param).
+  // Only fires on mount (preselected is derived from searchParams, which are
+  // stable on initial render). Address and validateService are read from refs
+  // to avoid re-triggering when the wallet connects after mount.
   useEffect(() => {
     if (preselected) {
       const mapping = BLUEPRINT_INFRA[preselected.id];
       if (mapping) {
         updateInfra({ blueprintId: mapping.blueprintId, serviceId: mapping.serviceId, serviceValidated: false });
-        validateService(BigInt(mapping.serviceId), address);
+        validateServiceRef.current(BigInt(mapping.serviceId), addressRef.current);
       }
     }
-  }, []);
+  }, [preselected]);
 
   // The create/provision job: first lifecycle job that doesn't require an existing resource
   const createJob = useMemo<JobDefinition | null>(() => {
@@ -102,6 +111,7 @@ export default function CreatePage() {
 
   // Unified deploy hook — manages both submitJob and requestService paths
   const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values, infra, validate });
+  const { reset: deployReset } = deploy;
 
   const isSandbox = deploy.mode === 'sandbox';
   const entityLabel = isSandbox ? 'Sandbox' : 'Instance';
@@ -126,7 +136,7 @@ export default function CreatePage() {
   const handleSelectBlueprint = useCallback((bp: BlueprintDefinition) => {
     setSelectedBlueprint(bp);
     resetForm();
-    deploy.reset();
+    deployReset();
     const mapping = BLUEPRINT_INFRA[bp.id];
     if (mapping) {
       updateInfra({ blueprintId: mapping.blueprintId, serviceId: mapping.serviceId, serviceValidated: false });
@@ -135,7 +145,7 @@ export default function CreatePage() {
       }
     }
     setStep('configure');
-  }, [resetForm, deploy.reset, address, validateService]);
+  }, [resetForm, deployReset, address, validateService]);
 
   return (
     <AnimatedPage className="mx-auto max-w-3xl px-4 sm:px-6 py-8">
@@ -240,7 +250,7 @@ export default function CreatePage() {
           serviceInfo={serviceInfo}
           serviceValidating={serviceValidating}
           serviceError={serviceError}
-          onBack={() => { setStep('configure'); deploy.reset(); }}
+          onBack={() => { setStep('configure'); deployReset(); }}
           onDeploy={deploy.deploy}
           onViewList={() => navigate(isSandbox ? '/sandboxes' : '/instances')}
           onOpenInfra={() => setShowInfra(true)}
@@ -395,7 +405,7 @@ function DeployStep({
   const memoryMb = Number(values.memoryMb) || 2048;
   const diskGb = Number(values.diskGb) || 10;
   const costDisplay = hasProvisionRfq ? provisionPriceFormatted : `~${formatCost(provisionEstimate)}`;
-  const { status, txHash, error, isNewService, isInstanceMode, hasValidService, operators, operatorsLoading, provision, callId } = deploy;
+  const { status, txHash, error, isNewService, isInstanceMode, hasValidService, operators, operatorsLoading, provision, callId, contractsDeployed } = deploy;
   const isSandbox = !isInstanceMode;
   const isActive = status !== 'idle';
   const isComplete = status === 'confirmed' || status === 'ready';
@@ -543,6 +553,23 @@ function DeployStep({
               </p>
             </div>
             <Button variant="secondary" size="sm" onClick={onOpenInfra}>Settings</Button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Contracts not deployed warning ── */}
+      {!contractsDeployed && status === 'idle' && (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
+          <div className="flex items-center gap-3">
+            <div className="i-ph:warning-circle text-lg text-amber-400" />
+            <div className="flex-1">
+              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+                Contracts not yet deployed on this network
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
+                Please switch to a supported network where the blueprint contracts have been deployed.
+              </p>
+            </div>
           </div>
         </div>
       )}

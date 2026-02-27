@@ -1,39 +1,19 @@
 import { useEffect, useRef } from 'react';
+import { toast } from 'sonner';
 import { useOperatorAuth } from './useOperatorAuth';
-import { sandboxListStore, type LocalSandbox } from '~/lib/stores/sandboxes';
+import { sandboxListStore } from '~/lib/stores/sandboxes';
+import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
+import { fetchSandboxes, mergeApiResults, type ApiSandbox } from './sandboxHydrationLogic';
 
-const OPERATOR_API_URL = import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090';
-const INSTANCE_OPERATOR_API_URL = import.meta.env.VITE_INSTANCE_OPERATOR_API_URL ?? '';
-
-interface ApiSandbox {
-  id: string;
-  sidecar_url: string;
-  state: string;
-  cpu_cores: number;
-  memory_mb: number;
-  created_at: number;
-  last_activity_at: number;
-}
-
-async function fetchSandboxes(
-  baseUrl: string,
-  token: string,
-  blueprintId: string,
-  serviceId: string,
-): Promise<ApiSandbox[]> {
-  const res = await fetch(`${baseUrl}/api/sandboxes`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.sandboxes ?? [];
-}
+// Re-export for external consumers
+export { fetchSandboxes, mergeApiResults, type ApiSandbox } from './sandboxHydrationLogic';
 
 /**
  * Hydrate the local sandbox list from operator APIs on mount.
  *
  * Fetches from both the sandbox operator and (if configured) the instance
- * operator, then merges with local state.
+ * operator, then merges with local state. Shows a toast if the operator
+ * API is unreachable.
  */
 export function useSandboxHydration() {
   const { getToken: getSandboxToken } = useOperatorAuth(OPERATOR_API_URL);
@@ -44,76 +24,80 @@ export function useSandboxHydration() {
     if (hydrated.current) return;
     hydrated.current = true;
 
-    (async () => {
-      try {
-        const results: ApiSandbox[] = [];
+    const controller = new AbortController();
+    const { signal } = controller;
 
-        // Fetch from sandbox operator
+    (async () => {
+      const results: ApiSandbox[] = [];
+      let hadError = false;
+
+      // Fetch from sandbox operator
+      try {
         const sandboxToken = await getSandboxToken();
+        if (signal.aborted) return;
         if (sandboxToken) {
           const sandboxes = await fetchSandboxes(
             OPERATOR_API_URL,
             sandboxToken,
             import.meta.env.VITE_SANDBOX_BLUEPRINT_ID ?? '',
             import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '',
+            getSandboxToken,
+            signal,
           );
           results.push(...sandboxes);
         }
+      } catch (e) {
+        if (signal.aborted) return;
+        hadError = true;
+        console.warn('Sandbox operator hydration failed:', e);
+      }
 
-        // Fetch from instance operator (if configured)
-        if (INSTANCE_OPERATOR_API_URL) {
+      // Fetch from instance operator (if configured)
+      if (INSTANCE_OPERATOR_API_URL) {
+        try {
           const instanceToken = await getInstanceToken();
+          if (signal.aborted) return;
           if (instanceToken) {
             const instances = await fetchSandboxes(
               INSTANCE_OPERATOR_API_URL,
               instanceToken,
               import.meta.env.VITE_INSTANCE_BLUEPRINT_ID ?? '',
               import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '',
+              getInstanceToken,
+              signal,
             );
             results.push(...instances);
           }
+        } catch (e) {
+          if (signal.aborted) return;
+          console.warn('Instance operator hydration failed:', e);
         }
+      }
 
-        if (results.length === 0) return;
+      if (signal.aborted) return;
 
-        const existing = sandboxListStore.get();
-        const existingIds = new Set(existing.map((s) => s.id));
-
-        // Add new sandboxes from API that aren't in local store
-        const newSandboxes: LocalSandbox[] = results
-          .filter((s) => !existingIds.has(s.id))
-          .map((s) => ({
-            id: s.id,
-            name: s.id.replace('sandbox-', '').slice(0, 8),
-            image: '',
-            cpuCores: s.cpu_cores,
-            memoryMb: s.memory_mb,
-            diskGb: 0,
-            createdAt: s.created_at * 1000,
-            blueprintId: import.meta.env.VITE_SANDBOX_BLUEPRINT_ID ?? '',
-            serviceId: import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '',
-            sidecarUrl: s.sidecar_url,
-            status: s.state === 'running' ? 'running' : 'stopped',
-          }));
-
-        // Update status of existing sandboxes from API ground truth
-        const apiStatusMap = new Map(results.map((s) => [s.id, s]));
-        const updated = existing.map((local) => {
-          const api = apiStatusMap.get(local.id);
-          if (!api) return local;
-          return {
-            ...local,
-            sidecarUrl: api.sidecar_url || local.sidecarUrl,
-            status: (api.state === 'running' ? 'running' : 'stopped') as LocalSandbox['status'],
-          };
+      // Surface error to user if sandbox operator is unreachable
+      if (hadError && results.length === 0) {
+        toast.error('Unable to reach operator API', {
+          description: 'Sandbox status may be stale. Check that the operator is running.',
+          duration: 6000,
         });
+      }
 
-        if (newSandboxes.length > 0 || updated.some((u, i) => u !== existing[i])) {
-          sandboxListStore.set([...newSandboxes, ...updated]);
-        }
-      } catch {
-        // Silently fail — hydration is best-effort
+      if (results.length === 0) return;
+
+      const existing = sandboxListStore.get();
+      const merged = mergeApiResults(results, existing);
+
+      if (merged.length !== existing.length || merged.some((m, i) => m !== existing[i])) {
+        sandboxListStore.set(merged);
       }
     })();
-  }, [getSandboxToken, getInstanceToken]);
+
+    return () => {
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- This is an on-mount effect.
+    // The hydrated ref guarantees it runs at most once, so getToken deps are irrelevant.
+  }, []);
 }

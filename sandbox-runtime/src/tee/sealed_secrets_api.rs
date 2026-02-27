@@ -9,17 +9,12 @@
 //! This module is intentionally isolated — it can be removed without affecting
 //! the existing operator API or 2-phase plaintext secret provisioning.
 
-use axum::{
-    Json,
-    extract::Path,
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::Path, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::sealed_secrets::{SealedSecret, TeePublicKey};
 use super::TeeBackend;
+use super::sealed_secrets::{SealedSecret, TeePublicKey};
 use crate::operator_api::api_error;
 use crate::runtime::get_sandbox_by_id;
 use crate::secret_provisioning::validate_secret_access;
@@ -71,15 +66,18 @@ pub async fn get_tee_public_key(
         Some(id) => id.clone(),
         None => {
             return api_error(StatusCode::BAD_REQUEST, "Sandbox is not a TEE deployment")
-                .into_response()
+                .into_response();
         }
     };
 
     let backend = match tee_backend.as_ref() {
         Some(b) => b.as_ref(),
         None => {
-            return api_error(StatusCode::SERVICE_UNAVAILABLE, "TEE backend not configured")
-                .into_response()
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "TEE backend not configured",
+            )
+            .into_response();
         }
     };
 
@@ -119,15 +117,18 @@ pub async fn inject_sealed_secrets(
         Some(id) => id.clone(),
         None => {
             return api_error(StatusCode::BAD_REQUEST, "Sandbox is not a TEE deployment")
-                .into_response()
+                .into_response();
         }
     };
 
     let backend = match tee_backend.as_ref() {
         Some(b) => b.as_ref(),
         None => {
-            return api_error(StatusCode::SERVICE_UNAVAILABLE, "TEE backend not configured")
-                .into_response()
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "TEE backend not configured",
+            )
+            .into_response();
         }
     };
 

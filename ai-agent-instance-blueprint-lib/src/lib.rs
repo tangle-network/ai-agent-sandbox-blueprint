@@ -14,16 +14,16 @@ pub mod billing;
 pub mod jobs;
 
 // Re-export sandbox-runtime modules.
+pub use sandbox_runtime::instance_types::{
+    InstanceExecRequest, InstanceExecResponse, InstancePromptRequest, InstancePromptResponse,
+    InstanceTaskRequest, InstanceTaskResponse,
+};
 pub use sandbox_runtime::{
     CreateSandboxParams, DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE,
     DEFAULT_SIDECAR_SSH_PORT, DEFAULT_TIMEOUT_SECS, SandboxError, SandboxRecord, SandboxState,
     TeeConfig, TeeType,
 };
 pub use sandbox_runtime::{auth, error, http, metrics, reaper, runtime, store, tee, util};
-pub use sandbox_runtime::instance_types::{
-    InstanceExecRequest, InstanceExecResponse, InstancePromptRequest, InstancePromptResponse,
-    InstanceTaskRequest, InstanceTaskResponse,
-};
 
 use blueprint_sdk::Job;
 use blueprint_sdk::Router;
@@ -153,7 +153,10 @@ pub fn instance_store() -> error::Result<&'static store::PersistentStore<Sandbox
 
 /// Get the provisioned sandbox record for this instance, if any.
 pub fn get_instance_sandbox() -> error::Result<Option<SandboxRecord>> {
-    instance_store()?.get(INSTANCE_KEY)
+    Ok(instance_store()?.get(INSTANCE_KEY)?.map(|mut r| {
+        sandbox_runtime::runtime::unseal_record(&mut r);
+        r
+    }))
 }
 
 /// Get the provisioned sandbox or return an error if not yet provisioned.
@@ -164,7 +167,8 @@ pub fn require_instance_sandbox() -> Result<SandboxRecord, String> {
 }
 
 /// Store the provisioned sandbox record.
-pub fn set_instance_sandbox(record: SandboxRecord) -> error::Result<()> {
+pub fn set_instance_sandbox(mut record: SandboxRecord) -> error::Result<()> {
+    sandbox_runtime::runtime::seal_record(&mut record);
     instance_store()?.insert(INSTANCE_KEY.to_string(), record)
 }
 

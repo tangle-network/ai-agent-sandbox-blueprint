@@ -8,6 +8,10 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
+/// Global lock for tests that access the shared INSTANCE_STORE singleton.
+/// Must be used by ALL test functions that call set/get/clear_instance_sandbox().
+static INSTANCE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn init() {
     INIT.call_once(|| {
         let dir = std::env::temp_dir().join(format!("tee-instance-bp-test-{}", std::process::id()));
@@ -84,6 +88,7 @@ mod instance_state_tests {
     #[test]
     fn instance_store_initializes_through_tee_lib() {
         init();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = instance_store();
         assert!(store.is_ok());
     }
@@ -91,7 +96,8 @@ mod instance_state_tests {
     #[test]
     fn get_instance_returns_none_when_empty() {
         init();
-        let _ = clear_instance_sandbox();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before assertion");
         let result = get_instance_sandbox().unwrap();
         assert!(result.is_none());
     }
@@ -99,7 +105,8 @@ mod instance_state_tests {
     #[test]
     fn require_instance_fails_when_not_provisioned() {
         init();
-        let _ = clear_instance_sandbox();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before assertion");
         let result = require_instance_sandbox();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not provisioned"));
@@ -113,16 +120,24 @@ mod instance_state_tests {
 // We can't test init_tee_backend/tee_backend directly in unit tests because
 // they use a process-global OnceCell — calling init in one test would affect
 // all others. Instead, we verify the API exists and is callable by checking
-// that tee_backend() panics when NOT initialized (the expected behavior).
+// that tee_backend() returns an error when NOT initialized.
 
 mod tee_backend_tests {
     #[test]
-    #[should_panic(expected = "TEE backend not initialized")]
-    fn tee_backend_panics_when_not_initialized() {
-        // This test MUST run in isolation. Because we haven't called
-        // init_tee_backend(), accessing it should panic with the expected message.
-        // Note: if another test in this binary calls init_tee_backend(), this
-        // test may fail — that's by design (global state).
-        let _ = ai_agent_tee_instance_blueprint_lib::tee_backend();
+    fn tee_backend_errors_when_not_initialized() {
+        // Because we haven't called init_tee_backend(), accessing it should
+        // return an error (not panic). Note: if another test in this binary
+        // calls init_tee_backend(), this test may fail — that's by design
+        // (global state).
+        let result = ai_agent_tee_instance_blueprint_lib::tee_backend();
+        assert!(result.is_err());
+        let err_msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error but got Ok"),
+        };
+        assert!(
+            err_msg.contains("TEE backend not initialized"),
+            "Unexpected error: {err_msg}"
+        );
     }
 }

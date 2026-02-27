@@ -50,6 +50,20 @@ impl HeartbeatConsumer for LoggingHeartbeatConsumer {
 async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
 
+    // Validate required auth config — SESSION_AUTH_SECRET must be set in production.
+    // In test mode (--test-mode flag or TEST_MODE env var), log a warning but continue.
+    let is_test_mode = std::env::args().any(|a| a == "--test-mode")
+        || std::env::var("TEST_MODE")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+    if let Err(msg) = sandbox_runtime::session_auth::validate_required_config() {
+        if is_test_mode {
+            warn!("Config validation (test mode): {msg}");
+        } else {
+            return Err(blueprint_sdk::Error::Other(msg));
+        }
+    }
+
     // Optionally start QoS background service (heartbeat + metrics collection + on-chain reporting)
     #[cfg(feature = "qos")]
     {
@@ -185,32 +199,32 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .unwrap_or(false);
 
     let bridge = match env.bridge().await {
-        Ok(b) => {
-            match b.ping().await {
-                Ok(()) => {
-                    info!("Connected to Blueprint Manager bridge");
-                    Some(b)
-                }
-                Err(e) => {
-                    if allow_standalone {
-                        warn!("Bridge ping failed ({e}), ALLOW_STANDALONE=true — running without proxy");
-                        None
-                    } else {
-                        return Err(blueprint_sdk::Error::Other(
-                            format!("BPM bridge ping failed: {e}. Set ALLOW_STANDALONE=true for dev mode."),
-                        ));
-                    }
+        Ok(b) => match b.ping().await {
+            Ok(()) => {
+                info!("Connected to Blueprint Manager bridge");
+                Some(b)
+            }
+            Err(e) => {
+                if allow_standalone {
+                    warn!(
+                        "Bridge ping failed ({e}), ALLOW_STANDALONE=true — running without proxy"
+                    );
+                    None
+                } else {
+                    return Err(blueprint_sdk::Error::Other(format!(
+                        "BPM bridge ping failed: {e}. Set ALLOW_STANDALONE=true for dev mode."
+                    )));
                 }
             }
-        }
+        },
         Err(e) => {
             if allow_standalone {
                 warn!("No BPM bridge ({e}), ALLOW_STANDALONE=true — running without proxy");
                 None
             } else {
-                return Err(blueprint_sdk::Error::Other(
-                    format!("BPM bridge unavailable: {e}. Set ALLOW_STANDALONE=true for dev mode."),
-                ));
+                return Err(blueprint_sdk::Error::Other(format!(
+                    "BPM bridge unavailable: {e}. Set ALLOW_STANDALONE=true for dev mode."
+                )));
             }
         }
     };
@@ -224,9 +238,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .unwrap_or(9090);
 
     let (api_port, bind_addr) = if let Some(ref b) = bridge {
-        let port = b.request_port(Some(preferred_port)).await.map_err(|e| {
-            blueprint_sdk::Error::Other(format!("BPM port allocation failed: {e}"))
-        })?;
+        let port = b
+            .request_port(Some(preferred_port))
+            .await
+            .map_err(|e| blueprint_sdk::Error::Other(format!("BPM port allocation failed: {e}")))?;
         info!("BPM allocated port {port} for operator API");
         (port, [127, 0, 0, 1u8])
     } else {
@@ -244,7 +259,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             service_id,
             Some(api_key_prefix.as_str()),
             &upstream_url,
-            &[], // owners managed by BPM based on on-chain service registrants
+            &[],  // owners managed by BPM based on on-chain service registrants
             None, // TLS terminated by BPM proxy
         )
         .await
@@ -273,11 +288,14 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
         let mut shutdown_rx = api_shutdown.1;
         tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    let _ = shutdown_rx.changed().await;
-                })
-                .await
+            if let Err(e) = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.changed().await;
+            })
+            .await
             {
                 error!("Operator API error: {e}");
             }
@@ -297,21 +315,54 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         let reaper_interval = config.sandbox_reaper_interval;
         let gc_interval = config.sandbox_gc_interval;
 
+        let mut reaper_shutdown = api_shutdown_tx.subscribe();
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(reaper_interval));
             loop {
-                interval.tick().await;
-                ai_agent_sandbox_blueprint_lib::reaper::reaper_tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        ai_agent_sandbox_blueprint_lib::reaper::reaper_tick().await;
+                    }
+                    _ = reaper_shutdown.changed() => {
+                        info!("Reaper shutting down");
+                        break;
+                    }
+                }
             }
         });
 
         // Spawn GC background task (stopped sandbox cleanup)
+        let mut gc_shutdown = api_shutdown_tx.subscribe();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(gc_interval));
             loop {
-                interval.tick().await;
-                ai_agent_sandbox_blueprint_lib::reaper::gc_tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        ai_agent_sandbox_blueprint_lib::reaper::gc_tick().await;
+                    }
+                    _ = gc_shutdown.changed() => {
+                        info!("GC shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Spawn session GC background task (expired challenges + sessions cleanup)
+        let mut gc_session_shutdown = api_shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        sandbox_runtime::session_auth::gc_sessions();
+                    }
+                    _ = gc_session_shutdown.changed() => {
+                        info!("Session GC shutting down");
+                        break;
+                    }
+                }
             }
         });
     }

@@ -9,33 +9,32 @@
  * so the consuming component only needs to render based on `status` + `provision`.
  */
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { tangleServicesAbi } from '~/lib/contracts/abi';
 import { getAddresses } from '~/lib/contracts/publicClient';
-import { useSubmitJob, type JobSubmitStatus } from '~/lib/hooks/useSubmitJob';
+import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { useOperators, type DiscoveredOperator } from '~/lib/hooks/useOperators';
+import {
+  deriveMode,
+  deriveIsNewService,
+  computeStatus,
+  computeCanDeploy,
+  type DeployMode,
+  type DeployStatus,
+  type JobSubmitStatus,
+} from './createDeployLogic';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { addInstance, updateInstanceStatus } from '~/lib/stores/instances';
 import type { BlueprintDefinition, JobDefinition } from '~/lib/blueprints';
-import type { SandboxAddresses } from '~/lib/contracts/chains';
+import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
 import type { InfraConfig } from '~/lib/stores/infra';
 import type { Address } from 'viem';
 
-// ── Public types ──
-
-export type DeployMode = 'sandbox' | 'instance';
-
-export type DeployStatus =
-  | 'idle'           // Ready to deploy
-  | 'signing'        // Waiting for wallet confirmation
-  | 'pending'        // TX submitted, awaiting on-chain confirmation
-  | 'confirmed'      // TX confirmed; for sandbox → provisioning; for instance → waiting for operator
-  | 'provisioning'   // Sandbox: operator is provisioning; Instance: operator provisioning in progress
-  | 'ready'          // Fully provisioned (sandbox or instance)
-  | 'failed';        // TX failed
+// Re-export types from logic module for external consumers
+export type { DeployMode, DeployStatus, JobSubmitStatus } from './createDeployLogic';
 
 export interface ProvisionInfo {
   sandboxId: string;
@@ -63,15 +62,32 @@ interface UseCreateDeployOpts {
   validate: () => boolean;
 }
 
+/** ~30 days at 3s blocks */
+const TTL_BLOCKS_30_DAYS = 864000n;
+
 // ── Hook ──
 
 export function useCreateDeploy({ blueprint, job, values, infra, validate }: UseCreateDeployOpts) {
   const { address } = useAccount();
 
-  // Derive mode from blueprint ID
-  const mode: DeployMode = blueprint?.id === 'ai-agent-sandbox-blueprint' ? 'sandbox' : 'instance';
+  const mode = deriveMode(blueprint?.id);
   const isTeeInstance = blueprint?.id === 'ai-agent-tee-instance-blueprint';
   const isInstanceMode = mode === 'instance';
+
+  // Store latest values in refs to avoid stale closures in useEffect hooks.
+  // These change on every keystroke, but the effects should only fire on their
+  // specific trigger deps (callId, serviceConfirmed, instanceProvision).
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
+
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+
+  const infraRef = useRef(infra);
+  infraRef.current = infra;
+
+  const isTeeInstanceRef = useRef(isTeeInstance);
+  isTeeInstanceRef.current = isTeeInstance;
 
   // Path A: submitJob (sandbox, or instance with existing service)
   const {
@@ -110,23 +126,10 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
   // ── Unified status ──
 
-  const status = useMemo<DeployStatus>(() => {
-    // Path A status
-    if (!isNewService) {
-      if (jobStatus === 'signing') return 'signing';
-      if (jobStatus === 'pending') return 'pending';
-      if (jobStatus === 'failed') return 'failed';
-      if (jobStatus === 'confirmed') return 'confirmed';
-      return 'idle';
-    }
-
-    // Path B status
-    if (serviceError) return 'failed';
-    if (serviceSigning) return 'signing';
-    if (serviceTxPending) return 'pending';
-    if (serviceConfirmed) return 'confirmed';
-    return 'idle';
-  }, [isNewService, jobStatus, serviceSigning, serviceTxPending, serviceConfirmed, serviceError]);
+  const status = useMemo<DeployStatus>(
+    () => computeStatus({ isNewService, jobStatus, serviceSigning, serviceTxPending, serviceConfirmed, serviceError }),
+    [isNewService, jobStatus, serviceSigning, serviceTxPending, serviceConfirmed, serviceError],
+  );
 
   const txHash = isNewService ? serviceTxHash : jobTxHash;
   const error = isNewService ? serviceError : jobError;
@@ -144,9 +147,9 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   // Update store when submitJob callId is parsed from receipt
   useEffect(() => {
     if (callId != null) {
-      const name = String(values.name || '');
+      const name = String(valuesRef.current.name || '');
       if (!name) return;
-      if (mode === 'sandbox') {
+      if (modeRef.current === 'sandbox') {
         updateSandboxStatus(name, 'creating', { callId });
       } else {
         updateInstanceStatus(name, 'creating', { callId });
@@ -157,29 +160,30 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   // Add instance to store when requestService confirms
   useEffect(() => {
     if (serviceConfirmed && isInstanceMode) {
-      const name = String(values.name || '');
+      const v = valuesRef.current;
+      const name = String(v.name || '');
       if (!name) return;
       addInstance({
         id: name,
         name,
-        image: String(values.image || ''),
-        cpuCores: Number(values.cpuCores) || 2,
-        memoryMb: Number(values.memoryMb) || 2048,
-        diskGb: Number(values.diskGb) || 10,
+        image: String(v.image || ''),
+        cpuCores: Number(v.cpuCores) || 2,
+        memoryMb: Number(v.memoryMb) || 2048,
+        diskGb: Number(v.diskGb) || 10,
         createdAt: Date.now(),
-        blueprintId: infra.blueprintId,
-        serviceId: infra.serviceId || '',
-        teeEnabled: isTeeInstance,
+        blueprintId: infraRef.current.blueprintId,
+        serviceId: infraRef.current.serviceId || '',
+        teeEnabled: isTeeInstanceRef.current,
         status: 'creating',
         txHash: serviceTxHash,
       });
     }
-  }, [serviceConfirmed]);
+  }, [serviceConfirmed, isInstanceMode, serviceTxHash]);
 
   // Update store when instance provision event arrives
   useEffect(() => {
     if (instanceProvision) {
-      const name = String(values.name || '');
+      const name = String(valuesRef.current.name || '');
       if (name) {
         updateInstanceStatus(name, 'running', {
           id: instanceProvision.sandboxId,
@@ -247,13 +251,17 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
           ops,
           args as `0x${string}`,
           [address as Address],
-          864000n, // ~30 days at 3s blocks
+          TTL_BLOCKS_30_DAYS,
           '0x0000000000000000000000000000000000000000' as Address,
           0n,
         ],
       });
-    } catch (err: any) {
-      setServiceError(err?.shortMessage ?? err?.message ?? 'Service creation failed');
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? (err as Error & { shortMessage?: string }).shortMessage ?? err.message
+          : String(err);
+      setServiceError(message || 'Service creation failed');
     }
   }, [job, values, infra, validate, isNewService, submitJob, address, operators, requestServiceWrite, mode, isTeeInstance]);
 
@@ -267,14 +275,22 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
   // ── Computed flags ──
 
-  const canDeploy = !!(
-    job &&
-    values.name &&
-    address &&
-    status === 'idle' &&
-    (mode === 'sandbox' ? hasValidService : true) &&
-    (!isNewService || (operators.length > 0 && !operatorsLoading))
-  );
+  // Check if contracts are deployed on the current network
+  const addrs = getAddresses<SandboxAddresses>();
+  const contractsDeployed = isContractDeployed(addrs.jobs) && isContractDeployed(addrs.services);
+
+  const canDeploy = computeCanDeploy({
+    job: !!job,
+    hasName: !!values.name,
+    hasAddress: !!address,
+    status,
+    contractsDeployed,
+    mode,
+    hasValidService,
+    isNewService,
+    operatorCount: operators.length,
+    operatorsLoading,
+  });
 
   return {
     // State
@@ -290,6 +306,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
     isInstanceMode,
     isTeeInstance,
     hasValidService,
+    contractsDeployed,
     canDeploy,
     // Actions
     deploy,

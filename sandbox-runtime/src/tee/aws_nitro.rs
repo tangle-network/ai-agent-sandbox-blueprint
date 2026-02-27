@@ -225,8 +225,7 @@ impl TeeBackend for NitroBackend {
 
         // Base64-encode user data (EC2 requirement).
         let user_data = self.build_user_data(params);
-        let user_data_b64 =
-            base64::engine::general_purpose::STANDARD.encode(user_data.as_bytes());
+        let user_data_b64 = base64::engine::general_purpose::STANDARD.encode(user_data.as_bytes());
 
         // Launch EC2 instance with enclave support.
         let mut run_req = ec2

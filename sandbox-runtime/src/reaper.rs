@@ -26,7 +26,8 @@ pub async fn reaper_tick() {
         }
     };
 
-    for record in records {
+    for mut record in records {
+        crate::runtime::unseal_record(&mut record);
         if record.state != SandboxState::Running {
             continue;
         }
@@ -299,10 +300,13 @@ pub async fn reconcile_on_startup() {
     let now = crate::util::now_ts();
 
     for record in records {
-        let inspect = builder
-            .client()
-            .inspect_container(&record.container_id, None::<InspectContainerOptions>)
-            .await;
+        let inspect = crate::runtime::docker_timeout(
+            "inspect_container",
+            builder
+                .client()
+                .inspect_container(&record.container_id, None::<InspectContainerOptions>),
+        )
+        .await;
 
         match inspect {
             Err(_) => {

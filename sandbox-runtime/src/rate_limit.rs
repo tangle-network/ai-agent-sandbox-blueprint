@@ -20,9 +20,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+use crate::metrics;
 
 /// Configuration for a rate limiter.
 #[derive(Clone, Debug)]
@@ -108,10 +111,7 @@ impl RateLimiter {
 
     /// Number of tracked IPs (for metrics/debugging).
     pub fn tracked_ips(&self) -> usize {
-        self.buckets
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.buckets.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 
@@ -148,33 +148,63 @@ pub fn auth_limiter() -> &'static RateLimiter {
 // ---------------------------------------------------------------------------
 
 /// Extract client IP from ConnectInfo or x-forwarded-for header.
+///
+/// Security: XFF is only trusted when ConnectInfo shows the connection came
+/// from a loopback or private IP (i.e., through a reverse proxy like BPM).
+/// Direct connections from public IPs use the socket address directly,
+/// preventing XFF spoofing from bypassing rate limits.
 fn extract_client_ip(req: &Request) -> Option<IpAddr> {
-    // Try ConnectInfo first (direct connections)
-    req.extensions()
+    let connect_ip = req
+        .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip())
-        .or_else(|| {
-            // Fall back to x-forwarded-for (behind reverse proxy)
+        .map(|ci| ci.0.ip());
+
+    match connect_ip {
+        Some(ip) if is_trusted_proxy(ip) => {
+            // Connection from loopback/private IP — trust XFF header
             req.headers()
                 .get("x-forwarded-for")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.split(',').next())
                 .and_then(|s| s.trim().parse().ok())
-        })
+                .or(Some(ip))
+        }
+        Some(ip) => Some(ip), // Direct connection — use socket IP, ignore XFF
+        None => {
+            // No ConnectInfo (e.g., test/oneshot) — XFF as last resort
+            req.headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .and_then(|s| s.trim().parse().ok())
+        }
+    }
 }
+
+/// Returns true if the IP is a loopback or private address (trusted proxy).
+fn is_trusted_proxy(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
+}
+
+/// Sentinel IP used for rate limiting when the client IP cannot be determined.
+/// All requests with unknown IPs share this single bucket, preventing bypass.
+const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
 /// Rate-limiting middleware for read (GET) endpoints.
 /// Allows 120 requests per minute per IP.
 pub async fn read_rate_limit(request: Request, next: Next) -> Response {
-    if let Some(ip) = extract_client_ip(&request) {
-        if !read_limiter().check(ip) {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                [("retry-after", "60")],
-                "Rate limit exceeded",
-            )
-                .into_response();
-        }
+    let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
+    if !read_limiter().check(ip) {
+        metrics::rate_limit_rejections().fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", "60")],
+            "Rate limit exceeded",
+        )
+            .into_response();
     }
     next.run(request).await
 }
@@ -182,15 +212,15 @@ pub async fn read_rate_limit(request: Request, next: Next) -> Response {
 /// Rate-limiting middleware for write (POST/PUT/DELETE) endpoints.
 /// Allows 30 requests per minute per IP.
 pub async fn write_rate_limit(request: Request, next: Next) -> Response {
-    if let Some(ip) = extract_client_ip(&request) {
-        if !write_limiter().check(ip) {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                [("retry-after", "60")],
-                "Rate limit exceeded",
-            )
-                .into_response();
-        }
+    let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
+    if !write_limiter().check(ip) {
+        metrics::rate_limit_rejections().fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", "60")],
+            "Rate limit exceeded",
+        )
+            .into_response();
     }
     next.run(request).await
 }
@@ -198,15 +228,15 @@ pub async fn write_rate_limit(request: Request, next: Next) -> Response {
 /// Rate-limiting middleware for auth endpoints.
 /// Allows 10 requests per minute per IP to prevent brute-force attacks.
 pub async fn auth_rate_limit(request: Request, next: Next) -> Response {
-    if let Some(ip) = extract_client_ip(&request) {
-        if !auth_limiter().check(ip) {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                [("retry-after", "60")],
-                "Rate limit exceeded",
-            )
-                .into_response();
-        }
+    let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
+    if !auth_limiter().check(ip) {
+        metrics::rate_limit_rejections().fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", "60")],
+            "Rate limit exceeded",
+        )
+            .into_response();
     }
     next.run(request).await
 }
@@ -257,5 +287,55 @@ mod tests {
         limiter.check(other);
         // ip1 entry should have been GC'd — only ip2 remains
         assert_eq!(limiter.tracked_ips(), 1);
+    }
+
+    #[test]
+    fn extract_client_ip_returns_none_for_bare_request() {
+        // Build a request with no ConnectInfo extension and no XFF header
+        let req = Request::builder()
+            .uri("/test")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, None, "should return None when no IP source is present");
+    }
+
+    #[test]
+    fn extract_client_ip_from_xff_header() {
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "192.168.1.42, 10.0.0.1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let ip = extract_client_ip(&req);
+        assert_eq!(
+            ip,
+            Some("192.168.1.42".parse().unwrap()),
+            "should extract the first IP from XFF"
+        );
+    }
+
+    #[test]
+    fn extract_client_ip_xff_invalid_ip() {
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "not-an-ip")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, None, "invalid XFF should return None");
+    }
+
+    #[test]
+    fn unknown_ip_bucket_rate_limits() {
+        // All requests without a discernible IP share the UNKNOWN_IP bucket.
+        let limiter = RateLimiter::new(RateLimitConfig::new(2, 60));
+
+        assert!(limiter.check(UNKNOWN_IP));
+        assert!(limiter.check(UNKNOWN_IP));
+        assert!(
+            !limiter.check(UNKNOWN_IP),
+            "third request to unknown IP bucket should be rate limited"
+        );
     }
 }

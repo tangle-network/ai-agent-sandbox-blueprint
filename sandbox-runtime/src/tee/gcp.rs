@@ -289,7 +289,7 @@ impl TeeBackend for GcpConfidentialSpaceBackend {
         // Create the Confidential Space VM.
         let resp = self
             .http
-            .post(&self.instances_url())
+            .post(self.instances_url())
             .bearer_auth(&token)
             .json(&body)
             .send()

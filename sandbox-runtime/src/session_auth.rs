@@ -28,6 +28,10 @@ use crate::error::{Result, SandboxError};
 const CHALLENGE_TTL_SECS: u64 = 300;
 /// Session token TTL in seconds (1 hour).
 const SESSION_TTL_SECS: u64 = 3600;
+/// Maximum number of pending challenges to prevent memory exhaustion.
+const MAX_CHALLENGES: usize = 10_000;
+/// Maximum number of active sessions to prevent memory exhaustion.
+const MAX_SESSIONS: usize = 50_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,7 +80,10 @@ fn now_secs() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Generate a random challenge nonce for EIP-191 signing.
-pub fn create_challenge() -> Challenge {
+///
+/// Returns an error if the challenge store is at capacity ([`MAX_CHALLENGES`]),
+/// preventing memory exhaustion from unauthenticated requests.
+pub fn create_challenge() -> Result<Challenge> {
     let mut nonce_bytes = [0u8; 32];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = hex::encode(nonce_bytes);
@@ -93,12 +100,15 @@ pub fn create_challenge() -> Challenge {
         expires_at: now + CHALLENGE_TTL_SECS,
     };
 
-    CHALLENGES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(nonce, challenge.clone());
+    let mut map = CHALLENGES.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= MAX_CHALLENGES {
+        return Err(SandboxError::Unavailable(
+            "Challenge capacity exceeded, try again later".into(),
+        ));
+    }
+    map.insert(nonce, challenge.clone());
 
-    challenge
+    Ok(challenge)
 }
 
 /// Consume and validate a challenge nonce. Returns the challenge message if valid.
@@ -141,11 +151,7 @@ pub fn verify_eip191_signature(message: &str, signature_hex: &str) -> Result<Str
     let v = match v_byte[0] {
         0 | 27 => 0u8,
         1 | 28 => 1u8,
-        v => {
-            return Err(SandboxError::Auth(format!(
-                "Invalid recovery id: {v}"
-            )))
-        }
+        v => return Err(SandboxError::Auth(format!("Invalid recovery id: {v}"))),
     };
 
     let signature = Signature::from_slice(rs)
@@ -157,9 +163,8 @@ pub fn verify_eip191_signature(message: &str, signature_hex: &str) -> Result<Str
     let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
     let digest = keccak256(prefixed.as_bytes());
 
-    let verifying_key =
-        VerifyingKey::recover_from_prehash(&digest, &signature, recovery_id)
-            .map_err(|e| SandboxError::Auth(format!("Signature recovery failed: {e}")))?;
+    let verifying_key = VerifyingKey::recover_from_prehash(&digest, &signature, recovery_id)
+        .map_err(|e| SandboxError::Auth(format!("Signature recovery failed: {e}")))?;
 
     // Derive address from uncompressed public key (skip 0x04 prefix byte)
     let pubkey_bytes = verifying_key.to_encoded_point(false);
@@ -191,20 +196,27 @@ const HKDF_INFO: &[u8] = b"session-auth-symmetric-key-v1";
 
 /// Symmetric key for PASETO tokens. Derived once from `SESSION_AUTH_SECRET` env var
 /// using HKDF-SHA256 (extract-then-expand), or a random key generated at startup.
-static SYMMETRIC_KEY: Lazy<pasetors::keys::SymmetricKey<pasetors::version4::V4>> = Lazy::new(|| {
-    let key_bytes = match std::env::var("SESSION_AUTH_SECRET") {
-        Ok(secret) => {
-            derive_symmetric_key(secret.as_bytes())
-        }
-        Err(_) => {
-            let mut bytes = [0u8; 32];
-            OsRng.fill_bytes(&mut bytes);
-            bytes
-        }
-    };
-    pasetors::keys::SymmetricKey::<pasetors::version4::V4>::from(&key_bytes)
-        .expect("Failed to create PASETO symmetric key")
-});
+///
+/// **Warning**: When `SESSION_AUTH_SECRET` is not set, a random key is generated.
+/// This means sessions will not survive a restart. Use [`validate_required_config`]
+/// early in `main()` to enforce the secret is set in production.
+static SYMMETRIC_KEY: Lazy<pasetors::keys::SymmetricKey<pasetors::version4::V4>> =
+    Lazy::new(|| {
+        let key_bytes = match std::env::var("SESSION_AUTH_SECRET") {
+            Ok(secret) => derive_symmetric_key(secret.as_bytes()),
+            Err(_) => {
+                tracing::error!(
+                    "SESSION_AUTH_SECRET is not set — using random key. \
+                 Sessions will NOT survive restart. Set this env var in production."
+                );
+                let mut bytes = [0u8; 32];
+                OsRng.fill_bytes(&mut bytes);
+                bytes
+            }
+        };
+        pasetors::keys::SymmetricKey::<pasetors::version4::V4>::from(&key_bytes)
+            .expect("Failed to create PASETO symmetric key")
+    });
 
 /// Derive a 32-byte symmetric key from input keying material using HKDF-SHA256.
 ///
@@ -223,10 +235,7 @@ fn derive_symmetric_key(ikm: &[u8]) -> [u8; 32] {
 }
 
 /// Verify a challenge signature and issue a PASETO session token.
-pub fn exchange_signature_for_token(
-    nonce: &str,
-    signature_hex: &str,
-) -> Result<SessionToken> {
+pub fn exchange_signature_for_token(nonce: &str, signature_hex: &str) -> Result<SessionToken> {
     let message = consume_challenge(nonce)?;
     let address = verify_eip191_signature(&message, signature_hex)?;
 
@@ -265,16 +274,19 @@ pub fn exchange_signature_for_token(
         .expiration(&exp_str)
         .map_err(|e| SandboxError::Auth(format!("Failed to set expiration: {e}")))?;
 
-    let token = pasetors::local::encrypt(
-        &*SYMMETRIC_KEY,
-        &paseto_claims,
-        None,
-        None,
-    )
-    .map_err(|e| SandboxError::Auth(format!("Failed to encrypt PASETO token: {e}")))?;
+    let token = pasetors::local::encrypt(&SYMMETRIC_KEY, &paseto_claims, None, None)
+        .map_err(|e| SandboxError::Auth(format!("Failed to encrypt PASETO token: {e}")))?;
 
-    // Store session for server-side validation
-    SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).insert(token.clone(), claims);
+    // Store session for server-side validation (with capacity check)
+    {
+        let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+        if sessions.len() >= MAX_SESSIONS {
+            return Err(SandboxError::Unavailable(
+                "Session capacity exceeded, try again later".into(),
+            ));
+        }
+        sessions.insert(token.clone(), claims);
+    }
 
     Ok(SessionToken {
         token,
@@ -300,14 +312,9 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
         .map_err(|e| SandboxError::Auth(format!("Invalid PASETO token: {e}")))?;
 
     let validation_rules = pasetors::claims::ClaimsValidationRules::new();
-    let trusted = pasetors::local::decrypt(
-        &*SYMMETRIC_KEY,
-        &validation,
-        &validation_rules,
-        None,
-        None,
-    )
-    .map_err(|e| SandboxError::Auth(format!("PASETO decryption failed: {e}")))?;
+    let trusted =
+        pasetors::local::decrypt(&SYMMETRIC_KEY, &validation, &validation_rules, None, None)
+            .map_err(|e| SandboxError::Auth(format!("PASETO decryption failed: {e}")))?;
 
     let payload = trusted.payload();
     let json: serde_json::Value = serde_json::from_str(payload)
@@ -322,7 +329,9 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
     let iat = json
         .get("iat")
         .and_then(|v| v.as_str())
-        .and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok())
+        .and_then(|s| {
+            time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+        })
         .map(|dt| dt.unix_timestamp() as u64)
         .unwrap_or(0);
 
@@ -332,8 +341,9 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| SandboxError::Auth("Missing expiration in token".into()))?;
 
-    let exp_dt = time::OffsetDateTime::parse(exp_str, &time::format_description::well_known::Rfc3339)
-        .map_err(|e| SandboxError::Auth(format!("Invalid expiration format: {e}")))?;
+    let exp_dt =
+        time::OffsetDateTime::parse(exp_str, &time::format_description::well_known::Rfc3339)
+            .map_err(|e| SandboxError::Auth(format!("Invalid expiration format: {e}")))?;
 
     let expires_at = exp_dt.unix_timestamp() as u64;
 
@@ -348,11 +358,63 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
     })
 }
 
+/// Revoke a specific session token, removing it from the in-memory store.
+/// Returns `true` if the token was found and removed.
+pub fn revoke_session(token: &str) -> bool {
+    SESSIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(token)
+        .is_some()
+}
+
+/// Revoke all sessions for a specific address.
+/// Returns the number of sessions revoked.
+pub fn revoke_sessions_for_address(address: &str) -> usize {
+    let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let before = sessions.len();
+    sessions.retain(|_, s| !s.address.eq_ignore_ascii_case(address));
+    before - sessions.len()
+}
+
 /// Remove expired challenges and sessions.
 pub fn gc_sessions() {
     let now = now_secs();
-    CHALLENGES.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, c| c.expires_at > now);
-    SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, s| s.expires_at > now);
+    CHALLENGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, c| c.expires_at > now);
+    SESSIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, s| s.expires_at > now);
+}
+
+/// Clear all challenges and sessions. Test-only — prevents cross-test
+/// pollution when capacity tests fill the global maps.
+#[cfg(test)]
+pub fn clear_all_for_testing() {
+    CHALLENGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// Shared lock backing both sync and async capacity-test guards.
+#[cfg(test)]
+static CAPACITY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Acquire the shared capacity-test mutex (sync variant for `#[test]`).
+/// Hold the returned guard for the duration of any test that creates
+/// challenges or sessions to prevent races with capacity-exhaustion tests.
+#[cfg(test)]
+pub fn capacity_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    CAPACITY_LOCK.blocking_lock()
+}
+
+/// Async variant of [`capacity_test_lock`] for `#[tokio::test]` functions.
+/// Can be held across `.await` points without triggering clippy warnings.
+#[cfg(test)]
+pub async fn capacity_test_lock_async() -> tokio::sync::MutexGuard<'static, ()> {
+    CAPACITY_LOCK.lock().await
 }
 
 /// Extract a Bearer token from an Authorization header value.
@@ -361,6 +423,31 @@ pub fn extract_bearer_token(auth_header: &str) -> Option<&str> {
         .strip_prefix("Bearer ")
         .or_else(|| auth_header.strip_prefix("bearer "))
         .map(|t| t.trim())
+}
+
+// ---------------------------------------------------------------------------
+// Configuration validation
+// ---------------------------------------------------------------------------
+
+/// Validate that required configuration for session auth is present.
+///
+/// Checks that `SESSION_AUTH_SECRET` is set and non-empty. Without this,
+/// PASETO tokens use a random key that changes on restart, silently breaking
+/// all existing sessions.
+///
+/// Call this early in each binary's `main()` — in production it should be
+/// treated as a hard error; in test mode, log a warning and continue.
+pub fn validate_required_config() -> std::result::Result<(), String> {
+    match std::env::var("SESSION_AUTH_SECRET") {
+        Ok(val) if !val.trim().is_empty() => Ok(()),
+        Ok(_) => Err("SESSION_AUTH_SECRET is set but empty. \
+             Provide a non-empty secret for stable session auth."
+            .to_string()),
+        Err(_) => Err("SESSION_AUTH_SECRET is not set. \
+             Sessions will use a random key and break on restart. \
+             Set this env var before starting the operator."
+            .to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +523,7 @@ pub fn create_test_token(address: &str) -> String {
         .unwrap();
     paseto_claims.expiration(&exp_str).unwrap();
 
-    let token = pasetors::local::encrypt(&*SYMMETRIC_KEY, &paseto_claims, None, None).unwrap();
+    let token = pasetors::local::encrypt(&SYMMETRIC_KEY, &paseto_claims, None, None).unwrap();
     SESSIONS.lock().unwrap().insert(token.clone(), claims);
     token
 }
@@ -447,7 +534,8 @@ mod tests {
 
     #[test]
     fn challenge_lifecycle() {
-        let challenge = create_challenge();
+        let _guard = capacity_test_lock();
+        let challenge = create_challenge().unwrap();
         assert!(!challenge.nonce.is_empty());
         assert!(challenge.message.contains(&challenge.nonce));
         assert!(challenge.expires_at > now_secs());
@@ -463,6 +551,11 @@ mod tests {
 
     #[test]
     fn challenge_expiry() {
+        let _guard = capacity_test_lock();
+        // Clear any leftover challenges from capacity tests to avoid
+        // hitting the capacity cap when inserting our test challenge.
+        CHALLENGES.lock().unwrap().clear();
+
         // Insert a challenge directly with an expired timestamp
         let nonce = "expired-test-nonce".to_string();
         let challenge = Challenge {
@@ -475,7 +568,10 @@ mod tests {
         let result = consume_challenge(&nonce);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("expired"), "Expected 'expired' in error: {err_msg}");
+        assert!(
+            err_msg.contains("expired"),
+            "Expected 'expired' in error: {err_msg}"
+        );
     }
 
     #[test]
@@ -494,11 +590,7 @@ mod tests {
 
         // Sign a message using EIP-191 personal_sign
         let message = "test message for signing";
-        let prefixed = format!(
-            "\x19Ethereum Signed Message:\n{}{}",
-            message.len(),
-            message
-        );
+        let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
         let digest = keccak256(prefixed.as_bytes());
 
         let (signature, recovery_id) = signing_key
@@ -519,6 +611,7 @@ mod tests {
 
     #[test]
     fn token_roundtrip() {
+        let _guard = capacity_test_lock();
         use k256::ecdsa::SigningKey;
 
         let signing_key = SigningKey::random(&mut OsRng);
@@ -531,7 +624,7 @@ mod tests {
         let expected_address = format!("0x{}", hex::encode(&address_hash[12..]));
 
         // Step 1: Create challenge
-        let challenge = create_challenge();
+        let challenge = create_challenge().unwrap();
 
         // Step 2: Sign the challenge message
         let prefixed = format!(
@@ -580,6 +673,11 @@ mod tests {
 
     #[test]
     fn gc_sessions_cleans_expired() {
+        let _guard = capacity_test_lock();
+        // Clear maps to avoid capacity interference from other tests
+        CHALLENGES.lock().unwrap().clear();
+        SESSIONS.lock().unwrap().clear();
+
         // Insert an expired challenge
         let expired_nonce = format!("gc-test-{}", now_secs());
         CHALLENGES.lock().unwrap().insert(
@@ -612,14 +710,8 @@ mod tests {
 
     #[test]
     fn extract_bearer() {
-        assert_eq!(
-            extract_bearer_token("Bearer abc123"),
-            Some("abc123")
-        );
-        assert_eq!(
-            extract_bearer_token("bearer xyz"),
-            Some("xyz")
-        );
+        assert_eq!(extract_bearer_token("Bearer abc123"), Some("abc123"));
+        assert_eq!(extract_bearer_token("bearer xyz"), Some("xyz"));
         assert_eq!(extract_bearer_token("Basic abc"), None);
     }
 
@@ -654,5 +746,133 @@ mod tests {
             hkdf_key, keccak_hash,
             "HKDF output must differ from raw Keccak256"
         );
+    }
+
+    #[test]
+    fn challenge_capacity_blocks_when_full() {
+        let _guard = capacity_test_lock();
+
+        {
+            let mut map = CHALLENGES.lock().unwrap();
+            for i in 0..MAX_CHALLENGES {
+                map.insert(
+                    format!("cap-ch-{i}"),
+                    Challenge {
+                        nonce: format!("cap-ch-{i}"),
+                        message: "cap".into(),
+                        expires_at: now_secs() + 600,
+                    },
+                );
+            }
+        }
+
+        let result = create_challenge();
+
+        // Clean up before assertions
+        CHALLENGES
+            .lock()
+            .unwrap()
+            .retain(|k, _| !k.starts_with("cap-ch-"));
+
+        assert!(result.is_err(), "should fail when at capacity");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("Challenge capacity exceeded"),
+            "error should mention capacity: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn gc_restores_challenge_capacity_after_expiry() {
+        let _guard = capacity_test_lock();
+
+        {
+            let mut map = CHALLENGES.lock().unwrap();
+            for i in 0..MAX_CHALLENGES {
+                map.insert(
+                    format!("gc-ch-{i}"),
+                    Challenge {
+                        nonce: format!("gc-ch-{i}"),
+                        message: "expired".into(),
+                        expires_at: now_secs().saturating_sub(1),
+                    },
+                );
+            }
+        }
+
+        gc_sessions();
+
+        let result = create_challenge();
+
+        if let Ok(ref c) = result {
+            CHALLENGES.lock().unwrap().remove(&c.nonce);
+        }
+
+        assert!(result.is_ok(), "should succeed after GC frees capacity");
+    }
+
+    #[test]
+    fn session_capacity_blocks_when_full() {
+        let _guard = capacity_test_lock();
+
+        {
+            let mut map = SESSIONS.lock().unwrap();
+            for i in 0..MAX_SESSIONS {
+                map.insert(
+                    format!("cap-sess-{i}"),
+                    SessionClaims {
+                        address: "0xdead".into(),
+                        issued_at: now_secs(),
+                        expires_at: now_secs() + 600,
+                    },
+                );
+            }
+        }
+
+        use k256::ecdsa::SigningKey;
+        let signing_key = SigningKey::random(&mut OsRng);
+        let challenge = create_challenge().unwrap();
+        let prefixed = format!(
+            "\x19Ethereum Signed Message:\n{}{}",
+            challenge.message.len(),
+            challenge.message
+        );
+        let digest = keccak256(prefixed.as_bytes());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(&digest)
+            .expect("signing failed");
+        let mut sig_bytes = Vec::with_capacity(65);
+        sig_bytes.extend_from_slice(&signature.to_bytes());
+        sig_bytes.push(recovery_id.to_byte() + 27);
+        let sig_hex = format!("0x{}", hex::encode(&sig_bytes));
+
+        let result = exchange_signature_for_token(&challenge.nonce, &sig_hex);
+
+        // Clean up before assertions
+        SESSIONS
+            .lock()
+            .unwrap()
+            .retain(|k, _| !k.starts_with("cap-sess-"));
+
+        assert!(result.is_err(), "should fail when sessions are at capacity");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("Session capacity exceeded"),
+            "error should mention session capacity: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn create_test_token_produces_valid_session() {
+        let addr = "0xabcdef1234567890abcdef1234567890abcdef12";
+        let token = create_test_token(addr);
+        assert!(
+            token.starts_with("v4.local."),
+            "test token should be a PASETO v4 local token"
+        );
+
+        let claims = validate_session_token(&token).unwrap();
+        assert_eq!(claims.address, addr);
+        assert!(claims.expires_at > now_secs());
     }
 }

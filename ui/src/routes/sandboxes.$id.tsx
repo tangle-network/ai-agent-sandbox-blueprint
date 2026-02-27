@@ -1,5 +1,6 @@
 import { useParams, Link } from 'react-router';
-import { lazy, Suspense, useState, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '~/components/motion/AnimatedPage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card';
@@ -28,9 +29,7 @@ const TerminalView = lazy(() =>
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets';
 
-/** Operator API base URL for sandbox lifecycle operations. */
-const OPERATOR_API_URL = import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090';
-const INSTANCE_OPERATOR_API_URL = import.meta.env.VITE_INSTANCE_OPERATOR_API_URL ?? 'http://localhost:9200';
+import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
 
 interface SshKey {
   username: string;
@@ -64,13 +63,33 @@ export default function SandboxDetail() {
   const [secretsError, setSecretsError] = useState<string | null>(null);
   const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
 
+  // Track setTimeout IDs so they can be cleared on unmount
+  const timeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  useEffect(() => {
+    return () => {
+      for (const id of timeoutsRef.current) {
+        clearTimeout(id);
+      }
+      timeoutsRef.current.clear();
+    };
+  }, []);
+
+  /** Schedule a timeout and track it for cleanup on unmount. */
+  const scheduleDismiss = useCallback((fn: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      timeoutsRef.current.delete(id);
+      fn();
+    }, ms);
+    timeoutsRef.current.add(id);
+  }, []);
+
   const serviceId = BigInt(sb?.serviceId ?? '1');
 
   // Resolve correct operator API URL (instance blueprints run on a different port)
   const instanceBpId = import.meta.env.VITE_INSTANCE_BLUEPRINT_ID;
   const teeBpId = import.meta.env.VITE_TEE_INSTANCE_BLUEPRINT_ID;
   const isInstance = sb ? (sb.blueprintId === instanceBpId || sb.blueprintId === teeBpId) : false;
-  const operatorUrl = isInstance ? INSTANCE_OPERATOR_API_URL : OPERATOR_API_URL;
+  const operatorUrl = isInstance ? (INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL) : OPERATOR_API_URL;
 
   // Sidecar auth for PTY terminal and chat (direct connection)
   const sidecarUrl = sb?.sidecarUrl ?? '';
@@ -115,14 +134,24 @@ export default function SandboxDetail() {
       : `/api/sandboxes/${encodeURIComponent(decodedId)}/${action}`;
     const url = `${operatorUrl}${path}`;
 
-    const res = await fetch(url, {
-      method: opts?.method ?? 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: body ? JSON.stringify(body) : '{}',
-    });
+    const doFetch = (bearerToken: string) =>
+      fetch(url, {
+        method: opts?.method ?? 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${bearerToken}`,
+        },
+        body: body ? JSON.stringify(body) : '{}',
+      });
+
+    let res = await doFetch(token);
+
+    // Auto-retry once on 401 (expired PASETO token)
+    if (res.status === 401) {
+      const freshToken = await getOperatorToken(true);
+      if (!freshToken) throw new Error('Re-authentication failed');
+      res = await doFetch(freshToken);
+    }
 
     if (!res.ok) {
       const text = await res.text();
@@ -137,6 +166,7 @@ export default function SandboxDetail() {
       updateSandboxStatus(decodedId, 'stopped');
     } catch (e) {
       console.error('Stop failed:', e);
+      toast.error('Failed to stop sandbox');
     }
   }, [decodedId, operatorApiCall]);
 
@@ -146,10 +176,12 @@ export default function SandboxDetail() {
       updateSandboxStatus(decodedId, 'running');
     } catch (e) {
       console.error('Resume failed:', e);
+      toast.error('Failed to resume sandbox');
     }
   }, [decodedId, operatorApiCall]);
 
   const handleDelete = useCallback(async () => {
+    if (!window.confirm('Are you sure you want to permanently delete this sandbox? This action is irreversible and will submit an on-chain transaction.')) return;
     const hash = await submitJob({
       serviceId,
       jobId: JOB_IDS.SANDBOX_DELETE,
@@ -169,27 +201,34 @@ export default function SandboxDetail() {
       });
     } catch (e) {
       console.error('Snapshot failed:', e);
+      toast.error('Failed to snapshot sandbox');
     }
   }, [operatorApiCall]);
 
   // SSH handlers
   const handleSshProvision = useCallback(async () => {
-    if (!sshPublicKey.trim()) return;
+    const key = sshPublicKey.trim();
+    if (!key) return;
+    const validPrefixes = ['ssh-rsa ', 'ssh-ed25519 ', 'ssh-dss ', 'ecdsa-sha2-'];
+    if (!validPrefixes.some((p) => key.startsWith(p))) {
+      setSshError('Invalid SSH key format. Must start with ssh-rsa, ssh-ed25519, or ecdsa-sha2-*');
+      return;
+    }
     setSshBusy(true);
     setSshError(null);
     setSshSuccess(null);
     try {
-      await operatorApiCall('ssh', { username: sshUsername, public_key: sshPublicKey.trim() });
+      await operatorApiCall('ssh', { username: sshUsername, public_key: key });
       setSshKeys((prev) => [...prev, { username: sshUsername, publicKey: sshPublicKey.trim() }]);
       setSshPublicKey('');
       setSshSuccess('SSH key provisioned');
-      setTimeout(() => setSshSuccess(null), 3000);
+      scheduleDismiss(() => setSshSuccess(null), 3000);
     } catch (e) {
       setSshError(e instanceof Error ? e.message : 'Failed to provision SSH key');
     } finally {
       setSshBusy(false);
     }
-  }, [sshUsername, sshPublicKey, operatorApiCall]);
+  }, [sshUsername, sshPublicKey, operatorApiCall, scheduleDismiss]);
 
   const handleSshRevoke = useCallback(async (key: SshKey) => {
     setSshBusy(true);
@@ -199,13 +238,13 @@ export default function SandboxDetail() {
       await operatorApiCall('ssh', { username: key.username, public_key: key.publicKey }, { method: 'DELETE' });
       setSshKeys((prev) => prev.filter((k) => k.publicKey !== key.publicKey));
       setSshSuccess('SSH key revoked');
-      setTimeout(() => setSshSuccess(null), 3000);
+      scheduleDismiss(() => setSshSuccess(null), 3000);
     } catch (e) {
       setSshError(e instanceof Error ? e.message : 'Failed to revoke SSH key');
     } finally {
       setSshBusy(false);
     }
-  }, [operatorApiCall]);
+  }, [operatorApiCall, scheduleDismiss]);
 
   // Secrets handlers
   const handleInjectSecrets = useCallback(async () => {
@@ -219,28 +258,29 @@ export default function SandboxDetail() {
       }
       await operatorApiCall('secrets', { env_json: parsed });
       setSecretsSuccess('Secrets injected');
-      setTimeout(() => setSecretsSuccess(null), 3000);
+      scheduleDismiss(() => setSecretsSuccess(null), 3000);
     } catch (e) {
       setSecretsError(e instanceof Error ? e.message : 'Failed to inject secrets');
     } finally {
       setSecretsBusy(false);
     }
-  }, [secretsJson, operatorApiCall]);
+  }, [secretsJson, operatorApiCall, scheduleDismiss]);
 
   const handleWipeSecrets = useCallback(async () => {
+    if (!window.confirm('Are you sure you want to wipe all secrets? This will restart the sandbox without any injected secrets.')) return;
     setSecretsBusy(true);
     setSecretsError(null);
     setSecretsSuccess(null);
     try {
       await operatorApiCall('secrets', undefined, { method: 'DELETE' });
       setSecretsSuccess('Secrets wiped');
-      setTimeout(() => setSecretsSuccess(null), 3000);
+      scheduleDismiss(() => setSecretsSuccess(null), 3000);
     } catch (e) {
       setSecretsError(e instanceof Error ? e.message : 'Failed to wipe secrets');
     } finally {
       setSecretsBusy(false);
     }
-  }, [operatorApiCall]);
+  }, [operatorApiCall, scheduleDismiss]);
 
   if (!sb) {
     return (

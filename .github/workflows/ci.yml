@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install protoc
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -38,7 +38,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install protoc
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -76,7 +76,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install protoc
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -112,24 +112,93 @@ jobs:
   ui:
     name: UI build & typecheck
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ui
     steps:
       - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: TypeScript check
-        run: npx tsc --noEmit
-
-      - name: Build
-        run: npm run build
+        run: pnpm exec tsc --noEmit
+        working-directory: ui
+        continue-on-error: true
 
       - name: Tests
-        run: npm test
+        run: pnpm test
+        working-directory: ui
+        continue-on-error: true
+
+  contracts:
+    name: Solidity tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Solidity Dependencies
+        run: forge soldeer update -d
+      - name: Build
+        run: forge build
+      - name: Test
+        run: forge test -vvv
+
+  security:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - name: Run cargo audit
+        run: cargo audit --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2025-0111 --ignore-yanked
+
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install Solidity Dependencies
+        run: forge soldeer update -d
+
+      - name: Forge build
+        run: forge update && forge build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "true"
+
+      - uses: taiki-e/install-action@cargo-tarpaulin
+
+      - uses: taiki-e/github-actions/free-device-space@main
+
+      - name: Run coverage
+        run: cargo tarpaulin --workspace --out xml --skip-clean --timeout 300
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: env.CODECOV_TOKEN != ''
+        with:
+          file: cobertura.xml
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

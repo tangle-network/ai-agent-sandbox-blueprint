@@ -13,11 +13,19 @@ const transports = {
   [mainnet.id]: http(),
 };
 
+const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || '';
+
+if (!walletConnectProjectId) {
+  console.warn(
+    'WalletConnect Project ID not set. Set VITE_WALLETCONNECT_PROJECT_ID for wallet support.',
+  );
+}
+
 const config = createConfig(
   getDefaultConfig({
     chains,
     transports,
-    walletConnectProjectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || '3fcc6bba6f1de962d911bb5b5c3dba68',
+    walletConnectProjectId,
     appName: 'Tangle Sandbox Cloud',
     appDescription: 'AI Agent Sandbox Provisioning on Tangle Network',
     appUrl: typeof window !== 'undefined' ? window.location.origin : 'https://cloud.tangle.tools',

@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use phala_tee_deploy_rs::{TeeDeployer, TeeDeployerBuilder};
 
-use super::{AttestationReport, TeeBackend, TeeDeployParams, TeeDeployment, TeeType};
 use super::sealed_secrets::{SealedSecret, SealedSecretResult, TeePublicKey};
+use super::{AttestationReport, TeeBackend, TeeDeployParams, TeeDeployment, TeeType};
 use crate::error::{Result, SandboxError};
 
 /// TEE backend that deploys containers to Phala Cloud CVMs.

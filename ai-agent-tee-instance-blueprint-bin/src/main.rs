@@ -17,6 +17,19 @@ use blueprint_sdk::{error, info, warn};
 async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
 
+    // Validate required auth config — SESSION_AUTH_SECRET must be set in production.
+    let is_test_mode = std::env::args().any(|a| a == "--test-mode")
+        || std::env::var("TEST_MODE")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+    if let Err(msg) = sandbox_runtime::session_auth::validate_required_config() {
+        if is_test_mode {
+            warn!("Config validation (test mode): {msg}");
+        } else {
+            return Err(blueprint_sdk::Error::Other(msg));
+        }
+    }
+
     // ── TEE backend ──────────────────────────────────────────────────────
     let backend = sandbox_runtime::tee::backend_factory::backend_from_env()
         .map_err(|e| blueprint_sdk::Error::Other(format!("Failed to create TEE backend: {e}")))?;
@@ -51,12 +64,13 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(9090);
 
-    let tee_for_api = ai_agent_tee_instance_blueprint_lib::tee_backend().clone();
+    let tee_for_api = ai_agent_tee_instance_blueprint_lib::tee_backend()
+        .map_err(|e| blueprint_sdk::Error::Other(format!("TEE backend not available: {e}")))?
+        .clone();
     let api_shutdown = tokio::sync::watch::channel(());
     let api_shutdown_tx = api_shutdown.0;
     let api_handle = {
-        let router =
-            sandbox_runtime::operator_api::operator_api_router_with_tee(Some(tee_for_api));
+        let router = sandbox_runtime::operator_api::operator_api_router_with_tee(Some(tee_for_api));
         let addr = std::net::SocketAddr::from(([0, 0, 0, 0u8], api_port));
         info!("Starting operator API on {addr}");
 
@@ -66,11 +80,14 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
         let mut shutdown_rx = api_shutdown.1;
         tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    let _ = shutdown_rx.changed().await;
-                })
-                .await
+            if let Err(e) = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.changed().await;
+            })
+            .await
             {
                 error!("Operator API error: {e}");
             }
@@ -79,10 +96,13 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
     // Auto-provision: read service config from BSM and provision sandbox on startup.
     if let Some(ap_config) =
-        ai_agent_tee_instance_blueprint_lib::auto_provision::AutoProvisionConfig::from_env(service_id)
+        ai_agent_tee_instance_blueprint_lib::auto_provision::AutoProvisionConfig::from_env(
+            service_id,
+        )
     {
         info!("Auto-provision enabled (BSM={})", ap_config.bsm_address);
-        let tee = ai_agent_tee_instance_blueprint_lib::tee_backend();
+        let tee = ai_agent_tee_instance_blueprint_lib::tee_backend()
+            .map_err(|e| blueprint_sdk::Error::Other(format!("TEE backend not available: {e}")))?;
         tokio::spawn(async move {
             match ai_agent_tee_instance_blueprint_lib::auto_provision::run_auto_provision(
                 ap_config,
@@ -101,12 +121,37 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         let config = ai_agent_tee_instance_blueprint_lib::runtime::SidecarRuntimeConfig::load();
         let reaper_interval = config.sandbox_reaper_interval;
 
+        let mut reaper_shutdown = api_shutdown_tx.subscribe();
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(reaper_interval));
             loop {
-                interval.tick().await;
-                ai_agent_tee_instance_blueprint_lib::reaper::reaper_tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        ai_agent_tee_instance_blueprint_lib::reaper::reaper_tick().await;
+                    }
+                    _ = reaper_shutdown.changed() => {
+                        info!("Reaper shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Spawn session GC background task (expired challenges + sessions cleanup)
+        let mut gc_session_shutdown = api_shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        sandbox_runtime::session_auth::gc_sessions();
+                    }
+                    _ = gc_session_shutdown.changed() => {
+                        info!("Session GC shutting down");
+                        break;
+                    }
+                }
             }
         });
     }
@@ -122,7 +167,8 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
         if let Some(watchdog_config) =
             ai_agent_tee_instance_blueprint_lib::billing::EscrowWatchdogConfig::from_env(
-                service_id, blueprint_id,
+                service_id,
+                blueprint_id,
             )
         {
             if let Err(e) = watchdog_config.validate() {
@@ -133,7 +179,8 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
                 let tangle_contract = watchdog_config.tangle_contract;
                 ai_agent_tee_instance_blueprint_lib::billing::spawn_watchdog(
-                    watchdog_config, watchdog_rx,
+                    watchdog_config,
+                    watchdog_rx,
                 );
                 info!("Escrow watchdog started for service {service_id}");
 
@@ -162,8 +209,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                     ));
 
                 let billing_rx = shutdown_tx.subscribe();
-                let _billing_handle =
-                    SubscriptionBillingKeeper::start(keeper_config, billing_rx);
+                let _billing_handle = SubscriptionBillingKeeper::start(keeper_config, billing_rx);
 
                 info!("Subscription billing keeper started for service {service_id}");
                 Some(shutdown_tx)
@@ -200,8 +246,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             }
 
             // Deprovision sandbox + TEE deployment so they don't outlive the service.
-            let tee = ai_agent_tee_instance_blueprint_lib::tee_backend();
-            match ai_agent_tee_instance_blueprint_lib::deprovision_core(Some(tee.as_ref())).await {
+            let tee = ai_agent_tee_instance_blueprint_lib::tee_backend()
+                .ok()
+                .map(|b| b.as_ref() as &dyn sandbox_runtime::tee::TeeBackend);
+            match ai_agent_tee_instance_blueprint_lib::deprovision_core(tee).await {
                 Ok((_, id)) => info!("Shutdown: deprovisioned sandbox {id}"),
                 Err(e) => info!("Shutdown: no sandbox to deprovision ({e})"),
             }

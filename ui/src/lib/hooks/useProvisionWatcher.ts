@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useWatchContractEvent } from 'wagmi';
 import { agentInstanceBlueprintAbi } from '~/lib/contracts/abi';
 import { getAddresses } from '~/lib/contracts/publicClient';
@@ -7,6 +7,15 @@ import type { SandboxAddresses } from '~/lib/contracts/chains';
 interface ProvisionResult {
   sandboxId: string;
   sidecarUrl: string;
+}
+
+interface ProvisionedEventLog {
+  args: {
+    serviceId?: bigint;
+    operator?: `0x${string}`;
+    sandboxId?: string;
+    sidecarUrl?: string;
+  };
 }
 
 /**
@@ -27,17 +36,12 @@ export function useInstanceProvisionWatcher(
     ? addrs.teeInstanceBlueprint
     : addrs.instanceBlueprint;
 
-  const onLogs = useCallback((logs: any[]) => {
+  const onLogs = useCallback((logs: ProvisionedEventLog[]) => {
     if (resultRef.current) return; // Already got a result
     for (const log of logs) {
-      const args = log.args as {
-        serviceId: bigint;
-        operator: `0x${string}`;
-        sandboxId: string;
-        sidecarUrl: string;
-      };
-      if (serviceId != null && args.serviceId === serviceId && args.sidecarUrl) {
-        const r = { sandboxId: args.sandboxId, sidecarUrl: args.sidecarUrl };
+      const { args } = log;
+      if (serviceId != null && args.serviceId === serviceId && args.sandboxId && args.sidecarUrl) {
+        const r: ProvisionResult = { sandboxId: args.sandboxId, sidecarUrl: args.sidecarUrl };
         resultRef.current = r;
         setResult(r);
         return;

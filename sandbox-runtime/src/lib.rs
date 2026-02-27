@@ -6,6 +6,7 @@
 
 pub mod api_types;
 pub mod auth;
+pub mod circuit_breaker;
 pub mod error;
 pub mod http;
 pub mod instance_types;
@@ -20,6 +21,9 @@ pub mod session_auth;
 pub mod store;
 pub mod tee;
 pub mod util;
+
+#[cfg(feature = "test-utils")]
+pub mod test_utils;
 
 pub use error::SandboxError;
 pub use runtime::{CreateSandboxParams, SandboxRecord, SandboxState};

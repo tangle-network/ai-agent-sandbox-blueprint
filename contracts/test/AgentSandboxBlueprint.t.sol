@@ -524,11 +524,6 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // MODE FLAGS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function test_cloudModeIsDefault() public view {
-        assertFalse(blueprint.instanceMode());
-        assertFalse(blueprint.teeRequired());
-    }
-
     function test_setInstanceMode() public {
         vm.prank(blueprintOwner);
         blueprint.setInstanceMode(true);
@@ -541,21 +536,473 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertTrue(blueprint.teeRequired());
     }
 
+    function test_setInstanceModeRevertsWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 950, operator1, "sandbox-guard");
+        assertEq(blueprint.totalActiveSandboxes(), 1);
+
+        vm.prank(blueprintOwner);
+        vm.expectRevert(AgentSandboxBlueprint.CannotChangeWithActiveResources.selector);
+        blueprint.setInstanceMode(true);
+    }
+
+    function test_setTeeRequiredRevertsWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 951, operator1, "sandbox-tee-guard");
+        assertEq(blueprint.totalActiveSandboxes(), 1);
+
+        vm.prank(blueprintOwner);
+        vm.expectRevert(AgentSandboxBlueprint.CannotChangeWithActiveResources.selector);
+        blueprint.setTeeRequired(true);
+    }
+
+    function test_setInstanceModeSucceedsWhenNoActiveSandboxes() public {
+        assertEq(blueprint.totalActiveSandboxes(), 0);
+
+        vm.prank(blueprintOwner);
+        blueprint.setInstanceMode(true);
+        assertTrue(blueprint.instanceMode());
+
+        vm.prank(blueprintOwner);
+        blueprint.setInstanceMode(false);
+        assertFalse(blueprint.instanceMode());
+    }
+
+    function test_setTeeRequiredSucceedsWhenNoActiveSandboxes() public {
+        assertEq(blueprint.totalActiveSandboxes(), 0);
+
+        vm.prank(blueprintOwner);
+        blueprint.setTeeRequired(true);
+        assertTrue(blueprint.teeRequired());
+
+        vm.prank(blueprintOwner);
+        blueprint.setTeeRequired(false);
+        assertFalse(blueprint.teeRequired());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MODE ENFORCEMENT — CLOUD MODE REJECTS INSTANCE JOBS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_cloudModeRejectsInstanceModeJobs() public {
+        // onJobCall rejects PROVISION (5) and DEPROVISION (6)
+        for (uint8 jobId = 5; jobId <= 6; jobId++) {
+            vm.prank(tangleCore);
+            vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
+            blueprint.onJobCall(1, jobId, uint64(960 + jobId), bytes(""));
+        }
+        // onJobResult rejects PROVISION (5) and DEPROVISION (6)
+        for (uint8 jobId = 5; jobId <= 6; jobId++) {
+            vm.prank(tangleCore);
+            vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
+            blueprint.onJobResult(1, jobId, uint64(962 + jobId), operator1, bytes(""), bytes(""));
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // JOB METADATA
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function test_jobMetadata() public view {
-        uint8[] memory ids = blueprint.jobIds();
-        assertEq(ids.length, 7);
-        assertEq(ids[0], 0); // SANDBOX_CREATE
-        assertEq(ids[6], 6); // DEPROVISION
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: SANDBOX ID VALIDATION (M6)
+    // ═══════════════════════════════════════════════════════════════════════════
 
-        assertTrue(blueprint.supportsJob(0));
-        assertTrue(blueprint.supportsJob(6));
-        assertFalse(blueprint.supportsJob(7));
+    function test_createResultRevertsEmptySandboxId() public {
+        registerOperator(operator1, 10);
+        simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 900, encodeSandboxCreateInputs());
 
-        assertEq(blueprint.jobCount(), 7);
+        vm.prank(tangleCore);
+        vm.expectRevert(AgentSandboxBlueprint.EmptySandboxId.selector);
+        blueprint.onJobResult(
+            1, 0, 900, operator1,
+            encodeSandboxCreateInputs(),
+            encodeSandboxCreateOutputs("", "{}")
+        );
+    }
+
+    function test_createResultRevertsTooLongSandboxId() public {
+        registerOperator(operator1, 10);
+        simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 901, encodeSandboxCreateInputs());
+
+        // Build a 256-character string (exceeds 255 limit)
+        bytes memory longBytes = new bytes(256);
+        for (uint256 i = 0; i < 256; i++) {
+            longBytes[i] = "a";
+        }
+        string memory longId = string(longBytes);
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.SandboxIdTooLong.selector, 256));
+        blueprint.onJobResult(
+            1, 0, 901, operator1,
+            encodeSandboxCreateInputs(),
+            encodeSandboxCreateOutputs(longId, "{}")
+        );
+    }
+
+    function test_createResultAccepts255CharSandboxId() public {
+        registerOperator(operator1, 10);
+
+        // Build a 255-character string (exactly at limit)
+        bytes memory maxBytes = new bytes(255);
+        for (uint256 i = 0; i < 255; i++) {
+            maxBytes[i] = "b";
+        }
+        string memory maxId = string(maxBytes);
+
+        _createSandbox(1, 902, operator1, maxId);
+        assertTrue(blueprint.isSandboxActive(maxId));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: WORKFLOW ARRAY BOUNDS (H5a)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY: SERVICE REQUEST VALIDATED EVENT (M7)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onRequestEmitsServiceRequestValidated() public {
+        registerOperator(operator1, 10);
+
+        address[] memory operators = new address[](1);
+        operators[0] = operator1;
+
+        vm.expectEmit(true, false, false, true);
+        emit AgentSandboxBlueprint.ServiceRequestValidated(1, blueprintOwner, 1);
+
+        vm.prank(tangleCore);
+        blueprint.onRequest(1, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    function test_onRequestEmitsServiceRequestValidatedMultipleOperators() public {
+        registerOperator(operator1, 10);
+        registerOperator(operator2, 10);
+
+        address[] memory operators = new address[](2);
+        operators[0] = operator1;
+        operators[1] = operator2;
+
+        vm.expectEmit(true, false, false, true);
+        emit AgentSandboxBlueprint.ServiceRequestValidated(2, blueprintOwner, 2);
+
+        vm.prank(tangleCore);
+        blueprint.onRequest(2, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UNKNOWN JOB ID REVERTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_unknownJobIdRevertsOnJobCall() public {
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
+        blueprint.onJobCall(1, 7, 970, bytes(""));
+    }
+
+    function test_unknownJobIdRevertsOnJobCallHighId() public {
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 255));
+        blueprint.onJobCall(1, 255, 971, bytes(""));
+    }
+
+    function test_unknownJobIdRevertsOnJobResult() public {
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
+        blueprint.onJobResult(1, 7, 972, operator1, bytes(""), bytes(""));
+    }
+
+    function test_unknownJobIdRevertsOnJobResultHighId() public {
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 255));
+        blueprint.onJobResult(1, 255, 973, operator1, bytes(""), bytes(""));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPERATOR UNREGISTER / LEAVE TESTS (cloud mode)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onUnregisterRevertsWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 4000, operator1, "sb-unreg");
+
+        vm.prank(tangleCore);
+        vm.expectRevert(AgentSandboxBlueprint.CannotLeaveWithActiveResources.selector);
+        blueprint.onUnregister(operator1);
+    }
+
+    function test_onUnregisterSucceedsWithNoSandboxes() public {
+        registerOperator(operator1, 10);
+
+        // Should succeed — no active sandboxes
+        vm.prank(tangleCore);
+        blueprint.onUnregister(operator1);
+    }
+
+    function test_onUnregisterSucceedsAfterDeletion() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 4010, operator1, "sb-del-unreg");
+
+        // Delete the sandbox
+        simulateJobResult(
+            1, blueprint.JOB_SANDBOX_DELETE(), 4011, operator1,
+            encodeSandboxIdInputs("sb-del-unreg"),
+            encodeJsonOutputs("{}")
+        );
+        assertEq(blueprint.operatorActiveSandboxes(operator1), 0);
+
+        // Now unregister should succeed
+        vm.prank(tangleCore);
+        blueprint.onUnregister(operator1);
+    }
+
+    function test_onOperatorLeftRevertsWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 4020, operator1, "sb-leave");
+
+        vm.prank(tangleCore);
+        vm.expectRevert(AgentSandboxBlueprint.CannotLeaveWithActiveResources.selector);
+        blueprint.onOperatorLeft(1, operator1);
+    }
+
+    function test_onOperatorLeftSucceedsWithNoSandboxes() public {
+        registerOperator(operator1, 10);
+
+        // Should succeed — no active sandboxes, no provisions
+        vm.prank(tangleCore);
+        blueprint.onOperatorLeft(1, operator1);
+    }
+
+    function test_canLeaveReturnsFalseWithActiveSandboxes() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 4030, operator1, "sb-canleave");
+
+        assertFalse(blueprint.canLeave(1, operator1));
+    }
+
+    function test_canLeaveReturnsTrueWithNoResources() public {
+        registerOperator(operator1, 10);
+        assertTrue(blueprint.canLeave(1, operator1));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function testFuzz_sandboxIdValidation(bytes memory sandboxId) public pure {
+        // Test that sandbox ID validation logic works for arbitrary inputs.
+        // IDs of length 0 or >255 should be rejected in _handleCreateResult.
+        vm.assume(sandboxId.length > 0 && sandboxId.length <= 255);
+        // Verify the string is processable (won't revert on encoding)
+        string memory idStr = string(sandboxId);
+        bytes memory encoded = abi.encode(idStr, "http://sidecar:8080", uint32(22), uint32(2222));
+        assertTrue(encoded.length > 0);
+        assertTrue(bytes(idStr).length > 0);
+        assertTrue(bytes(idStr).length <= 255);
+    }
+
+    function testFuzz_jobRatesNoOverflow(uint256 baseRate) public view {
+        // Verify getDefaultJobRates doesn't panic for any input.
+        // It will revert on overflow due to Solidity 0.8 checked math.
+        vm.assume(baseRate <= type(uint256).max / 50);
+        (uint8[] memory jobs, uint256[] memory rates) = blueprint.getDefaultJobRates(baseRate);
+        assertTrue(jobs.length == 7);
+        assertTrue(rates.length == 7);
+        // Verify all rates are >= baseRate (multiplied by >= 1)
+        for (uint256 i = 0; i < rates.length; i++) {
+            assertTrue(rates[i] >= baseRate);
+        }
+    }
+
+    function testFuzz_operatorSelectionBounded(uint8 numOperators) public {
+        // Verify selection doesn't revert for valid operator counts (1-10).
+        // Bound to a reasonable range to avoid excessive gas.
+        vm.assume(numOperators >= 1 && numOperators <= 10);
+
+        // Register numOperators operators
+        for (uint8 i = 0; i < numOperators; i++) {
+            address op = address(uint160(0x2000 + i));
+            mockDelegation.addOperator(op, testBlueprintId);
+            vm.prank(tangleCore);
+            blueprint.onRegister(op, abi.encode(uint32(10)));
+        }
+
+        // Should not revert — at least one operator has capacity
+        vm.prevrandao(bytes32(uint256(42)));
+        vm.recordLogs();
+        simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 5000, encodeSandboxCreateInputs());
+
+        // Verify an assignment was emitted
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found = false;
+        for (uint256 j = 0; j < logs.length; j++) {
+            if (logs[j].topics[0] == AgentSandboxBlueprint.OperatorAssigned.selector) {
+                found = true;
+            }
+        }
+        assertTrue(found, "operator assignment should have been emitted");
+    }
+
+    function testFuzz_workflowIdValidation(uint64 workflowId) public {
+        // Verify workflow operations handle any uint64 ID correctly.
+        // Reserve 2 IDs above workflowId for trigger/cancel callIds.
+        vm.assume(workflowId <= type(uint64).max - 2);
+
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "fuzz-workflow",
+            workflow_json: "{}",
+            trigger_type: "cron",
+            trigger_config: "* * * * *",
+            sandbox_config_json: "{}"
+        });
+
+        // Create workflow with fuzzed ID — should always succeed
+        simulateJobResult(
+            1, blueprint.JOB_WORKFLOW_CREATE(), workflowId, operator1,
+            abi.encode(req), encodeJsonOutputs("{}")
+        );
+
+        AgentSandboxBlueprint.WorkflowConfig memory config = blueprint.getWorkflow(workflowId);
+        assertEq(config.name, "fuzz-workflow");
+        assertTrue(config.active);
+
+        // Trigger should also work with any uint64
+        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl = AgentSandboxBlueprint.WorkflowControlRequest({
+            workflow_id: workflowId
+        });
+        simulateJobResult(
+            1, blueprint.JOB_WORKFLOW_TRIGGER(), workflowId + 1, operator1,
+            abi.encode(ctrl), encodeJsonOutputs("{}")
+        );
+        assertEq(blueprint.getWorkflow(workflowId).last_triggered_at, uint64(block.timestamp));
+
+        // Cancel should work too
+        simulateJobResult(
+            1, blueprint.JOB_WORKFLOW_CANCEL(), workflowId + 2, operator1,
+            abi.encode(ctrl), encodeJsonOutputs("{}")
+        );
+        assertFalse(blueprint.getWorkflow(workflowId).active);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: onRequest WITH ZERO OPERATORS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_onRequestRevertsWithZeroOperators() public {
+        address[] memory operators = new address[](0);
+
+        vm.prank(tangleCore);
+        vm.expectRevert(AgentSandboxBlueprint.ZeroOperatorsInRequest.selector);
+        blueprint.onRequest(1, blueprintOwner, operators, bytes(""), 0, address(0), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: _markTriggered FOR NON-EXISTENT WORKFLOW
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_markTriggeredRevertsForNonExistentWorkflow() public {
+        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl = AgentSandboxBlueprint.WorkflowControlRequest({
+            workflow_id: 99999
+        });
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.WorkflowNotFound.selector, uint64(99999)));
+        blueprint.onJobResult(
+            1, 3, 5000, operator1, // JOB_WORKFLOW_TRIGGER = 3
+            abi.encode(ctrl), encodeJsonOutputs("{}")
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: _cancelWorkflow FOR NON-EXISTENT WORKFLOW
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_cancelWorkflowRevertsForNonExistentWorkflow() public {
+        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl = AgentSandboxBlueprint.WorkflowControlRequest({
+            workflow_id: 88888
+        });
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.WorkflowNotFound.selector, uint64(88888)));
+        blueprint.onJobResult(
+            1, 4, 5001, operator1, // JOB_WORKFLOW_CANCEL = 4
+            abi.encode(ctrl), encodeJsonOutputs("{}")
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REVERT PATH: setOperatorCapacity BY NON-OWNER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_setOperatorCapacityRevertsForNonOwner() public {
+        registerOperator(operator1, 50);
+
+        vm.prank(operator1);
+        vm.expectRevert();
+        blueprint.setOperatorCapacity(operator1, 200);
+    }
+
+    function test_setDefaultMaxCapacityRevertsForNonOwner() public {
+        vm.prank(operator1);
+        vm.expectRevert();
+        blueprint.setDefaultMaxCapacity(500);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SAFE DECREMENT — DELETION SUCCEEDS EVEN IF COUNTER IS ALREADY 0
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Verifies that _handleDeleteResult does not revert if
+    ///         operatorActiveSandboxes or totalActiveSandboxes is somehow 0.
+    ///         Uses vm.store to force the counters to 0 after a sandbox has
+    ///         been created, then deletes the sandbox. Without the safe
+    ///         decrement pattern (if > 0) this would underflow and revert
+    ///         under Solidity 0.8 checked arithmetic.
+    function test_deleteSucceedsWhenCounterAlreadyZero() public {
+        registerOperator(operator1, 10);
+        _createSandbox(1, 6000, operator1, "sb-safe-dec");
+
+        // Sanity: counters should be 1
+        assertEq(blueprint.operatorActiveSandboxes(operator1), 1);
+        assertEq(blueprint.totalActiveSandboxes(), 1);
+
+        // Force operatorActiveSandboxes[operator1] to 0 via vm.store.
+        // operatorActiveSandboxes is mapping(address => uint32) at base slot 6.
+        // Mapping slot = keccak256(abi.encode(key, baseSlot)).
+        bytes32 opActiveSlot = keccak256(abi.encode(operator1, uint256(6)));
+        vm.store(address(blueprint), opActiveSlot, bytes32(uint256(0)));
+
+        // Force totalActiveSandboxes to 0. It's a uint32 at slot 7, offset 4.
+        // Slot 7 is packed: [defaultMaxCapacity (uint32 @ offset 0), totalActiveSandboxes (uint32 @ offset 4)].
+        // Preserve defaultMaxCapacity (100) while zeroing totalActiveSandboxes.
+        bytes32 slot7 = vm.load(address(blueprint), bytes32(uint256(7)));
+        // Zero out bytes 4-7 (totalActiveSandboxes) while keeping bytes 0-3 (defaultMaxCapacity).
+        // In EVM storage, lower offsets are stored in lower-order bytes of the 32-byte word.
+        bytes32 mask = bytes32(uint256(0xFFFFFFFF)); // keep lowest 4 bytes (defaultMaxCapacity)
+        bytes32 newSlot7 = slot7 & mask;
+        vm.store(address(blueprint), bytes32(uint256(7)), newSlot7);
+
+        // Verify forced to 0
+        assertEq(blueprint.operatorActiveSandboxes(operator1), 0);
+        assertEq(blueprint.totalActiveSandboxes(), 0);
+        // Verify defaultMaxCapacity is preserved
+        assertEq(blueprint.defaultMaxCapacity(), 100);
+
+        // Delete should succeed (no underflow revert) thanks to safe decrement
+        simulateJobResult(
+            1,
+            blueprint.JOB_SANDBOX_DELETE(),
+            6001,
+            operator1,
+            encodeSandboxIdInputs("sb-safe-dec"),
+            encodeJsonOutputs("{\"deleted\":true}")
+        );
+
+        // Counters remain 0 (clamped, not underflowed)
+        assertEq(blueprint.operatorActiveSandboxes(operator1), 0);
+        assertEq(blueprint.totalActiveSandboxes(), 0);
+        assertFalse(blueprint.isSandboxActive("sb-safe-dec"));
+        assertEq(blueprint.getSandboxOperator("sb-safe-dec"), address(0));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

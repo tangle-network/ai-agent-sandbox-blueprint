@@ -94,10 +94,7 @@ impl TeeDeployParams {
     ) -> Self {
         let mut env_vars = vec![
             ("SIDECAR_PORT".to_string(), container_port.to_string()),
-            (
-                "SIDECAR_AUTH_TOKEN".to_string(),
-                token.to_string(),
-            ),
+            ("SIDECAR_AUTH_TOKEN".to_string(), token.to_string()),
         ];
 
         // Parse env_json into env var pairs.
@@ -223,11 +220,17 @@ pub fn init_tee_backend(backend: std::sync::Arc<dyn TeeBackend>) {
     }
 }
 
-/// Get the global TEE backend. Panics if not yet initialized.
-pub fn tee_backend() -> &'static std::sync::Arc<dyn TeeBackend> {
-    TEE_BACKEND
-        .get()
-        .expect("TEE backend not initialized — call init_tee_backend() first")
+/// Get the global TEE backend.
+///
+/// Returns an error if the backend has not been initialized via
+/// [`init_tee_backend`]. Prefer [`try_tee_backend`] when absence is
+/// expected (e.g. non-TEE operators).
+pub fn tee_backend() -> crate::error::Result<&'static std::sync::Arc<dyn TeeBackend>> {
+    TEE_BACKEND.get().ok_or_else(|| {
+        crate::error::SandboxError::Validation(
+            "TEE backend not initialized — call init_tee_backend() first".into(),
+        )
+    })
 }
 
 /// Try to get the global TEE backend, returning `None` if not initialized.
@@ -266,11 +269,9 @@ pub(crate) async fn fetch_sidecar_attestation(
 ) -> crate::error::Result<AttestationReport> {
     let url = crate::http::build_url(sidecar_url, "/tee/attestation")?;
     let headers = crate::http::auth_headers(token)?;
-    let (_status, body) =
-        crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
-    serde_json::from_str(&body).map_err(|e| {
-        crate::error::SandboxError::Http(format!("Invalid attestation response: {e}"))
-    })
+    let (_status, body) = crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
+    serde_json::from_str(&body)
+        .map_err(|e| crate::error::SandboxError::Http(format!("Invalid attestation response: {e}")))
 }
 
 /// Poll a sidecar's `/health` endpoint until it responds successfully.
@@ -308,8 +309,7 @@ pub(crate) async fn sidecar_derive_public_key(
     let (sidecar_url, token) = sidecar_info_for_deployment(deployment_id)?;
     let url = crate::http::build_url(&sidecar_url, "/tee/public-key")?;
     let headers = crate::http::auth_headers(&token)?;
-    let (_status, body) =
-        crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
+    let (_status, body) = crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
     serde_json::from_str(&body).map_err(|e| {
         crate::error::SandboxError::Http(format!("Invalid TeePublicKey response: {e}"))
     })
@@ -322,13 +322,10 @@ pub(crate) async fn sidecar_inject_sealed_secrets(
 ) -> crate::error::Result<sealed_secrets::SealedSecretResult> {
     let (sidecar_url, token) = sidecar_info_for_deployment(deployment_id)?;
     let payload = serde_json::to_value(sealed).map_err(|e| {
-        crate::error::SandboxError::Validation(format!(
-            "Failed to serialize sealed secret: {e}"
-        ))
+        crate::error::SandboxError::Validation(format!("Failed to serialize sealed secret: {e}"))
     })?;
-    let resp =
-        crate::http::sidecar_post_json(&sidecar_url, "/tee/sealed-secrets", &token, payload)
-            .await?;
+    let resp = crate::http::sidecar_post_json(&sidecar_url, "/tee/sealed-secrets", &token, payload)
+        .await?;
     serde_json::from_value(resp).map_err(|e| {
         crate::error::SandboxError::Http(format!("Invalid SealedSecretResult response: {e}"))
     })
@@ -393,10 +390,7 @@ pub mod mock {
 
     #[async_trait::async_trait]
     impl TeeBackend for MockTeeBackend {
-        async fn deploy(
-            &self,
-            params: &TeeDeployParams,
-        ) -> crate::error::Result<TeeDeployment> {
+        async fn deploy(&self, params: &TeeDeployParams) -> crate::error::Result<TeeDeployment> {
             self.deploy_count.fetch_add(1, Ordering::Relaxed);
             if self.should_fail.load(Ordering::Relaxed) {
                 return Err(crate::error::SandboxError::CloudProvider(
@@ -542,9 +536,21 @@ mod tests {
 
         // Check env vars: SIDECAR_PORT + SIDECAR_AUTH_TOKEN + 3 from env_json
         assert_eq!(deploy.env_vars.len(), 5);
-        assert!(deploy.env_vars.contains(&("SIDECAR_PORT".into(), "8080".into())));
-        assert!(deploy.env_vars.contains(&("SIDECAR_AUTH_TOKEN".into(), "tok-abc".into())));
-        assert!(deploy.env_vars.contains(&("API_KEY".into(), "secret".into())));
+        assert!(
+            deploy
+                .env_vars
+                .contains(&("SIDECAR_PORT".into(), "8080".into()))
+        );
+        assert!(
+            deploy
+                .env_vars
+                .contains(&("SIDECAR_AUTH_TOKEN".into(), "tok-abc".into()))
+        );
+        assert!(
+            deploy
+                .env_vars
+                .contains(&("API_KEY".into(), "secret".into()))
+        );
         assert!(deploy.env_vars.contains(&("COUNT".into(), "42".into())));
         assert!(deploy.env_vars.contains(&("VERBOSE".into(), "true".into())));
     }
@@ -653,12 +659,11 @@ mod tests {
     #[tokio::test]
     async fn mock_backend_sealed_secrets_unsupported() {
         let mock = mock::MockTeeBackend::new(TeeType::Tdx);
-        mock.support_sealed_secrets
-            .store(false, Ordering::Relaxed);
+        mock.support_sealed_secrets.store(false, Ordering::Relaxed);
 
         assert!(mock.derive_public_key("dep-1").await.is_err());
-        assert!(mock
-            .inject_sealed_secrets(
+        assert!(
+            mock.inject_sealed_secrets(
                 "dep-1",
                 &sealed_secrets::SealedSecret {
                     algorithm: "test".into(),
@@ -667,6 +672,7 @@ mod tests {
                 }
             )
             .await
-            .is_err());
+            .is_err()
+        );
     }
 }

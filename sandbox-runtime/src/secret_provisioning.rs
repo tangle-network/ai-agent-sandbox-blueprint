@@ -13,7 +13,7 @@
 use serde_json::{Map, Value};
 
 use crate::error::{Result, SandboxError};
-use crate::runtime::{get_sandbox_by_id, recreate_sidecar_with_env, SandboxRecord};
+use crate::runtime::{SandboxRecord, get_sandbox_by_id, recreate_sidecar_with_env};
 
 /// Inject user secrets into a sandbox by recreating it with merged environment.
 ///
@@ -47,12 +47,12 @@ pub async fn wipe_secrets(
 }
 
 /// Validate that the caller (identified by session address) owns the sandbox.
-pub fn validate_secret_access(
-    sandbox_id: &str,
-    caller_address: &str,
-) -> Result<SandboxRecord> {
+pub fn validate_secret_access(sandbox_id: &str, caller_address: &str) -> Result<SandboxRecord> {
     let record = get_sandbox_by_id(sandbox_id)?;
-    if record.owner.is_empty() || record.owner.eq_ignore_ascii_case(caller_address) {
+    if record.owner.is_empty() {
+        return Err(SandboxError::Auth("Sandbox has no owner configured".into()));
+    }
+    if record.owner.eq_ignore_ascii_case(caller_address) {
         Ok(record)
     } else {
         Err(SandboxError::Auth(format!(

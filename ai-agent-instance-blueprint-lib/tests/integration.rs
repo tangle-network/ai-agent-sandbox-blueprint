@@ -20,6 +20,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 static INIT: Once = Once::new();
 static CTR: AtomicU64 = AtomicU64::new(0);
 
+/// Global lock for tests that access the shared INSTANCE_STORE singleton.
+/// Must be used by ALL test modules that call set/get/clear_instance_sandbox().
+static INSTANCE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn init() {
     INIT.call_once(|| {
         let dir = std::env::temp_dir().join(format!("instance-bp-test-{}", std::process::id()));
@@ -698,16 +702,11 @@ mod helper_tests {
 
 mod instance_state_tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serialize instance-state tests — they all share a single `INSTANCE_STORE`
-    /// singleton keyed by `"instance"`, so parallel execution causes races.
-    static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn instance_store_initializes() {
         init();
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let store = instance_store();
         assert!(store.is_ok());
     }
@@ -715,8 +714,8 @@ mod instance_state_tests {
     #[test]
     fn get_instance_sandbox_returns_none_when_empty() {
         init();
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = clear_instance_sandbox();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before assertion");
         let result = get_instance_sandbox().unwrap();
         assert!(result.is_none());
     }
@@ -724,8 +723,8 @@ mod instance_state_tests {
     #[test]
     fn require_instance_sandbox_errors_when_empty() {
         init();
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = clear_instance_sandbox();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before assertion");
         let result = require_instance_sandbox();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not provisioned"));
@@ -734,7 +733,7 @@ mod instance_state_tests {
     #[test]
     fn set_and_get_instance_sandbox() {
         init();
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let record = SandboxRecord {
             id: "test-instance".to_string(),
             container_id: "ctr-test".to_string(),
@@ -782,7 +781,7 @@ mod instance_state_tests {
     #[test]
     fn clear_instance_sandbox_removes_record() {
         init();
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let record = SandboxRecord {
             id: "to-clear".to_string(),
             container_id: "ctr-clear".to_string(),
@@ -1218,7 +1217,10 @@ mod session_tests {
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
         let body2: Value = serde_json::from_slice(&requests[1].body).unwrap();
-        assert_eq!(body2["sessionId"], "s-reused", "second request body: {body2}");
+        assert_eq!(
+            body2["sessionId"], "s-reused",
+            "second request body: {body2}"
+        );
         rm(&id);
     }
 
@@ -1252,8 +1254,12 @@ mod session_tests {
             timeout_ms: 0,
         };
 
-        let _a = run_instance_task(&server.uri(), "tok", &id, &req_a).await.unwrap();
-        let _b = run_instance_task(&server.uri(), "tok", &id, &req_b).await.unwrap();
+        let _a = run_instance_task(&server.uri(), "tok", &id, &req_a)
+            .await
+            .unwrap();
+        let _b = run_instance_task(&server.uri(), "tok", &id, &req_b)
+            .await
+            .unwrap();
 
         let requests = server.received_requests().await.unwrap();
         let body_a: Value = serde_json::from_slice(&requests[0].body).unwrap();
@@ -1285,7 +1291,9 @@ mod session_tests {
 
         // Prompt: no session_id in response struct (compile-time guarantee).
         let prompt_resp = run_instance_prompt(
-            &server.uri(), "tok", &id,
+            &server.uri(),
+            "tok",
+            &id,
             &InstancePromptRequest {
                 message: "Hi".to_string(),
                 session_id: String::new(),
@@ -1299,7 +1307,9 @@ mod session_tests {
 
         // Task: has session_id in response.
         let task_resp = run_instance_task(
-            &server.uri(), "tok", &id,
+            &server.uri(),
+            "tok",
+            &id,
             &InstanceTaskRequest {
                 prompt: "Do it".to_string(),
                 session_id: String::new(),
@@ -1339,15 +1349,8 @@ mod snapshot_tests {
             .await;
 
         let id = insert_sandbox(&server.uri(), "tok");
-        let result = run_instance_snapshot(
-            &server.uri(),
-            "tok",
-            &id,
-            "s3://bucket/snap",
-            true,
-            true,
-        )
-        .await;
+        let result =
+            run_instance_snapshot(&server.uri(), "tok", &id, "s3://bucket/snap", true, true).await;
 
         assert!(result.is_ok(), "snapshot should succeed: {result:?}");
         rm(&id);
@@ -1355,15 +1358,7 @@ mod snapshot_tests {
 
     #[tokio::test]
     async fn snapshot_empty_destination_rejected() {
-        let result = run_instance_snapshot(
-            "http://unused",
-            "tok",
-            "sb-1",
-            "",
-            true,
-            false,
-        )
-        .await;
+        let result = run_instance_snapshot("http://unused", "tok", "sb-1", "", true, false).await;
 
         assert!(result.is_err());
         assert!(
@@ -1414,16 +1409,12 @@ mod snapshot_tests {
 
 mod provision_guard_tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serialize with instance_state_tests — they share the same singleton store.
-    static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn already_provisioned_guard() {
         init();
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = clear_instance_sandbox();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before test");
 
         // Set a sandbox record.
         let record = SandboxRecord {
@@ -1473,8 +1464,8 @@ mod provision_guard_tests {
     #[test]
     fn deprovision_clears_instance_store() {
         init();
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = clear_instance_sandbox();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear_instance_sandbox must succeed before test");
 
         let record = SandboxRecord {
             id: "to-deprovision".to_string(),

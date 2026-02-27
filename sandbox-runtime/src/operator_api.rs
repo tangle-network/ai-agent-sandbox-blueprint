@@ -6,6 +6,8 @@
 //! - Session auth (challenge/response + PASETO tokens)
 //! - Sandbox operations (exec, prompt, task, stop, resume, snapshot, SSH)
 
+use axum::extract::DefaultBodyLimit;
+use axum::middleware;
 use axum::{
     Json, Router,
     extract::Path,
@@ -15,10 +17,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use axum::middleware;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use crate::api_types::*;
+use crate::circuit_breaker;
 use crate::http::sidecar_post_json;
 use crate::metrics;
 use crate::provision_progress;
@@ -26,6 +31,87 @@ use crate::rate_limit;
 use crate::runtime::{self, SandboxRecord, SandboxState, sandboxes};
 use crate::secret_provisioning;
 use crate::session_auth::{self, SessionAuth};
+
+// ---------------------------------------------------------------------------
+// Per-operation sidecar call timeouts
+// ---------------------------------------------------------------------------
+
+/// Timeout for exec (shell command) calls to the sidecar.
+const SIDECAR_EXEC_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for prompt/task (LLM agent) calls to the sidecar.
+/// These are longer because LLM inference can be slow.
+const SIDECAR_AGENT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Timeout for other sidecar calls (snapshot, SSH provisioning, etc.).
+const SIDECAR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+
+// ---------------------------------------------------------------------------
+// Request ID middleware
+// ---------------------------------------------------------------------------
+
+/// Monotonic counter for generating unique request IDs.
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Unique identifier attached to every request for correlation in logs and
+/// response headers.
+#[derive(Clone, Debug)]
+pub struct RequestId(pub String);
+
+tokio::task_local! {
+    /// The request ID for the current task, set by [`request_id_middleware`].
+    ///
+    /// Downstream helpers (e.g. [`crate::http::sidecar_post_json`]) read this
+    /// via `try_with` to propagate the `x-request-id` header to sidecar HTTP
+    /// calls, enabling end-to-end trace correlation between operator and
+    /// sidecar logs.
+    pub static CURRENT_REQUEST_ID: String;
+}
+
+/// Middleware that assigns a unique `x-request-id` to every request.
+///
+/// The ID is inserted into request extensions (so handlers can access it via
+/// `Extension<RequestId>`) and echoed back in the `x-request-id` response
+/// header for client-side correlation.  It is also stored in the
+/// [`CURRENT_REQUEST_ID`] task-local so that downstream sidecar HTTP calls
+/// automatically propagate the same ID.
+async fn request_id_middleware(
+    mut req: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    let id = format!(
+        "req-{:016x}",
+        REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    tracing::debug!(request_id = %id, method = %req.method(), uri = %req.uri(), "incoming request");
+    req.extensions_mut().insert(RequestId(id.clone()));
+    let mut res = CURRENT_REQUEST_ID.scope(id.clone(), next.run(req)).await;
+    res.headers_mut()
+        .insert("x-request-id", id.parse().unwrap());
+    res
+}
+
+// ---------------------------------------------------------------------------
+// Security headers middleware
+// ---------------------------------------------------------------------------
+
+/// Middleware that adds security headers to every response.
+///
+/// Applied headers:
+/// - `X-Content-Type-Options: nosniff` — prevent MIME-type sniffing
+/// - `X-Frame-Options: DENY` — disallow framing (clickjacking protection)
+/// - `Cache-Control: no-store` — prevent caching of API responses
+async fn security_headers_middleware(
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    headers.insert("x-frame-options", "DENY".parse().unwrap());
+    headers.insert("cache-control", "no-store".parse().unwrap());
+    res
+}
 
 // ---------------------------------------------------------------------------
 // Error response
@@ -36,7 +122,10 @@ pub struct ApiError {
     error: String,
 }
 
-pub(crate) fn api_error(status: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
+pub(crate) fn api_error(
+    status: StatusCode,
+    msg: impl Into<String>,
+) -> (StatusCode, Json<ApiError>) {
     (status, Json(ApiError { error: msg.into() }))
 }
 
@@ -72,9 +161,7 @@ impl From<&SandboxRecord> for SandboxSummary {
     }
 }
 
-async fn list_sandboxes(
-    SessionAuth(address): SessionAuth,
-) -> impl IntoResponse {
+async fn list_sandboxes(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     match sandboxes().and_then(|s| s.values()) {
         Ok(records) => {
             let summaries: Vec<SandboxSummary> = records
@@ -82,7 +169,11 @@ async fn list_sandboxes(
                 .filter(|r| r.owner.is_empty() || r.owner.eq_ignore_ascii_case(&address))
                 .map(SandboxSummary::from)
                 .collect();
-            (StatusCode::OK, Json(serde_json::json!({ "sandboxes": summaries }))).into_response()
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "sandboxes": summaries })),
+            )
+                .into_response()
         }
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -92,9 +183,7 @@ async fn list_sandboxes(
 // Provision progress endpoints
 // ---------------------------------------------------------------------------
 
-async fn get_provision(
-    Path(call_id): Path<u64>,
-) -> impl IntoResponse {
+async fn get_provision(Path(call_id): Path<u64>) -> impl IntoResponse {
     match provision_progress::get_provision(call_id) {
         Ok(Some(status)) => match serde_json::to_value(status) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
@@ -107,7 +196,11 @@ async fn get_provision(
 
 async fn list_provisions() -> impl IntoResponse {
     match provision_progress::list_all_provisions() {
-        Ok(provisions) => (StatusCode::OK, Json(serde_json::json!({ "provisions": provisions }))).into_response(),
+        Ok(provisions) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "provisions": provisions })),
+        )
+            .into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -123,7 +216,12 @@ struct SessionRequest {
 }
 
 async fn create_challenge() -> impl IntoResponse {
-    let challenge = session_auth::create_challenge();
+    let challenge = match session_auth::create_challenge() {
+        Ok(c) => c,
+        Err(e) => {
+            return api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response();
+        }
+    };
     match serde_json::to_value(challenge) {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -136,7 +234,34 @@ async fn create_session(Json(req): Json<SessionRequest>) -> impl IntoResponse {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
             Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
+        Err(crate::error::SandboxError::Unavailable(msg)) => {
+            api_error(StatusCode::SERVICE_UNAVAILABLE, msg).into_response()
+        }
         Err(e) => api_error(StatusCode::UNAUTHORIZED, e.to_string()).into_response(),
+    }
+}
+
+/// Revoke the current session token.
+async fn revoke_session(headers: HeaderMap) -> impl IntoResponse {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(session_auth::extract_bearer_token);
+
+    match token {
+        Some(t) => {
+            let revoked = session_auth::revoke_session(t);
+            if revoked {
+                (StatusCode::OK, Json(json!({"revoked": true}))).into_response()
+            } else {
+                (
+                    StatusCode::OK,
+                    Json(json!({"revoked": false, "message": "Token not found in session store"})),
+                )
+                    .into_response()
+            }
+        }
+        None => api_error(StatusCode::BAD_REQUEST, "Missing Authorization header").into_response(),
     }
 }
 
@@ -160,6 +285,9 @@ async fn inject_secrets(
     Path(sandbox_id): Path<String>,
     Json(body): Json<InjectSecretsRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = crate::api_types::validate_secrets_map(&body.env_json) {
+        return api_error(StatusCode::BAD_REQUEST, e).into_response();
+    }
     if let Err(e) = secret_provisioning::validate_secret_access(&sandbox_id, &address) {
         return api_error(StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
@@ -203,14 +331,48 @@ async fn wipe_secrets(
 // ---------------------------------------------------------------------------
 
 async fn health() -> impl IntoResponse {
+    // Check Docker daemon connectivity (5s timeout to prevent hung health checks).
+    let docker_ok = match runtime::docker_builder().await {
+        Ok(builder) => {
+            tokio::time::timeout(std::time::Duration::from_secs(5), builder.client().ping())
+                .await
+                .is_ok_and(|r| r.is_ok())
+        }
+        Err(_) => false,
+    };
+
+    // Check persistent store readability.
+    let store_ok = runtime::sandboxes().and_then(|s| s.values()).is_ok();
+
+    let (status, code) = match (docker_ok, store_ok) {
+        (true, true) => ("ok", StatusCode::OK),
+        (false, false) => ("unhealthy", StatusCode::SERVICE_UNAVAILABLE),
+        _ => ("degraded", StatusCode::OK),
+    };
+
+    let check = |ok: bool| {
+        if ok {
+            json!({ "status": "ok" })
+        } else {
+            json!({ "status": "error" })
+        }
+    };
+
     (
-        StatusCode::OK,
-        Json(serde_json::json!({ "status": "ok" })),
+        code,
+        Json(json!({
+            "status": status,
+            "checks": {
+                "docker": check(docker_ok),
+                "store": check(store_ok),
+            }
+        })),
     )
 }
 
 async fn prometheus_metrics() -> impl IntoResponse {
-    let body = metrics::metrics().render_prometheus();
+    let mut body = metrics::metrics().render_prometheus();
+    body.push_str(&metrics::http_metrics().render_prometheus());
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
@@ -223,16 +385,18 @@ async fn prometheus_metrics() -> impl IntoResponse {
 // ---------------------------------------------------------------------------
 
 /// Look up a sandbox by ID and validate caller ownership.
-fn resolve_sandbox(sandbox_id: &str, caller: &str) -> Result<SandboxRecord, (StatusCode, Json<ApiError>)> {
-    runtime::require_sandbox_owner(sandbox_id, caller)
-        .map_err(|e| {
-            let status = match &e {
-                crate::SandboxError::NotFound(_) => StatusCode::NOT_FOUND,
-                crate::SandboxError::Auth(_) => StatusCode::FORBIDDEN,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            api_error(status, e.to_string())
-        })
+fn resolve_sandbox(
+    sandbox_id: &str,
+    caller: &str,
+) -> Result<SandboxRecord, (StatusCode, Json<ApiError>)> {
+    runtime::require_sandbox_owner(sandbox_id, caller).map_err(|e| {
+        let status = match &e {
+            crate::SandboxError::NotFound(_) => StatusCode::NOT_FOUND,
+            crate::SandboxError::Auth(_) => StatusCode::FORBIDDEN,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        api_error(status, e.to_string())
+    })
 }
 
 /// Look up the singleton instance sandbox and validate ownership.
@@ -241,8 +405,17 @@ fn resolve_instance(caller: &str) -> Result<SandboxRecord, (StatusCode, Json<Api
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Instance not provisioned"))?;
 
-    if !record.owner.is_empty() && !record.owner.eq_ignore_ascii_case(caller) {
-        return Err(api_error(StatusCode::FORBIDDEN, "Not authorized for this instance"));
+    if record.owner.is_empty() {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "Instance has no owner configured",
+        ));
+    }
+    if !record.owner.eq_ignore_ascii_case(caller) {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "Not authorized for this instance",
+        ));
     }
     Ok(record)
 }
@@ -316,14 +489,18 @@ fn build_agent_payload(
             let mut metadata = Map::new();
             metadata.insert("maxTurns".into(), json!(turns));
             if !context_json.trim().is_empty() {
-                if let Ok(Some(Value::Object(ctx))) = crate::util::parse_json_object(context_json, "context_json") {
+                if let Ok(Some(Value::Object(ctx))) =
+                    crate::util::parse_json_object(context_json, "context_json")
+                {
                     metadata.extend(ctx);
                 }
             }
             payload.insert("metadata".into(), Value::Object(metadata));
         }
     } else if !context_json.trim().is_empty() {
-        if let Ok(Some(Value::Object(ctx))) = crate::util::parse_json_object(context_json, "context_json") {
+        if let Ok(Some(Value::Object(ctx))) =
+            crate::util::parse_json_object(context_json, "context_json")
+        {
             payload.insert("metadata".into(), Value::Object(ctx));
         }
     }
@@ -334,41 +511,160 @@ fn build_agent_payload(
     Value::Object(payload)
 }
 
+/// Parsed agent response from the sidecar (used by both prompt and task).
+struct AgentResponse {
+    success: bool,
+    response: String,
+    error: String,
+    trace_id: String,
+    session_id: String,
+    /// Duration reported by the sidecar (milliseconds), if available.
+    duration_ms: u64,
+    /// Input tokens consumed, if reported by the sidecar.
+    input_tokens: u32,
+    /// Output tokens produced, if reported by the sidecar.
+    output_tokens: u32,
+}
+
 /// Parse agent response from sidecar (used by both prompt and task).
-fn parse_agent_response(parsed: &Value) -> (bool, String, String, String, String) {
-    let success = parsed.get("success").and_then(Value::as_bool).unwrap_or(false);
+///
+/// Extracts usage metrics (`duration_ms`, `input_tokens`, `output_tokens`)
+/// from the sidecar JSON when present, falling back to zero.
+fn parse_agent_response(parsed: &Value) -> AgentResponse {
+    let success = parsed
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let response = parsed
         .get("response")
         .and_then(Value::as_str)
-        .or_else(|| parsed.get("data").and_then(|d| d.get("finalText")).and_then(Value::as_str))
+        .or_else(|| {
+            parsed
+                .get("data")
+                .and_then(|d| d.get("finalText"))
+                .and_then(Value::as_str)
+        })
         .unwrap_or_default()
         .to_string();
     let error = parsed
         .get("error")
-        .and_then(|e| e.get("message").and_then(Value::as_str).or_else(|| e.as_str()))
+        .and_then(|e| {
+            e.get("message")
+                .and_then(Value::as_str)
+                .or_else(|| e.as_str())
+        })
         .unwrap_or_default()
         .to_string();
-    let trace_id = parsed.get("traceId").and_then(Value::as_str).unwrap_or_default().to_string();
-    let session_id = parsed
-        .get("sessionId")
-        .or_else(|| parsed.get("data").and_then(|d| d.get("metadata")).and_then(|m| m.get("sessionId")))
+    let trace_id = parsed
+        .get("traceId")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    (success, response, error, trace_id, session_id)
+    let session_id = parsed
+        .get("sessionId")
+        .or_else(|| {
+            parsed
+                .get("data")
+                .and_then(|d| d.get("metadata"))
+                .and_then(|m| m.get("sessionId"))
+        })
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    // Extract usage metrics from the sidecar response.
+    // The sidecar may report these at the top level or nested under "usage"/"data.usage".
+    let usage = parsed
+        .get("usage")
+        .or_else(|| parsed.get("data").and_then(|d| d.get("usage")));
+
+    let duration_ms = parsed
+        .get("duration_ms")
+        .or_else(|| parsed.get("durationMs"))
+        .or_else(|| usage.and_then(|u| u.get("duration_ms")))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    let input_tokens = usage
+        .and_then(|u| {
+            u.get("input_tokens")
+                .or_else(|| u.get("inputTokens"))
+                .or_else(|| u.get("prompt_tokens"))
+        })
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    let output_tokens = usage
+        .and_then(|u| {
+            u.get("output_tokens")
+                .or_else(|| u.get("outputTokens"))
+                .or_else(|| u.get("completion_tokens"))
+        })
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    AgentResponse {
+        success,
+        response,
+        error,
+        trace_id,
+        session_id,
+        duration_ms,
+        input_tokens,
+        output_tokens,
+    }
 }
 
 /// Execute a sidecar operation and return the result, touching the sandbox activity.
-async fn exec_on_sidecar(record: &SandboxRecord, req: &ExecApiRequest) -> Result<ExecApiResponse, (StatusCode, Json<ApiError>)> {
+///
+/// Applies [`SIDECAR_EXEC_TIMEOUT`] to prevent runaway commands from holding
+/// the connection indefinitely.
+async fn exec_on_sidecar(
+    record: &SandboxRecord,
+    req: &ExecApiRequest,
+) -> Result<ExecApiResponse, (StatusCode, Json<ApiError>)> {
+    circuit_breaker::check_health(&record.id)
+        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let payload = build_exec_payload(&req.command, &req.cwd, &req.env_json, req.timeout_ms);
-    let parsed = sidecar_post_json(&record.sidecar_url, "/terminals/commands", &record.token, payload)
-        .await
-        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let result = tokio::time::timeout(
+        SIDECAR_EXEC_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/terminals/commands",
+            &record.token,
+            payload,
+        ),
+    )
+    .await;
+    match &result {
+        Err(_) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "Sidecar exec timed out after {}s",
+                    SIDECAR_EXEC_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        Ok(Err(e)) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
+        }
+        Ok(Ok(_)) => {
+            circuit_breaker::mark_healthy(&record.id);
+        }
+    }
+    let parsed = result.unwrap().unwrap();
     runtime::touch_sandbox(&record.id);
     Ok(parse_exec_response(&parsed))
 }
 
 /// Run a prompt/task on the sidecar agent.
+///
+/// Applies [`SIDECAR_AGENT_TIMEOUT`] as the outer deadline for the HTTP call.
+/// The sidecar may also enforce its own internal `timeout_ms` from the payload,
+/// but this ensures the operator never waits longer than the configured limit.
 async fn agent_on_sidecar(
     record: &SandboxRecord,
     message: &str,
@@ -377,11 +673,42 @@ async fn agent_on_sidecar(
     context_json: &str,
     timeout_ms: u64,
     max_turns: Option<u64>,
-) -> Result<(bool, String, String, String, String), (StatusCode, Json<ApiError>)> {
-    let payload = build_agent_payload(message, session_id, model, context_json, timeout_ms, max_turns);
-    let parsed = sidecar_post_json(&record.sidecar_url, "/agents/run", &record.token, payload)
-        .await
-        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
+) -> Result<AgentResponse, (StatusCode, Json<ApiError>)> {
+    circuit_breaker::check_health(&record.id)
+        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    let payload = build_agent_payload(
+        message,
+        session_id,
+        model,
+        context_json,
+        timeout_ms,
+        max_turns,
+    );
+    let result = tokio::time::timeout(
+        SIDECAR_AGENT_TIMEOUT,
+        sidecar_post_json(&record.sidecar_url, "/agents/run", &record.token, payload),
+    )
+    .await;
+    match &result {
+        Err(_) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "Sidecar agent call timed out after {}s",
+                    SIDECAR_AGENT_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        Ok(Err(e)) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
+        }
+        Ok(Ok(_)) => {
+            circuit_breaker::mark_healthy(&record.id);
+        }
+    }
+    let parsed = result.unwrap().unwrap();
     runtime::touch_sandbox(&record.id);
     Ok(parse_agent_response(&parsed))
 }
@@ -393,6 +720,8 @@ async fn sandbox_exec_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<ExecApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let resp = exec_on_sidecar(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -402,6 +731,8 @@ async fn instance_exec_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<ExecApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let resp = exec_on_sidecar(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -414,26 +745,64 @@ async fn sandbox_prompt_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<PromptApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    let (success, response, error, trace_id, _) = agent_on_sidecar(
-        &record, &req.message, &req.session_id, &req.model, &req.context_json, req.timeout_ms, None,
-    ).await?;
-    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(PromptApiResponse {
-        success, response, error, trace_id, duration_ms: 0, input_tokens: 0, output_tokens: 0,
-    })))
+    let ar = agent_on_sidecar(
+        &record,
+        &req.message,
+        &req.session_id,
+        &req.model,
+        &req.context_json,
+        req.timeout_ms,
+        None,
+    )
+    .await?;
+    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(PromptApiResponse {
+            success: ar.success,
+            response: ar.response,
+            error: ar.error,
+            trace_id: ar.trace_id,
+            duration_ms: ar.duration_ms,
+            input_tokens: ar.input_tokens,
+            output_tokens: ar.output_tokens,
+        }),
+    ))
 }
 
 async fn instance_prompt_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<PromptApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
-    let (success, response, error, trace_id, _) = agent_on_sidecar(
-        &record, &req.message, &req.session_id, &req.model, &req.context_json, req.timeout_ms, None,
-    ).await?;
-    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(PromptApiResponse {
-        success, response, error, trace_id, duration_ms: 0, input_tokens: 0, output_tokens: 0,
-    })))
+    let ar = agent_on_sidecar(
+        &record,
+        &req.message,
+        &req.session_id,
+        &req.model,
+        &req.context_json,
+        req.timeout_ms,
+        None,
+    )
+    .await?;
+    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(PromptApiResponse {
+            success: ar.success,
+            response: ar.response,
+            error: ar.error,
+            trace_id: ar.trace_id,
+            duration_ms: ar.duration_ms,
+            input_tokens: ar.input_tokens,
+            output_tokens: ar.output_tokens,
+        }),
+    ))
 }
 
 // ── Task ─────────────────────────────────────────────────────────────────
@@ -443,26 +812,66 @@ async fn sandbox_task_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<TaskApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    let (success, result, error, trace_id, session_id) = agent_on_sidecar(
-        &record, &req.prompt, &req.session_id, &req.model, &req.context_json, req.timeout_ms, Some(req.max_turns),
-    ).await?;
-    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(TaskApiResponse {
-        success, result, error, trace_id, session_id, duration_ms: 0, input_tokens: 0, output_tokens: 0,
-    })))
+    let ar = agent_on_sidecar(
+        &record,
+        &req.prompt,
+        &req.session_id,
+        &req.model,
+        &req.context_json,
+        req.timeout_ms,
+        Some(req.max_turns),
+    )
+    .await?;
+    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(TaskApiResponse {
+            success: ar.success,
+            result: ar.response,
+            error: ar.error,
+            trace_id: ar.trace_id,
+            session_id: ar.session_id,
+            duration_ms: ar.duration_ms,
+            input_tokens: ar.input_tokens,
+            output_tokens: ar.output_tokens,
+        }),
+    ))
 }
 
 async fn instance_task_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<TaskApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
-    let (success, result, error, trace_id, session_id) = agent_on_sidecar(
-        &record, &req.prompt, &req.session_id, &req.model, &req.context_json, req.timeout_ms, Some(req.max_turns),
-    ).await?;
-    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(TaskApiResponse {
-        success, result, error, trace_id, session_id, duration_ms: 0, input_tokens: 0, output_tokens: 0,
-    })))
+    let ar = agent_on_sidecar(
+        &record,
+        &req.prompt,
+        &req.session_id,
+        &req.model,
+        &req.context_json,
+        req.timeout_ms,
+        Some(req.max_turns),
+    )
+    .await?;
+    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(TaskApiResponse {
+            success: ar.success,
+            result: ar.response,
+            error: ar.error,
+            trace_id: ar.trace_id,
+            session_id: ar.session_id,
+            duration_ms: ar.duration_ms,
+            input_tokens: ar.input_tokens,
+            output_tokens: ar.output_tokens,
+        }),
+    ))
 }
 
 // ── Stop / Resume ────────────────────────────────────────────────────────
@@ -475,9 +884,14 @@ async fn sandbox_stop_handler(
     runtime::stop_sidecar(&record)
         .await
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(LifecycleApiResponse {
-        success: true, sandbox_id: record.id, state: "stopped".into(),
-    })))
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(LifecycleApiResponse {
+            success: true,
+            sandbox_id: record.id,
+            state: "stopped".into(),
+        }),
+    ))
 }
 
 async fn sandbox_resume_handler(
@@ -488,51 +902,116 @@ async fn sandbox_resume_handler(
     runtime::resume_sidecar(&record)
         .await
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(LifecycleApiResponse {
-        success: true, sandbox_id: record.id, state: "running".into(),
-    })))
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(LifecycleApiResponse {
+            success: true,
+            sandbox_id: record.id,
+            state: "running".into(),
+        }),
+    ))
 }
 
-async fn instance_stop_handler(
-    SessionAuth(address): SessionAuth,
-) -> impl IntoResponse {
+async fn instance_stop_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
     let id = record.id.clone();
     runtime::stop_sidecar(&record)
         .await
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(LifecycleApiResponse {
-        success: true, sandbox_id: id, state: "stopped".into(),
-    })))
+
+    // Sync updated state back to instance store.
+    if let Ok(Some(updated)) = sandboxes().and_then(|s| s.get(&id)) {
+        let _ = runtime::instance_store().and_then(|s| s.insert("instance".to_string(), updated));
+    }
+
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(LifecycleApiResponse {
+            success: true,
+            sandbox_id: id,
+            state: "stopped".into(),
+        }),
+    ))
 }
 
-async fn instance_resume_handler(
-    SessionAuth(address): SessionAuth,
-) -> impl IntoResponse {
+async fn instance_resume_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
     let id = record.id.clone();
     runtime::resume_sidecar(&record)
         .await
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(LifecycleApiResponse {
-        success: true, sandbox_id: id, state: "running".into(),
-    })))
+
+    // Sync updated record (port mappings may have changed) back to instance store.
+    if let Ok(Some(updated)) = sandboxes().and_then(|s| s.get(&id)) {
+        let _ = runtime::instance_store().and_then(|s| s.insert("instance".to_string(), updated));
+    }
+
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(LifecycleApiResponse {
+            success: true,
+            sandbox_id: id,
+            state: "running".into(),
+        }),
+    ))
 }
 
 // ── Snapshot ─────────────────────────────────────────────────────────────
 
-async fn run_snapshot(record: &SandboxRecord, req: &SnapshotApiRequest) -> Result<SnapshotApiResponse, (StatusCode, Json<ApiError>)> {
+async fn run_snapshot(
+    record: &SandboxRecord,
+    req: &SnapshotApiRequest,
+) -> Result<SnapshotApiResponse, (StatusCode, Json<ApiError>)> {
+    circuit_breaker::check_health(&record.id)
+        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     if req.destination.trim().is_empty() {
-        return Err(api_error(StatusCode::BAD_REQUEST, "Snapshot destination is required"));
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "Snapshot destination is required",
+        ));
     }
-    let command = crate::util::build_snapshot_command(&req.destination, req.include_workspace, req.include_state)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let command = crate::util::build_snapshot_command(
+        &req.destination,
+        req.include_workspace,
+        req.include_state,
+    )
+    .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let result = sidecar_post_json(&record.sidecar_url, "/terminals/commands", &record.token, payload)
-        .await
-        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let result = tokio::time::timeout(
+        SIDECAR_DEFAULT_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/terminals/commands",
+            &record.token,
+            payload,
+        ),
+    )
+    .await;
+    match &result {
+        Err(_) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "Sidecar snapshot timed out after {}s",
+                    SIDECAR_DEFAULT_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        Ok(Err(e)) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
+        }
+        Ok(Ok(_)) => {
+            circuit_breaker::mark_healthy(&record.id);
+        }
+    }
+    let parsed = result.unwrap().unwrap();
     runtime::touch_sandbox(&record.id);
-    Ok(SnapshotApiResponse { success: true, result })
+    Ok(SnapshotApiResponse {
+        success: true,
+        result: parsed,
+    })
 }
 
 async fn sandbox_snapshot_handler(
@@ -585,28 +1064,98 @@ fi"
     )
 }
 
-async fn run_ssh_provision(record: &SandboxRecord, req: &SshProvisionApiRequest) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
+async fn run_ssh_provision(
+    record: &SandboxRecord,
+    req: &SshProvisionApiRequest,
+) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
+    circuit_breaker::check_health(&record.id)
+        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let username = crate::util::normalize_username(&req.username)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let command = build_ssh_provision_command(&username, &req.public_key);
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let result = sidecar_post_json(&record.sidecar_url, "/terminals/commands", &record.token, payload)
-        .await
-        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let result = tokio::time::timeout(
+        SIDECAR_DEFAULT_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/terminals/commands",
+            &record.token,
+            payload,
+        ),
+    )
+    .await;
+    match &result {
+        Err(_) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "Sidecar SSH provision timed out after {}s",
+                    SIDECAR_DEFAULT_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        Ok(Err(e)) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
+        }
+        Ok(Ok(_)) => {
+            circuit_breaker::mark_healthy(&record.id);
+        }
+    }
+    let parsed = result.unwrap().unwrap();
     runtime::touch_sandbox(&record.id);
-    Ok(SshApiResponse { success: true, result })
+    Ok(SshApiResponse {
+        success: true,
+        result: parsed,
+    })
 }
 
-async fn run_ssh_revoke(record: &SandboxRecord, req: &SshRevokeApiRequest) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
+async fn run_ssh_revoke(
+    record: &SandboxRecord,
+    req: &SshRevokeApiRequest,
+) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
+    circuit_breaker::check_health(&record.id)
+        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let username = crate::util::normalize_username(&req.username)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
     let command = build_ssh_revoke_cmd(&username, &req.public_key);
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let result = sidecar_post_json(&record.sidecar_url, "/terminals/commands", &record.token, payload)
-        .await
-        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let result = tokio::time::timeout(
+        SIDECAR_DEFAULT_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/terminals/commands",
+            &record.token,
+            payload,
+        ),
+    )
+    .await;
+    match &result {
+        Err(_) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "Sidecar SSH revoke timed out after {}s",
+                    SIDECAR_DEFAULT_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        Ok(Err(e)) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            return Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()));
+        }
+        Ok(Ok(_)) => {
+            circuit_breaker::mark_healthy(&record.id);
+        }
+    }
+    let parsed = result.unwrap().unwrap();
     runtime::touch_sandbox(&record.id);
-    Ok(SshApiResponse { success: true, result })
+    Ok(SshApiResponse {
+        success: true,
+        result: parsed,
+    })
 }
 
 async fn sandbox_ssh_provision_handler(
@@ -614,6 +1163,8 @@ async fn sandbox_ssh_provision_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<SshProvisionApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let resp = run_ssh_provision(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -624,6 +1175,8 @@ async fn sandbox_ssh_revoke_handler(
     Path(sandbox_id): Path<String>,
     Json(req): Json<SshRevokeApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let resp = run_ssh_revoke(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -633,6 +1186,8 @@ async fn instance_ssh_provision_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<SshProvisionApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let resp = run_ssh_provision(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -642,6 +1197,8 @@ async fn instance_ssh_revoke_handler(
     SessionAuth(address): SessionAuth,
     Json(req): Json<SshRevokeApiRequest>,
 ) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let resp = run_ssh_revoke(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
@@ -655,14 +1212,20 @@ async fn instance_ssh_revoke_handler(
 ///
 /// **Prefer** using the [`SessionAuth`](crate::session_auth::SessionAuth) Axum
 /// extractor directly in handler signatures instead of calling this manually.
-pub fn extract_session_from_headers(headers: &HeaderMap) -> Result<session_auth::SessionClaims, (StatusCode, Json<ApiError>)> {
+pub fn extract_session_from_headers(
+    headers: &HeaderMap,
+) -> Result<session_auth::SessionClaims, (StatusCode, Json<ApiError>)> {
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "Missing Authorization header"))?;
 
-    let token = session_auth::extract_bearer_token(auth_header)
-        .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "Invalid Authorization header format"))?;
+    let token = session_auth::extract_bearer_token(auth_header).ok_or_else(|| {
+        api_error(
+            StatusCode::UNAUTHORIZED,
+            "Invalid Authorization header format",
+        )
+    })?;
 
     session_auth::validate_session_token(token)
         .map_err(|e| api_error(StatusCode::UNAUTHORIZED, e.to_string()))
@@ -676,9 +1239,10 @@ pub fn extract_session_from_headers(headers: &HeaderMap) -> Result<session_auth:
 ///
 /// - `"none"` → CORS disabled (use when behind BPM proxy that handles CORS).
 /// - Comma-separated origins → strict whitelist with credentials.
-/// - Unset or `"*"` → allow any origin (development mode only).
+/// - `"*"` → allow any origin (development mode only, must be explicit).
+/// - Unset → localhost-only with warning (safe default for production).
 pub fn build_cors_layer() -> CorsLayer {
-    use axum::http::{header, Method};
+    use axum::http::{Method, header};
 
     let allowed_methods = vec![
         Method::GET,
@@ -687,11 +1251,7 @@ pub fn build_cors_layer() -> CorsLayer {
         Method::DELETE,
         Method::OPTIONS,
     ];
-    let allowed_headers = vec![
-        header::AUTHORIZATION,
-        header::CONTENT_TYPE,
-        header::ACCEPT,
-    ];
+    let allowed_headers = vec![header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT];
 
     let origins_env = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
 
@@ -705,11 +1265,32 @@ pub fn build_cors_layer() -> CorsLayer {
             .allow_headers(allowed_headers);
     }
 
-    if origins_env.is_empty() || origins_env == "*" {
+    if origins_env == "*" {
+        // Explicit wildcard — development mode only.
         CorsLayer::new()
             .allow_origin(AllowOrigin::any())
             .allow_methods(allowed_methods)
             .allow_headers(allowed_headers)
+    } else if origins_env.is_empty() {
+        // Unset — restrictive default for production safety.
+        tracing::warn!(
+            "CORS_ALLOWED_ORIGINS not set; defaulting to localhost-only. \
+             Set explicitly for production deployments."
+        );
+        let localhost_origins: Vec<_> = [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+        ]
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(localhost_origins))
+            .allow_methods(allowed_methods)
+            .allow_headers(allowed_headers)
+            .allow_credentials(true)
     } else {
         let origins: Vec<_> = origins_env
             .split(',')
@@ -721,6 +1302,33 @@ pub fn build_cors_layer() -> CorsLayer {
             .allow_headers(allowed_headers)
             .allow_credentials(true)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-endpoint HTTP metrics middleware
+// ---------------------------------------------------------------------------
+
+async fn http_metrics_middleware(
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    // Prefer the route template (e.g. "/api/sandboxes/{sandbox_id}/exec") to avoid
+    // high-cardinality metric keys from dynamic path segments like sandbox IDs.
+    // When no route matches (404 paths), use a fixed "unmatched" label to prevent
+    // unbounded cardinality from scanners probing arbitrary URLs.
+    let path = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| "unmatched".to_string());
+    let start = std::time::Instant::now();
+    let response = next.run(req).await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let status = response.status();
+    let is_server_error = status.is_server_error();
+    let is_client_error = status.is_client_error();
+    metrics::http_metrics().record(&path, duration_ms, is_server_error, is_client_error);
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -762,13 +1370,34 @@ pub fn operator_api_router_with_tee(
 
     // Sandbox-scoped operation endpoints (authenticated, write-rate-limited)
     let sandbox_op_routes = Router::new()
-        .route("/api/sandboxes/{sandbox_id}/exec", post(sandbox_exec_handler))
-        .route("/api/sandboxes/{sandbox_id}/prompt", post(sandbox_prompt_handler))
-        .route("/api/sandboxes/{sandbox_id}/task", post(sandbox_task_handler))
-        .route("/api/sandboxes/{sandbox_id}/stop", post(sandbox_stop_handler))
-        .route("/api/sandboxes/{sandbox_id}/resume", post(sandbox_resume_handler))
-        .route("/api/sandboxes/{sandbox_id}/snapshot", post(sandbox_snapshot_handler))
-        .route("/api/sandboxes/{sandbox_id}/ssh", post(sandbox_ssh_provision_handler).delete(sandbox_ssh_revoke_handler))
+        .route(
+            "/api/sandboxes/{sandbox_id}/exec",
+            post(sandbox_exec_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/prompt",
+            post(sandbox_prompt_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/task",
+            post(sandbox_task_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/stop",
+            post(sandbox_stop_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/resume",
+            post(sandbox_resume_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/snapshot",
+            post(sandbox_snapshot_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/ssh",
+            post(sandbox_ssh_provision_handler).delete(sandbox_ssh_revoke_handler),
+        )
         .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
     // Instance-scoped operation endpoints (singleton sandbox, authenticated)
@@ -779,13 +1408,19 @@ pub fn operator_api_router_with_tee(
         .route("/api/sandbox/stop", post(instance_stop_handler))
         .route("/api/sandbox/resume", post(instance_resume_handler))
         .route("/api/sandbox/snapshot", post(instance_snapshot_handler))
-        .route("/api/sandbox/ssh", post(instance_ssh_provision_handler).delete(instance_ssh_revoke_handler))
+        .route(
+            "/api/sandbox/ssh",
+            post(instance_ssh_provision_handler).delete(instance_ssh_revoke_handler),
+        )
         .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
     // Auth endpoints: 10 req/min per IP (stricter to prevent brute-force)
     let auth_routes = Router::new()
         .route("/api/auth/challenge", post(create_challenge))
-        .route("/api/auth/session", post(create_session))
+        .route(
+            "/api/auth/session",
+            post(create_session).delete(revoke_session),
+        )
         .layer(middleware::from_fn(rate_limit::auth_rate_limit));
 
     // Health, metrics & provision progress: rate-limited but unauthenticated
@@ -816,13 +1451,27 @@ pub fn operator_api_router_with_tee(
                 "/api/sandboxes/{sandbox_id}/tee/sealed-secrets",
                 post(crate::tee::sealed_secrets_api::inject_sealed_secrets),
             )
-            .layer(axum::Extension(Some(backend) as Option<std::sync::Arc<dyn crate::tee::TeeBackend>>))
+            .layer(axum::Extension(
+                Some(backend) as Option<std::sync::Arc<dyn crate::tee::TeeBackend>>
+            ))
             .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
         router = router.merge(tee_routes);
     }
 
-    router.layer(cors)
+    router
+        .layer(DefaultBodyLimit::max(1024 * 1024)) // 1 MB max request body
+        .layer(middleware::from_fn(security_headers_middleware))
+        .layer(middleware::from_fn(http_metrics_middleware))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(tower::limit::ConcurrencyLimitLayer::new(64))
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(120),
+        ))
+        .layer(cors)
+        // Outermost layer: assign a unique request ID before anything else runs.
+        .layer(middleware::from_fn(request_id_middleware))
 }
 
 #[cfg(test)]
@@ -837,8 +1486,8 @@ mod tests {
     static INIT: Once = Once::new();
     fn init() {
         INIT.call_once(|| {
-            let dir = std::env::temp_dir()
-                .join(format!("operator-api-test-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("operator-api-test-{}", std::process::id()));
             std::fs::create_dir_all(&dir).ok();
             unsafe { std::env::set_var("BLUEPRINT_STATE_DIR", dir) };
         });
@@ -995,6 +1644,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_challenge_returns_nonce() {
+        let _guard = crate::session_auth::capacity_test_lock_async().await;
+        crate::session_auth::clear_all_for_testing();
+
         let response = app()
             .oneshot(
                 Request::builder()
@@ -1016,6 +1668,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_session_invalid_sig() {
+        let _guard = crate::session_auth::capacity_test_lock_async().await;
+        crate::session_auth::clear_all_for_testing();
+
         // First get a challenge
         let response = app()
             .clone()
@@ -1065,9 +1720,22 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        // Health returns 200 (ok/degraded) or 503 (unhealthy) depending on Docker
+        let status = response.status();
+        assert!(
+            status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected health status: {status}"
+        );
         let json = body_json(response.into_body()).await;
-        assert_eq!(json["status"], "ok");
+        assert!(json["status"].is_string(), "missing status field");
+        assert!(
+            json["checks"]["docker"]["status"].is_string(),
+            "missing checks.docker.status"
+        );
+        assert!(
+            json["checks"]["store"]["status"].is_string(),
+            "missing checks.store.status"
+        );
     }
 
     #[tokio::test]
@@ -1113,109 +1781,105 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(response.headers().contains_key("access-control-allow-origin"));
+        assert!(
+            response
+                .headers()
+                .contains_key("access-control-allow-origin")
+        );
     }
 
     // ── TEE sealed secrets API tests ──────────────────────────────────────
 
     fn tee_app() -> Router {
-        let mock = std::sync::Arc::new(
-            crate::tee::mock::MockTeeBackend::new(crate::tee::TeeType::Tdx),
-        );
+        let mock = std::sync::Arc::new(crate::tee::mock::MockTeeBackend::new(
+            crate::tee::TeeType::Tdx,
+        ));
         operator_api_router_with_tee(Some(mock))
     }
 
     /// Insert a sandbox record with TEE fields into the store.
     fn insert_tee_sandbox(id: &str, deployment_id: &str, owner: &str) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes};
-        sandboxes()
-            .unwrap()
-            .insert(
-                id.to_string(),
-                SandboxRecord {
-                    id: id.to_string(),
-                    container_id: format!("tee-{deployment_id}"),
-                    sidecar_url: "http://mock-tee:8080".into(),
-                    sidecar_port: 8080,
-                    ssh_port: None,
-                    token: "test-token".into(),
-                    created_at: 1_700_000_000,
-                    cpu_cores: 2,
-                    memory_mb: 4096,
-                    state: SandboxState::Running,
-                    idle_timeout_seconds: 1800,
-                    max_lifetime_seconds: 86400,
-                    last_activity_at: 1_700_000_000,
-                    stopped_at: None,
-                    snapshot_image_id: None,
-                    snapshot_s3_url: None,
-                    container_removed_at: None,
-                    image_removed_at: None,
-                    original_image: "test:latest".into(),
-                    base_env_json: "{}".into(),
-                    user_env_json: String::new(),
-                    snapshot_destination: None,
-                    tee_deployment_id: Some(deployment_id.to_string()),
-                    tee_metadata_json: Some(r#"{"backend":"mock"}"#.into()),
-                    name: "tee-sandbox".into(),
-                    agent_identifier: String::new(),
-                    metadata_json: "{}".into(),
-                    disk_gb: 50,
-                    stack: String::new(),
-                    owner: owner.to_string(),
-                    tee_config: Some(crate::tee::TeeConfig {
-                        required: true,
-                        tee_type: crate::tee::TeeType::Tdx,
-                    }),
-                },
-            )
-            .unwrap();
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        let mut record = SandboxRecord {
+            id: id.to_string(),
+            container_id: format!("tee-{deployment_id}"),
+            sidecar_url: "http://mock-tee:8080".into(),
+            sidecar_port: 8080,
+            ssh_port: None,
+            token: "test-token".into(),
+            created_at: 1_700_000_000,
+            cpu_cores: 2,
+            memory_mb: 4096,
+            state: SandboxState::Running,
+            idle_timeout_seconds: 1800,
+            max_lifetime_seconds: 86400,
+            last_activity_at: 1_700_000_000,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: "test:latest".into(),
+            base_env_json: "{}".into(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: Some(deployment_id.to_string()),
+            tee_metadata_json: Some(r#"{"backend":"mock"}"#.into()),
+            name: "tee-sandbox".into(),
+            agent_identifier: String::new(),
+            metadata_json: "{}".into(),
+            disk_gb: 50,
+            stack: String::new(),
+            owner: owner.to_string(),
+            tee_config: Some(crate::tee::TeeConfig {
+                required: true,
+                tee_type: crate::tee::TeeType::Tdx,
+            }),
+        };
+        seal_record(&mut record);
+        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
     /// Insert a non-TEE sandbox into the store.
     fn insert_plain_sandbox(id: &str, owner: &str) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes};
-        sandboxes()
-            .unwrap()
-            .insert(
-                id.to_string(),
-                SandboxRecord {
-                    id: id.to_string(),
-                    container_id: format!("ctr-{id}"),
-                    sidecar_url: "http://localhost:9999".into(),
-                    sidecar_port: 9999,
-                    ssh_port: None,
-                    token: "plain-token".into(),
-                    created_at: 1_700_000_000,
-                    cpu_cores: 1,
-                    memory_mb: 1024,
-                    state: SandboxState::Running,
-                    idle_timeout_seconds: 1800,
-                    max_lifetime_seconds: 86400,
-                    last_activity_at: 1_700_000_000,
-                    stopped_at: None,
-                    snapshot_image_id: None,
-                    snapshot_s3_url: None,
-                    container_removed_at: None,
-                    image_removed_at: None,
-                    original_image: "test:latest".into(),
-                    base_env_json: "{}".into(),
-                    user_env_json: String::new(),
-                    snapshot_destination: None,
-                    tee_deployment_id: None,
-                    tee_metadata_json: None,
-                    name: "plain-sandbox".into(),
-                    agent_identifier: String::new(),
-                    metadata_json: "{}".into(),
-                    disk_gb: 10,
-                    stack: String::new(),
-                    owner: owner.to_string(),
-                    tee_config: None,
-                },
-            )
-            .unwrap();
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        let mut record = SandboxRecord {
+            id: id.to_string(),
+            container_id: format!("ctr-{id}"),
+            sidecar_url: "http://localhost:9999".into(),
+            sidecar_port: 9999,
+            ssh_port: None,
+            token: "plain-token".into(),
+            created_at: 1_700_000_000,
+            cpu_cores: 1,
+            memory_mb: 1024,
+            state: SandboxState::Running,
+            idle_timeout_seconds: 1800,
+            max_lifetime_seconds: 86400,
+            last_activity_at: 1_700_000_000,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: "test:latest".into(),
+            base_env_json: "{}".into(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            name: "plain-sandbox".into(),
+            agent_identifier: String::new(),
+            metadata_json: "{}".into(),
+            disk_gb: 10,
+            stack: String::new(),
+            owner: owner.to_string(),
+            tee_config: None,
+        };
+        seal_record(&mut record);
+        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
     // Use a distinct owner for TEE tests so sandbox inserts don't pollute
@@ -1225,10 +1889,7 @@ mod tests {
     #[tokio::test]
     async fn test_tee_public_key_success() {
         insert_tee_sandbox("tee-pk-1", "deploy-pk-1", TEE_TEST_OWNER);
-        let auth = format!(
-            "Bearer {}",
-            session_auth::create_test_token(TEE_TEST_OWNER)
-        );
+        let auth = format!("Bearer {}", session_auth::create_test_token(TEE_TEST_OWNER));
 
         let response = tee_app()
             .oneshot(
@@ -1251,10 +1912,7 @@ mod tests {
     #[tokio::test]
     async fn test_tee_public_key_not_tee_sandbox() {
         insert_plain_sandbox("plain-pk-1", TEE_TEST_OWNER);
-        let auth = format!(
-            "Bearer {}",
-            session_auth::create_test_token(TEE_TEST_OWNER)
-        );
+        let auth = format!("Bearer {}", session_auth::create_test_token(TEE_TEST_OWNER));
 
         let response = tee_app()
             .oneshot(
@@ -1275,9 +1933,7 @@ mod tests {
         init();
         let auth = format!(
             "Bearer {}",
-            session_auth::create_test_token(
-                "0x1234567890abcdef1234567890abcdef12345678"
-            )
+            session_auth::create_test_token("0x1234567890abcdef1234567890abcdef12345678")
         );
 
         let response = tee_app()
@@ -1313,10 +1969,7 @@ mod tests {
     #[tokio::test]
     async fn test_tee_sealed_secrets_success() {
         insert_tee_sandbox("tee-ss-1", "deploy-ss-1", TEE_TEST_OWNER);
-        let auth = format!(
-            "Bearer {}",
-            session_auth::create_test_token(TEE_TEST_OWNER)
-        );
+        let auth = format!("Bearer {}", session_auth::create_test_token(TEE_TEST_OWNER));
 
         let body = serde_json::json!({
             "sealed_secret": {
@@ -1351,9 +2004,7 @@ mod tests {
         init();
         let auth = format!(
             "Bearer {}",
-            session_auth::create_test_token(
-                "0x1234567890abcdef1234567890abcdef12345678"
-            )
+            session_auth::create_test_token("0x1234567890abcdef1234567890abcdef12345678")
         );
 
         // Use app() which has no TEE backend
