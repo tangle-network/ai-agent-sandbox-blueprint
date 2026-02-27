@@ -110,6 +110,10 @@ async fn security_headers_middleware(
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
     headers.insert("x-frame-options", "DENY".parse().unwrap());
     headers.insert("cache-control", "no-store".parse().unwrap());
+    headers.insert(
+        "strict-transport-security",
+        "max-age=63072000; includeSubDomains".parse().unwrap(),
+    );
     res
 }
 
@@ -1213,7 +1217,7 @@ pub fn build_cors_layer() -> CorsLayer {
     }
 
     if origins_env == "*" {
-        // Explicit wildcard — development mode only.
+        tracing::warn!("CORS_ALLOWED_ORIGINS=* — wildcard CORS enabled (development mode only)");
         CorsLayer::new()
             .allow_origin(AllowOrigin::any())
             .allow_methods(allowed_methods)

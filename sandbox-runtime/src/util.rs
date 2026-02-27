@@ -433,6 +433,16 @@ mod tests {
     }
 
     #[test]
+    fn build_snapshot_command_rejects_oversized_url() {
+        let long_path = "x".repeat(2100);
+        let url = format!("https://93.184.216.34/{long_path}");
+        let result = build_snapshot_command(&url, true, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("too long"));
+    }
+
+    #[test]
     fn build_snapshot_command_rejects_ipv6_unspecified() {
         let result = build_snapshot_command("https://[::]/snap", true, true);
         assert!(result.is_err());
