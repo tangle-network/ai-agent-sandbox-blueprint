@@ -575,25 +575,17 @@ fn unseal_field(stored: &str) -> Result<String> {
 }
 
 /// Encrypt sensitive fields in a `SandboxRecord` before persisting.
-pub fn seal_record(record: &mut SandboxRecord) {
-    match seal_field(&record.token) {
-        Ok(sealed) => record.token = sealed,
-        Err(e) => {
-            tracing::error!(field = "token", error = %e, "Failed to encrypt field — storing plaintext")
-        }
-    }
-    match seal_field(&record.base_env_json) {
-        Ok(sealed) => record.base_env_json = sealed,
-        Err(e) => {
-            tracing::error!(field = "base_env_json", error = %e, "Failed to encrypt field — storing plaintext")
-        }
-    }
-    match seal_field(&record.user_env_json) {
-        Ok(sealed) => record.user_env_json = sealed,
-        Err(e) => {
-            tracing::error!(field = "user_env_json", error = %e, "Failed to encrypt field — storing plaintext")
-        }
-    }
+///
+/// Returns an error if any field fails to encrypt — never falls back to
+/// storing plaintext, which would silently expose secrets at rest.
+pub fn seal_record(record: &mut SandboxRecord) -> Result<()> {
+    record.token =
+        seal_field(&record.token).map_err(|e| SandboxError::Storage(format!("seal token: {e}")))?;
+    record.base_env_json = seal_field(&record.base_env_json)
+        .map_err(|e| SandboxError::Storage(format!("seal base_env_json: {e}")))?;
+    record.user_env_json = seal_field(&record.user_env_json)
+        .map_err(|e| SandboxError::Storage(format!("seal user_env_json: {e}")))?;
+    Ok(())
 }
 
 /// Decrypt sensitive fields in a `SandboxRecord` after reading from store.
@@ -845,7 +837,7 @@ async fn create_sidecar_tee(
     };
 
     let mut sealed = record.clone();
-    seal_record(&mut sealed);
+    seal_record(&mut sealed)?;
     sandboxes()?.insert(sandbox_id, sealed)?;
     crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
 
@@ -1070,7 +1062,7 @@ async fn create_sidecar_docker(
         };
 
         let mut sealed = record.clone();
-        seal_record(&mut sealed);
+        seal_record(&mut sealed)?;
         sandboxes()?.insert(sandbox_id, sealed)?;
 
         crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
@@ -1419,7 +1411,7 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         updated.snapshot_image_id = None;
 
         let mut sealed = updated.clone();
-        seal_record(&mut sealed);
+        seal_record(&mut sealed)?;
         sandboxes()?.insert(record.id.clone(), sealed)?;
         Ok(updated)
     }
@@ -1522,7 +1514,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         updated.snapshot_s3_url = None;
 
         let mut sealed = updated.clone();
-        seal_record(&mut sealed);
+        seal_record(&mut sealed)?;
         sandboxes()?.insert(record.id.clone(), sealed)?;
         Ok(updated)
     }
@@ -1809,7 +1801,7 @@ mod seal_tests {
             tee_config: None,
         };
 
-        seal_record(&mut record);
+        seal_record(&mut record).unwrap();
         assert!(record.token.starts_with(ENC_PREFIX));
         assert!(record.base_env_json.starts_with(ENC_PREFIX));
         assert!(record.user_env_json.starts_with(ENC_PREFIX));

@@ -140,36 +140,47 @@ fn validate_snapshot_destination(destination: &str) -> Result<()> {
         ));
     }
 
+    // Require the host to be a valid IP literal. Rejecting DNS hostnames
+    // eliminates DNS rebinding attacks where an attacker-controlled name
+    // resolves to an internal IP at request time (TOCTOU).
+    let ip: std::net::IpAddr = host.parse().map_err(|_| {
+        SandboxError::Validation(
+            "Snapshot destination must use an IP address, not a hostname (DNS rebinding protection)"
+                .into(),
+        )
+    })?;
+
     // Block private/link-local/internal IP addresses (IPv4 and IPv6)
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        let is_internal = match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    // Cloud metadata: 169.254.x.x
-                    || v4.octets()[0] == 169
-            }
-            std::net::IpAddr::V6(v6) => {
-                v6.is_loopback()
-                    // Unique-local (fc00::/7)
-                    || (v6.segments()[0] & 0xfe00) == 0xfc00
-                    // Link-local (fe80::/10)
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-                    // IPv4-mapped IPv6 (::ffff:x.x.x.x) — check the embedded v4
-                    || v6.to_ipv4_mapped().is_some_and(|v4| {
-                        v4.is_loopback()
-                            || v4.is_private()
-                            || v4.is_link_local()
-                            || v4.octets()[0] == 169
-                    })
-            }
-        };
-        if is_internal {
-            return Err(SandboxError::Validation(
-                "Snapshot destination must not target private/internal IP addresses".into(),
-            ));
+    let is_internal = match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified() // 0.0.0.0
+                // Cloud metadata: 169.254.x.x
+                || v4.octets()[0] == 169
         }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified() // ::
+                // Unique-local (fc00::/7)
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                // Link-local (fe80::/10)
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // IPv4-mapped IPv6 (::ffff:x.x.x.x) — check the embedded v4
+                || v6.to_ipv4_mapped().is_some_and(|v4| {
+                    v4.is_loopback()
+                        || v4.is_private()
+                        || v4.is_link_local()
+                        || v4.is_unspecified()
+                        || v4.octets()[0] == 169
+                })
+        }
+    };
+    if is_internal {
+        return Err(SandboxError::Validation(
+            "Snapshot destination must not target private/internal IP addresses".into(),
+        ));
     }
 
     Ok(())
@@ -248,12 +259,12 @@ mod tests {
 
     #[test]
     fn build_snapshot_command_valid_https() {
-        let result = build_snapshot_command("https://example.com/snap.tar.gz", true, true);
+        let result = build_snapshot_command("https://93.184.216.34/snap.tar.gz", true, true);
         assert!(result.is_ok());
         let cmd = result.unwrap();
         assert!(cmd.contains("/home/agent"));
         assert!(cmd.contains("/var/lib/sidecar"));
-        assert!(cmd.contains("example.com"));
+        assert!(cmd.contains("93.184.216.34"));
     }
 
     #[test]
@@ -321,7 +332,7 @@ mod tests {
 
     #[test]
     fn build_snapshot_command_rejects_empty_paths() {
-        let result = build_snapshot_command("https://example.com/snap", false, false);
+        let result = build_snapshot_command("https://93.184.216.34/snap", false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("workspace or state"));
@@ -329,7 +340,7 @@ mod tests {
 
     #[test]
     fn build_snapshot_command_workspace_only() {
-        let result = build_snapshot_command("https://example.com/snap", true, false);
+        let result = build_snapshot_command("https://93.184.216.34/snap", true, false);
         assert!(result.is_ok());
         let cmd = result.unwrap();
         assert!(cmd.contains("/home/agent"));
@@ -338,7 +349,7 @@ mod tests {
 
     #[test]
     fn build_snapshot_command_state_only() {
-        let result = build_snapshot_command("https://example.com/snap", false, true);
+        let result = build_snapshot_command("https://93.184.216.34/snap", false, true);
         assert!(result.is_ok());
         let cmd = result.unwrap();
         assert!(!cmd.contains("/home/agent"));
@@ -393,9 +404,29 @@ mod tests {
 
     #[test]
     fn build_snapshot_command_allows_ipv6_public() {
-        // 2001:db8:: is documentation range, but not private/loopback
         let result = build_snapshot_command("https://[2607:f8b0:4004:800::200e]/snap", true, true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_dns_hostname() {
+        // DNS rebinding prevention: hostnames rejected, only IP literals allowed
+        let result = build_snapshot_command("https://attacker.com/snap", true, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("hostname") || err.contains("DNS"));
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_zero_ip() {
+        let result = build_snapshot_command("https://0.0.0.0/snap", true, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_snapshot_command_rejects_ipv6_unspecified() {
+        let result = build_snapshot_command("https://[::]/snap", true, true);
+        assert!(result.is_err());
     }
 
     // ── normalize_username ──────────────────────────────────────────────

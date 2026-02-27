@@ -514,7 +514,8 @@ mod util_tests {
 
     #[test]
     fn build_snapshot_command_escapes_destination() {
-        let cmd = build_snapshot_command("https://evil.com/'; rm -rf /; '", true, false).unwrap();
+        let cmd =
+            build_snapshot_command("https://93.184.216.34/'; rm -rf /; '", true, false).unwrap();
         assert!(
             cmd.contains("'\"'\"'"),
             "Single quotes should be escaped with quote-break pattern"

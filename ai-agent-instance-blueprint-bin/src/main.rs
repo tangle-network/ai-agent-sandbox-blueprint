@@ -115,7 +115,12 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        ai_agent_instance_blueprint_lib::reaper::reaper_tick().await;
+                        let h = tokio::spawn(
+                            ai_agent_instance_blueprint_lib::reaper::reaper_tick()
+                        );
+                        if let Err(e) = h.await {
+                            error!("Reaper tick panicked: {e}");
+                        }
                     }
                     _ = reaper_shutdown.changed() => {
                         info!("Reaper shutting down");
@@ -132,7 +137,12 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        ai_agent_instance_blueprint_lib::reaper::gc_tick().await;
+                        let h = tokio::spawn(
+                            ai_agent_instance_blueprint_lib::reaper::gc_tick()
+                        );
+                        if let Err(e) = h.await {
+                            error!("GC tick panicked: {e}");
+                        }
                     }
                     _ = gc_shutdown.changed() => {
                         info!("GC shutting down");
@@ -149,7 +159,12 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        sandbox_runtime::session_auth::gc_sessions();
+                        let h = tokio::spawn(async {
+                            sandbox_runtime::session_auth::gc_sessions();
+                        });
+                        if let Err(e) = h.await {
+                            error!("Session GC panicked: {e}");
+                        }
                     }
                     _ = gc_session_shutdown.changed() => {
                         info!("Session GC shutting down");

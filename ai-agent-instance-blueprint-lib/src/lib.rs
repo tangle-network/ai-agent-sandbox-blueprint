@@ -168,7 +168,7 @@ pub fn require_instance_sandbox() -> Result<SandboxRecord, String> {
 
 /// Store the provisioned sandbox record.
 pub fn set_instance_sandbox(mut record: SandboxRecord) -> error::Result<()> {
-    sandbox_runtime::runtime::seal_record(&mut record);
+    sandbox_runtime::runtime::seal_record(&mut record)?;
     instance_store()?.insert(INSTANCE_KEY.to_string(), record)
 }
 

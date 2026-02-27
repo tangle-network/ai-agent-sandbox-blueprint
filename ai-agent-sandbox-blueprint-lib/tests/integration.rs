@@ -423,7 +423,7 @@ mod snapshot_job {
 
     #[test]
     fn both_workspace_and_state() {
-        let cmd = build_snapshot_command("https://dest/snap", true, true).unwrap();
+        let cmd = build_snapshot_command("https://93.184.216.34/snap", true, true).unwrap();
         assert!(cmd.contains("/home/agent"));
         assert!(cmd.contains("/var/lib/sidecar"));
     }

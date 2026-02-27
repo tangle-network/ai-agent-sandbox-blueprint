@@ -369,6 +369,34 @@ async fn health() -> impl IntoResponse {
     )
 }
 
+/// Readiness probe — reports ready only when Docker daemon is reachable
+/// AND the persistent store is functional. Returns 503 during startup or
+/// when either subsystem is degraded. Kubernetes should route traffic only
+/// to ready instances (`readinessProbe` on this endpoint).
+async fn readyz() -> impl IntoResponse {
+    let docker_ok = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let builder = runtime::docker_builder().await.ok()?;
+        builder.client().ping().await.ok()
+    })
+    .await
+    .is_ok_and(|r| r.is_some());
+
+    let store_ok = runtime::sandboxes().and_then(|s| s.values()).is_ok();
+
+    if docker_ok && store_ok {
+        (StatusCode::OK, Json(json!({ "status": "ready" })))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "not_ready",
+                "docker": docker_ok,
+                "store": store_ok,
+            })),
+        )
+    }
+}
+
 async fn prometheus_metrics() -> impl IntoResponse {
     let mut body = metrics::metrics().render_prometheus();
     body.push_str(&metrics::http_metrics().render_prometheus());
@@ -1347,6 +1375,7 @@ pub fn operator_api_router_with_tee(
     // (liveness probes + pre-auth provision tracking need these)
     let infra_routes = Router::new()
         .route("/health", get(health))
+        .route("/readyz", get(readyz))
         .route("/metrics", get(prometheus_metrics))
         .route("/api/provisions", get(list_provisions))
         .route("/api/provisions/{call_id}", get(get_provision))
@@ -1757,7 +1786,7 @@ mod tests {
                 tee_type: crate::tee::TeeType::Tdx,
             }),
         };
-        seal_record(&mut record);
+        seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
@@ -1798,7 +1827,7 @@ mod tests {
             owner: owner.to_string(),
             tee_config: None,
         };
-        seal_record(&mut record);
+        seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
@@ -2104,5 +2133,82 @@ mod tests {
                 "Expected 401 for {path} (not 404), confirming route exists"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_readyz_endpoint() {
+        init();
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = response.status();
+        assert!(
+            status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected readyz status: {status}"
+        );
+        let json = body_json(response.into_body()).await;
+        assert!(json["status"].is_string(), "missing status field");
+    }
+
+    #[tokio::test]
+    async fn test_invalid_json_body() {
+        init();
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/some-id/exec")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from("not json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = response.status().as_u16();
+        assert!(
+            (400..500).contains(&status),
+            "expected 4xx for invalid JSON, got {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_security_headers_present() {
+        init();
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let headers = response.headers();
+        assert_eq!(
+            headers
+                .get("x-content-type-options")
+                .map(|v| v.to_str().unwrap()),
+            Some("nosniff"),
+            "missing or wrong X-Content-Type-Options header"
+        );
+        assert_eq!(
+            headers.get("x-frame-options").map(|v| v.to_str().unwrap()),
+            Some("DENY"),
+            "missing or wrong X-Frame-Options header"
+        );
     }
 }
