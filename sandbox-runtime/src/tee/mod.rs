@@ -248,6 +248,7 @@ pub fn try_tee_backend() -> Option<&'static std::sync::Arc<dyn TeeBackend>> {
 /// Look up the sidecar URL and auth token for a TEE deployment by its deployment ID.
 ///
 /// Scans the sandbox store for a record whose `tee_deployment_id` matches.
+#[allow(dead_code)] // Used by TEE backends (phala, gcp, azure)
 pub(crate) fn sidecar_info_for_deployment(
     deployment_id: &str,
 ) -> crate::error::Result<(String, String)> {
@@ -263,6 +264,7 @@ pub(crate) fn sidecar_info_for_deployment(
 }
 
 /// Fetch fresh attestation from a running sidecar's `/tee/attestation` endpoint.
+#[allow(dead_code)] // Used by TEE backends
 pub(crate) async fn fetch_sidecar_attestation(
     sidecar_url: &str,
     token: &str,
@@ -275,6 +277,7 @@ pub(crate) async fn fetch_sidecar_attestation(
 }
 
 /// Poll a sidecar's `/health` endpoint until it responds successfully.
+#[allow(dead_code)] // Used by TEE backends
 pub(crate) async fn wait_for_sidecar_health(
     sidecar_url: &str,
     token: &str,
@@ -303,6 +306,7 @@ pub(crate) async fn wait_for_sidecar_health(
 }
 
 /// Derive a TEE-bound public key by proxying to the sidecar.
+#[allow(dead_code)] // Used by TEE backends
 pub(crate) async fn sidecar_derive_public_key(
     deployment_id: &str,
 ) -> crate::error::Result<sealed_secrets::TeePublicKey> {
@@ -316,6 +320,7 @@ pub(crate) async fn sidecar_derive_public_key(
 }
 
 /// Inject sealed secrets by proxying to the sidecar.
+#[allow(dead_code)] // Used by TEE backends
 pub(crate) async fn sidecar_inject_sealed_secrets(
     deployment_id: &str,
     sealed: &sealed_secrets::SealedSecret,

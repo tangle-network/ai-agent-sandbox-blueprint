@@ -67,7 +67,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     // QoS metrics provider is stored here for deferred spawn (after api_shutdown_tx exists).
     #[cfg(feature = "qos")]
     let mut qos_deferred: Option<(
-        std::sync::Arc<dyn blueprint_qos::metrics::types::MetricsProvider>,
+        std::sync::Arc<blueprint_qos::metrics::provider::EnhancedMetricsProvider>,
         u64,
     )> = None;
 

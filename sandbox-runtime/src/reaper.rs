@@ -500,6 +500,7 @@ mod tests {
             sandbox_gc_cold_retention: 604800,
             snapshot_auto_commit: true,
             snapshot_destination_prefix: Some("s3://my-bucket/snapshots/".to_string()),
+            sandbox_max_count: 100,
         }
     }
 

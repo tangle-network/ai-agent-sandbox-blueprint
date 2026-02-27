@@ -120,6 +120,7 @@ pub fn backend_from_env() -> Result<Arc<dyn TeeBackend>> {
     }
 }
 
+#[allow(dead_code)] // Used by TEE backend constructors
 fn require_env(name: &str) -> Result<String> {
     std::env::var(name)
         .map_err(|_| SandboxError::Validation(format!("{name} environment variable is required")))

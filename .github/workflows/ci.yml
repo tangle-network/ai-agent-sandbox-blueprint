@@ -165,6 +165,62 @@ jobs:
         # --ignore-yanked: keccak 0.1.5 yanked, transitive dep
         run: cargo audit --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2025-0111 --ignore-yanked
 
+  # ── E2E tests (Docker + on-chain) ──────────────────────────────────────────
+  # Uncomment to enable. Prerequisites:
+  #   1. Sidecar image: ghcr.io/tangle-network/sidecar:latest (or build locally)
+  #   2. TNT core artifacts: run scripts/fetch-localtestnet-fixtures.sh
+  #      (downloads Anvil state snapshot with deployed Tangle contracts)
+  #   3. Tests gracefully skip if artifacts are missing (returns Ok)
+  #
+  # e2e:
+  #   name: E2E tests
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 60
+  #   needs: [test]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Install protoc
+  #       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+  #
+  #     - name: Install Foundry
+  #       uses: foundry-rs/foundry-toolchain@v1
+  #       with:
+  #         version: nightly
+  #
+  #     - name: Install Solidity Dependencies
+  #       run: forge soldeer update -d
+  #
+  #     - name: Forge build
+  #       run: forge update && forge build
+  #
+  #     - uses: dtolnay/rust-toolchain@nightly
+  #
+  #     - uses: swatinem/rust-cache@v2
+  #       with:
+  #         cache-on-failure: "true"
+  #
+  #     - uses: taiki-e/install-action@v2
+  #       with:
+  #         tool: nextest
+  #
+  #     - name: Pull sidecar image
+  #       run: docker pull ghcr.io/tangle-network/sidecar:latest
+  #
+  #     - name: Fetch TNT core artifacts
+  #       run: scripts/fetch-localtestnet-fixtures.sh
+  #
+  #     - uses: taiki-e/github-actions/free-device-space@main
+  #
+  #     - name: Run E2E tests
+  #       env:
+  #         SIDECAR_E2E: "1"
+  #         SIDECAR_IMAGE: ghcr.io/tangle-network/sidecar:latest
+  #         SIDECAR_PULL_IMAGE: "false"
+  #         SIDECAR_PUBLIC_HOST: "127.0.0.1"
+  #         REQUEST_TIMEOUT_SECS: "60"
+  #       run: cargo nextest run --test-threads=1 -p ai-agent-sandbox-blueprint-lib --test e2e_operator_api
+
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest

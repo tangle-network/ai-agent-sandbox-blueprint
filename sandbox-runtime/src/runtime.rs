@@ -73,6 +73,7 @@ pub struct SidecarRuntimeConfig {
     pub sandbox_gc_cold_retention: u64,
     pub snapshot_auto_commit: bool,
     pub snapshot_destination_prefix: Option<String>,
+    pub sandbox_max_count: usize,
 }
 
 static RUNTIME_CONFIG: OnceCell<SidecarRuntimeConfig> = OnceCell::new();
@@ -172,6 +173,10 @@ impl SidecarRuntimeConfig {
             let snapshot_destination_prefix = env::var("SANDBOX_SNAPSHOT_DESTINATION_PREFIX")
                 .ok()
                 .filter(|v| !v.trim().is_empty());
+            let sandbox_max_count = env::var("SANDBOX_MAX_COUNT")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(100);
 
             // Validate critical configuration values. Panics are intentional here —
             // these represent unrecoverable startup misconfigurations. Unlike process::exit,
@@ -188,6 +193,7 @@ impl SidecarRuntimeConfig {
                 max_lifetime = sandbox_default_max_lifetime,
                 reaper_interval = sandbox_reaper_interval,
                 gc_interval = sandbox_gc_interval,
+                max_sandboxes = sandbox_max_count,
                 "Runtime configuration loaded"
             );
 
@@ -210,6 +216,7 @@ impl SidecarRuntimeConfig {
                 sandbox_gc_cold_retention,
                 snapshot_auto_commit,
                 snapshot_destination_prefix,
+                sandbox_max_count,
             }
         })
     }
@@ -550,7 +557,15 @@ fn unseal_field(stored: &str) -> Result<String> {
     use base64::Engine;
     use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
 
-    if stored.is_empty() || !stored.starts_with(ENC_PREFIX) {
+    if stored.is_empty() {
+        return Ok(stored.to_string());
+    }
+    if !stored.starts_with(ENC_PREFIX) {
+        // Migration path: pre-encryption records stored as plaintext.
+        // This passthrough will be removed in a future release.
+        tracing::warn!(
+            "unseal_field: found unencrypted value — records will be re-encrypted on next write"
+        );
         return Ok(stored.to_string());
     }
 
@@ -951,6 +966,18 @@ async fn create_sidecar_docker(
     token_override: Option<&str>,
 ) -> Result<SandboxRecord> {
     let config = SidecarRuntimeConfig::load();
+
+    // Enforce per-operator sandbox count limit to prevent resource exhaustion.
+    if config.sandbox_max_count > 0 {
+        let current = sandboxes()?.values()?.len();
+        if current >= config.sandbox_max_count {
+            return Err(SandboxError::Validation(format!(
+                "Sandbox limit reached ({current}/{max}). Delete unused sandboxes before creating new ones.",
+                max = config.sandbox_max_count,
+            )));
+        }
+    }
+
     let builder = docker_builder().await?;
 
     ensure_image_pulled(builder, &config.image).await?;
@@ -1944,6 +1971,7 @@ mod core_logic_tests {
             sandbox_gc_cold_retention: 604800,
             snapshot_auto_commit: true,
             snapshot_destination_prefix: None,
+            sandbox_max_count: 100,
         }
     }
 
