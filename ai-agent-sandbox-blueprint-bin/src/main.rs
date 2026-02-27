@@ -131,8 +131,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
                     // Spawn a background task that periodically pushes sandbox metrics
                     // from the lib's atomic counters to the QoS on-chain provider.
+                    // Uses a shutdown channel to exit cleanly when the operator shuts down.
                     if let Some(provider) = qos_service.provider() {
                         let interval_secs = metrics_interval;
+                        let mut qos_shutdown = api_shutdown_tx.subscribe();
                         tokio::spawn(async move {
                             use blueprint_qos::metrics::types::MetricsProvider;
 
@@ -140,11 +142,19 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                                 std::time::Duration::from_secs(interval_secs),
                             );
                             loop {
-                                interval.tick().await;
-                                let snapshot =
-                                    ai_agent_sandbox_blueprint_lib::metrics::metrics().snapshot();
-                                for (key, value) in snapshot {
-                                    provider.add_on_chain_metric(key, value).await;
+                                tokio::select! {
+                                    _ = interval.tick() => {
+                                        let snapshot =
+                                            ai_agent_sandbox_blueprint_lib::metrics::metrics()
+                                                .snapshot();
+                                        for (key, value) in snapshot {
+                                            provider.add_on_chain_metric(key, value).await;
+                                        }
+                                    }
+                                    _ = qos_shutdown.changed() => {
+                                        info!("QoS metrics loop shutting down");
+                                        break;
+                                    }
                                 }
                             }
                         });

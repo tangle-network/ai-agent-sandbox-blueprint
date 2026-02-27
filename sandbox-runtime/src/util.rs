@@ -92,11 +92,71 @@ pub fn shell_escape(value: &str) -> String {
     format!("'{escaped}'")
 }
 
+/// Validate a snapshot destination URL against SSRF risks.
+///
+/// Rejects:
+/// - Non-HTTPS/S3 schemes (file://, ftp://, gopher://, etc.)
+/// - Private/loopback IP addresses (169.254.x.x, 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x)
+/// - `localhost` hostname
+fn validate_snapshot_destination(destination: &str) -> Result<()> {
+    let trimmed = destination.trim();
+
+    // Allow s3:// URIs (handled by the sidecar's S3 client, not curl)
+    if trimmed.starts_with("s3://") {
+        return Ok(());
+    }
+
+    // Require https:// scheme
+    if !trimmed.starts_with("https://") {
+        return Err(SandboxError::Validation(
+            "Snapshot destination must use https:// or s3:// scheme".into(),
+        ));
+    }
+
+    // Extract the host portion (between :// and the next / or end)
+    let after_scheme = &trimmed["https://".len()..];
+    let host = after_scheme
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+
+    // Block localhost
+    if host.eq_ignore_ascii_case("localhost") {
+        return Err(SandboxError::Validation(
+            "Snapshot destination must not target localhost".into(),
+        ));
+    }
+
+    // Block private/link-local IP addresses
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let is_private = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                    // Cloud metadata: 169.254.169.254
+                    || v4.octets()[0] == 169
+            }
+            std::net::IpAddr::V6(v6) => v6.is_loopback(),
+        };
+        if is_private {
+            return Err(SandboxError::Validation(
+                "Snapshot destination must not target private/internal IP addresses".into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 pub fn build_snapshot_command(
     destination: &str,
     include_workspace: bool,
     include_state: bool,
 ) -> Result<String> {
+    validate_snapshot_destination(destination)?;
+
     let mut paths = Vec::new();
     if include_workspace {
         paths.push("/home/agent");

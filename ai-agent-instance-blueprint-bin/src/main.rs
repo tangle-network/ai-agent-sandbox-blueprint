@@ -83,11 +83,12 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     };
 
     // Auto-provision: read service config from BSM and provision sandbox on startup.
-    if let Some(ap_config) =
+    // Track the JoinHandle so we can abort it during shutdown if it's still running.
+    let auto_provision_handle: Option<tokio::task::JoinHandle<()>> = if let Some(ap_config) =
         ai_agent_instance_blueprint_lib::auto_provision::AutoProvisionConfig::from_env(service_id)
     {
         info!("Auto-provision enabled (BSM={})", ap_config.bsm_address);
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             match ai_agent_instance_blueprint_lib::auto_provision::run_auto_provision(
                 ap_config, None,
             )
@@ -96,13 +97,16 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                 Ok(()) => info!("Auto-provision completed"),
                 Err(e) => error!("Auto-provision failed: {e}"),
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     // Spawn reaper background task (idle timeout + max lifetime enforcement).
     {
         let config = ai_agent_instance_blueprint_lib::runtime::SidecarRuntimeConfig::load();
         let reaper_interval = config.sandbox_reaper_interval;
+        let gc_interval = config.sandbox_gc_interval;
 
         let mut reaper_shutdown = api_shutdown_tx.subscribe();
         tokio::spawn(async move {
@@ -115,6 +119,23 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                     }
                     _ = reaper_shutdown.changed() => {
                         info!("Reaper shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Spawn GC background task (stopped sandbox cleanup — images, committed snapshots)
+        let mut gc_shutdown = api_shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(gc_interval));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        ai_agent_instance_blueprint_lib::reaper::gc_tick().await;
+                    }
+                    _ = gc_shutdown.changed() => {
+                        info!("GC shutting down");
                         break;
                     }
                 }
@@ -215,6 +236,12 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .consumer(tangle_consumer)
         .with_shutdown_handler(async move {
             info!("Shutting down ai-agent-instance-blueprint");
+
+            // Abort auto-provision if it's still running (e.g., blocked on RPC).
+            if let Some(h) = auto_provision_handle {
+                h.abort();
+                info!("Auto-provision task aborted");
+            }
 
             // Drain operator API first.
             drop(api_shutdown_tx);

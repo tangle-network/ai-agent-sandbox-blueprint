@@ -24,14 +24,17 @@ FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y libssl3 && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends libssl3 curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -r operator && useradd -r -g operator -d /app -s /sbin/nologin operator && \
+    mkdir -p /app/keystore /app/blueprint-state && \
+    chown -R operator:operator /app
 
-COPY --from=app-builder /app/target/release/ai-agent-sandbox-blueprint-blueprint-bin /usr/local/bin
+COPY --from=app-builder /app/target/release/ai-agent-sandbox-blueprint-blueprint-bin /usr/local/bin/
 
 LABEL org.opencontainers.image.authors="drewstone <drewstone329@gmail.com>"
 LABEL org.opencontainers.image.description="AI Agent Sandbox Blueprint"
-LABEL org.opencontainers.image.source="https://github.com//ai-agent-sandbox-blueprint"
+LABEL org.opencontainers.image.source="https://github.com/tangle-network/ai-agent-sandbox-blueprint"
 LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
 ENV RUST_LOG="info"
@@ -40,6 +43,15 @@ ENV BIND_PORT=9632
 ENV BLUEPRINT_ID=0
 ENV SERVICE_ID=0
 ENV CHAIN="testnet"
-ENV KEYSTORE_URI="./keystore"
+ENV KEYSTORE_URI="/app/keystore"
+ENV BLUEPRINT_STATE_DIR="/app/blueprint-state"
+
+# Note: USER directive is commented out because the operator needs Docker
+# socket access (typically requires docker group or root). Uncomment in
+# deployments where Docker access is handled via socket permissions:
+# USER operator
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:9090/health || exit 1
 
 ENTRYPOINT ["/usr/local/bin/ai-agent-sandbox-blueprint-blueprint-bin", "run"]

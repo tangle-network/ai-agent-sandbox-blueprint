@@ -131,12 +131,10 @@ jobs:
       - name: TypeScript check
         run: pnpm exec tsc --noEmit
         working-directory: ui
-        continue-on-error: true
 
       - name: Tests
         run: pnpm test
         working-directory: ui
-        continue-on-error: true
 
   contracts:
     name: Solidity tests

@@ -332,14 +332,13 @@ async fn wipe_secrets(
 
 async fn health() -> impl IntoResponse {
     // Check Docker daemon connectivity (5s timeout to prevent hung health checks).
-    let docker_ok = match runtime::docker_builder().await {
-        Ok(builder) => {
-            tokio::time::timeout(std::time::Duration::from_secs(5), builder.client().ping())
-                .await
-                .is_ok_and(|r| r.is_ok())
-        }
-        Err(_) => false,
-    };
+    // The outer timeout covers both docker_builder() init (first call may connect) and ping.
+    let docker_ok = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let builder = runtime::docker_builder().await.ok()?;
+        builder.client().ping().await.ok()
+    })
+    .await
+    .is_ok_and(|r| r.is_some());
 
     // Check persistent store readability.
     let store_ok = runtime::sandboxes().and_then(|s| s.values()).is_ok();
@@ -876,13 +875,17 @@ async fn instance_task_handler(
 
 // ── Stop / Resume ────────────────────────────────────────────────────────
 
+/// Timeout for stop/resume operations (Docker stop + potential health polling).
+const STOP_RESUME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
 async fn sandbox_stop_handler(
     SessionAuth(address): SessionAuth,
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    runtime::stop_sidecar(&record)
+    tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::stop_sidecar(&record))
         .await
+        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Stop operation timed out"))?
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
@@ -899,8 +902,9 @@ async fn sandbox_resume_handler(
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    runtime::resume_sidecar(&record)
+    tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::resume_sidecar(&record))
         .await
+        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Resume operation timed out"))?
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
@@ -915,8 +919,9 @@ async fn sandbox_resume_handler(
 async fn instance_stop_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
     let id = record.id.clone();
-    runtime::stop_sidecar(&record)
+    tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::stop_sidecar(&record))
         .await
+        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Stop operation timed out"))?
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Sync updated state back to instance store.
@@ -937,8 +942,9 @@ async fn instance_stop_handler(SessionAuth(address): SessionAuth) -> impl IntoRe
 async fn instance_resume_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
     let id = record.id.clone();
-    runtime::resume_sidecar(&record)
+    tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::resume_sidecar(&record))
         .await
+        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Resume operation timed out"))?
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Sync updated record (port mappings may have changed) back to instance store.

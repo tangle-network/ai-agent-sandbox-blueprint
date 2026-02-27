@@ -377,35 +377,31 @@ impl HttpMetrics {
         is_server_error: bool,
         is_client_error: bool,
     ) {
-        if let Ok(mut map) = self.endpoints.lock() {
-            let entry = map.entry(path.to_string()).or_default();
-            entry.count += 1;
-            entry.total_ms += duration_ms;
-            entry.min_duration_ms = std::cmp::min(entry.min_duration_ms, duration_ms);
-            entry.max_duration_ms = std::cmp::max(entry.max_duration_ms, duration_ms);
-            // Increment the first histogram bucket whose upper bound >= duration_ms.
-            for (i, &bound) in HISTOGRAM_BUCKETS.iter().enumerate() {
-                if duration_ms <= bound {
-                    entry.histogram[i] += 1;
-                    break;
-                }
+        let mut map = self.endpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = map.entry(path.to_string()).or_default();
+        entry.count += 1;
+        entry.total_ms += duration_ms;
+        entry.min_duration_ms = std::cmp::min(entry.min_duration_ms, duration_ms);
+        entry.max_duration_ms = std::cmp::max(entry.max_duration_ms, duration_ms);
+        // Increment the first histogram bucket whose upper bound >= duration_ms.
+        for (i, &bound) in HISTOGRAM_BUCKETS.iter().enumerate() {
+            if duration_ms <= bound {
+                entry.histogram[i] += 1;
+                break;
             }
-            if is_server_error {
-                entry.errors += 1;
-            }
-            if is_client_error {
-                entry.client_errors += 1;
-            }
+        }
+        if is_server_error {
+            entry.errors += 1;
+        }
+        if is_client_error {
+            entry.client_errors += 1;
         }
     }
 
     /// Snapshot all endpoint stats for Prometheus rendering.
     pub fn snapshot(&self) -> Vec<(String, EndpointStats)> {
-        self.endpoints
-            .lock()
-            .ok()
-            .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default()
+        let map = self.endpoints.lock().unwrap_or_else(|e| e.into_inner());
+        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     /// Render per-endpoint metrics in Prometheus text exposition format.
