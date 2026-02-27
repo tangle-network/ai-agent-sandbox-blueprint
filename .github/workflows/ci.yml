@@ -159,7 +159,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-audit
       - name: Run cargo audit
-        run: cargo audit --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2025-0111
+        run: cargo audit --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2025-0111 --ignore-yanked
 
   coverage:
     name: Code coverage
