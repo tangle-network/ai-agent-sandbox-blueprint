@@ -14,8 +14,17 @@ import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagm
 import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
 import { tangleServicesAbi } from '~/lib/contracts/abi';
 import { getAddresses } from '~/lib/contracts/publicClient';
-import { useSubmitJob, type JobSubmitStatus } from '~/lib/hooks/useSubmitJob';
+import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
 import { useOperators, type DiscoveredOperator } from '~/lib/hooks/useOperators';
+import {
+  deriveMode,
+  deriveIsNewService,
+  computeStatus,
+  computeCanDeploy,
+  type DeployMode,
+  type DeployStatus,
+  type JobSubmitStatus,
+} from './createDeployLogic';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { addInstance, updateInstanceStatus } from '~/lib/stores/instances';
@@ -24,18 +33,8 @@ import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chain
 import type { InfraConfig } from '~/lib/stores/infra';
 import type { Address } from 'viem';
 
-// ── Public types ──
-
-export type DeployMode = 'sandbox' | 'instance';
-
-export type DeployStatus =
-  | 'idle'           // Ready to deploy
-  | 'signing'        // Waiting for wallet confirmation
-  | 'pending'        // TX submitted, awaiting on-chain confirmation
-  | 'confirmed'      // TX confirmed; for sandbox → provisioning; for instance → waiting for operator
-  | 'provisioning'   // Sandbox: operator is provisioning; Instance: operator provisioning in progress
-  | 'ready'          // Fully provisioned (sandbox or instance)
-  | 'failed';        // TX failed
+// Re-export types from logic module for external consumers
+export type { DeployMode, DeployStatus, JobSubmitStatus } from './createDeployLogic';
 
 export interface ProvisionInfo {
   sandboxId: string;
@@ -71,8 +70,7 @@ const TTL_BLOCKS_30_DAYS = 864000n;
 export function useCreateDeploy({ blueprint, job, values, infra, validate }: UseCreateDeployOpts) {
   const { address } = useAccount();
 
-  // Derive mode from blueprint ID
-  const mode: DeployMode = blueprint?.id === 'ai-agent-sandbox-blueprint' ? 'sandbox' : 'instance';
+  const mode = deriveMode(blueprint?.id);
   const isTeeInstance = blueprint?.id === 'ai-agent-tee-instance-blueprint';
   const isInstanceMode = mode === 'instance';
 
@@ -128,23 +126,10 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
   // ── Unified status ──
 
-  const status = useMemo<DeployStatus>(() => {
-    // Path A status
-    if (!isNewService) {
-      if (jobStatus === 'signing') return 'signing';
-      if (jobStatus === 'pending') return 'pending';
-      if (jobStatus === 'failed') return 'failed';
-      if (jobStatus === 'confirmed') return 'confirmed';
-      return 'idle';
-    }
-
-    // Path B status
-    if (serviceError) return 'failed';
-    if (serviceSigning) return 'signing';
-    if (serviceTxPending) return 'pending';
-    if (serviceConfirmed) return 'confirmed';
-    return 'idle';
-  }, [isNewService, jobStatus, serviceSigning, serviceTxPending, serviceConfirmed, serviceError]);
+  const status = useMemo<DeployStatus>(
+    () => computeStatus({ isNewService, jobStatus, serviceSigning, serviceTxPending, serviceConfirmed, serviceError }),
+    [isNewService, jobStatus, serviceSigning, serviceTxPending, serviceConfirmed, serviceError],
+  );
 
   const txHash = isNewService ? serviceTxHash : jobTxHash;
   const error = isNewService ? serviceError : jobError;
@@ -294,15 +279,18 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   const addrs = getAddresses<SandboxAddresses>();
   const contractsDeployed = isContractDeployed(addrs.jobs) && isContractDeployed(addrs.services);
 
-  const canDeploy = !!(
-    job &&
-    values.name &&
-    address &&
-    status === 'idle' &&
-    contractsDeployed &&
-    (mode === 'sandbox' ? hasValidService : true) &&
-    (!isNewService || (operators.length > 0 && !operatorsLoading))
-  );
+  const canDeploy = computeCanDeploy({
+    job: !!job,
+    hasName: !!values.name,
+    hasAddress: !!address,
+    status,
+    contractsDeployed,
+    mode,
+    hasValidService,
+    isNewService,
+    operatorCount: operators.length,
+    operatorsLoading,
+  });
 
   return {
     // State

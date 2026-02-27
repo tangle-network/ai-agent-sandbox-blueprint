@@ -1,48 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { useOperatorAuth } from './useOperatorAuth';
-import { sandboxListStore, type LocalSandbox } from '~/lib/stores/sandboxes';
+import { sandboxListStore } from '~/lib/stores/sandboxes';
 import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
+import { fetchSandboxes, mergeApiResults, type ApiSandbox } from './sandboxHydrationLogic';
 
-interface ApiSandbox {
-  id: string;
-  sidecar_url: string;
-  state: string;
-  cpu_cores: number;
-  memory_mb: number;
-  created_at: number;
-  last_activity_at: number;
-}
-
-async function fetchSandboxes(
-  baseUrl: string,
-  token: string,
-  blueprintId: string,
-  serviceId: string,
-  getToken?: (forceRefresh: boolean) => Promise<string | null>,
-  signal?: AbortSignal,
-): Promise<ApiSandbox[]> {
-  const url = `${baseUrl}/api/sandboxes`;
-  let res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-    signal,
-  });
-
-  // Auto-retry once on 401 (expired PASETO token)
-  if (res.status === 401 && getToken) {
-    const freshToken = await getToken(true);
-    if (freshToken) {
-      res = await fetch(url, {
-        headers: { Authorization: `Bearer ${freshToken}` },
-        signal,
-      });
-    }
-  }
-
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.sandboxes ?? [];
-}
+// Re-export for external consumers
+export { fetchSandboxes, mergeApiResults, type ApiSandbox } from './sandboxHydrationLogic';
 
 /**
  * Hydrate the local sandbox list from operator APIs on mount.
@@ -123,39 +87,10 @@ export function useSandboxHydration() {
       if (results.length === 0) return;
 
       const existing = sandboxListStore.get();
-      const existingIds = new Set(existing.map((s) => s.id));
+      const merged = mergeApiResults(results, existing);
 
-      // Add new sandboxes from API that aren't in local store
-      const newSandboxes: LocalSandbox[] = results
-        .filter((s) => !existingIds.has(s.id))
-        .map((s) => ({
-          id: s.id,
-          name: s.id.replace('sandbox-', '').slice(0, 8),
-          image: '',
-          cpuCores: s.cpu_cores,
-          memoryMb: s.memory_mb,
-          diskGb: 0,
-          createdAt: s.created_at * 1000,
-          blueprintId: import.meta.env.VITE_SANDBOX_BLUEPRINT_ID ?? '',
-          serviceId: import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '',
-          sidecarUrl: s.sidecar_url,
-          status: s.state === 'running' ? 'running' : 'stopped',
-        }));
-
-      // Update status of existing sandboxes from API ground truth
-      const apiStatusMap = new Map(results.map((s) => [s.id, s]));
-      const updated = existing.map((local) => {
-        const api = apiStatusMap.get(local.id);
-        if (!api) return local;
-        return {
-          ...local,
-          sidecarUrl: api.sidecar_url || local.sidecarUrl,
-          status: (api.state === 'running' ? 'running' : 'stopped') as LocalSandbox['status'],
-        };
-      });
-
-      if (newSandboxes.length > 0 || updated.some((u, i) => u !== existing[i])) {
-        sandboxListStore.set([...newSandboxes, ...updated]);
+      if (merged.length !== existing.length || merged.some((m, i) => m !== existing[i])) {
+        sandboxListStore.set(merged);
       }
     })();
 

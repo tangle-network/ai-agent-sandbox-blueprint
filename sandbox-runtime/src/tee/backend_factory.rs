@@ -128,6 +128,12 @@ fn require_env(name: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that mutate environment variables.
+    /// `std::env::set_var` is not thread-safe — concurrent tests reading
+    /// TEE_BACKEND will race without this lock.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Extract error message from a Result, panicking if Ok.
     fn expect_err(result: Result<Arc<dyn TeeBackend>>) -> String {
@@ -138,7 +144,9 @@ mod tests {
     }
 
     /// Save and restore TEE_BACKEND env var around a test closure.
+    /// Acquires ENV_LOCK to prevent races with parallel tests.
     fn with_env(key: &str, val: Option<&str>, f: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var(key).ok();
         match val {
             Some(v) => unsafe { std::env::set_var(key, v) },

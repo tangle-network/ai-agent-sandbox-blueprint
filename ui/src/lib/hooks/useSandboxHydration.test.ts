@@ -1,67 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { sandboxListStore, type LocalSandbox } from '~/lib/stores/sandboxes';
-
-// ── Mock wagmi (required by useOperatorAuth which useSandboxHydration imports) ──
-
-vi.mock('wagmi', () => ({
-  useAccount: () => ({ address: '0x1111111111111111111111111111111111111111' }),
-  useSignMessage: () => ({ signMessageAsync: vi.fn() }),
-}));
-
-vi.mock('~/lib/config', () => ({
-  OPERATOR_API_URL: 'http://sandbox-operator:9090',
-  INSTANCE_OPERATOR_API_URL: '',
-}));
-
-vi.mock('sonner', () => ({
-  toast: { error: vi.fn(), success: vi.fn() },
-}));
-
-/**
- * The fetchSandboxes function is defined at module scope in useSandboxHydration.ts.
- * Since it's not exported, we re-implement its exact logic here for unit testing.
- * This is a common pattern when testing non-exported module-level helpers.
- */
-
-interface ApiSandbox {
-  id: string;
-  sidecar_url: string;
-  state: string;
-  cpu_cores: number;
-  memory_mb: number;
-  created_at: number;
-  last_activity_at: number;
-}
-
-async function fetchSandboxes(
-  baseUrl: string,
-  token: string,
-  blueprintId: string,
-  serviceId: string,
-  getToken?: (forceRefresh: boolean) => Promise<string | null>,
-  signal?: AbortSignal,
-): Promise<ApiSandbox[]> {
-  const url = `${baseUrl}/api/sandboxes`;
-  let res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-    signal,
-  });
-
-  // Auto-retry once on 401 (expired PASETO token)
-  if (res.status === 401 && getToken) {
-    const freshToken = await getToken(true);
-    if (freshToken) {
-      res = await fetch(url, {
-        headers: { Authorization: `Bearer ${freshToken}` },
-        signal,
-      });
-    }
-  }
-
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.sandboxes ?? [];
-}
+import { fetchSandboxes, mergeApiResults, type ApiSandbox } from './sandboxHydrationLogic';
 
 /** Build a minimal API sandbox for tests */
 function makeApiSandbox(overrides: Partial<ApiSandbox> = {}): ApiSandbox {
@@ -225,50 +164,9 @@ describe('fetchSandboxes', () => {
   });
 });
 
-// ── Merge behavior tests (testing the store merge logic from the hook) ──
+// ── Merge behavior tests ──
 
 describe('sandbox hydration merge logic', () => {
-  beforeEach(() => {
-    sandboxListStore.set([]);
-  });
-
-  /**
-   * Re-implements the merge logic from useSandboxHydration for unit testing.
-   * In the hook this runs inside a useEffect; here we call it directly.
-   */
-  function mergeApiResults(apiResults: ApiSandbox[], existing: LocalSandbox[]): LocalSandbox[] {
-    const existingIds = new Set(existing.map((s) => s.id));
-
-    const newSandboxes: LocalSandbox[] = apiResults
-      .filter((s) => !existingIds.has(s.id))
-      .map((s) => ({
-        id: s.id,
-        name: s.id.replace('sandbox-', '').slice(0, 8),
-        image: '',
-        cpuCores: s.cpu_cores,
-        memoryMb: s.memory_mb,
-        diskGb: 0,
-        createdAt: s.created_at * 1000,
-        blueprintId: '',
-        serviceId: '',
-        sidecarUrl: s.sidecar_url,
-        status: (s.state === 'running' ? 'running' : 'stopped') as LocalSandbox['status'],
-      }));
-
-    const apiStatusMap = new Map(apiResults.map((s) => [s.id, s]));
-    const updated = existing.map((local) => {
-      const api = apiStatusMap.get(local.id);
-      if (!api) return local;
-      return {
-        ...local,
-        sidecarUrl: api.sidecar_url || local.sidecarUrl,
-        status: (api.state === 'running' ? 'running' : 'stopped') as LocalSandbox['status'],
-      };
-    });
-
-    return [...newSandboxes, ...updated];
-  }
-
   it('adds new sandboxes from API that are not in local store', () => {
     const existing: LocalSandbox[] = [];
     const apiResults = [
@@ -366,5 +264,4 @@ describe('sandbox hydration merge logic', () => {
     const merged = mergeApiResults(apiResults, []);
     expect(merged[0].name).toBe('abcdef12');
   });
-
 });

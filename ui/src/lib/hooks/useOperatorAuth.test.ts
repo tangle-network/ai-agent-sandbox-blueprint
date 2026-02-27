@@ -394,7 +394,7 @@ describe('useOperatorAuth', () => {
 
     // Verify challenge request
     const challengeCall = fetchMock.mock.calls.find(
-      ([url]: [string]) => url.includes('/api/auth/challenge'),
+      (call) => (call[0] as string).includes('/api/auth/challenge'),
     );
     expect(challengeCall).toBeDefined();
     const challengeBody = JSON.parse(challengeCall![1].body);
@@ -402,7 +402,7 @@ describe('useOperatorAuth', () => {
 
     // Verify session request
     const sessionCall = fetchMock.mock.calls.find(
-      ([url]: [string]) => url.includes('/api/auth/session'),
+      (call) => (call[0] as string).includes('/api/auth/session'),
     );
     expect(sessionCall).toBeDefined();
     const sessionBody = JSON.parse(sessionCall![1].body);

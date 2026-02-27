@@ -1,91 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 /**
- * useCreateDeploy is deeply coupled to wagmi hooks (useAccount, useWriteContract,
- * useWaitForTransactionReceipt) and several internal hooks (useSubmitJob, useOperators,
- * useInstanceProvisionWatcher). Testing it via renderHook would require an enormous
- * mock surface.
- *
- * Instead, we extract and test the pure computation logic that the hook relies on:
- *   - DeployStatus computation from path A / path B signals
- *   - canDeploy flag computation
- *   - mode derivation from blueprint ID
- *   - isNewService derivation
- *
- * These match the exact logic in useCreateDeploy.ts without needing wagmi context.
+ * Tests for the pure computation functions used by useCreateDeploy.
+ * Imported from createDeployLogic.ts — no wagmi/React mocks needed.
  */
 
-import type { DeployStatus, DeployMode } from './useCreateDeploy';
-import type { JobSubmitStatus } from '~/lib/hooks/useSubmitJob';
-
-// ── Extracted pure functions (matching the hook's inline logic) ──
-
-/** Derive deploy mode from blueprint ID */
-function deriveMode(blueprintId: string | undefined): DeployMode {
-  return blueprintId === 'ai-agent-sandbox-blueprint' ? 'sandbox' : 'instance';
-}
-
-/** Derive whether a new service must be created (Path B) */
-function deriveIsNewService(
-  mode: DeployMode,
-  serviceActive: boolean,
-  servicePermitted: boolean,
-  serviceId: string,
-): boolean {
-  const isInstanceMode = mode === 'instance';
-  const hasValidService = !!(serviceActive && servicePermitted && serviceId);
-  return isInstanceMode && !hasValidService;
-}
-
-/** Compute unified deploy status from Path A and Path B signals */
-function computeStatus(opts: {
-  isNewService: boolean;
-  jobStatus: JobSubmitStatus;
-  serviceSigning: boolean;
-  serviceTxPending: boolean;
-  serviceConfirmed: boolean;
-  serviceError: string | null;
-}): DeployStatus {
-  const { isNewService, jobStatus, serviceSigning, serviceTxPending, serviceConfirmed, serviceError } = opts;
-
-  if (!isNewService) {
-    if (jobStatus === 'signing') return 'signing';
-    if (jobStatus === 'pending') return 'pending';
-    if (jobStatus === 'failed') return 'failed';
-    if (jobStatus === 'confirmed') return 'confirmed';
-    return 'idle';
-  }
-
-  if (serviceError) return 'failed';
-  if (serviceSigning) return 'signing';
-  if (serviceTxPending) return 'pending';
-  if (serviceConfirmed) return 'confirmed';
-  return 'idle';
-}
-
-/** Compute canDeploy flag */
-function computeCanDeploy(opts: {
-  job: boolean;
-  hasName: boolean;
-  hasAddress: boolean;
-  status: DeployStatus;
-  contractsDeployed: boolean;
-  mode: DeployMode;
-  hasValidService: boolean;
-  isNewService: boolean;
-  operatorCount: number;
-  operatorsLoading: boolean;
-}): boolean {
-  return !!(
-    opts.job &&
-    opts.hasName &&
-    opts.hasAddress &&
-    opts.status === 'idle' &&
-    opts.contractsDeployed &&
-    (opts.mode === 'sandbox' ? opts.hasValidService : true) &&
-    (!opts.isNewService || (opts.operatorCount > 0 && !opts.operatorsLoading))
-  );
-}
+import {
+  deriveMode,
+  deriveIsNewService,
+  computeStatus,
+  computeCanDeploy,
+  type DeployStatus,
+  type DeployMode,
+  type JobSubmitStatus,
+} from './createDeployLogic';
 
 // ── Tests ──
 
@@ -101,7 +29,6 @@ describe('useCreateDeploy: deriveMode', () => {
   it('returns instance for ai-agent-tee-instance-blueprint', () => {
     expect(deriveMode('ai-agent-tee-instance-blueprint')).toBe('instance');
   });
-
 });
 
 describe('useCreateDeploy: deriveIsNewService', () => {
@@ -310,4 +237,3 @@ describe('useCreateDeploy: computeCanDeploy', () => {
     })).toBe(true);
   });
 });
-
