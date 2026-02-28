@@ -36,3 +36,5 @@ pub const DEFAULT_SIDECAR_IMAGE: &str = "ghcr.io/tangle-network/sidecar:latest";
 pub const DEFAULT_SIDECAR_HTTP_PORT: u16 = 8080;
 pub const DEFAULT_SIDECAR_SSH_PORT: u16 = 22;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// Maximum number of extra user-requested ports per sandbox.
+pub const MAX_EXTRA_PORTS: usize = 8;

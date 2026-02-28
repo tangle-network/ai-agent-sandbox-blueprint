@@ -84,6 +84,7 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 stack: String::new(),
                 owner: String::new(),
                 tee_config: None,
+                extra_ports: std::collections::HashMap::new(),
             },
         )
         .unwrap();
@@ -768,6 +769,7 @@ mod instance_state_tests {
             stack: String::new(),
             owner: String::new(),
             tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -817,6 +819,7 @@ mod instance_state_tests {
             stack: String::new(),
             owner: String::new(),
             tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -1453,6 +1456,7 @@ mod provision_guard_tests {
             stack: String::new(),
             owner: String::new(),
             tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
         };
         set_instance_sandbox(record).unwrap();
 
@@ -1504,6 +1508,7 @@ mod provision_guard_tests {
             stack: String::new(),
             owner: String::new(),
             tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
         };
         set_instance_sandbox(record).unwrap();
         assert!(get_instance_sandbox().unwrap().is_some());

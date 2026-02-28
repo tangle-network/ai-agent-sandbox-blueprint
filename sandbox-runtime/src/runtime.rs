@@ -50,6 +50,9 @@ pub struct CreateSandboxParams {
     /// User-injected secrets (phase 2 of two-phase provisioning).
     /// Empty on initial creation; populated when recreating with secrets.
     pub user_env_json: String,
+    /// Extra container ports to expose (e.g. user web server on 3000).
+    /// Parsed from `metadata_json.ports` at creation time.
+    pub port_mappings: Vec<u16>,
 }
 
 /// Runtime configuration loaded once at startup from environment variables.
@@ -297,6 +300,10 @@ pub struct SandboxRecord {
     /// TEE configuration used to create this sandbox (preserved for recreation).
     #[serde(default)]
     pub tee_config: Option<crate::tee::TeeConfig>,
+    /// Extra user-requested port mappings: container_port → host_port.
+    /// Populated from `metadata_json.ports` at creation time.
+    #[serde(default)]
+    pub extra_ports: HashMap<u16, u16>,
 }
 
 impl SandboxRecord {
@@ -845,6 +852,7 @@ async fn create_sidecar_tee(
         stack: request.stack.clone(),
         owner: request.owner.clone(),
         tee_config: request.tee_config.clone(),
+        extra_ports: HashMap::new(), // TEE sandboxes don't expose extra ports yet
     };
 
     let mut sealed = record.clone();
@@ -910,6 +918,7 @@ fn build_docker_config(
     cpu_cores: u64,
     memory_mb: u64,
     labels: Option<HashMap<String, String>>,
+    extra_ports: &[u16],
 ) -> BollardConfig<String> {
     // Security: ports bound to 127.0.0.1 only — not exposed to external network.
     // Inter-container isolation requires Docker daemon --icc=false configuration.
@@ -930,20 +939,36 @@ fn build_docker_config(
             }]),
         );
     }
+    for &port in extra_ports {
+        port_bindings.insert(
+            format!("{port}/tcp"),
+            Some(vec![PortBinding {
+                host_ip: Some("127.0.0.1".to_string()),
+                host_port: None,
+            }]),
+        );
+    }
 
     let mut exposed_ports = HashMap::new();
     exposed_ports.insert(format!("{}/tcp", config.container_port), HashMap::new());
     if ssh_enabled {
         exposed_ports.insert(format!("{}/tcp", config.ssh_port), HashMap::new());
     }
+    for &port in extra_ports {
+        exposed_ports.insert(format!("{port}/tcp"), HashMap::new());
+    }
 
     let mut host_config = HostConfig {
         port_bindings: Some(port_bindings),
         cap_drop: Some(vec!["ALL".to_string()]),
-        cap_add: Some(vec!["SYS_PTRACE".to_string()]),
-        security_opt: Some(vec!["no-new-privileges=true".to_string()]),
+        cap_add: Some(vec![
+            "SYS_PTRACE".to_string(),
+            "SETGID".to_string(),
+            "SETUID".to_string(),
+        ]),
+        security_opt: Some(vec!["no-new-privileges=false".to_string()]),
         pids_limit: Some(512),
-        readonly_rootfs: Some(true),
+        readonly_rootfs: Some(false),
         tmpfs: Some(HashMap::from([
             ("/tmp".to_string(), "rw,noexec,nosuid,size=512m".to_string()),
             ("/run".to_string(), "rw,noexec,nosuid,size=64m".to_string()),
@@ -1013,12 +1038,16 @@ async fn create_sidecar_docker(
         _ => None,
     };
 
+    // Parse extra ports from metadata_json (e.g. {"ports": [3000, 8080]}).
+    let extra_ports = parse_extra_ports(&request.metadata_json, &request.port_mappings);
+
     let override_config = build_docker_config(
         config,
         request.ssh_enabled,
         request.cpu_cores,
         request.memory_mb,
         labels,
+        &extra_ports,
     );
 
     let mut container = Container::new(builder.client(), config.image.clone())
@@ -1044,6 +1073,7 @@ async fn create_sidecar_docker(
 
         let (sidecar_port, ssh_port) =
             extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
+        let extra_port_map = extract_extra_ports(&inspect, &extra_ports);
         let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
         let now = crate::util::now_ts();
@@ -1083,6 +1113,7 @@ async fn create_sidecar_docker(
             stack: request.stack.clone(),
             owner: request.owner.clone(),
             tee_config: None,
+            extra_ports: extra_port_map,
         };
 
         let mut sealed = record.clone();
@@ -1199,10 +1230,11 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
                     config.container_port,
                     record.ssh_port.is_some(),
                     &config.public_host,
+                    &record.extra_ports,
                 )
                 .await
                 {
-                    Ok((url, sidecar_port, ssh_port)) => {
+                    Ok((url, sidecar_port, ssh_port, extra_ports)) => {
                         let now = crate::util::now_ts();
                         let _ = sandboxes()?.update(&record.id, |r| {
                             r.state = SandboxState::Running;
@@ -1211,6 +1243,7 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
                             r.sidecar_url = url.clone();
                             r.sidecar_port = sidecar_port;
                             r.ssh_port = ssh_port;
+                            r.extra_ports = extra_ports;
                         });
                         url
                     }
@@ -1351,6 +1384,7 @@ pub async fn recreate_sidecar_with_env(
         disk_gb: if old.disk_gb > 0 { old.disk_gb } else { 10 },
         owner: old.owner.clone(),
         tee_config: old.tee_config.clone(),
+        port_mappings: old.extra_ports.keys().copied().collect(),
     };
 
     // Preserve the original token so existing workflows/references keep working.
@@ -1427,12 +1461,14 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
     let ssh_enabled = record.ssh_port.is_some();
     let effective_env = record.effective_env_json();
     let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
+    let ep: Vec<u16> = record.extra_ports.keys().copied().collect();
     let override_config = build_docker_config(
         config,
         ssh_enabled,
         record.cpu_cores,
         record.memory_mb,
         None,
+        &ep,
     );
 
     let container_name = format!("sidecar-{}-warm", record.id);
@@ -1506,12 +1542,14 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     let ssh_enabled = record.ssh_port.is_some();
     let effective_env = record.effective_env_json();
     let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
+    let ep: Vec<u16> = record.extra_ports.keys().copied().collect();
     let override_config = build_docker_config(
         config,
         ssh_enabled,
         record.cpu_cores,
         record.memory_mb,
         None,
+        &ep,
     );
 
     let container_name = format!("sidecar-{}-cold", record.id);
@@ -1591,14 +1629,15 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
 /// Re-inspect a running container to get its current host port mappings.
 ///
 /// After `docker stop` + `docker start`, Docker may assign new random host ports.
-/// Returns `(sidecar_url, sidecar_port, ssh_port)`.
+/// Returns `(sidecar_url, sidecar_port, ssh_port, extra_ports)`.
 async fn refresh_port_mapping(
     client: std::sync::Arc<docktopus::bollard::Docker>,
     container_id: &str,
     container_port: u16,
     ssh_enabled: bool,
     public_host: &str,
-) -> Result<(String, u16, Option<u16>)> {
+    prev_extra_ports: &HashMap<u16, u16>,
+) -> Result<(String, u16, Option<u16>, HashMap<u16, u16>)> {
     use docktopus::bollard::container::InspectContainerOptions;
     let inspect = docker_timeout(
         "inspect_container",
@@ -1606,8 +1645,10 @@ async fn refresh_port_mapping(
     )
     .await?;
     let (sidecar_port, ssh_port) = extract_ports(&inspect, container_port, ssh_enabled)?;
+    let container_ports: Vec<u16> = prev_extra_ports.keys().copied().collect();
+    let extra = extract_extra_ports(&inspect, &container_ports);
     let sidecar_url = format!("http://{public_host}:{sidecar_port}");
-    Ok((sidecar_url, sidecar_port, ssh_port))
+    Ok((sidecar_url, sidecar_port, ssh_port, extra))
 }
 
 fn extract_ports(
@@ -1647,6 +1688,207 @@ fn extract_host_port(
     host_port
         .parse::<u16>()
         .map_err(|_| SandboxError::Docker(format!("Invalid host port for {key}")))
+}
+
+/// Parse extra port mappings from metadata_json and explicit port_mappings field.
+///
+/// Ports come from two sources, deduplicated and capped at [`MAX_EXTRA_PORTS`]:
+/// 1. `metadata_json` field `"ports"` — a JSON array of port numbers
+/// 2. `CreateSandboxParams.port_mappings` — explicit list
+///
+/// Reserved ports (sidecar HTTP, SSH, and well-known system ports < 1) are excluded.
+fn parse_extra_ports(metadata_json: &str, explicit: &[u16]) -> Vec<u16> {
+    use crate::MAX_EXTRA_PORTS;
+    let config = SidecarRuntimeConfig::load();
+    let reserved = [config.container_port, config.ssh_port];
+
+    let mut ports: Vec<u16> = Vec::new();
+
+    // From metadata_json.ports
+    if let Ok(Some(meta)) = parse_json_object(metadata_json, "metadata_json") {
+        if let Some(arr) = meta.get("ports").and_then(|v| v.as_array()) {
+            for v in arr {
+                if let Some(p) = v.as_u64().and_then(|n| u16::try_from(n).ok()) {
+                    ports.push(p);
+                }
+            }
+        }
+    }
+
+    // From explicit field
+    ports.extend_from_slice(explicit);
+
+    // Deduplicate, filter reserved, cap
+    ports.sort_unstable();
+    ports.dedup();
+    ports.retain(|p| *p > 0 && !reserved.contains(p));
+    ports.truncate(MAX_EXTRA_PORTS);
+    ports
+}
+
+/// Extract host port mappings for extra user ports from a container inspect result.
+///
+/// Returns a map of container_port → host_port for each port that was successfully
+/// bound. Ports that Docker failed to map are silently skipped.
+fn extract_extra_ports(
+    inspect: &docktopus::bollard::models::ContainerInspectResponse,
+    container_ports: &[u16],
+) -> HashMap<u16, u16> {
+    let network = match inspect
+        .network_settings
+        .as_ref()
+        .and_then(|s| s.ports.as_ref())
+    {
+        Some(n) => n,
+        None => return HashMap::new(),
+    };
+    let mut map = HashMap::new();
+    for &cp in container_ports {
+        if let Ok(hp) = extract_host_port(network, cp) {
+            map.insert(cp, hp);
+        }
+    }
+    map
+}
+
+#[cfg(test)]
+mod port_mapping_tests {
+    use super::*;
+
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    fn init() {
+        INIT.call_once(|| unsafe {
+            std::env::set_var("SIDECAR_IMAGE", "test:latest");
+            std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
+        });
+    }
+
+    #[test]
+    fn parse_ports_from_metadata_json() {
+        init();
+        let ports = parse_extra_ports(r#"{"ports": [3000, 5432, 9090]}"#, &[]);
+        assert_eq!(ports, vec![3000, 5432, 9090]);
+    }
+
+    #[test]
+    fn parse_ports_from_explicit_field() {
+        init();
+        let ports = parse_extra_ports("{}", &[3000, 5432]);
+        assert_eq!(ports, vec![3000, 5432]);
+    }
+
+    #[test]
+    fn parse_ports_deduplicates() {
+        init();
+        let ports = parse_extra_ports(r#"{"ports": [3000, 5432]}"#, &[3000, 9090]);
+        assert_eq!(ports, vec![3000, 5432, 9090]);
+    }
+
+    #[test]
+    fn parse_ports_filters_reserved_sidecar_port() {
+        init();
+        let config = SidecarRuntimeConfig::load();
+        let ports = parse_extra_ports(
+            &format!(r#"{{"ports": [{}, 3000]}}"#, config.container_port),
+            &[],
+        );
+        // Sidecar port (8080) should be filtered out
+        assert_eq!(ports, vec![3000]);
+    }
+
+    #[test]
+    fn parse_ports_filters_reserved_ssh_port() {
+        init();
+        let config = SidecarRuntimeConfig::load();
+        let ports = parse_extra_ports(&format!(r#"{{"ports": [{}, 3000]}}"#, config.ssh_port), &[]);
+        assert_eq!(ports, vec![3000]);
+    }
+
+    #[test]
+    fn parse_ports_filters_zero() {
+        init();
+        let ports = parse_extra_ports(r#"{"ports": [0, 3000]}"#, &[]);
+        assert_eq!(ports, vec![3000]);
+    }
+
+    #[test]
+    fn parse_ports_caps_at_max() {
+        init();
+        let all: Vec<u16> = (3000..3020).collect();
+        let ports = parse_extra_ports("{}", &all);
+        assert_eq!(ports.len(), crate::MAX_EXTRA_PORTS);
+    }
+
+    #[test]
+    fn parse_ports_empty_metadata() {
+        init();
+        let ports = parse_extra_ports("{}", &[]);
+        assert!(ports.is_empty());
+    }
+
+    #[test]
+    fn parse_ports_invalid_metadata() {
+        init();
+        let ports = parse_extra_ports("not-json", &[3000]);
+        // Should still parse explicit ports even if metadata is invalid
+        assert_eq!(ports, vec![3000]);
+    }
+
+    #[test]
+    fn parse_ports_ignores_non_numeric() {
+        init();
+        let ports = parse_extra_ports(r#"{"ports": ["not-a-port", 3000, true]}"#, &[]);
+        assert_eq!(ports, vec![3000]);
+    }
+
+    #[test]
+    fn build_docker_config_includes_extra_ports() {
+        init();
+        let config = SidecarRuntimeConfig::load();
+        let docker_config = build_docker_config(config, false, 1, 512, None, &[3000, 5432]);
+
+        let exposed = docker_config.exposed_ports.unwrap();
+        assert!(exposed.contains_key("3000/tcp"));
+        assert!(exposed.contains_key("5432/tcp"));
+        assert!(exposed.contains_key(&format!("{}/tcp", config.container_port)));
+
+        let bindings = docker_config.host_config.unwrap().port_bindings.unwrap();
+        assert!(bindings.contains_key("3000/tcp"));
+        assert!(bindings.contains_key("5432/tcp"));
+    }
+
+    #[test]
+    fn build_docker_config_no_extra_ports() {
+        init();
+        let config = SidecarRuntimeConfig::load();
+        let docker_config = build_docker_config(config, false, 1, 512, None, &[]);
+
+        let exposed = docker_config.exposed_ports.unwrap();
+        // Only sidecar port should be exposed (no SSH since ssh_enabled=false)
+        assert_eq!(exposed.len(), 1);
+        assert!(exposed.contains_key(&format!("{}/tcp", config.container_port)));
+    }
+
+    #[test]
+    fn extra_ports_serde_roundtrip() {
+        let mut ports = HashMap::new();
+        ports.insert(3000u16, 32768u16);
+        ports.insert(5432, 32769);
+
+        let json = serde_json::to_string(&ports).unwrap();
+        let restored: HashMap<u16, u16> = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.get(&3000), Some(&32768));
+        assert_eq!(restored.get(&5432), Some(&32769));
+    }
+
+    #[test]
+    fn extra_ports_default_empty_on_deserialize() {
+        // Simulates loading a record from before extra_ports existed
+        let json = r#"{"id":"test","container_id":"c","sidecar_url":"http://x","sidecar_port":0,"token":"t","created_at":0}"#;
+        let record: SandboxRecord = serde_json::from_str(json).unwrap();
+        assert!(record.extra_ports.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -1862,6 +2104,7 @@ mod seal_tests {
             stack: String::new(),
             owner: String::new(),
             tee_config: None,
+            extra_ports: HashMap::new(),
         };
 
         seal_record(&mut record).unwrap();

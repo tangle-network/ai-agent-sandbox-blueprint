@@ -13,7 +13,7 @@ use axum::{
     extract::Path,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -146,6 +146,9 @@ struct SandboxSummary {
     memory_mb: u64,
     created_at: u64,
     last_activity_at: u64,
+    /// Extra user-exposed ports: container_port → host_port.
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    extra_ports: std::collections::HashMap<u16, u16>,
 }
 
 impl From<&SandboxRecord> for SandboxSummary {
@@ -161,6 +164,7 @@ impl From<&SandboxRecord> for SandboxSummary {
             memory_mb: r.memory_mb,
             created_at: r.created_at,
             last_activity_at: r.last_activity_at,
+            extra_ports: r.extra_ports.clone(),
         }
     }
 }
@@ -1156,6 +1160,175 @@ async fn instance_ssh_revoke_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Port proxy endpoints
+// ---------------------------------------------------------------------------
+
+/// Timeout for proxied user-port requests.
+const PORT_PROXY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// List exposed port mappings for a sandbox.
+async fn sandbox_ports_handler(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(json!({ "ports": record.extra_ports })),
+    ))
+}
+
+/// List exposed port mappings for the singleton instance sandbox.
+async fn instance_ports_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(json!({ "ports": record.extra_ports })),
+    ))
+}
+
+/// Reverse-proxy an HTTP request to an exposed container port (with path).
+async fn sandbox_port_proxy_handler(
+    SessionAuth(address): SessionAuth,
+    Path(params): Path<(String, u16, String)>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let (sandbox_id, port, path) = params;
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    run_port_proxy(record, port, &path, query.as_deref(), method, headers, body).await
+}
+
+/// Reverse-proxy to container port root (no sub-path).
+async fn sandbox_port_proxy_root_handler(
+    SessionAuth(address): SessionAuth,
+    Path(params): Path<(String, u16)>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let (sandbox_id, port) = params;
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    run_port_proxy(record, port, "", query.as_deref(), method, headers, body).await
+}
+
+/// Reverse-proxy for instance mode (with path).
+async fn instance_port_proxy_handler(
+    SessionAuth(address): SessionAuth,
+    Path(params): Path<(u16, String)>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let (port, path) = params;
+    let record = resolve_instance(&address)?;
+    run_port_proxy(record, port, &path, query.as_deref(), method, headers, body).await
+}
+
+/// Reverse-proxy for instance mode root (no sub-path).
+async fn instance_port_proxy_root_handler(
+    SessionAuth(address): SessionAuth,
+    Path(port): Path<u16>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let record = resolve_instance(&address)?;
+    run_port_proxy(record, port, "", query.as_deref(), method, headers, body).await
+}
+
+/// Core proxy logic shared between sandbox and instance handlers.
+///
+/// Target is always `http://127.0.0.1:{host_port}` — the container port is
+/// mapped to a random localhost port by Docker, so SSRF to external hosts is
+/// impossible by construction.
+async fn run_port_proxy(
+    record: SandboxRecord,
+    port: u16,
+    path: &str,
+    query: Option<&str>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let host_port = record.extra_ports.get(&port).copied().ok_or_else(|| {
+        api_error(
+            StatusCode::NOT_FOUND,
+            format!("Port {port} is not exposed on this sandbox"),
+        )
+    })?;
+
+    // Defense-in-depth: reject clearly malicious path patterns even though the
+    // target is always localhost and reqwest::Url::parse validates the result.
+    if path.contains('\0') || path.starts_with("//") {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "Invalid proxy path".to_string(),
+        ));
+    }
+
+    circuit_breaker::check_health(&record.id)
+        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+
+    let mut target = format!("http://127.0.0.1:{host_port}/{path}");
+    if let Some(qs) = query {
+        target.push('?');
+        target.push_str(qs);
+    }
+    let target_url = reqwest::Url::parse(&target)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("Invalid path: {e}")))?;
+
+    tracing::debug!(
+        sandbox_id = %record.id,
+        container_port = port,
+        method = %method,
+        path,
+        "port proxy request"
+    );
+
+    let result = tokio::time::timeout(
+        PORT_PROXY_TIMEOUT,
+        crate::http::proxy_http(target_url, method, &headers, body.to_vec()),
+    )
+    .await;
+
+    match result {
+        Err(_) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "Port proxy timed out after {}s",
+                    PORT_PROXY_TIMEOUT.as_secs()
+                ),
+            ))
+        }
+        Ok(Err(e)) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()))
+        }
+        Ok(Ok((status, resp_headers, resp_body))) => {
+            circuit_breaker::mark_healthy(&record.id);
+            runtime::touch_sandbox(&record.id);
+
+            let mut response = axum::response::Response::builder().status(status.as_u16());
+            for (name, value) in resp_headers.iter() {
+                response = response.header(name.as_str(), value.as_bytes());
+            }
+
+            response
+                .body(axum::body::Body::from(resp_body))
+                .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Auth middleware helper (legacy — prefer `SessionAuth` extractor)
 // ---------------------------------------------------------------------------
 
@@ -1309,6 +1482,11 @@ pub fn operator_api_router_with_tee(
     // Read endpoints: 120 req/min per IP
     let read_routes = Router::new()
         .route("/api/sandboxes", get(list_sandboxes))
+        .route(
+            "/api/sandboxes/{sandbox_id}/ports",
+            get(sandbox_ports_handler),
+        )
+        .route("/api/sandbox/ports", get(instance_ports_handler))
         .layer(middleware::from_fn(rate_limit::read_rate_limit));
 
     // Write endpoints: 30 req/min per IP
@@ -1349,6 +1527,14 @@ pub fn operator_api_router_with_tee(
             "/api/sandboxes/{sandbox_id}/ssh",
             post(sandbox_ssh_provision_handler).delete(sandbox_ssh_revoke_handler),
         )
+        .route(
+            "/api/sandboxes/{sandbox_id}/port/{port}/{*rest}",
+            any(sandbox_port_proxy_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/port/{port}",
+            any(sandbox_port_proxy_root_handler),
+        )
         .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
     // Instance-scoped operation endpoints (singleton sandbox, authenticated)
@@ -1362,6 +1548,14 @@ pub fn operator_api_router_with_tee(
         .route(
             "/api/sandbox/ssh",
             post(instance_ssh_provision_handler).delete(instance_ssh_revoke_handler),
+        )
+        .route(
+            "/api/sandbox/port/{port}/{*rest}",
+            any(instance_port_proxy_handler),
+        )
+        .route(
+            "/api/sandbox/port/{port}",
+            any(instance_port_proxy_root_handler),
         )
         .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
@@ -1793,6 +1987,7 @@ mod tests {
                 required: true,
                 tee_type: crate::tee::TeeType::Tdx,
             }),
+            extra_ports: std::collections::HashMap::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
@@ -1835,6 +2030,7 @@ mod tests {
             stack: String::new(),
             owner: owner.to_string(),
             tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();

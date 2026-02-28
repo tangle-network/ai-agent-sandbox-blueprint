@@ -94,6 +94,7 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 stack: String::new(),
                 owner: String::new(),
                 tee_config: None,
+                extra_ports: std::collections::HashMap::new(),
             },
         )
         .unwrap();

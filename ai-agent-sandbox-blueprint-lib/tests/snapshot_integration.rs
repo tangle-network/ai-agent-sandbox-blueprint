@@ -815,6 +815,7 @@ async fn tiered_gc_cold_to_gone_real() {
         stack: String::new(),
         owner: String::new(),
         tee_config: None,
+        extra_ports: std::collections::HashMap::new(),
     };
 
     sandboxes()
@@ -913,6 +914,7 @@ async fn user_byos3_never_deleted_by_gc() {
         stack: String::new(),
         owner: String::new(),
         tee_config: None,
+        extra_ports: std::collections::HashMap::new(),
     };
 
     sandboxes()

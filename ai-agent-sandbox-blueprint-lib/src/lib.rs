@@ -283,6 +283,7 @@ impl From<&SandboxCreateRequest> for CreateSandboxParams {
             owner: String::new(), // Set by the job handler from Caller extractor
             tee_config,
             user_env_json: String::new(),
+            port_mappings: Vec::new(), // Parsed from metadata_json at runtime
         }
     }
 }

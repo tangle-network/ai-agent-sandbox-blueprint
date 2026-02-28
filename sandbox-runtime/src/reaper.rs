@@ -484,6 +484,7 @@ mod tests {
             stack: String::new(),
             owner: "0xdeadbeef".to_string(),
             tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
         }
     }
 
