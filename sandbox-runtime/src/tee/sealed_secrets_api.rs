@@ -5,6 +5,7 @@
 //!
 //! - `GET  /api/sandboxes/{id}/tee/public-key`      — fetch TEE-bound public key
 //! - `POST /api/sandboxes/{id}/tee/sealed-secrets`   — inject encrypted secrets
+//! - `GET  /api/sandboxes/{id}/tee/attestation`      — fetch fresh attestation
 //!
 //! This module is intentionally isolated — it can be removed without affecting
 //! the existing operator API or 2-phase plaintext secret provisioning.
@@ -13,8 +14,8 @@ use axum::{Json, extract::Path, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::TeeBackend;
 use super::sealed_secrets::{SealedSecret, TeePublicKey};
+use super::{AttestationReport, TeeBackend};
 use crate::operator_api::api_error;
 use crate::runtime::get_sandbox_by_id;
 use crate::secret_provisioning::validate_secret_access;
@@ -143,6 +144,63 @@ pub async fn inject_sealed_secrets(
                 success: result.success,
                 secrets_count: result.secrets_count,
                 error: result.error,
+            }),
+        )
+            .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Response for `GET /api/sandboxes/{id}/tee/attestation`.
+#[derive(Serialize)]
+struct AttestationResponse {
+    sandbox_id: String,
+    attestation: AttestationReport,
+}
+
+/// `GET /api/sandboxes/{sandbox_id}/tee/attestation`
+///
+/// Returns a fresh attestation report from the TEE backend for the sandbox.
+/// Allows users to request attestation at any time, not just during deploy.
+pub async fn get_tee_attestation(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+    tee_backend: axum::Extension<Option<Arc<dyn TeeBackend>>>,
+) -> impl IntoResponse {
+    if let Err(e) = validate_secret_access(&sandbox_id, &address) {
+        return api_error(StatusCode::FORBIDDEN, e.to_string()).into_response();
+    }
+
+    let record = match get_sandbox_by_id(&sandbox_id) {
+        Ok(r) => r,
+        Err(e) => return api_error(StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    };
+
+    let deployment_id = match &record.tee_deployment_id {
+        Some(id) => id.clone(),
+        None => {
+            return api_error(StatusCode::BAD_REQUEST, "Sandbox is not a TEE deployment")
+                .into_response();
+        }
+    };
+
+    let backend = match tee_backend.as_ref() {
+        Some(b) => b.as_ref(),
+        None => {
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "TEE backend not configured",
+            )
+            .into_response();
+        }
+    };
+
+    match backend.attestation(&deployment_id).await {
+        Ok(att) => (
+            StatusCode::OK,
+            Json(AttestationResponse {
+                sandbox_id,
+                attestation: att,
             }),
         )
             .into_response(),

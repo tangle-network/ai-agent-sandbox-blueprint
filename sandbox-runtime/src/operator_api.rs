@@ -1403,6 +1403,10 @@ pub fn operator_api_router_with_tee(
                 "/api/sandboxes/{sandbox_id}/tee/sealed-secrets",
                 post(crate::tee::sealed_secrets_api::inject_sealed_secrets),
             )
+            .route(
+                "/api/sandboxes/{sandbox_id}/tee/attestation",
+                get(crate::tee::sealed_secrets_api::get_tee_attestation),
+            )
             .layer(axum::Extension(
                 Some(backend) as Option<std::sync::Arc<dyn crate::tee::TeeBackend>>
             ))
@@ -1778,6 +1782,7 @@ mod tests {
             snapshot_destination: None,
             tee_deployment_id: Some(deployment_id.to_string()),
             tee_metadata_json: Some(r#"{"backend":"mock"}"#.into()),
+            tee_attestation_json: None,
             name: "tee-sandbox".into(),
             agent_identifier: String::new(),
             metadata_json: "{}".into(),
@@ -1822,6 +1827,7 @@ mod tests {
             snapshot_destination: None,
             tee_deployment_id: None,
             tee_metadata_json: None,
+            tee_attestation_json: None,
             name: "plain-sandbox".into(),
             agent_identifier: String::new(),
             metadata_json: "{}".into(),

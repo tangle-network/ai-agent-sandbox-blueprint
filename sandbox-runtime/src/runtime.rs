@@ -276,6 +276,9 @@ pub struct SandboxRecord {
     /// Opaque backend metadata JSON for TEE sandboxes.
     #[serde(default)]
     pub tee_metadata_json: Option<String>,
+    /// Deploy-time attestation report serialized as JSON.
+    #[serde(default)]
+    pub tee_attestation_json: Option<String>,
     // ── Creation params preserved for recreation ──────────────────────────
     #[serde(default)]
     pub name: String,
@@ -834,6 +837,7 @@ async fn create_sidecar_tee(
         snapshot_destination: None,
         tee_deployment_id: Some(deployment.deployment_id),
         tee_metadata_json: Some(deployment.metadata_json),
+        tee_attestation_json: serde_json::to_string(&deployment.attestation).ok(),
         name: request.name.clone(),
         agent_identifier: request.agent_identifier.clone(),
         metadata_json: request.metadata_json.clone(),
@@ -1071,6 +1075,7 @@ async fn create_sidecar_docker(
             snapshot_destination,
             tee_deployment_id: None,
             tee_metadata_json: None,
+            tee_attestation_json: None,
             name: request.name.clone(),
             agent_identifier: request.agent_identifier.clone(),
             metadata_json: request.metadata_json.clone(),
@@ -1097,12 +1102,30 @@ async fn create_sidecar_docker(
 }
 
 /// Stop a running sandbox container, updating its state to `Stopped`.
+///
+/// For TEE-managed sandboxes, delegates to the TEE backend's `stop()` method.
+/// For standard Docker sandboxes, stops via the Docker API directly.
 pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
     if record.state == SandboxState::Stopped {
         return Err(SandboxError::Validation(
             "Sandbox is already stopped".into(),
         ));
     }
+
+    // TEE-managed sandbox: delegate to the TEE backend.
+    if let Some(deployment_id) = &record.tee_deployment_id {
+        if let Some(backend) = crate::tee::try_tee_backend() {
+            backend.stop(deployment_id).await?;
+            let now = crate::util::now_ts();
+            let _ = sandboxes()?.update(&record.id, |r| {
+                r.state = SandboxState::Stopped;
+                r.stopped_at = Some(now);
+            });
+            return Ok(());
+        }
+    }
+
+    // Standard Docker path.
     let builder = docker_builder().await?;
     let mut container = docker_timeout(
         "load_container",
@@ -1145,13 +1168,22 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
             "Sandbox is already running".into(),
         ));
     }
+    // For TEE-managed sandboxes, tee_deployment_id holds the real Docker container
+    // ID (Direct backend) or cloud deployment ID (cloud backends). Use it for
+    // Docker operations when available so the `tee-` prefixed container_id is
+    // bypassed.
+    let effective_container_id = record
+        .tee_deployment_id
+        .as_deref()
+        .unwrap_or(&record.container_id);
+
     // Tier 1 (Hot): container still exists -> docker start
     if record.container_removed_at.is_none() {
         let builder = docker_builder().await?;
         let try_start = async {
             let mut container = docker_timeout(
                 "load_container",
-                Container::from_id(builder.client(), &record.container_id),
+                Container::from_id(builder.client(), effective_container_id),
             )
             .await?;
             start_container_with_retry(&mut container).await?;
@@ -1163,7 +1195,7 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
                 let config = SidecarRuntimeConfig::load();
                 let sidecar_url = match refresh_port_mapping(
                     builder.client(),
-                    &record.container_id,
+                    effective_container_id,
                     config.container_port,
                     record.ssh_port.is_some(),
                     &config.public_host,
@@ -1242,17 +1274,28 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
 }
 
 /// Permanently destroy a sandbox, removing the container, image, and store entry.
+///
+/// For TEE-managed sandboxes, delegates to the TEE backend's `destroy()` method.
+/// Accepts an explicit backend reference, or falls back to the global TEE backend.
 pub async fn delete_sidecar(
     record: &SandboxRecord,
     tee: Option<&dyn crate::tee::TeeBackend>,
 ) -> Result<()> {
     // If this is a TEE-managed sandbox, delegate to the backend.
     if let Some(deployment_id) = &record.tee_deployment_id {
-        if let Some(backend) = tee {
-            backend.destroy(deployment_id).await?;
-            crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
-            return Ok(());
-        }
+        // Use explicit backend if provided, otherwise fall back to global.
+        let backend = tee.map(Ok).unwrap_or_else(|| {
+            crate::tee::try_tee_backend()
+                .map(|b| b.as_ref())
+                .ok_or_else(|| {
+                    SandboxError::Validation(
+                        "TEE sandbox has no backend available for deletion".into(),
+                    )
+                })
+        })?;
+        backend.destroy(deployment_id).await?;
+        crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
+        return Ok(());
     }
     // Default Docker removal path.
     delete_sidecar_docker(record).await
@@ -1811,6 +1854,7 @@ mod seal_tests {
             snapshot_destination: None,
             tee_deployment_id: None,
             tee_metadata_json: None,
+            tee_attestation_json: None,
             name: String::new(),
             agent_identifier: String::new(),
             metadata_json: String::new(),

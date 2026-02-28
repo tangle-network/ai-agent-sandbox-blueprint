@@ -8,6 +8,9 @@
 pub mod phala;
 
 #[cfg(feature = "tee-direct")]
+pub mod attestation;
+
+#[cfg(feature = "tee-direct")]
 pub mod direct;
 
 #[cfg(feature = "tee-aws-nitro")]
@@ -272,8 +275,51 @@ pub(crate) async fn fetch_sidecar_attestation(
     let url = crate::http::build_url(sidecar_url, "/tee/attestation")?;
     let headers = crate::http::auth_headers(token)?;
     let (_status, body) = crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
-    serde_json::from_str(&body)
-        .map_err(|e| crate::error::SandboxError::Http(format!("Invalid attestation response: {e}")))
+    let report: AttestationReport = serde_json::from_str(&body).map_err(|e| {
+        crate::error::SandboxError::Http(format!("Invalid attestation response: {e}"))
+    })?;
+
+    // Basic sanity check — callers should also validate the TEE type matches.
+    if report.evidence.is_empty() {
+        return Err(crate::error::SandboxError::CloudProvider(
+            "Sidecar returned empty attestation evidence".into(),
+        ));
+    }
+    if report.measurement.is_empty() {
+        return Err(crate::error::SandboxError::CloudProvider(
+            "Sidecar returned empty attestation measurement".into(),
+        ));
+    }
+
+    Ok(report)
+}
+
+/// Validate an attestation report for completeness and type correctness.
+///
+/// Called after every attestation fetch (sidecar or native) to catch silent
+/// failures where the sidecar returns 200 with empty/wrong data.
+#[allow(dead_code)] // Used by TEE backends (attestation.rs)
+pub(crate) fn validate_attestation_report(
+    report: &AttestationReport,
+    expected_type: &TeeType,
+) -> crate::error::Result<()> {
+    if report.evidence.is_empty() {
+        return Err(crate::error::SandboxError::CloudProvider(
+            "Attestation evidence is empty — TEE device may not be available".into(),
+        ));
+    }
+    if &report.tee_type != expected_type {
+        return Err(crate::error::SandboxError::CloudProvider(format!(
+            "Attestation type mismatch: expected {expected_type:?}, got {:?}",
+            report.tee_type
+        )));
+    }
+    if report.measurement.is_empty() {
+        return Err(crate::error::SandboxError::CloudProvider(
+            "Attestation measurement is empty — report may be malformed".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Poll a sidecar's `/health` endpoint until it responds successfully.
@@ -679,5 +725,58 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[test]
+    fn validate_attestation_report_success() {
+        let report = AttestationReport {
+            tee_type: TeeType::Tdx,
+            evidence: vec![0x01],
+            measurement: vec![0x02],
+            timestamp: 1_000,
+        };
+        assert!(validate_attestation_report(&report, &TeeType::Tdx).is_ok());
+    }
+
+    #[test]
+    fn validate_attestation_report_empty_evidence() {
+        let report = AttestationReport {
+            tee_type: TeeType::Tdx,
+            evidence: vec![],
+            measurement: vec![0x02],
+            timestamp: 1_000,
+        };
+        let err = validate_attestation_report(&report, &TeeType::Tdx)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("evidence is empty"), "{err}");
+    }
+
+    #[test]
+    fn validate_attestation_report_type_mismatch() {
+        let report = AttestationReport {
+            tee_type: TeeType::Sev,
+            evidence: vec![0x01],
+            measurement: vec![0x02],
+            timestamp: 1_000,
+        };
+        let err = validate_attestation_report(&report, &TeeType::Tdx)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mismatch"), "{err}");
+    }
+
+    #[test]
+    fn validate_attestation_report_empty_measurement() {
+        let report = AttestationReport {
+            tee_type: TeeType::Tdx,
+            evidence: vec![0x01],
+            measurement: vec![],
+            timestamp: 1_000,
+        };
+        let err = validate_attestation_report(&report, &TeeType::Tdx)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("measurement is empty"), "{err}");
     }
 }

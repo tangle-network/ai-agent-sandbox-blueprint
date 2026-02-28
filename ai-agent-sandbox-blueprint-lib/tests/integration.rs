@@ -86,6 +86,7 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 snapshot_destination: None,
                 tee_deployment_id: None,
                 tee_metadata_json: None,
+                tee_attestation_json: None,
                 name: String::new(),
                 agent_identifier: String::new(),
                 metadata_json: String::new(),

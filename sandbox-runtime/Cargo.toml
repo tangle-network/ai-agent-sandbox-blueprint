@@ -14,6 +14,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
 hex = "0.4"
 once_cell = "1"
+libc = { version = "0.2", optional = true }
 phala-tee-deploy-rs = { version = "0.2.0", optional = true }
 rand = "0.8"
 
@@ -58,7 +59,7 @@ tower = { version = "0.5", features = ["util"] }
 default = []
 test-utils = ["dep:anyhow"]
 tee-phala = ["dep:phala-tee-deploy-rs"]
-tee-direct = []
+tee-direct = ["dep:libc"]
 tee-aws-nitro = ["dep:aws-config", "dep:aws-sdk-ec2"]
 tee-gcp = ["dep:gcp_auth"]
 tee-azure = []

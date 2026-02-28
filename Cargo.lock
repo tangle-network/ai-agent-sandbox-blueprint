@@ -8340,6 +8340,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.8.1",
  "k256",
+ "libc",
  "once_cell",
  "pasetors 0.6.8",
  "phala-tee-deploy-rs",

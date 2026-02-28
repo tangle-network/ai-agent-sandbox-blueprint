@@ -807,6 +807,7 @@ async fn tiered_gc_cold_to_gone_real() {
         snapshot_destination: None, // operator-managed (not user BYOS3)
         tee_deployment_id: None,
         tee_metadata_json: None,
+        tee_attestation_json: None,
         name: String::new(),
         agent_identifier: String::new(),
         metadata_json: String::new(),
@@ -904,6 +905,7 @@ async fn user_byos3_never_deleted_by_gc() {
         snapshot_destination: Some(user_dest.clone()), // user BYOS3
         tee_deployment_id: None,
         tee_metadata_json: None,
+        tee_attestation_json: None,
         name: String::new(),
         agent_identifier: String::new(),
         metadata_json: String::new(),

@@ -303,6 +303,13 @@ pub async fn reconcile_on_startup() {
     let now = crate::util::now_ts();
 
     for record in records {
+        // TEE-managed sandboxes: skip Docker reconciliation — their lifecycle is
+        // managed by the TEE backend, not Docker. The `container_id` field has a
+        // `tee-` prefix and doesn't correspond to a real Docker container.
+        if record.tee_deployment_id.is_some() {
+            continue;
+        }
+
         let inspect = crate::runtime::docker_timeout(
             "inspect_container",
             builder
@@ -469,6 +476,7 @@ mod tests {
             snapshot_destination: None,
             tee_deployment_id: None,
             tee_metadata_json: None,
+            tee_attestation_json: None,
             name: "test".to_string(),
             agent_identifier: String::new(),
             metadata_json: String::new(),
