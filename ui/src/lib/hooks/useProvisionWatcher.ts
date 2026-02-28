@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { useWatchContractEvent } from 'wagmi';
 import { agentInstanceBlueprintAbi } from '~/lib/contracts/abi';
-import { getAddresses } from '~/lib/contracts/publicClient';
+import { getAddresses } from '@tangle/blueprint-ui';
 import type { SandboxAddresses } from '~/lib/contracts/chains';
 
 interface ProvisionResult {

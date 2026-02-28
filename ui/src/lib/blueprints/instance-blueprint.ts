@@ -1,6 +1,6 @@
 import { INSTANCE_JOB_IDS, INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
 import { TEE_TYPE_OPTIONS } from './sandbox-blueprint';
-import { type BlueprintDefinition, type JobDefinition, registerBlueprint } from './registry';
+import { type BlueprintDefinition, type JobDefinition, registerBlueprint } from '@tangle/blueprint-ui';
 import type { Address } from 'viem';
 
 /**

@@ -1,15 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
 import { useStore } from '@nanostores/react';
-import { txListStore, pendingCount, clearTxs, type TrackedTx } from '~/lib/stores/txHistory';
-
-function timeAgo(ts: number): string {
-  const secs = Math.floor((Date.now() - ts) / 1000);
-  if (secs < 5) return 'just now';
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  return `${Math.floor(mins / 60)}h ago`;
-}
+import { txListStore, pendingCount, clearTxs, type TrackedTx } from '@tangle/blueprint-ui';
+import { timeAgo, useDropdownMenu } from '@tangle/agent-ui/primitives';
 
 function StatusIcon({ status }: { status: TrackedTx['status'] }) {
   if (status === 'pending') return <div className="w-4 h-4 rounded-full border-2 border-violet-500/40 border-t-violet-400 animate-spin shrink-0" />;
@@ -18,22 +9,13 @@ function StatusIcon({ status }: { status: TrackedTx['status'] }) {
 }
 
 export function TxDropdown() {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const { open, ref, toggle, close } = useDropdownMenu({ closeOnEsc: false });
   const txs = useStore(txListStore);
   const pending = useStore(pendingCount);
 
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    if (open) document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [open]);
-
   return (
     <div ref={ref} className="relative">
-      <button type="button" onClick={() => setOpen(!open)} className="relative p-2.5 rounded-lg glass-card hover:border-violet-500/20 transition-all" title="Transaction history">
+      <button type="button" onClick={toggle} className="relative p-2.5 rounded-lg glass-card hover:border-violet-500/20 transition-all" title="Transaction history">
         <div className="i-ph:receipt text-base text-cloud-elements-textSecondary" />
         {pending > 0 && (
           <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] flex items-center justify-center px-1 rounded-full bg-violet-600 text-white text-[10px] font-data font-bold animate-pulse">{pending}</span>
@@ -49,7 +31,7 @@ export function TxDropdown() {
               {txs.length > 0 && <span className="text-xs font-data text-cloud-elements-textTertiary">({txs.length})</span>}
             </div>
             {txs.length > 0 && (
-              <button type="button" onClick={() => { clearTxs(); setOpen(false); }} className="text-xs font-data text-cloud-elements-textTertiary hover:text-crimson-700 dark:hover:text-crimson-400 transition-colors">Clear all</button>
+              <button type="button" onClick={() => { clearTxs(); close(); }} className="text-xs font-data text-cloud-elements-textTertiary hover:text-crimson-700 dark:hover:text-crimson-400 transition-colors">Clear all</button>
             )}
           </div>
           <div className="max-h-[400px] overflow-y-auto">

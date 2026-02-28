@@ -1,8 +1,8 @@
 import { useStore } from '@nanostores/react';
-import { infraStore } from '~/lib/stores/infra';
-import { useJobPrice } from '~/lib/hooks/useJobPrice';
-import { formatCost } from '~/lib/hooks/useQuotes';
-import { cn } from '~/lib/utils';
+import { infraStore } from '@tangle/blueprint-ui';
+import { useJobPrice } from '@tangle/blueprint-ui';
+import { formatCost } from '@tangle/blueprint-ui';
+import { cn } from '@tangle/blueprint-ui';
 
 interface JobPriceBadgeProps {
   jobIndex: number;
@@ -72,7 +72,7 @@ export function JobPriceBadge({ jobIndex, pricingMultiplier, className, compact 
         </>
       ) : (
         <>
-          <div className={cn('text-[10px]', isEstimate ? 'i-ph:approximately-equals' : 'i-ph:tag')} />
+          <div className={cn('text-[10px]', isEstimate ? 'i-ph:approximate-equals' : 'i-ph:tag')} />
           <span>{displayPrice}</span>
         </>
       )}

@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useWatchContractEvent } from 'wagmi';
 import { agentSandboxBlueprintAbi, tangleJobsAbi } from '~/lib/contracts/abi';
-import { getAddresses } from '~/lib/contracts/publicClient';
+import { getAddresses } from '@tangle/blueprint-ui';
 
 /**
  * Watch for SandboxCreated events from the blueprint contract.

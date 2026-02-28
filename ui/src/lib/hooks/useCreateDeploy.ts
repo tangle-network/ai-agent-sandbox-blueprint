@@ -11,11 +11,11 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
+import { encodeJobArgs } from '@tangle/blueprint-ui';
 import { tangleServicesAbi } from '~/lib/contracts/abi';
-import { getAddresses } from '~/lib/contracts/publicClient';
-import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
-import { useOperators, type DiscoveredOperator } from '~/lib/hooks/useOperators';
+import { getAddresses } from '@tangle/blueprint-ui';
+import { useSubmitJob } from '@tangle/blueprint-ui';
+import { useOperators, type DiscoveredOperator } from '@tangle/blueprint-ui';
 import {
   deriveMode,
   deriveIsNewService,
@@ -30,7 +30,7 @@ import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { addInstance, updateInstanceStatus } from '~/lib/stores/instances';
 import type { BlueprintDefinition, JobDefinition } from '~/lib/blueprints';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
-import type { InfraConfig } from '~/lib/stores/infra';
+import type { InfraConfig } from '@tangle/blueprint-ui';
 import type { Address } from 'viem';
 
 // Re-export types from logic module for external consumers
@@ -226,7 +226,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
           txHash: hash,
         };
         if (mode === 'sandbox') {
-          addSandbox(common);
+          addSandbox({ ...common, teeEnabled: isTeeInstance || undefined });
         } else {
           addInstance({ ...common, teeEnabled: isTeeInstance });
         }

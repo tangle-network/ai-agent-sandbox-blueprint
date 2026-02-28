@@ -1,6 +1,6 @@
 import { useReadContract, useReadContracts } from 'wagmi';
 import { agentSandboxBlueprintAbi } from '~/lib/contracts/abi';
-import { getAddresses } from '~/lib/contracts/publicClient';
+import { getAddresses } from '@tangle/blueprint-ui';
 
 /**
  * Read service-level stats from the blueprint contract.

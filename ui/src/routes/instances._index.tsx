@@ -1,11 +1,11 @@
 import { Link } from 'react-router';
 import { useStore } from '@nanostores/react';
-import { AnimatedPage, StaggerContainer, StaggerItem } from '~/components/motion/AnimatedPage';
-import { Card, CardContent } from '~/components/ui/card';
-import { Button } from '~/components/ui/button';
+import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle/blueprint-ui/components';
+import { Card, CardContent } from '@tangle/blueprint-ui/components';
+import { Button } from '@tangle/blueprint-ui/components';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { instanceListStore, activeInstances } from '~/lib/stores/instances';
-import { cn } from '~/lib/utils';
+import { cn } from '@tangle/blueprint-ui';
 
 export default function InstanceList() {
   const allInstances = useStore(instanceListStore);

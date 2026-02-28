@@ -1,5 +1,5 @@
 import { atom, computed } from 'nanostores';
-import { persistedAtom } from './persistedAtom';
+import { persistedAtom } from '@tangle/blueprint-ui';
 
 /**
  * Local sandbox registry — tracks sandboxes the user has created or interacted with.
@@ -19,6 +19,7 @@ export interface LocalSandbox {
   serviceId: string;
   operator?: string;
   sidecarUrl?: string;
+  teeEnabled?: boolean;
   /** Local status (hydrated from contract + events) */
   status: 'creating' | 'running' | 'stopped' | 'warm' | 'cold' | 'gone' | 'error';
   txHash?: string;

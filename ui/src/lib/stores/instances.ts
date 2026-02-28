@@ -1,5 +1,5 @@
 import { computed } from 'nanostores';
-import { persistedAtom } from './persistedAtom';
+import { persistedAtom } from '@tangle/blueprint-ui';
 
 export interface LocalInstance {
   id: string;

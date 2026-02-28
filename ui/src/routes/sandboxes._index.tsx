@@ -1,13 +1,13 @@
 import { Link } from 'react-router';
 import { useStore } from '@nanostores/react';
-import { AnimatedPage, StaggerContainer, StaggerItem } from '~/components/motion/AnimatedPage';
-import { Card, CardContent } from '~/components/ui/card';
-import { Button } from '~/components/ui/button';
-import { Badge } from '~/components/ui/badge';
+import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle/blueprint-ui/components';
+import { Card, CardContent } from '@tangle/blueprint-ui/components';
+import { Button } from '@tangle/blueprint-ui/components';
+import { Badge } from '@tangle/blueprint-ui/components';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { sandboxListStore, activeSandboxes } from '~/lib/stores/sandboxes';
 import { useSandboxHydration } from '~/lib/hooks/useSandboxHydration';
-import { cn } from '~/lib/utils';
+import { cn } from '@tangle/blueprint-ui';
 
 export default function SandboxList() {
   useSandboxHydration();
@@ -48,7 +48,7 @@ export default function SandboxList() {
                           'bg-cloud-elements-background-depth-3',
                         )}>
                           <div className={cn(
-                            'i-ph:hard-drives text-lg',
+                            sb.teeEnabled ? 'i-ph:shield-check text-lg' : 'i-ph:hard-drives text-lg',
                             sb.status === 'running' ? 'text-teal-400' :
                             sb.status === 'creating' ? 'text-blue-400' :
                             sb.status === 'stopped' ? 'text-amber-400' :
@@ -59,6 +59,9 @@ export default function SandboxList() {
                           <div className="flex items-center gap-2">
                             <h3 className="text-sm font-display font-semibold text-cloud-elements-textPrimary truncate">{sb.name}</h3>
                             <StatusBadge status={sb.status === 'creating' ? 'running' : sb.status} />
+                            {sb.teeEnabled && (
+                              <span className="text-xs text-violet-700 dark:text-violet-400 font-data bg-violet-500/10 px-2 py-0.5 rounded-full">TEE</span>
+                            )}
                           </div>
                           <div className="flex items-center gap-3 mt-1">
                             <span className="text-xs font-data text-cloud-elements-textTertiary">{sb.image}</span>

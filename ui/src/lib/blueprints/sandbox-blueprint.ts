@@ -1,5 +1,5 @@
 import { JOB_IDS } from '~/lib/types/sandbox';
-import { type BlueprintDefinition, type JobDefinition, registerBlueprint } from './registry';
+import { type BlueprintDefinition, type JobDefinition, registerBlueprint } from '@tangle/blueprint-ui';
 import type { Address } from 'viem';
 
 /**

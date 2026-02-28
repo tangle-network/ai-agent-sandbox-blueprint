@@ -2,32 +2,33 @@ import { useParams, Link } from 'react-router';
 import { lazy, Suspense, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
-import { AnimatedPage } from '~/components/motion/AnimatedPage';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card';
-import { Button } from '~/components/ui/button';
-import { Input } from '~/components/ui/input';
-import { Textarea } from '~/components/ui/textarea';
+import { AnimatedPage } from '@tangle/blueprint-ui/components';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle/blueprint-ui/components';
+import { Button } from '@tangle/blueprint-ui/components';
+import { Input } from '@tangle/blueprint-ui/components';
+import { Textarea } from '@tangle/blueprint-ui/components';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
 import { sandboxListStore, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
-import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
-import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
+import { useSubmitJob } from '@tangle/blueprint-ui';
+import { encodeJobArgs } from '@tangle/blueprint-ui';
 import { getJobById } from '~/lib/blueprints';
 import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
 import '~/lib/blueprints'; // auto-register
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
-import { cn } from '~/lib/utils';
+import { cn } from '@tangle/blueprint-ui';
+import { bytesToHex, type AttestationData } from '~/lib/tee';
 
 const TerminalView = lazy(() =>
   import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView }))
 );
 
-type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets';
+type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation';
 
 import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
 
@@ -62,6 +63,14 @@ export default function SandboxDetail() {
   const [secretsBusy, setSecretsBusy] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
   const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
+
+  // Ports state
+  const [ports, setPorts] = useState<{ container_port: number; host_port: number; protocol: string }[] | null>(null);
+
+  // Attestation state
+  const [attestation, setAttestation] = useState<AttestationData | null>(null);
+  const [attestationBusy, setAttestationBusy] = useState(false);
+  const [attestationError, setAttestationError] = useState<string | null>(null);
 
   // Track setTimeout IDs so they can be cleared on unmount
   const timeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
@@ -159,6 +168,19 @@ export default function SandboxDetail() {
     }
     return res;
   }, [decodedId, isInstance, operatorUrl, getOperatorToken]);
+
+  // Fetch exposed ports when sandbox is running
+  useEffect(() => {
+    if (sb?.status !== 'running' && sb?.status !== 'creating') return;
+    let cancelled = false;
+    operatorApiCall('ports', undefined, { method: 'GET' })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) setPorts(data);
+      })
+      .catch(() => { /* ports endpoint may not exist — ignore */ });
+    return () => { cancelled = true; };
+  }, [sb?.status, operatorApiCall]);
 
   const handleStop = useCallback(async () => {
     try {
@@ -282,6 +304,21 @@ export default function SandboxDetail() {
     }
   }, [operatorApiCall, scheduleDismiss]);
 
+  // Attestation handler
+  const handleFetchAttestation = useCallback(async () => {
+    setAttestationBusy(true);
+    setAttestationError(null);
+    try {
+      const res = await operatorApiCall('tee/attestation', undefined, { method: 'GET' });
+      const data: AttestationData = await res.json();
+      setAttestation(data);
+    } catch (e) {
+      setAttestationError(e instanceof Error ? e.message : 'Failed to fetch attestation');
+    } finally {
+      setAttestationBusy(false);
+    }
+  }, [operatorApiCall]);
+
   if (!sb) {
     return (
       <AnimatedPage className="mx-auto max-w-3xl px-4 sm:px-6 py-8">
@@ -308,6 +345,7 @@ export default function SandboxDetail() {
     { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !isRunning },
     { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !isRunning },
     { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', disabled: !isRunning },
+    { key: 'attestation', label: 'Attestation', icon: 'i-ph:shield-check', disabled: !sb.teeEnabled },
   ];
 
   return (
@@ -326,7 +364,7 @@ export default function SandboxDetail() {
             isRunning ? 'bg-teal-500/10' : isStopped ? 'bg-amber-500/10' : 'bg-cloud-elements-background-depth-3',
           )}>
             <div className={cn(
-              'i-ph:hard-drives text-2xl',
+              sb.teeEnabled ? 'i-ph:shield-check text-2xl' : 'i-ph:hard-drives text-2xl',
               isRunning ? 'text-teal-400' : isStopped ? 'text-amber-400' : 'text-cloud-elements-textTertiary',
             )} />
           </div>
@@ -334,6 +372,9 @@ export default function SandboxDetail() {
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-display font-bold text-cloud-elements-textPrimary">{sb.name}</h1>
               <StatusBadge status={sb.status === 'creating' ? 'running' : sb.status} />
+              {sb.teeEnabled && (
+                <span className="text-xs text-violet-700 dark:text-violet-400 font-data bg-violet-500/10 px-2 py-0.5 rounded-full">TEE</span>
+              )}
             </div>
             <div className="flex items-center gap-3 mt-1">
               <span className="text-xs font-data text-cloud-elements-textTertiary">{sb.image}</span>
@@ -452,6 +493,38 @@ export default function SandboxDetail() {
               ) : null}
             </CardContent>
           </Card>
+
+          {/* Exposed Ports */}
+          {ports && ports.length > 0 && (
+            <Card className="md:col-span-2">
+              <CardHeader>
+                <CardTitle className="text-sm">Exposed Ports</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {ports.map((p) => (
+                    <div
+                      key={p.container_port}
+                      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor"
+                    >
+                      <div className="i-ph:globe text-sm text-teal-400" />
+                      <div className="min-w-0">
+                        <span className="text-xs font-data font-medium text-cloud-elements-textPrimary">
+                          :{p.container_port}
+                        </span>
+                        <span className="text-[10px] text-cloud-elements-textTertiary ml-1.5">
+                          {p.protocol}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-cloud-elements-textTertiary mt-2">
+                  Access via <span className="font-data">/api/sandboxes/{'{id}'}/port/{'{port}'}/</span>
+                </p>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
 
@@ -655,6 +728,60 @@ export default function SandboxDetail() {
                   Wipe All Secrets
                 </Button>
               </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Attestation Tab — TEE attestation verification */}
+      {tab === 'attestation' && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">TEE Attestation</CardTitle>
+              <CardDescription>Verify the Trusted Execution Environment attestation for this sandbox</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Button
+                size="sm"
+                onClick={handleFetchAttestation}
+                disabled={attestationBusy}
+              >
+                <div className="i-ph:shield-check text-sm" />
+                {attestationBusy ? 'Fetching...' : attestation ? 'Refresh Attestation' : 'Get Attestation'}
+              </Button>
+
+              {attestationError && (
+                <p className="text-xs text-red-400">{attestationError}</p>
+              )}
+
+              {attestation && (
+                <div className="space-y-3">
+                  <DetailRow label="TEE Type" value={attestation.tee_type} />
+                  <DetailRow
+                    label="Timestamp"
+                    value={new Date(attestation.timestamp * 1000).toLocaleString()}
+                  />
+                  <div className="space-y-1.5">
+                    <span className="text-sm text-cloud-elements-textSecondary">Measurement</span>
+                    <div className="p-3 rounded-lg bg-cloud-elements-background-depth-2">
+                      <code className="text-xs font-data text-cloud-elements-textPrimary break-all">
+                        {bytesToHex(attestation.measurement)}
+                      </code>
+                    </div>
+                  </div>
+                  <details className="group">
+                    <summary className="text-sm text-cloud-elements-textSecondary cursor-pointer hover:text-cloud-elements-textPrimary transition-colors">
+                      Evidence ({attestation.evidence.length} bytes)
+                    </summary>
+                    <div className="mt-2 p-3 rounded-lg bg-cloud-elements-background-depth-2 max-h-48 overflow-y-auto">
+                      <code className="text-xs font-data text-cloud-elements-textTertiary break-all">
+                        {bytesToHex(attestation.evidence)}
+                      </code>
+                    </div>
+                  </details>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

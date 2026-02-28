@@ -5,7 +5,7 @@
  * instead of duplicating factory functions.
  */
 
-import type { JobDefinition, JobFieldDef, AbiContextParam, JobCategory } from '~/lib/blueprints/registry';
+import type { JobDefinition, JobFieldDef, AbiContextParam, JobCategory } from '@tangle/blueprint-ui';
 
 // ── Job factory ──
 
@@ -15,7 +15,7 @@ const JOB_DEFAULTS: JobDefinition = {
   label: 'Test Job',
   description: 'Test job for unit tests',
   category: 'execution',
-  icon: 'i-ph:test',
+  icon: 'i-ph:flask',
   pricingMultiplier: 1,
   requiresSandbox: false,
   fields: [],

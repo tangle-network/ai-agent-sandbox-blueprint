@@ -1,13 +1,13 @@
 import { Link } from 'react-router';
 import { useStore } from '@nanostores/react';
-import { AnimatedPage, StaggerContainer, StaggerItem } from '~/components/motion/AnimatedPage';
-import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card';
-import { Button } from '~/components/ui/button';
+import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle/blueprint-ui/components';
+import { Card, CardContent, CardHeader, CardTitle } from '@tangle/blueprint-ui/components';
+import { Button } from '@tangle/blueprint-ui/components';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { sandboxListStore, runningSandboxes, stoppedSandboxes } from '~/lib/stores/sandboxes';
 import { instanceListStore, runningInstances } from '~/lib/stores/instances';
 import { useServiceStats, useAvailableCapacity, useWorkflowIds } from '~/lib/hooks/useSandboxReads';
-import { cn } from '~/lib/utils';
+import { cn } from '@tangle/blueprint-ui';
 
 export default function Dashboard() {
   const sandboxes = useStore(sandboxListStore);

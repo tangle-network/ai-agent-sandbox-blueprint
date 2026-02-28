@@ -20,7 +20,8 @@ export interface SidecarAuth {
   token: string | null;
   isAuthenticated: boolean;
   isAuthenticating: boolean;
-  authenticate: () => Promise<void>;
+  authenticate: () => Promise<string | null>;
+  clearCachedToken: () => void;
   error: string | null;
 }
 
@@ -85,7 +86,14 @@ export function useSidecarAuth({ resourceId, apiUrl, signMessage }: UseSidecarAu
   const [error, setError] = useState<string | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
-  const authenticate = useCallback(async () => {
+  const clearCachedToken = useCallback(() => {
+    setToken(null);
+    setExpiresAt(0);
+    clearSession(resourceId, apiUrl);
+  }, [resourceId, apiUrl]);
+
+  const authenticate = useCallback(async (): Promise<string | null> => {
+    if (!apiUrl) return null;
     setIsAuthenticating(true);
     setError(null);
 
@@ -117,15 +125,15 @@ export function useSidecarAuth({ resourceId, apiUrl, signMessage }: UseSidecarAu
       setToken(newToken);
       setExpiresAt(expires_at);
       saveSession(resourceId, apiUrl, newToken, expires_at);
+      return newToken;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
-      setToken(null);
-      setExpiresAt(0);
-      clearSession(resourceId, apiUrl);
+      clearCachedToken();
+      return null;
     } finally {
       setIsAuthenticating(false);
     }
-  }, [resourceId, apiUrl, signMessage]);
+  }, [resourceId, apiUrl, signMessage, clearCachedToken]);
 
   // Auto-refresh token 5 minutes before expiry
   useEffect(() => {
@@ -137,15 +145,13 @@ export function useSidecarAuth({ resourceId, apiUrl, signMessage }: UseSidecarAu
 
     const msUntilRefresh = (expiresAt - 300) * 1000 - Date.now();
     if (msUntilRefresh <= 0) {
-      setToken(null);
-      clearSession(resourceId, apiUrl);
+      clearCachedToken();
       return;
     }
 
     refreshTimerRef.current = setTimeout(() => {
       authenticate().catch(() => {
-        setToken(null);
-        clearSession(resourceId, apiUrl);
+        clearCachedToken();
       });
     }, msUntilRefresh);
 
@@ -154,13 +160,14 @@ export function useSidecarAuth({ resourceId, apiUrl, signMessage }: UseSidecarAu
         clearTimeout(refreshTimerRef.current);
       }
     };
-  }, [token, expiresAt, authenticate, resourceId, apiUrl]);
+  }, [token, expiresAt, authenticate, clearCachedToken]);
 
   return {
     token,
     isAuthenticated: token !== null,
     isAuthenticating,
     authenticate,
+    clearCachedToken,
     error,
   };
 }

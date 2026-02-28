@@ -37,10 +37,15 @@ export { useRunCollapseState } from './hooks/useRunCollapseState';
 export { useAutoScroll } from './hooks/useAutoScroll';
 export { useSessionStream } from './hooks/useSessionStream';
 export type { SessionInfo, UseSessionStreamOptions, UseSessionStreamResult } from './hooks/useSessionStream';
+export { useDropdownMenu } from './hooks/useDropdownMenu';
+export { useWalletEthBalance } from './hooks/useWalletEthBalance';
 
 // Utils
 export { cn } from './utils/cn';
 export { formatDuration, truncateText } from './utils/format';
+export { copyText } from './utils/copyText';
+export { timeAgo } from './utils/timeAgo';
+export { truncateAddress } from './utils/truncateAddress';
 export {
   getToolDisplayMetadata,
   getToolCategory,
@@ -77,6 +82,7 @@ export { MessageList } from './components/chat/MessageList';
 export type { MessageListProps } from './components/chat/MessageList';
 export { UserMessage } from './components/chat/UserMessage';
 export type { UserMessageProps } from './components/chat/UserMessage';
+export { ConnectWalletCta } from './components/web3/ConnectWalletCta';
 
 // Sidecar — PTY session
 export { usePtySession } from './hooks/usePtySession';
@@ -85,6 +91,8 @@ export type { UsePtySessionOptions, UsePtySessionReturn } from './hooks/usePtySe
 // Sidecar — Auth (generic, no wallet dependency)
 export { useSidecarAuth } from './hooks/useSidecarAuth';
 export type { UseSidecarAuthOptions, SidecarAuth } from './hooks/useSidecarAuth';
+// Sidecar — Auth adapter for wagmi wallets
+export { useWagmiSidecarAuth } from './hooks/useWagmiSidecarAuth';
 
 // Sidecar — Session CRUD (requires @tanstack/react-query peer)
 export { useSessions, useCreateSession, useDeleteSession, useRenameSession } from './hooks/useSessionCrud';

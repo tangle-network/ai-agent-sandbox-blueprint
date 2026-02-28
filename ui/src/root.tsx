@@ -3,7 +3,7 @@ import './styles/global.scss';
 
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, useRouteError, isRouteErrorResponse } from 'react-router';
 import { Toaster } from 'sonner';
-import { useThemeValue } from '~/lib/hooks/useThemeValue';
+import { useThemeValue } from '@tangle/blueprint-ui';
 import { Web3Provider } from '~/providers/Web3Provider';
 import { Header } from '~/components/layout/Header';
 import { Footer } from '~/components/layout/Footer';

@@ -4,11 +4,11 @@ import { decodeAbiParameters } from 'viem';
  * ABI encoding/decoding helpers for Tangle blueprint jobs.
  *
  * For ENCODING, use the generic encoder:
- *   import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
+ *   import { encodeJobArgs } from '@tangle/blueprint-ui';
  */
 
 // Re-export the generic encoder for convenience
-export { encodeJobArgs } from './generic-encoder';
+export { encodeJobArgs } from '@tangle/blueprint-ui';
 
 // ── Result Decoding ──
 

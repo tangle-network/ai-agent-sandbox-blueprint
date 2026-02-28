@@ -7,19 +7,19 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from '~/components/ui/dialog';
-import { Button } from '~/components/ui/button';
-import { Input } from '~/components/ui/input';
-import { Badge } from '~/components/ui/badge';
-import { Card, CardContent } from '~/components/ui/card';
-import { Identicon } from '~/components/shared/Identicon';
-import { infraStore, updateInfra } from '~/lib/stores/infra';
-import { useServiceValidation } from '~/lib/hooks/useServiceValidation';
-import { useOperators, type DiscoveredOperator } from '~/lib/hooks/useOperators';
-import { useQuotes, formatCost } from '~/lib/hooks/useQuotes';
+} from '@tangle/blueprint-ui/components';
+import { Button } from '@tangle/blueprint-ui/components';
+import { Input } from '@tangle/blueprint-ui/components';
+import { Badge } from '@tangle/blueprint-ui/components';
+import { Card, CardContent } from '@tangle/blueprint-ui/components';
+import { Identicon } from '@tangle/blueprint-ui/components';
+import { infraStore, updateInfra } from '@tangle/blueprint-ui';
+import { useServiceValidation } from '@tangle/blueprint-ui';
+import { useOperators, type DiscoveredOperator } from '@tangle/blueprint-ui';
+import { useQuotes, formatCost } from '@tangle/blueprint-ui';
 import { tangleServicesAbi } from '~/lib/contracts/abi';
-import { getAddresses } from '~/lib/contracts/publicClient';
-import { cn } from '~/lib/utils';
+import { getAddresses } from '@tangle/blueprint-ui';
+import { cn } from '@tangle/blueprint-ui';
 import type { Address } from 'viem';
 
 interface InfrastructureModalProps {

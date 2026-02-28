@@ -9,7 +9,10 @@
     "preview": "vite preview --port 4173",
     "typecheck": "react-router typegen && tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "@nanostores/react": "^0.7.2",
@@ -51,8 +54,10 @@
   },
   "devDependencies": {
     "@iconify-json/ph": "^1.1.13",
+    "@playwright/test": "^1.58.2",
     "@react-router/dev": "^7.9.5",
     "@react-router/fs-routes": "^7.9.5",
+    "@tangle-network/agent-browser-driver": "^0.3.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/react": "18.3.1",

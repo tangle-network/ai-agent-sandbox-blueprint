@@ -2,28 +2,28 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useAccount } from 'wagmi';
 import { useStore } from '@nanostores/react';
-import { AnimatedPage } from '~/components/motion/AnimatedPage';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '~/components/ui/card';
-import { Button } from '~/components/ui/button';
-import { Badge } from '~/components/ui/badge';
+import { AnimatedPage } from '@tangle/blueprint-ui/components';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle/blueprint-ui/components';
+import { Button } from '@tangle/blueprint-ui/components';
+import { Badge } from '@tangle/blueprint-ui/components';
 import { InfrastructureModal, InfraBar } from '~/components/shared/InfrastructureModal';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
-import { infraStore, updateInfra } from '~/lib/stores/infra';
-import { BlueprintJobForm, type FormSection } from '~/components/forms/BlueprintJobForm';
-import { Identicon } from '~/components/shared/Identicon';
+import { infraStore, updateInfra } from '@tangle/blueprint-ui';
+import { BlueprintJobForm, type FormSection } from '@tangle/blueprint-ui/components';
+import { Identicon } from '@tangle/blueprint-ui/components';
 
-import { useJobForm } from '~/lib/hooks/useJobForm';
-import { useJobPrice } from '~/lib/hooks/useJobPrice';
-import { useServiceValidation } from '~/lib/hooks/useServiceValidation';
-import { formatCost } from '~/lib/hooks/useQuotes';
+import { useJobForm } from '@tangle/blueprint-ui';
+import { useJobPrice } from '@tangle/blueprint-ui';
+import { useServiceValidation } from '@tangle/blueprint-ui';
+import { formatCost } from '@tangle/blueprint-ui';
 import { useAvailableCapacity } from '~/lib/hooks/useSandboxReads';
 import { useCreateDeploy, type DeployStatus } from '~/lib/hooks/useCreateDeploy';
 import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition } from '~/lib/blueprints';
 import { updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { updateInstanceStatus } from '~/lib/stores/instances';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
-import type { DiscoveredOperator } from '~/lib/hooks/useOperators';
-import { cn } from '~/lib/utils';
+import type { DiscoveredOperator } from '@tangle/blueprint-ui';
+import { cn } from '@tangle/blueprint-ui';
 
 // ── Blueprint → on-chain ID mapping from env vars ──
 
@@ -109,8 +109,26 @@ export default function CreatePage() {
 
   const { values, errors, onChange, validate, reset: resetForm } = useJobForm(createJob);
 
+  // Extra ports input (not an ABI field — merged into metadataJson before deploy)
+  const [portsInput, setPortsInput] = useState('');
+
+  // Merge ports into metadataJson so they reach the backend via metadata_json.ports
+  const mergedValues = useMemo(() => {
+    const ports = portsInput
+      .split(',')
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => n > 0 && n <= 65535);
+    if (ports.length === 0) return values;
+    try {
+      const existing = JSON.parse(String(values.metadataJson || '{}'));
+      return { ...values, metadataJson: JSON.stringify({ ...existing, ports }) };
+    } catch {
+      return { ...values, metadataJson: JSON.stringify({ ports }) };
+    }
+  }, [values, portsInput]);
+
   // Unified deploy hook — manages both submitJob and requestService paths
-  const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values, infra, validate });
+  const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values: mergedValues, infra, validate });
   const { reset: deployReset } = deploy;
 
   const isSandbox = deploy.mode === 'sandbox';
@@ -224,6 +242,23 @@ export default function CreatePage() {
                 errors={errors}
                 sections={PROVISION_SECTIONS}
               />
+
+              {/* Extra ports — not an ABI field, merged into metadataJson */}
+              <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
+                <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+                  Exposed Ports
+                </label>
+                <input
+                  type="text"
+                  value={portsInput}
+                  onChange={(e) => setPortsInput(e.target.value)}
+                  placeholder="e.g. 3000, 8080, 5432"
+                  className="w-full px-3 py-2 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus:outline-none focus:border-cloud-elements-borderColorActive transition-colors"
+                />
+                <p className="text-[11px] text-cloud-elements-textTertiary">
+                  Comma-separated container ports to expose through the operator API proxy.
+                </p>
+              </div>
             </CardContent>
           </Card>
           <div className="flex justify-between">
@@ -239,6 +274,7 @@ export default function CreatePage() {
           blueprint={selectedBlueprint}
           job={createJob}
           values={values}
+          ports={portsInput.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n > 0 && n <= 65535)}
           infra={infra}
           entityLabel={entityLabel}
           deploy={deploy}
@@ -371,6 +407,7 @@ interface DeployStepProps {
   blueprint: BlueprintDefinition;
   job: JobDefinition;
   values: Record<string, unknown>;
+  ports: number[];
   infra: { blueprintId: string; serviceId: string };
   entityLabel: string;
   deploy: ReturnType<typeof useCreateDeploy>;
@@ -390,7 +427,7 @@ interface DeployStepProps {
 }
 
 function DeployStep({
-  blueprint, job, values, infra, entityLabel, deploy,
+  blueprint, job, values, ports, infra, entityLabel, deploy,
   capacity, provisionEstimate, provisionPriceFormatted,
   hasProvisionRfq, priceLoading,
   serviceInfo, serviceValidating, serviceError,
@@ -448,6 +485,7 @@ function DeployStep({
           <ResourcePill icon="i-ph:cpu" label={`${cpuCores} CPU`} />
           <ResourcePill icon="i-ph:memory" label={`${memoryMb} MB`} />
           <ResourcePill icon="i-ph:hard-drive" label={`${diskGb} GB`} />
+          {ports.length > 0 && <ResourcePill icon="i-ph:globe" label={`${ports.length} port${ports.length > 1 ? 's' : ''}`} />}
           <div className="ml-auto flex items-center gap-1.5 text-xs">
             <ServiceStatusBadge
               infra={infra}

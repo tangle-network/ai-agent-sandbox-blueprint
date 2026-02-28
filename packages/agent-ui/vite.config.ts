@@ -17,6 +17,7 @@ export default defineConfig({
     lib: {
       entry: {
         index: resolve(__dirname, 'src/index.ts'),
+        primitives: resolve(__dirname, 'src/primitives.ts'),
         terminal: resolve(__dirname, 'src/terminal.ts'),
       },
       formats: ['es'],
@@ -34,6 +35,7 @@ export default defineConfig({
         '@xterm/xterm',
         '@xterm/addon-fit',
         '@xterm/addon-web-links',
+        'wagmi',
       ],
     },
   },

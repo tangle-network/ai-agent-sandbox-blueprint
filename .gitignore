@@ -50,6 +50,11 @@ ui/build/
 ui/.react-router/
 ui/node_modules/
 
+# Playwright E2E
+ui/test-results/
+ui/playwright-report/
+ui/e2e-results/
+
 # Monorepo workspace (pnpm hoisted)
 node_modules/
 packages/*/node_modules/

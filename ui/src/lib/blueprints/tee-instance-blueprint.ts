@@ -1,6 +1,6 @@
 import { TEE_INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
 import { createInstanceJobs } from './instance-blueprint';
-import { type BlueprintDefinition, registerBlueprint } from './registry';
+import { type BlueprintDefinition, registerBlueprint } from '@tangle/blueprint-ui';
 import type { Address } from 'viem';
 
 /**

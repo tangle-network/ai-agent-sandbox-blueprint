@@ -66,8 +66,7 @@ function clientChunks(): Plugin {
               output: {
                 manualChunks: {
                   'react-vendor': ['react', 'react-dom', 'react-router'],
-                  'web3-vendor': ['wagmi', 'viem', '@tanstack/react-query', 'connectkit'],
-                  'motion-vendor': ['framer-motion'],
+                  'web3-vendor': ['wagmi', 'viem', '@tanstack/react-query', 'connectkit', 'framer-motion'],
                   'terminal-vendor': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links'],
                 },
               },

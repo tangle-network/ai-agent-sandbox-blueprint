@@ -1,27 +1,30 @@
 import { useParams, Link } from 'react-router';
 import { lazy, Suspense, useState, useCallback, useMemo, useEffect } from 'react';
 import { useStore } from '@nanostores/react';
-import { AnimatedPage } from '~/components/motion/AnimatedPage';
-import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card';
-import { Button } from '~/components/ui/button';
+import { AnimatedPage } from '@tangle/blueprint-ui/components';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle/blueprint-ui/components';
+import { Button } from '@tangle/blueprint-ui/components';
 import { StatusBadge } from '~/components/shared/StatusBadge';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
-import { useSubmitJob } from '~/lib/hooks/useSubmitJob';
-import { encodeJobArgs } from '~/lib/contracts/generic-encoder';
+import { useSubmitJob } from '@tangle/blueprint-ui';
+import { encodeJobArgs } from '@tangle/blueprint-ui';
 import { getBlueprint, getJobById } from '~/lib/blueprints';
 import { INSTANCE_JOB_IDS, INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
+import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
-import { cn } from '~/lib/utils';
+import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
+import { cn } from '@tangle/blueprint-ui';
+import { bytesToHex, type AttestationData } from '~/lib/tee';
 
 const TerminalView = lazy(() =>
   import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),
 );
 
-type ActionTab = 'overview' | 'terminal' | 'chat';
+type ActionTab = 'overview' | 'terminal' | 'chat' | 'attestation';
 
 export default function InstanceDetail() {
   const { id } = useParams<{ id: string }>();
@@ -63,6 +66,81 @@ export default function InstanceDetail() {
     return createDirectClient(sidecarUrl, sidecarToken);
   }, [sidecarUrl, sidecarToken]);
 
+  // Operator API auth for attestation
+  const operatorUrl = INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL;
+  const { getToken: getOperatorToken } = useOperatorAuth(operatorUrl);
+
+  /** Call operator API for instance operations (attestation). */
+  const operatorApiCall = useCallback(async (
+    action: string,
+    body?: Record<string, unknown>,
+    opts?: { method?: string },
+  ) => {
+    const token = await getOperatorToken();
+    if (!token) throw new Error('Wallet authentication required');
+
+    const url = `${operatorUrl}/api/sandbox/${action}`;
+
+    const doFetch = (bearerToken: string) =>
+      fetch(url, {
+        method: opts?.method ?? 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${bearerToken}`,
+        },
+        body: body ? JSON.stringify(body) : '{}',
+      });
+
+    let res = await doFetch(token);
+
+    if (res.status === 401) {
+      const freshToken = await getOperatorToken(true);
+      if (!freshToken) throw new Error('Re-authentication failed');
+      res = await doFetch(freshToken);
+    }
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`${action} failed (${res.status}): ${text}`);
+    }
+    return res;
+  }, [operatorUrl, getOperatorToken]);
+
+  // Ports state
+  const [ports, setPorts] = useState<{ container_port: number; host_port: number; protocol: string }[] | null>(null);
+
+  // Fetch exposed ports when instance is running
+  useEffect(() => {
+    if (inst?.status !== 'running' && inst?.status !== 'creating') return;
+    let cancelled = false;
+    operatorApiCall('ports', undefined, { method: 'GET' })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) setPorts(data);
+      })
+      .catch(() => { /* ports endpoint may not exist — ignore */ });
+    return () => { cancelled = true; };
+  }, [inst?.status, operatorApiCall]);
+
+  // Attestation state
+  const [attestation, setAttestation] = useState<AttestationData | null>(null);
+  const [attestationBusy, setAttestationBusy] = useState(false);
+  const [attestationError, setAttestationError] = useState<string | null>(null);
+
+  const handleFetchAttestation = useCallback(async () => {
+    setAttestationBusy(true);
+    setAttestationError(null);
+    try {
+      const res = await operatorApiCall('tee/attestation', undefined, { method: 'GET' });
+      const data: AttestationData = await res.json();
+      setAttestation(data);
+    } catch (e) {
+      setAttestationError(e instanceof Error ? e.message : 'Failed to fetch attestation');
+    } finally {
+      setAttestationBusy(false);
+    }
+  }, [operatorApiCall]);
+
   /** Compute job value from pricing tier (base rate = 0.001 TNT = 1e15 wei) */
   const jobValue = (jobId: number): bigint =>
     BigInt(INSTANCE_PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
@@ -101,6 +179,7 @@ export default function InstanceDetail() {
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal' },
     { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle' },
+    ...(inst.teeEnabled ? [{ key: 'attestation' as const, label: 'Attestation', icon: 'i-ph:shield-check' }] : []),
   ];
 
   return (
@@ -194,6 +273,38 @@ export default function InstanceDetail() {
               )}
             </CardContent>
           </Card>
+
+          {/* Exposed Ports */}
+          {ports && ports.length > 0 && (
+            <Card className="lg:col-span-2">
+              <CardHeader>
+                <CardTitle className="text-sm">Exposed Ports</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {ports.map((p) => (
+                    <div
+                      key={p.container_port}
+                      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor"
+                    >
+                      <div className="i-ph:globe text-sm text-teal-400" />
+                      <div className="min-w-0">
+                        <span className="text-xs font-data font-medium text-cloud-elements-textPrimary">
+                          :{p.container_port}
+                        </span>
+                        <span className="text-[10px] text-cloud-elements-textTertiary ml-1.5">
+                          {p.protocol}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-cloud-elements-textTertiary mt-2">
+                  Access via <span className="font-data">/api/sandbox/port/{'{port}'}/</span>
+                </p>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
 
@@ -252,6 +363,60 @@ export default function InstanceDetail() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Attestation Tab — TEE attestation verification */}
+      {tab === 'attestation' && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">TEE Attestation</CardTitle>
+              <CardDescription>Verify the Trusted Execution Environment attestation for this instance</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Button
+                size="sm"
+                onClick={handleFetchAttestation}
+                disabled={attestationBusy}
+              >
+                <div className="i-ph:shield-check text-sm" />
+                {attestationBusy ? 'Fetching...' : attestation ? 'Refresh Attestation' : 'Get Attestation'}
+              </Button>
+
+              {attestationError && (
+                <p className="text-xs text-red-400">{attestationError}</p>
+              )}
+
+              {attestation && (
+                <div className="space-y-3">
+                  <Row label="TEE Type" value={attestation.tee_type} />
+                  <Row
+                    label="Timestamp"
+                    value={new Date(attestation.timestamp * 1000).toLocaleString()}
+                  />
+                  <div className="space-y-1.5">
+                    <span className="text-sm text-cloud-elements-textSecondary">Measurement</span>
+                    <div className="p-3 rounded-lg bg-cloud-elements-background-depth-2">
+                      <code className="text-xs font-data text-cloud-elements-textPrimary break-all">
+                        {bytesToHex(attestation.measurement)}
+                      </code>
+                    </div>
+                  </div>
+                  <details className="group">
+                    <summary className="text-sm text-cloud-elements-textSecondary cursor-pointer hover:text-cloud-elements-textPrimary transition-colors">
+                      Evidence ({attestation.evidence.length} bytes)
+                    </summary>
+                    <div className="mt-2 p-3 rounded-lg bg-cloud-elements-background-depth-2 max-h-48 overflow-y-auto">
+                      <code className="text-xs font-data text-cloud-elements-textTertiary break-all">
+                        {bytesToHex(attestation.evidence)}
+                      </code>
+                    </div>
+                  </details>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
     </AnimatedPage>
   );
