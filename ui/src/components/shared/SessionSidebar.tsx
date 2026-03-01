@@ -162,7 +162,7 @@ export function SessionSidebar({
             className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-cloud-elements-item-backgroundHover transition-colors"
             title={sidebarOpen ? 'Hide sessions' : 'Show sessions'}
           >
-            <div className={cn('text-sm text-cloud-elements-textTertiary', sidebarOpen ? 'i-ph:sidebar-simple' : 'i-ph:sidebar-simple')} />
+            <div className={cn('text-sm text-cloud-elements-textTertiary', sidebarOpen ? 'i-ph:sidebar-simple' : 'i-ph:list')} />
           </button>
 
           <span className="text-xs font-display font-medium text-cloud-elements-textPrimary truncate flex-1">

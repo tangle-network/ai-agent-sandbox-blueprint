@@ -64,6 +64,7 @@ export function computeCanDeploy(opts: {
   hasAddress: boolean;
   status: DeployStatus;
   contractsDeployed: boolean;
+  correctChain: boolean;
   mode: DeployMode;
   hasValidService: boolean;
   isNewService: boolean;
@@ -76,6 +77,7 @@ export function computeCanDeploy(opts: {
     opts.hasAddress &&
     opts.status === 'idle' &&
     opts.contractsDeployed &&
+    opts.correctChain &&
     (opts.mode === 'sandbox' ? opts.hasValidService : true) &&
     (!opts.isNewService || (opts.operatorCount > 0 && !opts.operatorsLoading))
   );

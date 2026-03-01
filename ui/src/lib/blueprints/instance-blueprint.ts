@@ -51,7 +51,7 @@ export function createInstanceJobs(opts?: {
           { label: 'Node.js', value: 'nodejs' },
           { label: 'Rust', value: 'rust' },
         ] },
-        { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', placeholder: 'agent-1', abiType: 'string', abiParam: 'agent_identifier' },
+        { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', placeholder: 'agent-1', helperText: 'Set to enable AI chat. Leave empty for plain compute instances.', abiType: 'string', abiParam: 'agent_identifier' },
         { name: 'envJson', label: 'Environment Variables (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'env_json' },
         { name: 'metadataJson', label: 'Metadata (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'metadata_json' },
         { name: 'sshEnabled', label: 'Enable SSH', type: 'boolean', defaultValue: false, abiType: 'bool', abiParam: 'ssh_enabled' },

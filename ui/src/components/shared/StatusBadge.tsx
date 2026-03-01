@@ -1,7 +1,8 @@
 import { Badge } from '@tangle/blueprint-ui/components';
 import type { SandboxStatus } from '~/lib/types/sandbox';
 
-const statusConfig: Record<SandboxStatus, { label: string; variant: 'running' | 'stopped' | 'cold' | 'destructive' | 'secondary'; dot: string }> = {
+const statusConfig: Record<SandboxStatus, { label: string; variant: 'running' | 'stopped' | 'cold' | 'destructive' | 'secondary' | 'accent'; dot: string }> = {
+  creating: { label: 'Creating', variant: 'accent', dot: 'status-creating' },
   running: { label: 'Running', variant: 'running', dot: 'status-running' },
   stopped: { label: 'Stopped', variant: 'stopped', dot: 'status-stopped' },
   warm: { label: 'Warm', variant: 'stopped', dot: 'status-warm' },

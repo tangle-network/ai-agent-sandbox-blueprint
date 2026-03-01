@@ -33,6 +33,26 @@ Caller ─── Tangle EVM ─── BlueprintRunner ─── Job Handlers
 | `contracts/` | Solidity BSM contract (deployed 3x with different flags) |
 | `ui/` | React frontend for sandbox management |
 
+## UI Package Boundaries
+
+The UI uses two shared packages. Keep responsibilities strict to avoid copy/paste drift:
+
+- `@tangle/blueprint-ui`:
+  - Blueprint and chain infrastructure (`publicClient`, chain/address helpers, ABI exports)
+  - Job/provisioning/quote utilities, infra/session/tx stores
+  - Reusable cross-blueprint UI primitives and layout components
+- `@tangle/agent-ui`:
+  - Agent chat/session rendering, run/tool timeline UI, markdown/tool previews
+  - Sidecar auth/session hooks and PTY terminal integration
+  - Shared lightweight UI utilities in `@tangle/agent-ui/primitives`
+- App-local (`ui/src/**`):
+  - Sandbox-specific routes, workflows, feature copy, and product behavior
+
+Extraction rule:
+- If Sandbox UI and Arena UI carry the same non-trivial implementation (roughly 20+ lines), promote it to the appropriate shared package instead of creating a third copy.
+- Recommended duplication check:
+  - `npx jscpd --min-lines 8 --min-tokens 80 --format ts,tsx --ignore "**/node_modules/**,**/.next/**,**/dist/**,**/build/**" /home/drew/code/blueprint-ui/src /home/drew/code/ai-agent-sandbox-blueprint/packages/agent-ui/src /home/drew/code/ai-agent-sandbox-blueprint/ui/src /home/drew/code/ai-trading-blueprints/arena/src`
+
 ## On-Chain Jobs (7 total)
 
 | ID | Name | Mode | Description |

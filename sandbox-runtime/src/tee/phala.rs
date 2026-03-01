@@ -126,12 +126,17 @@ impl TeeBackend for PhalaBackend {
             "phala_public_url": network.public_urls.app,
         });
 
+        if !params.extra_ports.is_empty() {
+            tracing::warn!("Extra ports not yet supported for Phala backend — ignored");
+        }
+
         Ok(TeeDeployment {
             deployment_id: app_id,
             sidecar_url,
             ssh_port: params.ssh_port,
             attestation,
             metadata_json: metadata.to_string(),
+            extra_ports: std::collections::HashMap::new(),
         })
     }
 

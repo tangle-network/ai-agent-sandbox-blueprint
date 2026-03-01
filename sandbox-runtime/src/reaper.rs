@@ -99,8 +99,9 @@ pub async fn reaper_tick() {
                 continue;
             }
 
-            // Post-stop: docker commit to preserve filesystem
-            if config.snapshot_auto_commit {
+            // Post-stop: docker commit to preserve filesystem.
+            // TEE sandboxes have no Docker container to commit — skip.
+            if config.snapshot_auto_commit && record.tee_deployment_id.is_none() {
                 match commit_container(&record).await {
                     Ok(image_id) => {
                         if let Ok(store) = sandboxes() {
@@ -147,6 +148,12 @@ pub async fn gc_tick() {
 
     for record in records {
         if record.state != SandboxState::Stopped {
+            continue;
+        }
+
+        // TEE sandboxes have no Docker container/image/S3 tier — their lifecycle
+        // is managed by the TEE backend, not Docker GC.
+        if record.tee_deployment_id.is_some() {
             continue;
         }
 

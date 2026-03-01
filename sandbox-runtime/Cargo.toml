@@ -64,3 +64,5 @@ tee-aws-nitro = ["dep:aws-config", "dep:aws-sdk-ec2"]
 tee-gcp = ["dep:gcp_auth"]
 tee-azure = []
 tee-all = ["tee-phala", "tee-direct", "tee-aws-nitro", "tee-gcp", "tee-azure"]
+# Testing feature: enables DirectTeeBackend without TEE device passthrough
+test-direct-no-device = ["tee-direct", "test-utils"]

@@ -18,12 +18,14 @@ import { useServiceValidation } from '@tangle/blueprint-ui';
 import { formatCost } from '@tangle/blueprint-ui';
 import { useAvailableCapacity } from '~/lib/hooks/useSandboxReads';
 import { useCreateDeploy, type DeployStatus } from '~/lib/hooks/useCreateDeploy';
-import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition } from '~/lib/blueprints';
+import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition } from '@tangle/blueprint-ui';
 import { updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { updateInstanceStatus } from '~/lib/stores/instances';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
+import { BlueprintBadgeInline } from '~/components/shared/InfraSummaryBits';
 import type { DiscoveredOperator } from '@tangle/blueprint-ui';
 import { cn } from '@tangle/blueprint-ui';
+import { EnvEditor } from '~/components/shared/EnvEditor';
 
 // ── Blueprint → on-chain ID mapping from env vars ──
 
@@ -50,7 +52,7 @@ const PROVISION_SECTIONS: FormSection[] = [
   { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
   { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
   { label: 'Features', fields: ['sshEnabled', 'sshPublicKey', 'webTerminalEnabled'] },
-  { label: 'Advanced Options', fields: ['envJson', 'metadataJson', 'teeRequired', 'teeType'], collapsed: true },
+  { label: 'Advanced Options', fields: ['metadataJson', 'teeRequired', 'teeType'], collapsed: true },
 ];
 
 // ── Wizard Steps ──
@@ -98,6 +100,23 @@ export default function CreatePage() {
       }
     }
   }, [preselected]);
+
+  // Sync service validation result back to infraStore so useCreateDeploy can read it.
+  // useServiceValidation stores results in local state; useCreateDeploy reads infra.serviceInfo.
+  useEffect(() => {
+    if (serviceInfo) {
+      updateInfra({
+        serviceValidated: true,
+        serviceInfo: {
+          active: serviceInfo.active,
+          operatorCount: serviceInfo.operatorCount,
+          owner: serviceInfo.owner,
+          blueprintId: String(serviceInfo.blueprintId),
+          permitted: serviceInfo.permitted,
+        },
+      });
+    }
+  }, [serviceInfo]);
 
   // The create/provision job: first lifecycle job that doesn't require an existing resource
   const createJob = useMemo<JobDefinition | null>(() => {
@@ -243,6 +262,20 @@ export default function CreatePage() {
                 sections={PROVISION_SECTIONS}
               />
 
+              {/* Environment variables — key-value editor instead of raw JSON */}
+              <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
+                <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+                  Environment Variables
+                </label>
+                <EnvEditor
+                  value={String(values.envJson || '{}')}
+                  onChange={(json) => onChange('envJson', json)}
+                />
+                <p className="text-[11px] text-cloud-elements-textTertiary">
+                  Key-value pairs injected as environment variables into the sandbox.
+                </p>
+              </div>
+
               {/* Extra ports — not an ABI field, merged into metadataJson */}
               <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
                 <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
@@ -263,7 +296,7 @@ export default function CreatePage() {
           </Card>
           <div className="flex justify-between">
             <Button variant="secondary" onClick={() => setStep('blueprint')}>Back</Button>
-            <Button onClick={() => setStep('deploy')} disabled={!createJob || !values.name}>Continue</Button>
+            <Button onClick={() => { if (validate()) setStep('deploy'); }} disabled={!createJob || !values.name}>Continue</Button>
           </div>
         </div>
       )}
@@ -318,11 +351,7 @@ function InstanceInfraBar({
   return (
     <div className="glass-card rounded-lg p-3 flex items-center justify-between mb-6">
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <div className="i-ph:cube text-sm text-cloud-elements-textTertiary" />
-          <span className="text-xs text-cloud-elements-textTertiary">Blueprint</span>
-          <Badge variant="accent">#{infra.blueprintId}</Badge>
-        </div>
+        <BlueprintBadgeInline blueprintId={infra.blueprintId} />
         <div className="flex items-center gap-2">
           <div className="i-ph:users-three text-sm text-cloud-elements-textTertiary" />
           <span className="text-xs text-cloud-elements-textTertiary">
@@ -433,7 +462,8 @@ function DeployStep({
   serviceInfo, serviceValidating, serviceError,
   onBack, onDeploy, onViewList, onOpenInfra, onProvisionReady,
 }: DeployStepProps) {
-  const { address } = useAccount();
+  const { address, isConnected, status: walletStatus } = useAccount();
+  const isReconnecting = walletStatus === 'reconnecting';
   const [showAllJobs, setShowAllJobs] = useState(false);
 
   const name = String(values.name || '');
@@ -613,10 +643,15 @@ function DeployStep({
       )}
 
       {/* ── Wallet warning ── */}
-      {!address && status === 'idle' && (
+      {status === 'idle' && (!isConnected || !address) && (
         <div className="flex items-center gap-2 px-1">
           <div className="i-ph:wallet text-sm text-amber-400" />
-          <span className="text-xs text-amber-400/80">Connect wallet to deploy</span>
+          <span className="text-xs text-amber-400/80">
+            {isReconnecting ? 'Reconnecting wallet...' : 'Connect wallet to deploy'}
+          </span>
+          {isReconnecting && (
+            <div className="w-3 h-3 rounded-full border border-amber-400/40 border-t-amber-400 animate-spin" />
+          )}
         </div>
       )}
 
@@ -756,7 +791,26 @@ function TxStatusCard({
           {txHash && (
             <p className="text-[11px] font-data text-cloud-elements-textTertiary mt-0.5 truncate">{txHash}</p>
           )}
-          {error && <p className="text-xs text-crimson-400 mt-0.5">{error}</p>}
+          {error && (
+            <div className="mt-1">
+              <p className="text-xs text-crimson-400">{error}</p>
+              {/resource not available|request already pending/i.test(error) && (
+                <p className="text-[11px] text-cloud-elements-textTertiary mt-1">
+                  MetaMask may have a pending request. Open MetaMask, dismiss any popups, then try again.
+                </p>
+              )}
+              {/user rejected|denied/i.test(error) && (
+                <p className="text-[11px] text-cloud-elements-textTertiary mt-1">
+                  Transaction was rejected in the wallet.
+                </p>
+              )}
+              {/chain.*mismatch|wrong.*network/i.test(error) && (
+                <p className="text-[11px] text-cloud-elements-textTertiary mt-1">
+                  Your wallet is on a different network. Switch to the correct chain and try again.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

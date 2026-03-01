@@ -852,7 +852,7 @@ async fn create_sidecar_tee(
         stack: request.stack.clone(),
         owner: request.owner.clone(),
         tee_config: request.tee_config.clone(),
-        extra_ports: HashMap::new(), // TEE sandboxes don't expose extra ports yet
+        extra_ports: deployment.extra_ports,
     };
 
     let mut sealed = record.clone();
@@ -958,8 +958,24 @@ fn build_docker_config(
         exposed_ports.insert(format!("{port}/tcp"), HashMap::new());
     }
 
+    // When SIDECAR_NETWORK_HOST=true, use host networking so containers share the
+    // host's network namespace. This avoids firewall issues where the host drops
+    // traffic from the docker bridge interface. Port bindings are ignored in host
+    // network mode — the sidecar binds directly on host ports.
+    let use_host_network =
+        std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+
     let mut host_config = HostConfig {
-        port_bindings: Some(port_bindings),
+        port_bindings: if use_host_network {
+            None
+        } else {
+            Some(port_bindings)
+        },
+        network_mode: if use_host_network {
+            Some("host".to_string())
+        } else {
+            None
+        },
         cap_drop: Some(vec!["ALL".to_string()]),
         cap_add: Some(vec![
             "SYS_PTRACE".to_string(),
@@ -973,6 +989,13 @@ fn build_docker_config(
             ("/tmp".to_string(), "rw,noexec,nosuid,size=512m".to_string()),
             ("/run".to_string(), "rw,noexec,nosuid,size=64m".to_string()),
         ])),
+        // Map host.docker.internal to the host machine so containers can
+        // reach host-bound services on the Docker host.
+        extra_hosts: if use_host_network {
+            None
+        } else {
+            Some(vec!["host.docker.internal:host-gateway".to_string()])
+        },
         ..Default::default()
     };
     if cpu_cores > 0 {
@@ -983,7 +1006,11 @@ fn build_docker_config(
     }
 
     BollardConfig {
-        exposed_ports: Some(exposed_ports),
+        exposed_ports: if use_host_network {
+            None
+        } else {
+            Some(exposed_ports)
+        },
         host_config: Some(host_config),
         labels,
         ..Default::default()
@@ -1009,7 +1036,15 @@ async fn create_sidecar_docker(
 
     let builder = docker_builder().await?;
 
-    ensure_image_pulled(builder, &config.image).await?;
+    // Use the user-supplied image if provided, otherwise fall back to the
+    // operator's SIDECAR_IMAGE env var.
+    let effective_image = if request.image.is_empty() {
+        config.image.clone()
+    } else {
+        request.image.clone()
+    };
+
+    ensure_image_pulled(builder, &effective_image).await?;
 
     let sandbox_id = next_sandbox_id();
     let token = match token_override {
@@ -1050,7 +1085,7 @@ async fn create_sidecar_docker(
         &extra_ports,
     );
 
-    let mut container = Container::new(builder.client(), config.image.clone())
+    let mut container = Container::new(builder.client(), effective_image)
         .with_name(container_name)
         .env(env_vars)
         .config_override(override_config);
@@ -1071,9 +1106,17 @@ async fn create_sidecar_docker(
         )
         .await?;
 
-        let (sidecar_port, ssh_port) =
-            extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
-        let extra_port_map = extract_extra_ports(&inspect, &extra_ports);
+        let use_host_network =
+            std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+        let (sidecar_port, ssh_port, extra_port_map) = if use_host_network {
+            // Host network mode: container ports bind directly on the host.
+            // No Docker port mappings — use the container's internal ports.
+            (config.container_port, None, HashMap::new())
+        } else {
+            let (sp, ssh) = extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
+            let epm = extract_extra_ports(&inspect, &extra_ports);
+            (sp, ssh, epm)
+        };
         let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
         let now = crate::util::now_ts();
@@ -1099,7 +1142,7 @@ async fn create_sidecar_docker(
             snapshot_s3_url: None,
             container_removed_at: None,
             image_removed_at: None,
-            original_image: config.image.clone(),
+            original_image: request.image.clone(),
             base_env_json: request.env_json.clone(),
             user_env_json: request.user_env_json.clone(),
             snapshot_destination,
@@ -1351,6 +1394,16 @@ pub async fn recreate_sidecar_with_env(
 ) -> Result<SandboxRecord> {
     let old = get_sandbox_by_id(sandbox_id)?;
 
+    // TEE sandboxes cannot be recreated — it would invalidate attestation,
+    // break sealed secrets, and orphan the on-chain deployment ID.
+    if old.tee_deployment_id.is_some() {
+        return Err(SandboxError::Validation(
+            "Secret re-injection via container recreation is not supported for TEE sandboxes. \
+             Use the sealed-secrets API instead."
+                .into(),
+        ));
+    }
+
     // Stop if running, then delete
     if old.state == SandboxState::Running {
         let _ = stop_sidecar(&old).await;
@@ -1493,7 +1546,13 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         )
         .await?;
 
-        let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
+        let use_host_network =
+            std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+        let (sidecar_port, ssh_port) = if use_host_network {
+            (config.container_port, None)
+        } else {
+            extract_ports(&inspect, config.container_port, ssh_enabled)?
+        };
         let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
         let now = crate::util::now_ts();
@@ -1574,7 +1633,13 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         )
         .await?;
 
-        let (sidecar_port, ssh_port) = extract_ports(&inspect, config.container_port, ssh_enabled)?;
+        let use_host_network =
+            std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+        let (sidecar_port, ssh_port) = if use_host_network {
+            (config.container_port, None)
+        } else {
+            extract_ports(&inspect, config.container_port, ssh_enabled)?
+        };
         let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
         let token = &record.token;
 
@@ -1644,9 +1709,16 @@ async fn refresh_port_mapping(
         client.inspect_container(container_id, None::<InspectContainerOptions>),
     )
     .await?;
-    let (sidecar_port, ssh_port) = extract_ports(&inspect, container_port, ssh_enabled)?;
-    let container_ports: Vec<u16> = prev_extra_ports.keys().copied().collect();
-    let extra = extract_extra_ports(&inspect, &container_ports);
+    let use_host_network =
+        std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+    let (sidecar_port, ssh_port, extra) = if use_host_network {
+        (container_port, None, HashMap::new())
+    } else {
+        let (sp, ssh) = extract_ports(&inspect, container_port, ssh_enabled)?;
+        let container_ports: Vec<u16> = prev_extra_ports.keys().copied().collect();
+        let extra = extract_extra_ports(&inspect, &container_ports);
+        (sp, ssh, extra)
+    };
     let sidecar_url = format!("http://{public_host}:{sidecar_port}");
     Ok((sidecar_url, sidecar_port, ssh_port, extra))
 }

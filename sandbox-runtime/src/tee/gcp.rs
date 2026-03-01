@@ -327,12 +327,17 @@ impl TeeBackend for GcpConfidentialSpaceBackend {
             "machine_type": self.config.machine_type,
         });
 
+        if !params.extra_ports.is_empty() {
+            tracing::warn!("Extra ports not yet supported for GCP backend — ignored");
+        }
+
         Ok(TeeDeployment {
             deployment_id: instance_name,
             sidecar_url,
             ssh_port: params.ssh_port,
             attestation,
             metadata_json: metadata.to_string(),
+            extra_ports: std::collections::HashMap::new(),
         })
     }
 

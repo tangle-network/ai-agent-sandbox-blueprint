@@ -20,6 +20,8 @@ export interface LocalSandbox {
   operator?: string;
   sidecarUrl?: string;
   teeEnabled?: boolean;
+  /** Agent identifier — when non-empty, the sandbox has an AI agent and chat is available. */
+  agentIdentifier?: string;
   /** Local status (hydrated from contract + events) */
   status: 'creating' | 'running' | 'stopped' | 'warm' | 'cold' | 'gone' | 'error';
   txHash?: string;

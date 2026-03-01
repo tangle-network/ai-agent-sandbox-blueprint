@@ -1,3 +1,9 @@
+// Must be the FIRST import — polyfills crypto.randomUUID before any wallet
+// library (wagmi, ConnectKit, WalletConnect) evaluates. Without this, those
+// libraries fail silently on insecure contexts (HTTP over LAN/Tailscale),
+// causing 10-15s reconnection delays or broken wallet persistence.
+import './polyfills';
+
 import { startTransition } from 'react';
 import { hydrateRoot } from 'react-dom/client';
 import { HydratedRouter } from 'react-router/dom';

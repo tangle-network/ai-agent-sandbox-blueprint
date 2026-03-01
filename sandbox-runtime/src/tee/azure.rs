@@ -535,12 +535,17 @@ impl TeeBackend for AzureSkrBackend {
             "vm_size": self.config.vm_size,
         });
 
+        if !params.extra_ports.is_empty() {
+            tracing::warn!("Extra ports not yet supported for Azure backend — ignored");
+        }
+
         Ok(TeeDeployment {
             deployment_id: vm_name,
             sidecar_url,
             ssh_port: params.ssh_port,
             attestation,
             metadata_json: metadata.to_string(),
+            extra_ports: std::collections::HashMap::new(),
         })
     }
 

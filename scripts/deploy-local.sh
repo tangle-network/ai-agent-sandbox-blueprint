@@ -23,7 +23,8 @@
 #   SKIP_BUILD           — Set to 1 to skip cargo build
 #   BASE_RATE            — Per-job base rate in wei (default: 1e15 = 0.001 TNT)
 #   ANVIL_STATE          — Path to Anvil state snapshot
-#   PUBLIC_HOST          — Hostname for external access (auto-detected from Tailscale)
+#   PUBLIC_HOST          — Hostname for external access (default: 127.0.0.1)
+#   AUTO_DETECT_PUBLIC_HOST=1 — Auto-detect PUBLIC_HOST from Tailscale IPv4
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,13 +38,18 @@ OPERATOR_API_PORT="${OPERATOR_API_PORT:-9100}"
 INSTANCE_OPERATOR_API_PORT="${INSTANCE_OPERATOR_API_PORT:-9200}"
 BASE_RATE="${BASE_RATE:-1000000000000000}" # 1e15 = 0.001 TNT
 
-# Detect Tailscale hostname for external access, fallback to 0.0.0.0
+# Default to loopback for local deterministic testing.
+# Opt-in to Tailscale auto-detection with AUTO_DETECT_PUBLIC_HOST=1.
 if [[ -z "${PUBLIC_HOST:-}" ]]; then
-    TS_IP=$(tailscale ip -4 2>/dev/null || true)
-    if [[ -n "$TS_IP" ]]; then
-        PUBLIC_HOST="$TS_IP"
+    if [[ "${AUTO_DETECT_PUBLIC_HOST:-0}" == "1" ]]; then
+        TS_IP=$(tailscale ip -4 2>/dev/null || true)
+        if [[ -n "$TS_IP" ]]; then
+            PUBLIC_HOST="$TS_IP"
+        else
+            PUBLIC_HOST="127.0.0.1"
+        fi
     else
-        PUBLIC_HOST="0.0.0.0"
+        PUBLIC_HOST="127.0.0.1"
     fi
 fi
 
@@ -367,6 +373,7 @@ fi
 echo "[9/11] Starting sandbox operator..."
 
 export HTTP_RPC_URL="$RPC_URL"
+export HTTP_RPC_ENDPOINT="$RPC_URL"
 export WS_RPC_URL="ws://127.0.0.1:$ANVIL_PORT"
 export BLUEPRINT_ID="$SANDBOX_BLUEPRINT_ID"
 export SERVICE_ID="$SANDBOX_SERVICE_ID"
@@ -455,6 +462,17 @@ TEE_INSTANCE_BLUEPRINT_ID=$TEE_INSTANCE_BLUEPRINT_ID
 SANDBOX_SERVICE_ID=$SANDBOX_SERVICE_ID
 INSTANCE_SERVICE_ID=$INSTANCE_SERVICE_ID
 
+# Orchestrator compatibility (agent-dev-container TangleDriver)
+ORCHESTRATOR_DRIVER=tangle
+TANGLE_RPC_URL=http://127.0.0.1:$ANVIL_PORT
+TANGLE_WS_URL=ws://127.0.0.1:$ANVIL_PORT
+TANGLE_CHAIN_ID=31337
+TANGLE_CONTRACT_ADDRESS=$TANGLE
+TANGLE_SERVICE_ID=$SANDBOX_SERVICE_ID
+TANGLE_BLUEPRINT_CONTRACT_ADDRESS=$SANDBOX_BSM
+TANGLE_PRIVATE_KEY=$USER_KEY
+TANGLE_E2E_IMAGE=$SIDECAR_IMAGE
+
 # Operator
 OPERATOR_API_PORT=$OPERATOR_API_PORT
 INSTANCE_OPERATOR_API_PORT=$INSTANCE_OPERATOR_API_PORT
@@ -477,7 +495,7 @@ EOF
 if [ -d "$ROOT_DIR/ui" ]; then
     cat > "$ROOT_DIR/ui/.env.local" <<EOF
 VITE_USE_LOCAL_CHAIN=true
-VITE_RPC_URL=http://$PUBLIC_HOST:$ANVIL_PORT
+VITE_RPC_URL=http://127.0.0.1:$ANVIL_PORT
 VITE_CHAIN_ID=31337
 VITE_TANGLE_CONTRACT=$TANGLE
 VITE_SANDBOX_BSM=$SANDBOX_BSM
@@ -488,8 +506,8 @@ VITE_INSTANCE_BLUEPRINT_ID=$INSTANCE_BLUEPRINT_ID
 VITE_TEE_INSTANCE_BLUEPRINT_ID=$TEE_INSTANCE_BLUEPRINT_ID
 VITE_SANDBOX_SERVICE_ID=$SANDBOX_SERVICE_ID
 VITE_INSTANCE_SERVICE_ID=$INSTANCE_SERVICE_ID
-VITE_OPERATOR_API_URL=http://$PUBLIC_HOST:$OPERATOR_API_PORT
-VITE_INSTANCE_OPERATOR_API_URL=http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT
+VITE_OPERATOR_API_URL=http://127.0.0.1:$OPERATOR_API_PORT
+VITE_INSTANCE_OPERATOR_API_URL=http://127.0.0.1:$INSTANCE_OPERATOR_API_PORT
 EOF
     echo "  Wrote ui/.env.local"
 fi

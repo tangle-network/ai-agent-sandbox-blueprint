@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useWatchContractEvent } from 'wagmi';
-import { agentSandboxBlueprintAbi, tangleJobsAbi } from '~/lib/contracts/abi';
+import { tangleJobsAbi } from '@tangle/blueprint-ui';
+import { agentSandboxBlueprintAbi } from '~/lib/contracts/abi';
 import { getAddresses } from '@tangle/blueprint-ui';
 
 /**

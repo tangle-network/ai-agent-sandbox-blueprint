@@ -9,7 +9,7 @@ function StatusIcon({ status }: { status: TrackedTx['status'] }) {
 }
 
 export function TxDropdown() {
-  const { open, ref, toggle, close } = useDropdownMenu({ closeOnEsc: false });
+  const { open, ref, toggle, close } = useDropdownMenu({ closeOnEsc: true });
   const txs = useStore(txListStore);
   const pending = useStore(pendingCount);
 
@@ -23,7 +23,7 @@ export function TxDropdown() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-96 glass-card-strong rounded-xl border border-cloud-elements-dividerColor/50 z-50 shadow-xl overflow-hidden">
+        <div className="absolute right-0 top-full mt-2 w-96 rounded-xl border border-cloud-elements-dividerColor/50 z-50 shadow-xl overflow-hidden bg-[var(--cloud-elements-bg-depth-2)]">
           <div className="flex items-center justify-between px-4 py-3 border-b border-cloud-elements-dividerColor/50">
             <div className="flex items-center gap-2">
               <div className="i-ph:clock-counter-clockwise text-base text-cloud-elements-textTertiary" />
@@ -46,7 +46,18 @@ export function TxDropdown() {
                   <StatusIcon status={tx.status} />
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-display font-medium text-cloud-elements-textPrimary truncate">{tx.label}</div>
-                    <div className="text-xs font-data text-cloud-elements-textTertiary mt-0.5">{tx.hash.slice(0, 10)}...{tx.hash.slice(-6)} · {timeAgo(tx.timestamp)}</div>
+                    <div className="text-xs font-data text-cloud-elements-textTertiary mt-0.5">
+                      <a
+                        href={`https://explorer.tangle.tools/tx/${tx.hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:text-violet-400 transition-colors"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {tx.hash.slice(0, 10)}...{tx.hash.slice(-6)}
+                      </a>
+                      {' · '}{timeAgo(tx.timestamp)}
+                    </div>
                   </div>
                 </div>
               ))

@@ -1,7 +1,5 @@
-// Auto-register all blueprints on import
+// Side-effect: auto-register all blueprints on import.
+// Consumers should import functions/types from '@tangle/blueprint-ui' directly.
 import './sandbox-blueprint';
 import './instance-blueprint';
 import './tee-instance-blueprint';
-
-export { getAllBlueprints, getBlueprint, getBlueprintJobs, getJobById, registerBlueprint } from '@tangle/blueprint-ui';
-export type { BlueprintDefinition, JobDefinition, JobFieldDef, JobCategory, AbiContextParam } from '@tangle/blueprint-ui';

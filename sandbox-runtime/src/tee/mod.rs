@@ -84,6 +84,8 @@ pub struct TeeDeployParams {
     pub http_port: u16,
     pub ssh_port: Option<u16>,
     pub sidecar_token: String,
+    /// Extra container ports to expose (e.g. user web server on 3000).
+    pub extra_ports: Vec<u16>,
 }
 
 impl TeeDeployParams {
@@ -131,6 +133,7 @@ impl TeeDeployParams {
                 None
             },
             sidecar_token: token.to_string(),
+            extra_ports: params.port_mappings.clone(),
         }
     }
 }
@@ -148,6 +151,8 @@ pub struct TeeDeployment {
     pub attestation: AttestationReport,
     /// Opaque backend state, stored in SandboxRecord for later lifecycle ops.
     pub metadata_json: String,
+    /// Extra port mappings: container_port → host_port.
+    pub extra_ports: std::collections::HashMap<u16, u16>,
 }
 
 /// Async trait for TEE backend implementations.
@@ -389,6 +394,7 @@ pub(crate) async fn sidecar_inject_sealed_secrets(
 #[cfg(any(test, feature = "test-utils"))]
 pub mod mock {
     use super::*;
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// A configurable mock TEE backend for tests.
@@ -454,6 +460,7 @@ pub mod mock {
                 ssh_port: params.ssh_port,
                 attestation: self.dummy_attestation(),
                 metadata_json: r#"{"backend":"mock"}"#.to_string(),
+                extra_ports: HashMap::new(),
             })
         }
 
@@ -642,6 +649,7 @@ mod tests {
             http_port: 8080,
             ssh_port: Some(2222),
             sidecar_token: "tok".into(),
+            extra_ports: vec![],
         };
 
         // Deploy
@@ -680,6 +688,7 @@ mod tests {
             http_port: 8080,
             ssh_port: None,
             sidecar_token: "tok".into(),
+            extra_ports: vec![],
         };
 
         assert!(mock.deploy(&params).await.is_err());

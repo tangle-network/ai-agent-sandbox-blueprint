@@ -21,6 +21,11 @@ use crate::runtime::{SandboxRecord, get_sandbox_by_id, recreate_sidecar_with_env
 /// stored as `user_env_json` and merged on top of the base at container creation.
 /// User values override base values when keys collide.
 ///
+/// **TEE restriction:** This function is not supported for TEE sandboxes because
+/// recreation would invalidate the attestation, break sealed secrets, and orphan
+/// the on-chain deployment ID. TEE sandboxes should use the sealed-secrets API
+/// (`POST /tee/sealed-secrets`) instead.
+///
 /// Returns the new `SandboxRecord` for the recreated sandbox.
 pub async fn inject_secrets(
     sandbox_id: &str,
@@ -36,6 +41,8 @@ pub async fn inject_secrets(
 
 /// Remove all user-injected secrets from a sandbox by recreating it with
 /// only the base environment. The `base_env_json` is preserved.
+///
+/// **TEE restriction:** Not supported for TEE sandboxes — see [`inject_secrets`].
 ///
 /// Returns the new `SandboxRecord` for the recreated sandbox.
 pub async fn wipe_secrets(

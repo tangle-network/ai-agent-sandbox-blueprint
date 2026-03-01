@@ -1,6 +1,6 @@
 /**
- * Re-exports chain utilities from @tangle/blueprint-ui and configures
- * sandbox-specific network addresses at module load time.
+ * Sandbox-specific network configuration.
+ * For chain/network primitives, import from '@tangle/blueprint-ui' directly.
  */
 import type { Address } from 'viem';
 import {
@@ -12,19 +12,6 @@ import {
   getNetworks,
   type CoreAddresses,
 } from '@tangle/blueprint-ui';
-
-export {
-  tangleLocal,
-  tangleTestnet,
-  tangleMainnet,
-  rpcUrl,
-  allTangleChains,
-  mainnet,
-  resolveRpcUrl,
-  configureNetworks,
-  getNetworks,
-} from '@tangle/blueprint-ui';
-export type { CoreAddresses, NetworkConfig } from '@tangle/blueprint-ui';
 
 /** Sandbox-specific addresses — extends CoreAddresses with blueprint BSM addresses. */
 export interface SandboxAddresses extends CoreAddresses {

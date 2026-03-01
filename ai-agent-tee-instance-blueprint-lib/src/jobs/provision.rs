@@ -20,7 +20,7 @@ pub async fn tee_provision(
             sandbox_id: record.id.clone(),
             sidecar_url: record.sidecar_url.clone(),
             ssh_port: record.ssh_port.unwrap_or(0) as u32,
-            tee_attestation_json: String::new(),
+            tee_attestation_json: record.tee_attestation_json.clone().unwrap_or_default(),
             tee_public_key_json: String::new(),
         };
         return Ok(TangleResult(output));

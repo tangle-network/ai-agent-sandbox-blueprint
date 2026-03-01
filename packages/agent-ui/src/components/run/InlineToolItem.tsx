@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { cn } from '~/utils/cn';
 import { getToolDisplayMetadata, getToolErrorText } from '~/utils/toolDisplay';
@@ -6,26 +6,11 @@ import { formatDuration } from '~/utils/format';
 import type { ToolPart } from '~/types/parts';
 import type { CustomToolRenderer } from '~/types/tool-display';
 import { ExpandedToolDetail } from './ExpandedToolDetail';
+import { LiveDuration } from './RunItemPrimitives';
 
 export interface InlineToolItemProps {
   part: ToolPart;
   renderToolDetail?: CustomToolRenderer;
-}
-
-/** Live timer that updates every 100ms while a tool is running. */
-function StreamingTimer({ startTime }: { startTime: number }) {
-  const [elapsed, setElapsed] = useState(Date.now() - startTime);
-
-  useEffect(() => {
-    const id = setInterval(() => setElapsed(Date.now() - startTime), 100);
-    return () => clearInterval(id);
-  }, [startTime]);
-
-  return (
-    <span className="text-xs font-mono text-neutral-400 dark:text-neutral-500 tabular-nums">
-      {formatDuration(elapsed)}
-    </span>
-  );
 }
 
 /**
@@ -80,7 +65,7 @@ export const InlineToolItem = memo(({ part, renderToolDetail }: InlineToolItemPr
           {!meta.description && <span className="flex-1" />}
 
           {/* Duration or streaming timer */}
-          {isRunning && startTime && <StreamingTimer startTime={startTime} />}
+          {isRunning && startTime && <LiveDuration startTime={startTime} />}
           {!isRunning && durationMs != null && (
             <span className="text-xs font-mono text-neutral-400 dark:text-neutral-500 tabular-nums">
               {formatDuration(durationMs)}

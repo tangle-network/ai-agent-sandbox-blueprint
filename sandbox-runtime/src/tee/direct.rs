@@ -50,11 +50,26 @@ struct DirectMetadata {
 pub struct DirectTeeBackend {
     /// Which TEE technology this operator provides.
     pub tee_type: TeeType,
+    /// Skip TEE device passthrough (for testing on non-TEE hosts).
+    skip_device: bool,
 }
 
 impl DirectTeeBackend {
     pub fn new(tee_type: TeeType) -> Self {
-        Self { tee_type }
+        Self {
+            tee_type,
+            skip_device: false,
+        }
+    }
+
+    /// Create a backend that skips TEE device passthrough, allowing containers
+    /// to start on hosts without TEE hardware. For integration testing only.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_without_device(tee_type: TeeType) -> Self {
+        Self {
+            tee_type,
+            skip_device: true,
+        }
     }
 
     /// Returns the host device path for the configured TEE type.
@@ -91,24 +106,44 @@ impl DirectTeeBackend {
                 }]),
             );
         }
+        for &port in &params.extra_ports {
+            port_bindings.insert(
+                format!("{port}/tcp"),
+                Some(vec![PortBinding {
+                    host_ip: Some("127.0.0.1".to_string()),
+                    host_port: None,
+                }]),
+            );
+        }
 
         let mut exposed_ports: HashMap<String, HashMap<(), ()>> = HashMap::new();
         exposed_ports.insert(format!("{}/tcp", params.http_port), HashMap::new());
         if let Some(ssh) = params.ssh_port {
             exposed_ports.insert(format!("{ssh}/tcp"), HashMap::new());
         }
+        for &port in &params.extra_ports {
+            exposed_ports.insert(format!("{port}/tcp"), HashMap::new());
+        }
 
-        // TEE device passthrough.
-        let device_path = self.device_path().to_string();
-        let devices = vec![DeviceMapping {
-            path_on_host: Some(device_path.clone()),
-            path_in_container: Some(device_path),
-            cgroup_permissions: Some("rwm".to_string()),
-        }];
+        // TEE device passthrough (skipped in test mode).
+        let devices = if self.skip_device {
+            vec![]
+        } else {
+            let device_path = self.device_path().to_string();
+            vec![DeviceMapping {
+                path_on_host: Some(device_path.clone()),
+                path_in_container: Some(device_path),
+                cgroup_permissions: Some("rwm".to_string()),
+            }]
+        };
 
         let mut host_config = HostConfig {
             port_bindings: Some(port_bindings),
-            devices: Some(devices),
+            devices: if devices.is_empty() {
+                None
+            } else {
+                Some(devices)
+            },
             cap_drop: Some(vec!["ALL".to_string()]),
             cap_add: Some(vec!["SYS_PTRACE".to_string()]),
             security_opt: Some(vec!["no-new-privileges=true".to_string()]),
@@ -221,6 +256,13 @@ impl TeeBackend for DirectTeeBackend {
             .map(|p| Self::extract_host_port(ports, p))
             .transpose()?;
 
+        let mut extra_port_map = HashMap::new();
+        for &cp in &params.extra_ports {
+            if let Ok(hp) = Self::extract_host_port(ports, cp) {
+                extra_port_map.insert(cp, hp);
+            }
+        }
+
         let sidecar_url = format!("http://{}:{host_port}", config.public_host);
 
         // Wait for sidecar to become healthy.
@@ -259,6 +301,7 @@ impl TeeBackend for DirectTeeBackend {
             ssh_port: ssh_host_port,
             attestation,
             metadata_json: serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string()),
+            extra_ports: extra_port_map,
         })
     }
 
@@ -386,6 +429,7 @@ mod tests {
             http_port: 3000,
             ssh_port: Some(2222),
             sidecar_token: "tok".into(),
+            extra_ports: vec![],
         };
 
         let config = backend.build_config(&params);
@@ -435,6 +479,7 @@ mod tests {
             http_port: 8080,
             ssh_port: None,
             sidecar_token: "tok".into(),
+            extra_ports: vec![],
         };
 
         let config = backend.build_config(&params);

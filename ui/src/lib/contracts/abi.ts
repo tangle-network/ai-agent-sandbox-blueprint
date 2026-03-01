@@ -1,10 +1,4 @@
 /**
- * Re-exports core Tangle ABIs from @tangle/blueprint-ui.
- * Keeps agentSandboxBlueprintAbi locally (sandbox-specific).
- */
-export { tangleJobsAbi, tangleServicesAbi, tangleOperatorsAbi } from '@tangle/blueprint-ui';
-
-/**
  * AgentSandboxBlueprint ABI — extracted from AgentSandboxBlueprint.sol
  * Includes all view functions, events, errors, and job metadata.
  */

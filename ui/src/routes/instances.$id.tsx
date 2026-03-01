@@ -2,23 +2,30 @@ import { useParams, Link } from 'react-router';
 import { lazy, Suspense, useState, useCallback, useMemo, useEffect } from 'react';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '@tangle/blueprint-ui/components';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle/blueprint-ui/components';
+import { Card, CardContent, CardHeader, CardTitle } from '@tangle/blueprint-ui/components';
 import { Button } from '@tangle/blueprint-ui/components';
-import { StatusBadge } from '~/components/shared/StatusBadge';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
+import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
+import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
+import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
+import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
+import { SidecarAuthPrompt } from '~/components/shared/SidecarAuthPrompt';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
 import { useSubmitJob } from '@tangle/blueprint-ui';
 import { encodeJobArgs } from '@tangle/blueprint-ui';
-import { getBlueprint, getJobById } from '~/lib/blueprints';
+import { getBlueprint, getJobById } from '@tangle/blueprint-ui';
 import { INSTANCE_JOB_IDS, INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
+import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
+import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
+import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { cn } from '@tangle/blueprint-ui';
-import { bytesToHex, type AttestationData } from '~/lib/tee';
+import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 
 const TerminalView = lazy(() =>
   import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),
@@ -69,77 +76,20 @@ export default function InstanceDetail() {
   // Operator API auth for attestation
   const operatorUrl = INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL;
   const { getToken: getOperatorToken } = useOperatorAuth(operatorUrl);
+  const buildPath = useCallback((action: string) => `/api/sandbox/${action}`, []);
+  const operatorApiCall = useOperatorApiCall(operatorUrl, getOperatorToken, buildPath);
 
-  /** Call operator API for instance operations (attestation). */
-  const operatorApiCall = useCallback(async (
-    action: string,
-    body?: Record<string, unknown>,
-    opts?: { method?: string },
-  ) => {
-    const token = await getOperatorToken();
-    if (!token) throw new Error('Wallet authentication required');
+  const ports = useExposedPorts(inst?.status, operatorApiCall);
 
-    const url = `${operatorUrl}/api/sandbox/${action}`;
+  // Confirm dialog state
+  const [showConfirmDeprovision, setShowConfirmDeprovision] = useState(false);
 
-    const doFetch = (bearerToken: string) =>
-      fetch(url, {
-        method: opts?.method ?? 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${bearerToken}`,
-        },
-        body: body ? JSON.stringify(body) : '{}',
-      });
-
-    let res = await doFetch(token);
-
-    if (res.status === 401) {
-      const freshToken = await getOperatorToken(true);
-      if (!freshToken) throw new Error('Re-authentication failed');
-      res = await doFetch(freshToken);
-    }
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`${action} failed (${res.status}): ${text}`);
-    }
-    return res;
-  }, [operatorUrl, getOperatorToken]);
-
-  // Ports state
-  const [ports, setPorts] = useState<{ container_port: number; host_port: number; protocol: string }[] | null>(null);
-
-  // Fetch exposed ports when instance is running
-  useEffect(() => {
-    if (inst?.status !== 'running' && inst?.status !== 'creating') return;
-    let cancelled = false;
-    operatorApiCall('ports', undefined, { method: 'GET' })
-      .then((res) => res.json())
-      .then((data) => {
-        if (!cancelled && Array.isArray(data)) setPorts(data);
-      })
-      .catch(() => { /* ports endpoint may not exist — ignore */ });
-    return () => { cancelled = true; };
-  }, [inst?.status, operatorApiCall]);
-
-  // Attestation state
-  const [attestation, setAttestation] = useState<AttestationData | null>(null);
-  const [attestationBusy, setAttestationBusy] = useState(false);
-  const [attestationError, setAttestationError] = useState<string | null>(null);
-
-  const handleFetchAttestation = useCallback(async () => {
-    setAttestationBusy(true);
-    setAttestationError(null);
-    try {
-      const res = await operatorApiCall('tee/attestation', undefined, { method: 'GET' });
-      const data: AttestationData = await res.json();
-      setAttestation(data);
-    } catch (e) {
-      setAttestationError(e instanceof Error ? e.message : 'Failed to fetch attestation');
-    } finally {
-      setAttestationBusy(false);
-    }
-  }, [operatorApiCall]);
+  const {
+    attestation,
+    busy: attestationBusy,
+    error: attestationError,
+    fetchAttestation: handleFetchAttestation,
+  } = useTeeAttestation(operatorApiCall);
 
   /** Compute job value from pricing tier (base rate = 0.001 TNT = 1e15 wei) */
   const jobValue = (jobId: number): bigint =>
@@ -175,37 +125,47 @@ export default function InstanceDetail() {
     );
   }
 
-  const tabs: { key: ActionTab; label: string; icon: string }[] = [
+  const hasAgent = !!inst.agentIdentifier;
+
+  const tabs: { key: ActionTab; label: string; icon: string; hidden?: boolean }[] = [
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal' },
-    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle' },
+    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', hidden: !hasAgent },
     ...(inst.teeEnabled ? [{ key: 'attestation' as const, label: 'Attestation', icon: 'i-ph:shield-check' }] : []),
   ];
 
   return (
-    <AnimatedPage className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
+    <AnimatedPage className="mx-auto max-w-4xl px-4 sm:px-6 py-8">
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2 mb-6 text-sm text-cloud-elements-textTertiary">
+        <Link to="/instances" className="hover:text-cloud-elements-textSecondary transition-colors">Instances</Link>
+        <span>/</span>
+        <span className="text-cloud-elements-textPrimary font-display">{inst.name}</span>
+      </div>
+
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-start justify-between mb-6">
         <div className="flex items-center gap-4">
-          <Link to="/instances">
-            <Button variant="ghost" size="sm">
-              <div className="i-ph:arrow-left text-base" />
-            </Button>
-          </Link>
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-xl font-display font-bold text-cloud-elements-textPrimary">{inst.name}</h1>
-              <StatusBadge status={inst.status === 'creating' ? 'running' : inst.status} />
-              {inst.teeEnabled && (
-                <span className="text-xs text-violet-700 dark:text-violet-400 font-data bg-violet-500/10 px-2 py-0.5 rounded-full">TEE</span>
-              )}
-            </div>
-            <p className="text-xs font-data text-cloud-elements-textTertiary mt-1">
-              {inst.image} · {inst.cpuCores} CPU · {inst.memoryMb}MB
-            </p>
+          <div className={cn(
+            'w-14 h-14 rounded-xl flex items-center justify-center',
+            inst.status === 'running' ? 'bg-teal-500/10' : inst.status === 'creating' ? 'bg-violet-500/10' : 'bg-cloud-elements-background-depth-3',
+          )}>
+            <div className={cn(
+              inst.teeEnabled ? 'i-ph:shield-check text-2xl' : 'i-ph:cube text-2xl',
+              inst.status === 'running' ? 'text-teal-400' : inst.status === 'creating' ? 'text-violet-400' : 'text-cloud-elements-textTertiary',
+            )} />
           </div>
+          <ResourceIdentity
+            name={inst.name}
+            status={inst.status}
+            teeEnabled={inst.teeEnabled}
+            image={inst.image}
+            specs={`${inst.cpuCores} CPU · ${inst.memoryMb}MB · ${inst.diskGb}GB`}
+            titleClassName="text-xl"
+            teeStyle="pill"
+          />
         </div>
-        <Button variant="destructive" size="sm" onClick={handleDeprovision} disabled={txStatus !== 'idle'}>
+        <Button variant="destructive" size="sm" onClick={() => setShowConfirmDeprovision(true)} disabled={txStatus !== 'idle'}>
           <div className="i-ph:trash text-sm" />
           Deprovision
           <JobPriceBadge jobIndex={INSTANCE_JOB_IDS.DEPROVISION} pricingMultiplier={INSTANCE_PRICING_TIERS[INSTANCE_JOB_IDS.DEPROVISION]?.multiplier ?? 1} compact />
@@ -214,7 +174,7 @@ export default function InstanceDetail() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b border-cloud-elements-dividerColor">
-        {tabs.map((t) => (
+        {tabs.filter((t) => !t.hidden).map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
@@ -239,14 +199,14 @@ export default function InstanceDetail() {
               <CardTitle>Instance Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Row label="ID" value={inst.id} mono />
-              <Row label="Image" value={inst.image} mono />
-              <Row label="CPU" value={`${inst.cpuCores} cores`} />
-              <Row label="Memory" value={`${inst.memoryMb} MB`} />
-              <Row label="Disk" value={`${inst.diskGb} GB`} />
-              <Row label="Created" value={new Date(inst.createdAt).toLocaleString()} />
-              <Row label="Blueprint" value={getBlueprint(bpId)?.name ?? bpId} />
-              <Row label="Service" value={`#${inst.serviceId}`} />
+              <LabeledValueRow label="ID" value={inst.id} mono copyable />
+              <LabeledValueRow label="Image" value={inst.image} mono copyable />
+              <LabeledValueRow label="CPU" value={`${inst.cpuCores} cores`} />
+              <LabeledValueRow label="Memory" value={`${inst.memoryMb} MB`} />
+              <LabeledValueRow label="Disk" value={`${inst.diskGb} GB`} />
+              <LabeledValueRow label="Created" value={new Date(inst.createdAt).toLocaleString()} />
+              <LabeledValueRow label="Blueprint" value={getBlueprint(bpId)?.name ?? bpId} />
+              <LabeledValueRow label="Service" value={`#${inst.serviceId}`} />
             </CardContent>
           </Card>
           <Card>
@@ -255,7 +215,7 @@ export default function InstanceDetail() {
             </CardHeader>
             <CardContent className="space-y-3">
               {inst.sidecarUrl ? (
-                <Row label="Sidecar URL" value={inst.sidecarUrl} mono />
+                <LabeledValueRow label="Sidecar URL" value={inst.sidecarUrl} mono copyable />
               ) : (
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-cloud-elements-textSecondary">Sidecar URL</span>
@@ -265,7 +225,7 @@ export default function InstanceDetail() {
                   </span>
                 </div>
               )}
-              <Row label="Authenticated" value={isSidecarAuthed ? 'Yes' : 'No'} />
+              <LabeledValueRow label="Authenticated" value={isSidecarAuthed ? 'Yes' : 'No'} />
               {!isSidecarAuthed && inst.sidecarUrl && (
                 <Button size="sm" onClick={sidecarAuth} disabled={isAuthenticating}>
                   {isAuthenticating ? 'Authenticating...' : 'Authenticate'}
@@ -276,34 +236,11 @@ export default function InstanceDetail() {
 
           {/* Exposed Ports */}
           {ports && ports.length > 0 && (
-            <Card className="lg:col-span-2">
-              <CardHeader>
-                <CardTitle className="text-sm">Exposed Ports</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {ports.map((p) => (
-                    <div
-                      key={p.container_port}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor"
-                    >
-                      <div className="i-ph:globe text-sm text-teal-400" />
-                      <div className="min-w-0">
-                        <span className="text-xs font-data font-medium text-cloud-elements-textPrimary">
-                          :{p.container_port}
-                        </span>
-                        <span className="text-[10px] text-cloud-elements-textTertiary ml-1.5">
-                          {p.protocol}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-[11px] text-cloud-elements-textTertiary mt-2">
-                  Access via <span className="font-data">/api/sandbox/port/{'{port}'}/</span>
-                </p>
-              </CardContent>
-            </Card>
+            <ExposedPortsCard
+              ports={ports}
+              accessPath="/api/sandbox/port/{port}/"
+              className="lg:col-span-2"
+            />
           )}
         </div>
       )}
@@ -314,7 +251,7 @@ export default function InstanceDetail() {
           <CardContent className="p-0">
             {isSidecarAuthed && sidecarUrl ? (
               <Suspense fallback={<div className="p-6 text-sm text-cloud-elements-textTertiary">Loading terminal...</div>}>
-                <div className="h-[500px]">
+                <div className="h-[min(500px,60vh)]">
                   <TerminalView
                     apiUrl={sidecarUrl}
                     token={sidecarToken!}
@@ -341,17 +278,16 @@ export default function InstanceDetail() {
       {tab === 'chat' && (
         <Card className="overflow-hidden">
           <CardContent className="p-0">
-            <div className="h-[600px]">
+            <div className="h-[min(600px,65vh)]">
               {!isSidecarAuthed ? (
-                <div className="flex flex-col items-center justify-center h-full gap-3">
-                  <div className="i-ph:chat-circle text-3xl text-cloud-elements-textTertiary" />
-                  <p className="text-sm text-cloud-elements-textSecondary">
-                    Authenticate to start chatting
-                  </p>
-                  <Button size="sm" onClick={sidecarAuth} disabled={isAuthenticating || !sidecarUrl}>
-                    {isAuthenticating ? 'Authenticating...' : 'Authenticate'}
-                  </Button>
-                </div>
+                <SidecarAuthPrompt
+                  message="Authenticate to start chatting"
+                  actionLabel="Authenticate"
+                  busyLabel="Authenticating..."
+                  isBusy={isAuthenticating}
+                  isWaiting={!sidecarUrl}
+                  onAuthenticate={sidecarAuth}
+                />
               ) : (
                 <SessionSidebar
                   sandboxId={decodedId}
@@ -368,65 +304,24 @@ export default function InstanceDetail() {
       {/* Attestation Tab — TEE attestation verification */}
       {tab === 'attestation' && (
         <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">TEE Attestation</CardTitle>
-              <CardDescription>Verify the Trusted Execution Environment attestation for this instance</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Button
-                size="sm"
-                onClick={handleFetchAttestation}
-                disabled={attestationBusy}
-              >
-                <div className="i-ph:shield-check text-sm" />
-                {attestationBusy ? 'Fetching...' : attestation ? 'Refresh Attestation' : 'Get Attestation'}
-              </Button>
-
-              {attestationError && (
-                <p className="text-xs text-red-400">{attestationError}</p>
-              )}
-
-              {attestation && (
-                <div className="space-y-3">
-                  <Row label="TEE Type" value={attestation.tee_type} />
-                  <Row
-                    label="Timestamp"
-                    value={new Date(attestation.timestamp * 1000).toLocaleString()}
-                  />
-                  <div className="space-y-1.5">
-                    <span className="text-sm text-cloud-elements-textSecondary">Measurement</span>
-                    <div className="p-3 rounded-lg bg-cloud-elements-background-depth-2">
-                      <code className="text-xs font-data text-cloud-elements-textPrimary break-all">
-                        {bytesToHex(attestation.measurement)}
-                      </code>
-                    </div>
-                  </div>
-                  <details className="group">
-                    <summary className="text-sm text-cloud-elements-textSecondary cursor-pointer hover:text-cloud-elements-textPrimary transition-colors">
-                      Evidence ({attestation.evidence.length} bytes)
-                    </summary>
-                    <div className="mt-2 p-3 rounded-lg bg-cloud-elements-background-depth-2 max-h-48 overflow-y-auto">
-                      <code className="text-xs font-data text-cloud-elements-textTertiary break-all">
-                        {bytesToHex(attestation.evidence)}
-                      </code>
-                    </div>
-                  </details>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <TeeAttestationCard
+            subjectLabel="instance"
+            attestation={attestation}
+            busy={attestationBusy}
+            error={attestationError}
+            onFetch={handleFetchAttestation}
+          />
         </div>
       )}
+      <ConfirmDialog
+        open={showConfirmDeprovision}
+        onOpenChange={setShowConfirmDeprovision}
+        title="Deprovision Instance"
+        description="This is an irreversible on-chain operation that will permanently destroy the instance and all its data."
+        confirmLabel="Deprovision"
+        onConfirm={handleDeprovision}
+        variant="danger"
+      />
     </AnimatedPage>
-  );
-}
-
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex justify-between text-sm">
-      <span className="text-cloud-elements-textSecondary">{label}</span>
-      <span className={cn('text-cloud-elements-textPrimary', mono && 'font-data text-xs')}>{value}</span>
-    </div>
   );
 }

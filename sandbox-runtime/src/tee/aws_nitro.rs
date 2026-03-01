@@ -284,12 +284,17 @@ impl TeeBackend for NitroBackend {
             "instance_type": self.config.instance_type,
         });
 
+        if !params.extra_ports.is_empty() {
+            tracing::warn!("Extra ports not yet supported for AWS Nitro backend — ignored");
+        }
+
         Ok(TeeDeployment {
             deployment_id: instance_id,
             sidecar_url,
             ssh_port: params.ssh_port,
             attestation,
             metadata_json: metadata.to_string(),
+            extra_ports: std::collections::HashMap::new(),
         })
     }
 

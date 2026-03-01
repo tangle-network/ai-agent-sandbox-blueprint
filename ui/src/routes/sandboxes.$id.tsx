@@ -7,22 +7,28 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tang
 import { Button } from '@tangle/blueprint-ui/components';
 import { Input } from '@tangle/blueprint-ui/components';
 import { Textarea } from '@tangle/blueprint-ui/components';
-import { StatusBadge } from '~/components/shared/StatusBadge';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
+import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
+import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
+import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
+import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
+import { SidecarAuthPrompt } from '~/components/shared/SidecarAuthPrompt';
 import { sandboxListStore, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
 import { useSubmitJob } from '@tangle/blueprint-ui';
 import { encodeJobArgs } from '@tangle/blueprint-ui';
-import { getJobById } from '~/lib/blueprints';
+import { getJobById } from '@tangle/blueprint-ui';
 import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
-import '~/lib/blueprints'; // auto-register
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
+import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
+import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
+import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '@tangle/blueprint-ui';
-import { bytesToHex, type AttestationData } from '~/lib/tee';
+import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 
 const TerminalView = lazy(() =>
   import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView }))
@@ -64,13 +70,8 @@ export default function SandboxDetail() {
   const [secretsError, setSecretsError] = useState<string | null>(null);
   const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
 
-  // Ports state
-  const [ports, setPorts] = useState<{ container_port: number; host_port: number; protocol: string }[] | null>(null);
-
-  // Attestation state
-  const [attestation, setAttestation] = useState<AttestationData | null>(null);
-  const [attestationBusy, setAttestationBusy] = useState(false);
-  const [attestationError, setAttestationError] = useState<string | null>(null);
+  // Confirm dialog state
+  const [confirmAction, setConfirmAction] = useState<{ title: string; description: string; confirmLabel: string; onConfirm: () => void } | null>(null);
 
   // Track setTimeout IDs so they can be cleared on unmount
   const timeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
@@ -106,6 +107,15 @@ export default function SandboxDetail() {
 
   // Operator API auth for lifecycle operations (stop/resume/snapshot/ssh/secrets)
   const { getToken: getOperatorToken } = useOperatorAuth(operatorUrl);
+  const buildPath = useCallback(
+    (action: string) =>
+      isInstance
+        ? `/api/sandbox/${action}`
+        : `/api/sandboxes/${encodeURIComponent(decodedId)}/${action}`,
+    [isInstance, decodedId],
+  );
+  const operatorApiCall = useOperatorApiCall(operatorUrl, getOperatorToken, buildPath);
+  const ports = useExposedPorts(sb?.status, operatorApiCall);
 
   // Create sandbox client for direct API access (uses authenticated sidecar token)
   const client: SandboxClient | null = useMemo(() => {
@@ -128,60 +138,6 @@ export default function SandboxDetail() {
     [],
   );
 
-  /** Call operator API for sandbox lifecycle operations (stop/resume/snapshot/ssh/secrets). */
-  const operatorApiCall = useCallback(async (
-    action: string,
-    body?: Record<string, unknown>,
-    opts?: { method?: string },
-  ) => {
-    const token = await getOperatorToken();
-    if (!token) throw new Error('Wallet authentication required');
-
-    // Instance sandboxes use singleton /api/sandbox/* endpoints
-    const path = isInstance
-      ? `/api/sandbox/${action}`
-      : `/api/sandboxes/${encodeURIComponent(decodedId)}/${action}`;
-    const url = `${operatorUrl}${path}`;
-
-    const doFetch = (bearerToken: string) =>
-      fetch(url, {
-        method: opts?.method ?? 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${bearerToken}`,
-        },
-        body: body ? JSON.stringify(body) : '{}',
-      });
-
-    let res = await doFetch(token);
-
-    // Auto-retry once on 401 (expired PASETO token)
-    if (res.status === 401) {
-      const freshToken = await getOperatorToken(true);
-      if (!freshToken) throw new Error('Re-authentication failed');
-      res = await doFetch(freshToken);
-    }
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`${action} failed (${res.status}): ${text}`);
-    }
-    return res;
-  }, [decodedId, isInstance, operatorUrl, getOperatorToken]);
-
-  // Fetch exposed ports when sandbox is running
-  useEffect(() => {
-    if (sb?.status !== 'running' && sb?.status !== 'creating') return;
-    let cancelled = false;
-    operatorApiCall('ports', undefined, { method: 'GET' })
-      .then((res) => res.json())
-      .then((data) => {
-        if (!cancelled && Array.isArray(data)) setPorts(data);
-      })
-      .catch(() => { /* ports endpoint may not exist — ignore */ });
-    return () => { cancelled = true; };
-  }, [sb?.status, operatorApiCall]);
-
   const handleStop = useCallback(async () => {
     try {
       await operatorApiCall('stop');
@@ -202,16 +158,22 @@ export default function SandboxDetail() {
     }
   }, [decodedId, operatorApiCall]);
 
-  const handleDelete = useCallback(async () => {
-    if (!window.confirm('Are you sure you want to permanently delete this sandbox? This action is irreversible and will submit an on-chain transaction.')) return;
-    const hash = await submitJob({
-      serviceId,
-      jobId: JOB_IDS.SANDBOX_DELETE,
-      args: encodeCtxJob(JOB_IDS.SANDBOX_DELETE, { sandbox_id: decodedId }),
-      label: `Delete: ${decodedId}`,
-      value: jobValue(JOB_IDS.SANDBOX_DELETE),
+  const handleDelete = useCallback(() => {
+    setConfirmAction({
+      title: 'Delete Sandbox',
+      description: 'This action is irreversible and will submit an on-chain transaction. All sandbox data will be permanently deleted.',
+      confirmLabel: 'Delete',
+      onConfirm: async () => {
+        const hash = await submitJob({
+          serviceId,
+          jobId: JOB_IDS.SANDBOX_DELETE,
+          args: encodeCtxJob(JOB_IDS.SANDBOX_DELETE, { sandbox_id: decodedId }),
+          label: `Delete: ${decodedId}`,
+          value: jobValue(JOB_IDS.SANDBOX_DELETE),
+        });
+        if (hash) updateSandboxStatus(decodedId, 'gone');
+      },
     });
-    if (hash) updateSandboxStatus(decodedId, 'gone');
   }, [decodedId, serviceId, submitJob, encodeCtxJob]);
 
   const handleSnapshot = useCallback(async () => {
@@ -221,6 +183,7 @@ export default function SandboxDetail() {
         include_workspace: true,
         include_state: true,
       });
+      toast.success('Snapshot created');
     } catch (e) {
       console.error('Snapshot failed:', e);
       toast.error('Failed to snapshot sandbox');
@@ -288,36 +251,34 @@ export default function SandboxDetail() {
     }
   }, [secretsJson, operatorApiCall, scheduleDismiss]);
 
-  const handleWipeSecrets = useCallback(async () => {
-    if (!window.confirm('Are you sure you want to wipe all secrets? This will restart the sandbox without any injected secrets.')) return;
-    setSecretsBusy(true);
-    setSecretsError(null);
-    setSecretsSuccess(null);
-    try {
-      await operatorApiCall('secrets', undefined, { method: 'DELETE' });
-      setSecretsSuccess('Secrets wiped');
-      scheduleDismiss(() => setSecretsSuccess(null), 3000);
-    } catch (e) {
-      setSecretsError(e instanceof Error ? e.message : 'Failed to wipe secrets');
-    } finally {
-      setSecretsBusy(false);
-    }
+  const handleWipeSecrets = useCallback(() => {
+    setConfirmAction({
+      title: 'Wipe Secrets',
+      description: 'This will remove all injected secrets and restart the sandbox without them.',
+      confirmLabel: 'Wipe',
+      onConfirm: async () => {
+        setSecretsBusy(true);
+        setSecretsError(null);
+        setSecretsSuccess(null);
+        try {
+          await operatorApiCall('secrets', undefined, { method: 'DELETE' });
+          setSecretsSuccess('Secrets wiped');
+          scheduleDismiss(() => setSecretsSuccess(null), 3000);
+        } catch (e) {
+          setSecretsError(e instanceof Error ? e.message : 'Failed to wipe secrets');
+        } finally {
+          setSecretsBusy(false);
+        }
+      },
+    });
   }, [operatorApiCall, scheduleDismiss]);
 
-  // Attestation handler
-  const handleFetchAttestation = useCallback(async () => {
-    setAttestationBusy(true);
-    setAttestationError(null);
-    try {
-      const res = await operatorApiCall('tee/attestation', undefined, { method: 'GET' });
-      const data: AttestationData = await res.json();
-      setAttestation(data);
-    } catch (e) {
-      setAttestationError(e instanceof Error ? e.message : 'Failed to fetch attestation');
-    } finally {
-      setAttestationBusy(false);
-    }
-  }, [operatorApiCall]);
+  const {
+    attestation,
+    busy: attestationBusy,
+    error: attestationError,
+    fetchAttestation: handleFetchAttestation,
+  } = useTeeAttestation(operatorApiCall);
 
   if (!sb) {
     return (
@@ -335,14 +296,17 @@ export default function SandboxDetail() {
     );
   }
 
-  const isRunning = sb.status === 'running' || sb.status === 'creating';
+  const isCreating = sb.status === 'creating';
+  const isRunning = sb.status === 'running' || isCreating;
   const isStopped = sb.status === 'stopped' || sb.status === 'warm';
   const isGone = sb.status === 'gone';
 
-  const tabs: { key: ActionTab; label: string; icon: string; disabled?: boolean }[] = [
+  const hasAgent = !!sb.agentIdentifier;
+
+  const tabs: { key: ActionTab; label: string; icon: string; disabled?: boolean; hidden?: boolean }[] = [
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal', disabled: !isRunning },
-    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !isRunning },
+    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !isRunning, hidden: !hasAgent },
     { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !isRunning },
     { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', disabled: !isRunning },
     { key: 'attestation', label: 'Attestation', icon: 'i-ph:shield-check', disabled: !sb.teeEnabled },
@@ -368,27 +332,20 @@ export default function SandboxDetail() {
               isRunning ? 'text-teal-400' : isStopped ? 'text-amber-400' : 'text-cloud-elements-textTertiary',
             )} />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-display font-bold text-cloud-elements-textPrimary">{sb.name}</h1>
-              <StatusBadge status={sb.status === 'creating' ? 'running' : sb.status} />
-              {sb.teeEnabled && (
-                <span className="text-xs text-violet-700 dark:text-violet-400 font-data bg-violet-500/10 px-2 py-0.5 rounded-full">TEE</span>
-              )}
-            </div>
-            <div className="flex items-center gap-3 mt-1">
-              <span className="text-xs font-data text-cloud-elements-textTertiary">{sb.image}</span>
-              <span className="text-cloud-elements-dividerColor">·</span>
-              <span className="text-xs font-data text-cloud-elements-textTertiary">
-                {sb.cpuCores} CPU · {sb.memoryMb}MB · {sb.diskGb}GB
-              </span>
-            </div>
-          </div>
+          <ResourceIdentity
+            name={sb.name}
+            status={sb.status}
+            teeEnabled={sb.teeEnabled}
+            image={sb.image}
+            specs={`${sb.cpuCores} CPU · ${sb.memoryMb}MB · ${sb.diskGb}GB`}
+            titleClassName="text-xl"
+            teeStyle="pill"
+          />
         </div>
 
         {/* Actions */}
         <div className="flex items-center gap-2">
-          {isRunning && (
+          {isRunning && !isCreating && (
             <Button variant="secondary" size="sm" onClick={handleStop}>
               <div className="i-ph:stop text-sm" />
               Stop
@@ -418,7 +375,7 @@ export default function SandboxDetail() {
 
       {/* Tabs */}
       <div className="flex items-center gap-1 mb-6 border-b border-cloud-elements-dividerColor pb-px">
-        {tabs.map((t) => (
+        {tabs.filter((t) => !t.hidden).map((t) => (
           <button
             key={t.key}
             onClick={() => !t.disabled && setTab(t.key)}
@@ -457,14 +414,14 @@ export default function SandboxDetail() {
               <CardTitle className="text-sm">Configuration</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2.5">
-              <DetailRow label="Sandbox ID" value={sb.id} mono />
-              <DetailRow label="Image" value={sb.image} mono />
-              <DetailRow label="CPU" value={`${sb.cpuCores} cores`} />
-              <DetailRow label="Memory" value={`${sb.memoryMb} MB`} />
-              <DetailRow label="Disk" value={`${sb.diskGb} GB`} />
-              <DetailRow label="Created" value={new Date(sb.createdAt).toLocaleString()} />
-              <DetailRow label="Blueprint" value={sb.blueprintId} mono />
-              <DetailRow label="Service ID" value={sb.serviceId} />
+              <LabeledValueRow label="Sandbox ID" value={sb.id} mono copyable alignRight />
+              <LabeledValueRow label="Image" value={sb.image} mono copyable alignRight />
+              <LabeledValueRow label="CPU" value={`${sb.cpuCores} cores`} alignRight />
+              <LabeledValueRow label="Memory" value={`${sb.memoryMb} MB`} alignRight />
+              <LabeledValueRow label="Disk" value={`${sb.diskGb} GB`} alignRight />
+              <LabeledValueRow label="Created" value={new Date(sb.createdAt).toLocaleString()} alignRight />
+              <LabeledValueRow label="Blueprint" value={sb.blueprintId} mono alignRight />
+              <LabeledValueRow label="Service ID" value={sb.serviceId} alignRight />
             </CardContent>
           </Card>
 
@@ -473,15 +430,16 @@ export default function SandboxDetail() {
               <CardTitle className="text-sm">On-Chain Status</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2.5">
-              <DetailRow label="Active" value={isActive !== undefined ? (isActive ? 'Yes' : 'No') : 'Loading...'} />
-              <DetailRow
+              <LabeledValueRow label="Active" value={isActive !== undefined ? (isActive ? 'Yes' : 'No') : 'Loading...'} alignRight />
+              <LabeledValueRow
                 label="Operator"
                 value={operator && operator !== '0x0000000000000000000000000000000000000000' ? operator : 'Unassigned'}
                 mono
+                alignRight
               />
-              {sb.txHash && <DetailRow label="TX Hash" value={sb.txHash} mono />}
+              {sb.txHash && <LabeledValueRow label="TX Hash" value={sb.txHash} mono copyable alignRight />}
               {sb.sidecarUrl ? (
-                <DetailRow label="Sidecar" value={sb.sidecarUrl} mono />
+                <LabeledValueRow label="Sidecar" value={sb.sidecarUrl} mono copyable alignRight />
               ) : sb.status === 'creating' ? (
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-cloud-elements-textSecondary">Sidecar</span>
@@ -496,34 +454,11 @@ export default function SandboxDetail() {
 
           {/* Exposed Ports */}
           {ports && ports.length > 0 && (
-            <Card className="md:col-span-2">
-              <CardHeader>
-                <CardTitle className="text-sm">Exposed Ports</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {ports.map((p) => (
-                    <div
-                      key={p.container_port}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor"
-                    >
-                      <div className="i-ph:globe text-sm text-teal-400" />
-                      <div className="min-w-0">
-                        <span className="text-xs font-data font-medium text-cloud-elements-textPrimary">
-                          :{p.container_port}
-                        </span>
-                        <span className="text-[10px] text-cloud-elements-textTertiary ml-1.5">
-                          {p.protocol}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-[11px] text-cloud-elements-textTertiary mt-2">
-                  Access via <span className="font-data">/api/sandboxes/{'{id}'}/port/{'{port}'}/</span>
-                </p>
-              </CardContent>
-            </Card>
+            <ExposedPortsCard
+              ports={ports}
+              accessPath="/api/sandboxes/{id}/port/{port}/"
+              className="md:col-span-2"
+            />
           )}
         </div>
       )}
@@ -551,7 +486,7 @@ export default function SandboxDetail() {
             </CardContent>
           ) : (
             <CardContent className="p-0">
-              <div className="h-[500px]">
+              <div className="h-[min(500px,60vh)]">
                 <Suspense fallback={
                   <div className="flex items-center justify-center h-full bg-neutral-950">
                     <span className="text-sm text-neutral-500">Loading terminal...</span>
@@ -574,25 +509,19 @@ export default function SandboxDetail() {
       {tab === 'chat' && (
         <Card className="overflow-hidden">
           <CardContent className="p-0">
-            <div className="h-[600px]">
+            <div className="h-[min(600px,65vh)]">
               {!isSidecarAuthed ? (
-                <div className="flex flex-col items-center justify-center h-full gap-3">
-                  <div className="i-ph:chat-circle text-3xl text-cloud-elements-textTertiary" />
-                  <p className="text-sm text-cloud-elements-textSecondary">
-                    Authenticate to start chatting
-                  </p>
-                  <p className="text-xs text-cloud-elements-textTertiary">
-                    Sign a message with your wallet to verify ownership
-                  </p>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => sidecarAuth()}
-                    disabled={isAuthenticating || !sidecarUrl}
-                  >
-                    {isAuthenticating ? 'Signing...' : !sidecarUrl ? 'Waiting for sidecar...' : 'Connect'}
-                  </Button>
-                </div>
+                <SidecarAuthPrompt
+                  message="Authenticate to start chatting"
+                  hint="Sign a message with your wallet to verify ownership"
+                  actionLabel="Connect"
+                  busyLabel="Signing..."
+                  waitingLabel="Waiting for sidecar..."
+                  isBusy={isAuthenticating}
+                  isWaiting={!sidecarUrl}
+                  onAuthenticate={() => sidecarAuth()}
+                  buttonVariant="secondary"
+                />
               ) : (
                 <SessionSidebar
                   sandboxId={decodedId}
@@ -736,67 +665,24 @@ export default function SandboxDetail() {
       {/* Attestation Tab — TEE attestation verification */}
       {tab === 'attestation' && (
         <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">TEE Attestation</CardTitle>
-              <CardDescription>Verify the Trusted Execution Environment attestation for this sandbox</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Button
-                size="sm"
-                onClick={handleFetchAttestation}
-                disabled={attestationBusy}
-              >
-                <div className="i-ph:shield-check text-sm" />
-                {attestationBusy ? 'Fetching...' : attestation ? 'Refresh Attestation' : 'Get Attestation'}
-              </Button>
-
-              {attestationError && (
-                <p className="text-xs text-red-400">{attestationError}</p>
-              )}
-
-              {attestation && (
-                <div className="space-y-3">
-                  <DetailRow label="TEE Type" value={attestation.tee_type} />
-                  <DetailRow
-                    label="Timestamp"
-                    value={new Date(attestation.timestamp * 1000).toLocaleString()}
-                  />
-                  <div className="space-y-1.5">
-                    <span className="text-sm text-cloud-elements-textSecondary">Measurement</span>
-                    <div className="p-3 rounded-lg bg-cloud-elements-background-depth-2">
-                      <code className="text-xs font-data text-cloud-elements-textPrimary break-all">
-                        {bytesToHex(attestation.measurement)}
-                      </code>
-                    </div>
-                  </div>
-                  <details className="group">
-                    <summary className="text-sm text-cloud-elements-textSecondary cursor-pointer hover:text-cloud-elements-textPrimary transition-colors">
-                      Evidence ({attestation.evidence.length} bytes)
-                    </summary>
-                    <div className="mt-2 p-3 rounded-lg bg-cloud-elements-background-depth-2 max-h-48 overflow-y-auto">
-                      <code className="text-xs font-data text-cloud-elements-textTertiary break-all">
-                        {bytesToHex(attestation.evidence)}
-                      </code>
-                    </div>
-                  </details>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <TeeAttestationCard
+            subjectLabel="sandbox"
+            attestation={attestation}
+            busy={attestationBusy}
+            error={attestationError}
+            onFetch={handleFetchAttestation}
+          />
         </div>
       )}
+      <ConfirmDialog
+        open={!!confirmAction}
+        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
+        title={confirmAction?.title ?? ''}
+        description={confirmAction?.description ?? ''}
+        confirmLabel={confirmAction?.confirmLabel ?? 'Confirm'}
+        onConfirm={() => confirmAction?.onConfirm()}
+        variant="danger"
+      />
     </AnimatedPage>
-  );
-}
-
-function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex justify-between text-sm gap-2">
-      <span className="text-cloud-elements-textSecondary shrink-0">{label}</span>
-      <span className={cn('text-cloud-elements-textPrimary truncate text-right', mono && 'font-data text-xs')}>
-        {value}
-      </span>
-    </div>
   );
 }

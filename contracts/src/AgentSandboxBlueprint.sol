@@ -110,6 +110,15 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         uint64 workflow_id;
     }
 
+    struct SandboxIdRequest {
+        string sandbox_id;
+    }
+
+    struct SandboxCreateOutput {
+        string sandboxId;
+        string json;
+    }
+
     struct WorkflowConfig {
         string name;
         string workflow_json;
@@ -403,7 +412,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             emit OperatorAssigned(serviceId, jobCallId, selected);
         } else if (job == JOB_SANDBOX_DELETE) {
             if (instanceMode) revert CloudModeOnly();
-            string memory sandboxId = abi.decode(inputs, (string));
+            SandboxIdRequest memory request = abi.decode(inputs, (SandboxIdRequest));
+            string memory sandboxId = request.sandbox_id;
             bytes32 sandboxHash = keccak256(bytes(sandboxId));
             address routed = sandboxOperator[sandboxHash];
             if (routed == address(0)) revert SandboxNotFound(sandboxHash);
@@ -728,7 +738,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // INTERNAL: SANDBOX CREATE/DELETE RESULT HANDLING (cloud mode)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Processes a sandbox create result: validates the assigned operator, registers
+    /// @notice Processes a sandbox create result: validates the job was assigned, registers
     ///         the sandbox, and increments capacity counters.
     /// @param serviceId The service the sandbox belongs to.
     /// @param jobCallId The job call ID used to look up the pre-assigned operator.
@@ -741,9 +751,10 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         bytes calldata outputs
     ) internal {
         address assigned = _createAssignments[serviceId][jobCallId];
-        if (assigned != operator) revert OperatorMismatch(assigned, operator);
+        if (assigned == address(0)) revert OperatorMismatch(assigned, operator);
 
-        (string memory sandboxId,) = abi.decode(outputs, (string, string));
+        SandboxCreateOutput memory result = abi.decode(outputs, (SandboxCreateOutput));
+        string memory sandboxId = result.sandboxId;
         if (bytes(sandboxId).length == 0) revert EmptySandboxId();
         if (bytes(sandboxId).length > 255) revert SandboxIdTooLong(bytes(sandboxId).length);
         bytes32 sandboxHash = keccak256(bytes(sandboxId));
@@ -765,7 +776,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @param operator The operator that executed the delete.
     /// @param inputs ABI-encoded sandbox ID string.
     function _handleDeleteResult(address operator, bytes calldata inputs) internal {
-        string memory sandboxId = abi.decode(inputs, (string));
+        SandboxIdRequest memory request = abi.decode(inputs, (SandboxIdRequest));
+        string memory sandboxId = request.sandbox_id;
         bytes32 sandboxHash = keccak256(bytes(sandboxId));
 
         address expected = sandboxOperator[sandboxHash];

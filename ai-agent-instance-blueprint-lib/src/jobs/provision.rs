@@ -1,5 +1,6 @@
 use serde_json::json;
 
+use blueprint_sdk::{error, info};
 use crate::CreateSandboxParams;
 use crate::JsonResponse;
 use crate::ProvisionOutput;
@@ -77,7 +78,15 @@ pub async fn provision_core(
         if let (Some(dep_id), Some(backend)) = (&record.tee_deployment_id, tee) {
             match backend.derive_public_key(dep_id).await {
                 Ok(pk) => serde_json::to_string(&pk).unwrap_or_default(),
-                Err(_) => String::new(), // sidecar may not implement this yet
+                Err(e) => {
+                    blueprint_sdk::warn!(
+                        sandbox_id = %record.id,
+                        deployment_id = %dep_id,
+                        error = %e,
+                        "TEE public key derivation failed — sealed secrets will not be available"
+                    );
+                    String::new()
+                }
             }
         } else {
             String::new()
@@ -138,18 +147,23 @@ pub async fn instance_provision(
 
     // Idempotent: if auto-provision already created the sandbox, return existing info.
     if let Some(record) = crate::get_instance_sandbox().map_err(|e| e.to_string())? {
+        info!(sandbox_id = %record.id, "instance_provision: returning existing sandbox (idempotent)");
         let output = ProvisionOutput {
             sandbox_id: record.id.clone(),
             sidecar_url: record.sidecar_url.clone(),
             ssh_port: record.ssh_port.unwrap_or(0) as u32,
-            tee_attestation_json: String::new(),
+            tee_attestation_json: record.tee_attestation_json.clone().unwrap_or_default(),
             tee_public_key_json: String::new(),
         };
         return Ok(TangleResult(output));
     }
 
-    let (output, record) = provision_core(&request, None, &caller_hex).await?;
+    let (output, record) = provision_core(&request, None, &caller_hex).await.map_err(|e| {
+        error!("instance_provision failed: {e}");
+        e
+    })?;
     set_instance_sandbox(record).map_err(|e| e.to_string())?;
+    info!(sandbox_id = %output.sandbox_id, "instance_provision: provisioned successfully");
     Ok(TangleResult(output))
 }
 

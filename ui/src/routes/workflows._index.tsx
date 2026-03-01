@@ -8,7 +8,7 @@ import { Select } from '@tangle/blueprint-ui/components';
 import { useWorkflowIds, useWorkflowBatch } from '~/lib/hooks/useSandboxReads';
 import { useSubmitJob } from '@tangle/blueprint-ui';
 import { encodeJobArgs } from '@tangle/blueprint-ui';
-import { getJobById } from '~/lib/blueprints';
+import { getJobById } from '@tangle/blueprint-ui';
 import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
 import { cn } from '@tangle/blueprint-ui';
 

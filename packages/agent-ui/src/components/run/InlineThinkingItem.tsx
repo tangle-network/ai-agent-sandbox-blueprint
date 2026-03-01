@@ -1,28 +1,13 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { cn } from '~/utils/cn';
 import { formatDuration, truncateText } from '~/utils/format';
 import type { ReasoningPart } from '~/types/parts';
 import { Markdown } from '../markdown/Markdown';
+import { LiveDuration } from './RunItemPrimitives';
 
 export interface InlineThinkingItemProps {
   part: ReasoningPart;
-}
-
-/** Live timer for active thinking. */
-function ThinkingTimer({ startTime }: { startTime: number }) {
-  const [elapsed, setElapsed] = useState(Date.now() - startTime);
-
-  useEffect(() => {
-    const id = setInterval(() => setElapsed(Date.now() - startTime), 100);
-    return () => clearInterval(id);
-  }, [startTime]);
-
-  return (
-    <span className="text-xs font-mono text-neutral-400 dark:text-neutral-500 tabular-nums">
-      {formatDuration(elapsed)}
-    </span>
-  );
 }
 
 /**
@@ -65,7 +50,7 @@ export const InlineThinkingItem = memo(({ part }: InlineThinkingItemProps) => {
           )}
           {!preview && <span className="flex-1" />}
 
-          {isActive && startTime && <ThinkingTimer startTime={startTime} />}
+          {isActive && startTime && <LiveDuration startTime={startTime} />}
           {!isActive && durationMs != null && (
             <span className="text-xs font-mono text-neutral-400 dark:text-neutral-500 tabular-nums">
               {formatDuration(durationMs)}

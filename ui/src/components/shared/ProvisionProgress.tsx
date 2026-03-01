@@ -63,7 +63,6 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
   const isTerminal = isReady || isFailed || isTimedOut;
 
   // Start / stop the elapsed-time ticker.
-  // Uses startTimeRef exclusively so elapsedMs is not a dependency.
   useEffect(() => {
     if (!callId || isTerminal) {
       if (timerRef.current) {
@@ -90,7 +89,7 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
     };
   }, [callId, isTerminal, retryCount]);
 
-  // Reset timeout state when callId changes (e.g. on retry from parent)
+  // Reset timeout state when callId changes
   useEffect(() => {
     setElapsedMs(0);
     setIsTimedOut(false);
@@ -120,40 +119,39 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
   const showTimeout = isTimedOut && !isReady && !isFailed;
 
   return (
-    <div className={cn('rounded-xl border border-neutral-800 bg-neutral-900/60 p-4', className)}>
+    <div className={cn('rounded-xl border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 p-4', className)}>
       {/* Header */}
       <div className="flex items-center gap-2 mb-3">
         {showTimeout ? (
           <div className="i-ph:warning-circle w-5 h-5 text-amber-400" />
         ) : isFailed ? (
-          <div className="i-ph:warning-circle w-5 h-5 text-red-400" />
+          <div className="i-ph:warning-circle w-5 h-5 text-crimson-400" />
         ) : isReady ? (
-          <div className="i-ph:check-circle w-5 h-5 text-green-400" />
+          <div className="i-ph:check-circle w-5 h-5 text-teal-400" />
         ) : (
-          <div className="i-ph:circle-notch w-5 h-5 text-blue-400 animate-spin" />
+          <div className="i-ph:circle-notch w-5 h-5 text-violet-400 animate-spin" />
         )}
-        <span className="text-sm font-medium text-neutral-200">
+        <span className="text-sm font-display font-medium text-cloud-elements-textPrimary">
           {showTimeout
             ? 'Provisioning timed out'
             : phase ? getPhaseLabel(phase) : 'Waiting...'}
         </span>
-        {/* Elapsed time indicator while polling */}
         {!isTerminal && (
-          <span className="text-xs text-neutral-500 ml-auto">
+          <span className="text-xs text-cloud-elements-textTertiary ml-auto font-data">
             Waiting for operator... ({formatElapsed(elapsedMs)})
           </span>
         )}
         {!showTimeout && message && phase !== 'ready' && phase !== 'failed' && isTerminal && (
-          <span className="text-xs text-neutral-500 ml-auto">{message}</span>
+          <span className="text-xs text-cloud-elements-textTertiary ml-auto">{message}</span>
         )}
       </div>
 
       {/* Progress bar */}
-      <div className="h-1.5 rounded-full bg-neutral-800 overflow-hidden mb-3">
+      <div className="h-1.5 rounded-full bg-cloud-elements-background-depth-3 overflow-hidden mb-3">
         <div
           className={cn(
             'h-full rounded-full transition-all duration-500',
-            showTimeout ? 'bg-amber-500' : isFailed ? 'bg-red-500' : isReady ? 'bg-green-500' : 'bg-blue-500',
+            showTimeout ? 'bg-amber-500' : isFailed ? 'bg-crimson-500' : isReady ? 'bg-teal-500' : 'bg-violet-500',
           )}
           style={{ width: `${showTimeout ? 100 : progressPct}%` }}
         />
@@ -171,16 +169,16 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
               <div
                 className={cn(
                   'w-2 h-2 rounded-full transition-colors',
-                  isDone && 'bg-green-500',
-                  isActive && !isFail && 'bg-blue-400 animate-pulse',
-                  isFail && (showTimeout ? 'bg-amber-400' : 'bg-red-400'),
-                  !isDone && !isActive && 'bg-neutral-700',
+                  isDone && 'bg-teal-500',
+                  isActive && !isFail && 'bg-violet-400 animate-pulse',
+                  isFail && (showTimeout ? 'bg-amber-400' : 'bg-crimson-400'),
+                  !isDone && !isActive && 'bg-cloud-elements-background-depth-4',
                 )}
               />
               <span
                 className={cn(
                   'text-[10px] leading-tight text-center',
-                  isActive ? 'text-neutral-300' : 'text-neutral-600',
+                  isActive ? 'text-cloud-elements-textSecondary' : 'text-cloud-elements-textTertiary',
                 )}
               >
                 {getPhaseLabel(p)}
@@ -192,14 +190,14 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
 
       {/* Timeout message */}
       {showTimeout && (
-        <div className="mt-3 p-2 rounded bg-amber-900/20 border border-amber-900/40">
+        <div className="mt-3 p-2.5 rounded-lg bg-amber-500/5 border border-amber-500/20">
           <div className="flex items-center justify-between">
             <p className="text-xs text-amber-400">
-              Provisioning timed out. The operator may be offline. Please try again.
+              Provisioning timed out. The operator may still be working — click Retry to keep waiting.
             </p>
             <button
               onClick={handleRetry}
-              className="ml-3 shrink-0 px-3 py-1 text-xs font-medium text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded transition-colors"
+              className="ml-3 shrink-0 px-3 py-1 text-xs font-display font-medium text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg transition-colors"
             >
               Retry
             </button>
@@ -209,16 +207,16 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
 
       {/* Error message */}
       {isFailed && !showTimeout && message && (
-        <div className="mt-3 p-2 rounded bg-red-900/20 border border-red-900/40">
-          <p className="text-xs text-red-400">{message}</p>
+        <div className="mt-3 p-2.5 rounded-lg bg-crimson-500/5 border border-crimson-500/20">
+          <p className="text-xs text-crimson-400">{message}</p>
         </div>
       )}
 
       {/* Success */}
       {isReady && sandboxId && (
-        <div className="mt-3 p-2 rounded bg-green-900/20 border border-green-900/40">
-          <p className="text-xs text-green-400">
-            Sandbox <code className="font-mono">{sandboxId}</code> is ready
+        <div className="mt-3 p-2.5 rounded-lg bg-teal-500/5 border border-teal-500/20">
+          <p className="text-xs text-teal-400">
+            Sandbox <code className="font-data">{sandboxId}</code> is ready
           </p>
         </div>
       )}

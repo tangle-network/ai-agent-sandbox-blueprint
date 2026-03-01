@@ -125,6 +125,16 @@
   display: inline-block;
 }
 
+.status-creating {
+  background: var(--status-creating);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .status-running {
   background: var(--status-running);
   box-shadow: 0 0 8px var(--status-running);
@@ -144,6 +154,10 @@
 
 .status-error {
   background: var(--status-error);
+}
+
+.status-deleted {
+  background: var(--status-deleted);
 }
 
 /* Selection */

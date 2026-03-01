@@ -54,9 +54,6 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
-      connectkit:
-        specifier: ^1.9.1
-        version: 1.9.1(@babel/core@7.29.0)(@tanstack/react-query@5.90.21(react@19.0.0))(react-dom@19.0.0(react@19.0.0))(react-is@17.0.2)(react@19.0.0)(viem@2.46.1(typescript@5.9.3)(zod@4.3.6))(wagmi@3.4.4(@tanstack/query-core@5.90.20)(@tanstack/react-query@5.90.21(react@19.0.0))(@types/react@18.3.1)(ox@0.12.1(typescript@5.9.3)(zod@4.3.6))(react@19.0.0)(typescript@5.9.3)(viem@2.46.1(typescript@5.9.3)(zod@4.3.6)))
       framer-motion:
         specifier: ^12.23.26
         version: 12.34.1(@emotion/is-prop-valid@1.4.0)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
@@ -115,8 +112,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/agent-ui
       '@tangle/blueprint-ui':
-        specifier: github:tangle-network/blueprint-ui
-        version: https://codeload.github.com/tangle-network/blueprint-ui/tar.gz/4e8baf9bc832200bc61ff4f65628fbbb461d7a6e(150788be6e4b792a8d02efbd4e7a98fb)
+        specifier: link:../../blueprint-ui
+        version: link:../../blueprint-ui
       '@tanstack/react-query':
         specifier: ^5.90.16
         version: 5.90.21(react@19.0.0)
@@ -1461,30 +1458,6 @@ packages:
       '@ai-sdk/anthropic': ^3.0.49
       '@ai-sdk/google': ^3.0.33
       playwright: ^1.40.0
-
-  '@tangle/blueprint-ui@https://codeload.github.com/tangle-network/blueprint-ui/tar.gz/4e8baf9bc832200bc61ff4f65628fbbb461d7a6e':
-    resolution: {tarball: https://codeload.github.com/tangle-network/blueprint-ui/tar.gz/4e8baf9bc832200bc61ff4f65628fbbb461d7a6e}
-    version: 0.1.0
-    peerDependencies:
-      '@nanostores/react': ^0.7.0
-      '@radix-ui/react-dialog': ^1.1.0
-      '@radix-ui/react-select': ^2.1.0
-      '@radix-ui/react-separator': ^1.1.0
-      '@radix-ui/react-slot': ^1.2.0
-      '@radix-ui/react-tabs': ^1.1.0
-      '@radix-ui/react-tooltip': ^1.2.0
-      blo: ^2.0.0
-      class-variance-authority: ^0.7.0
-      clsx: ^2.1.0
-      framer-motion: ^12.0.0
-      nanostores: ^0.10.0
-      react: ^19.0.0
-      react-dom: ^19.0.0
-      react-router: ^7.0.0
-      sonner: ^2.0.0
-      tailwind-merge: ^3.2.0
-      viem: ^2.31.0
-      wagmi: ^3.3.0
 
   '@tanstack/query-core@5.90.20':
     resolution: {integrity: sha512-OMD2HLpNouXEfZJWcKeVKUgQ5n+n3A2JFmBaScpNDUqSrQSjiveC7dKMe53uJUg1nDG16ttFPz2xfilz6i2uVg==}
@@ -4728,28 +4701,6 @@ snapshots:
       playwright: 1.58.2
     transitivePeerDependencies:
       - zod
-
-  '@tangle/blueprint-ui@https://codeload.github.com/tangle-network/blueprint-ui/tar.gz/4e8baf9bc832200bc61ff4f65628fbbb461d7a6e(150788be6e4b792a8d02efbd4e7a98fb)':
-    dependencies:
-      '@nanostores/react': 0.7.3(nanostores@0.10.3)(react@19.0.0)
-      '@radix-ui/react-dialog': 1.1.15(@types/react-dom@18.3.1)(@types/react@18.3.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-select': 2.2.6(@types/react-dom@18.3.1)(@types/react@18.3.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-separator': 1.1.8(@types/react-dom@18.3.1)(@types/react@18.3.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-slot': 1.2.4(@types/react@18.3.1)(react@19.0.0)
-      '@radix-ui/react-tabs': 1.1.13(@types/react-dom@18.3.1)(@types/react@18.3.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      '@radix-ui/react-tooltip': 1.2.8(@types/react-dom@18.3.1)(@types/react@18.3.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      blo: 2.0.0
-      class-variance-authority: 0.7.1
-      clsx: 2.1.1
-      framer-motion: 12.34.1(@emotion/is-prop-valid@1.4.0)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      nanostores: 0.10.3
-      react: 19.0.0
-      react-dom: 19.0.0(react@19.0.0)
-      react-router: 7.13.0(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      sonner: 2.0.7(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
-      tailwind-merge: 3.4.1
-      viem: 2.46.1(typescript@5.9.3)(zod@4.3.6)
-      wagmi: 3.4.4(@tanstack/query-core@5.90.20)(@tanstack/react-query@5.90.21(react@19.0.0))(@types/react@18.3.1)(ox@0.12.1(typescript@5.9.3)(zod@4.3.6))(react@19.0.0)(typescript@5.9.3)(viem@2.46.1(typescript@5.9.3)(zod@4.3.6))
 
   '@tanstack/query-core@5.90.20': {}
 

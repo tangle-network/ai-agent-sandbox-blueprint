@@ -17,9 +17,10 @@ import { infraStore, updateInfra } from '@tangle/blueprint-ui';
 import { useServiceValidation } from '@tangle/blueprint-ui';
 import { useOperators, type DiscoveredOperator } from '@tangle/blueprint-ui';
 import { useQuotes, formatCost } from '@tangle/blueprint-ui';
-import { tangleServicesAbi } from '~/lib/contracts/abi';
+import { tangleServicesAbi } from '@tangle/blueprint-ui';
 import { getAddresses } from '@tangle/blueprint-ui';
 import { cn } from '@tangle/blueprint-ui';
+import { BlueprintBadgeInline } from './InfraSummaryBits';
 import type { Address } from 'viem';
 
 interface InfrastructureModalProps {
@@ -474,11 +475,7 @@ export function InfraBar({ onOpenModal }: { onOpenModal: () => void }) {
   return (
     <div className="glass-card rounded-lg p-3 flex items-center justify-between mb-6">
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <div className="i-ph:cube text-sm text-cloud-elements-textTertiary" />
-          <span className="text-xs text-cloud-elements-textTertiary">Blueprint</span>
-          <Badge variant="accent">#{infra.blueprintId}</Badge>
-        </div>
+        <BlueprintBadgeInline blueprintId={infra.blueprintId} />
         <div className="flex items-center gap-2">
           <div className="i-ph:cpu text-sm text-cloud-elements-textTertiary" />
           <span className="text-xs text-cloud-elements-textTertiary">Service</span>

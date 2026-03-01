@@ -140,12 +140,20 @@ pub(crate) fn api_error(
 #[derive(Serialize)]
 struct SandboxSummary {
     id: String,
+    name: String,
     sidecar_url: String,
     state: String,
+    image: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    agent_identifier: String,
     cpu_cores: u64,
     memory_mb: u64,
+    disk_gb: u64,
     created_at: u64,
     last_activity_at: u64,
+    ssh_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tee_deployment_id: Option<String>,
     /// Extra user-exposed ports: container_port → host_port.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     extra_ports: std::collections::HashMap<u16, u16>,
@@ -155,15 +163,21 @@ impl From<&SandboxRecord> for SandboxSummary {
     fn from(r: &SandboxRecord) -> Self {
         Self {
             id: r.id.clone(),
+            name: r.name.clone(),
             sidecar_url: r.sidecar_url.clone(),
             state: match r.state {
                 SandboxState::Running => "running".into(),
                 SandboxState::Stopped => "stopped".into(),
             },
+            image: r.original_image.clone(),
+            agent_identifier: r.agent_identifier.clone(),
             cpu_cores: r.cpu_cores,
             memory_mb: r.memory_mb,
+            disk_gb: r.disk_gb,
             created_at: r.created_at,
             last_activity_at: r.last_activity_at,
+            ssh_port: r.ssh_port,
+            tee_deployment_id: r.tee_deployment_id.clone(),
             extra_ports: r.extra_ports.clone(),
         }
     }
@@ -501,9 +515,15 @@ fn build_agent_payload(
     context_json: &str,
     timeout_ms: u64,
     max_turns: Option<u64>,
+    agent_identifier: &str,
 ) -> Value {
     let mut payload = Map::new();
-    payload.insert("identifier".into(), json!("default"));
+    let identifier = if agent_identifier.is_empty() {
+        "default"
+    } else {
+        agent_identifier
+    };
+    payload.insert("identifier".into(), json!(identifier));
     payload.insert("message".into(), json!(message));
 
     if !session_id.is_empty() {
@@ -724,6 +744,7 @@ async fn agent_on_sidecar(
         context_json,
         timeout_ms,
         max_turns,
+        &record.agent_identifier,
     );
     let parsed = sidecar_call(
         record,

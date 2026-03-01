@@ -1,30 +1,20 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { WagmiProvider, createConfig, http } from 'wagmi';
+import { createConfig } from 'wagmi';
 import { ConnectKitProvider, getDefaultConfig } from 'connectkit';
-import { type ReactNode, useState } from 'react';
-import { tangleLocal, tangleTestnet, tangleMainnet, mainnet, rpcUrl } from '~/lib/contracts/chains';
-
-const chains = [tangleLocal, tangleTestnet, tangleMainnet, mainnet] as const;
-
-const transports = {
-  [tangleLocal.id]: http(rpcUrl),
-  [tangleTestnet.id]: http('https://testnet-rpc.tangle.tools'),
-  [tangleMainnet.id]: http('https://rpc.tangle.tools'),
-  [mainnet.id]: http(),
-};
+import { type ReactNode, useEffect } from 'react';
+import { useReconnect } from 'wagmi';
+import {
+  createTangleTransports,
+  defaultConnectKitOptions,
+  tangleWalletChains,
+} from '@tangle/blueprint-ui';
+import { Web3Shell } from '@tangle/blueprint-ui/components';
 
 const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || '';
 
-if (!walletConnectProjectId) {
-  console.warn(
-    'WalletConnect Project ID not set. Set VITE_WALLETCONNECT_PROJECT_ID for wallet support.',
-  );
-}
-
 const config = createConfig(
   getDefaultConfig({
-    chains,
-    transports,
+    chains: tangleWalletChains as any,
+    transports: createTangleTransports() as any,
     walletConnectProjectId,
     appName: 'Tangle Sandbox Cloud',
     appDescription: 'AI Agent Sandbox Provisioning on Tangle Network',
@@ -35,35 +25,40 @@ const config = createConfig(
 
 export { config };
 
-export function Web3Provider({ children }: { children: ReactNode }) {
-  const [queryClient] = useState(
-    () =>
-      new QueryClient({
-        defaultOptions: {
-          queries: {
-            refetchOnWindowFocus: false,
-            staleTime: 30_000,
-          },
-        },
-      }),
-  );
+/**
+ * Eagerly reconnect using only the injected (MetaMask) connector.
+ * wagmi's default reconnect tries ALL connectors including WalletConnect,
+ * which can be slow when no project ID is set or on insecure contexts.
+ * This fires immediately and wins the race against WalletConnect's timeout.
+ */
+function FastReconnect({ children }: { children: ReactNode }) {
+  const { reconnect } = useReconnect();
 
+  useEffect(() => {
+    const inj = config.connectors.find((c) => c.type === 'injected');
+    if (inj) {
+      reconnect({ connectors: [inj] });
+    }
+  }, [reconnect]);
+
+  return <>{children}</>;
+}
+
+export function Web3Provider({ children }: { children: ReactNode }) {
   return (
-    <WagmiProvider config={config}>
-      <QueryClientProvider client={queryClient}>
-        <ConnectKitProvider
-          theme="auto"
-          mode="auto"
-          options={{
-            hideBalance: false,
-            hideTooltips: false,
-            hideQuestionMarkCTA: true,
-            overlayBlur: 4,
-          }}
-        >
+    <Web3Shell config={config as any}>
+      <ConnectKitProvider
+        theme="auto"
+        mode="auto"
+        options={{
+          ...defaultConnectKitOptions,
+          initialChainId: undefined,
+        }}
+      >
+        <FastReconnect>
           {children}
-        </ConnectKitProvider>
-      </QueryClientProvider>
-    </WagmiProvider>
+        </FastReconnect>
+      </ConnectKitProvider>
+    </Web3Shell>
   );
 }

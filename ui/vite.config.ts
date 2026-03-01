@@ -2,6 +2,28 @@ import { reactRouter } from '@react-router/dev/vite';
 import UnoCSS from 'unocss/vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 import { defineConfig, type Plugin } from 'vite';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+// Force linked packages (blueprint-ui) to share our exact wagmi/react copies.
+// Without this, blueprint-ui resolves its own wagmi 3.5.0 from its node_modules,
+// creating a separate React context that ConnectKit can't reach.
+const cjsRequire = createRequire(import.meta.url);
+function pkgDir(id: string) {
+  // Try resolving package.json first (fastest), fall back to entry point traversal
+  try {
+    return path.dirname(cjsRequire.resolve(`${id}/package.json`));
+  } catch {
+    // Some packages don't export package.json — resolve entry and walk up
+    const entry = cjsRequire.resolve(id);
+    let dir = path.dirname(entry);
+    const target = id.startsWith('@') ? id : id.split('/')[0];
+    while (dir.length > 1 && !dir.endsWith(`/node_modules/${target}`)) {
+      dir = path.dirname(dir);
+    }
+    return dir;
+  }
+}
 
 // Provide a full browser DOM environment for SSR module evaluation.
 // Some workspace packages (agent-ui) reference browser globals like
@@ -89,6 +111,15 @@ export default defineConfig({
   define: {
     global: 'globalThis',
   },
+  server: {
+    proxy: {
+      '/rpc-proxy': {
+        target: process.env.VITE_RPC_URL || 'http://127.0.0.1:8645',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/rpc-proxy/, ''),
+      },
+    },
+  },
   ssr: {
     // Force Vite to bundle workspace-linked packages during SSR module
     // evaluation instead of trying to resolve them via Node.
@@ -100,6 +131,9 @@ export default defineConfig({
   resolve: {
     alias: {
       events: 'events',
+      // Pin wagmi to a single copy so linked blueprint-ui (which has wagmi
+      // 3.5.0) doesn't create a separate WagmiContext that ConnectKit can't find.
+      wagmi: pkgDir('wagmi'),
     },
     dedupe: [
       '@nanostores/react',

@@ -1,34 +1,4 @@
-export type SandboxStatus = 'running' | 'stopped' | 'warm' | 'cold' | 'gone' | 'error';
-
-export interface Sandbox {
-  id: string;
-  name: string;
-  status: SandboxStatus;
-  image: string;
-  stack: string;
-  sidecarUrl: string;
-  sshPort?: number;
-  cpuCores: number;
-  memoryMb: number;
-  diskGb: number;
-  idleTimeoutSeconds: number;
-  maxLifetimeSeconds: number;
-  createdAt: number;
-  lastActivityAt: number;
-  sidecarToken: string;
-  sshEnabled: boolean;
-  webTerminalEnabled: boolean;
-  metadata?: Record<string, string>;
-}
-
-export interface SandboxSnapshot {
-  id: string;
-  sandboxId: string;
-  tier: 'hot' | 'warm' | 'cold';
-  destination?: string;
-  createdAt: number;
-  sizeBytes?: number;
-}
+export type SandboxStatus = 'creating' | 'running' | 'stopped' | 'warm' | 'cold' | 'gone' | 'error';
 
 /**
  * Job IDs — must match sequential indices in the unified AgentSandboxBlueprint contract.

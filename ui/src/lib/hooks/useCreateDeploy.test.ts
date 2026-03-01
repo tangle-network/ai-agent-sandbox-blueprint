@@ -157,6 +157,7 @@ describe('useCreateDeploy: computeCanDeploy', () => {
     hasAddress: true,
     status: 'idle' as DeployStatus,
     contractsDeployed: true,
+    correctChain: true,
     mode: 'sandbox' as DeployMode,
     hasValidService: true,
     isNewService: false,
@@ -189,6 +190,10 @@ describe('useCreateDeploy: computeCanDeploy', () => {
 
   it('returns false when contracts not deployed', () => {
     expect(computeCanDeploy({ ...baseOpts, contractsDeployed: false })).toBe(false);
+  });
+
+  it('returns false when wallet is on wrong chain', () => {
+    expect(computeCanDeploy({ ...baseOpts, correctChain: false })).toBe(false);
   });
 
   it('returns false for sandbox mode without valid service', () => {

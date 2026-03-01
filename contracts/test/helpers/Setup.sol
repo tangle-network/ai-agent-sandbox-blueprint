@@ -61,6 +61,15 @@ contract BlueprintTestSetup is Test {
     address public operator2 = address(0x1002);
     address public operator3 = address(0x1003);
 
+    struct SandboxIdRequest {
+        string sandbox_id;
+    }
+
+    struct SandboxCreateOutput {
+        string sandboxId;
+        string json;
+    }
+
     function setUp() public virtual {
         mockDelegation = new MockMultiAssetDelegation();
         blueprint = new AgentSandboxBlueprint(address(mockDelegation), false, false);
@@ -107,17 +116,17 @@ contract BlueprintTestSetup is Test {
         return bytes("");
     }
 
-    /// @dev Encode sandbox create outputs: (string sandboxId, string json).
+    /// @dev Encode sandbox create outputs: (SandboxCreateOutput).
     function encodeSandboxCreateOutputs(
         string memory sandboxId,
         string memory json
     ) internal pure returns (bytes memory) {
-        return abi.encode(sandboxId, json);
+        return abi.encode(SandboxCreateOutput({sandboxId: sandboxId, json: json}));
     }
 
-    /// @dev Encode sandbox ID inputs for delete: (string sandboxId).
+    /// @dev Encode sandbox ID inputs for delete: (SandboxIdRequest).
     function encodeSandboxIdInputs(string memory sandboxId) internal pure returns (bytes memory) {
-        return abi.encode(sandboxId);
+        return abi.encode(SandboxIdRequest({sandbox_id: sandboxId}));
     }
 
     /// @dev Encode generic JSON outputs for non-create jobs: (string json).

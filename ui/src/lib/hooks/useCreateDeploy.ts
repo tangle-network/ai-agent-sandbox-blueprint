@@ -5,20 +5,23 @@
  *   Path A (sandbox / instance with existing service): submitJob → watch provision
  *   Path B (instance without service): requestService → watch ServiceActivated → watch OperatorProvisioned
  *
- * The hook owns all TX lifecycle state, store updates, and provision watching,
- * so the consuming component only needs to render based on `status` + `provision`.
+ * Path A bypasses MetaMask's built-in gas estimation by pre-estimating gas
+ * through publicClient (uses the working Vite RPC proxy). This avoids the
+ * "Requested resource not available" error when MetaMask's internal RPC URL
+ * for the chain is unreachable (common in remote/Tailscale dev setups).
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useChainId } from 'wagmi';
+import { decodeEventLog } from 'viem';
 import { encodeJobArgs } from '@tangle/blueprint-ui';
-import { tangleServicesAbi } from '~/lib/contracts/abi';
-import { getAddresses } from '@tangle/blueprint-ui';
-import { useSubmitJob } from '@tangle/blueprint-ui';
+import { tangleServicesAbi } from '@tangle/blueprint-ui';
+import { getAddresses, publicClient } from '@tangle/blueprint-ui';
+import { tangleJobsAbi, addTx, updateTx } from '@tangle/blueprint-ui';
 import { useOperators, type DiscoveredOperator } from '@tangle/blueprint-ui';
+import { selectedChainIdStore } from '@tangle/blueprint-ui';
 import {
   deriveMode,
-  deriveIsNewService,
   computeStatus,
   computeCanDeploy,
   type DeployMode,
@@ -28,7 +31,7 @@ import {
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { addInstance, updateInstanceStatus } from '~/lib/stores/instances';
-import type { BlueprintDefinition, JobDefinition } from '~/lib/blueprints';
+import type { BlueprintDefinition, JobDefinition } from '@tangle/blueprint-ui';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
 import type { InfraConfig } from '@tangle/blueprint-ui';
 import type { Address } from 'viem';
@@ -68,7 +71,8 @@ const TTL_BLOCKS_30_DAYS = 864000n;
 // ── Hook ──
 
 export function useCreateDeploy({ blueprint, job, values, infra, validate }: UseCreateDeployOpts) {
-  const { address } = useAccount();
+  const { address, isConnected } = useAccount();
+  const walletChainId = useChainId();
 
   const mode = deriveMode(blueprint?.id);
   const isTeeInstance = blueprint?.id === 'ai-agent-tee-instance-blueprint';
@@ -89,12 +93,66 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   const isTeeInstanceRef = useRef(isTeeInstance);
   isTeeInstanceRef.current = isTeeInstance;
 
-  // Path A: submitJob (sandbox, or instance with existing service)
+  // ── Path A: submitJob (sandbox, or instance with existing service) ──
+  // Uses writeContractAsync directly with pre-estimated gas to bypass
+  // MetaMask's gas estimation (which fails when its RPC URL is unreachable).
   const {
-    submitJob, status: jobStatus, error: jobError, txHash: jobTxHash, callId, reset: resetJob,
-  } = useSubmitJob();
+    writeContractAsync: jobWriteAsync,
+    data: jobTxHash,
+    isPending: jobSigning,
+    reset: resetJobTx,
+  } = useWriteContract();
+  const {
+    data: jobReceipt,
+    isSuccess: jobConfirmed,
+    isLoading: jobTxPending,
+    isError: jobTxFailed,
+  } = useWaitForTransactionReceipt({ hash: jobTxHash });
 
-  // Path B: requestService (instance without existing service)
+  const [jobError, setJobError] = useState<string | null>(null);
+
+  // Extract callId from the JobCalled event in the receipt logs
+  const callId = useMemo<number | null>(() => {
+    if (!jobReceipt?.logs) return null;
+    for (const log of jobReceipt.logs) {
+      try {
+        const decoded = decodeEventLog({
+          abi: tangleJobsAbi,
+          data: log.data,
+          topics: log.topics,
+        });
+        if (decoded.eventName === 'JobCalled' && 'callId' in decoded.args) {
+          return Number(decoded.args.callId);
+        }
+      } catch {
+        // Not a matching event, skip
+      }
+    }
+    return null;
+  }, [jobReceipt]);
+
+  // Derive jobStatus from the write/receipt state
+  const jobStatus = useMemo<JobSubmitStatus>(() => {
+    if (jobError) return 'failed';
+    if (jobSigning) return 'signing';
+    if (jobTxPending) return 'pending';
+    if (jobTxFailed) return 'failed';
+    if (jobConfirmed) return 'confirmed';
+    return 'idle';
+  }, [jobError, jobSigning, jobTxPending, jobTxFailed, jobConfirmed]);
+
+  // Track job TX in the tx history store
+  useEffect(() => {
+    if (jobTxHash) {
+      addTx(jobTxHash, `Job`, selectedChainIdStore.get());
+    }
+  }, [jobTxHash]);
+  useEffect(() => {
+    if (jobConfirmed && jobTxHash) updateTx(jobTxHash, { status: 'confirmed' });
+    if (jobTxFailed && jobTxHash) updateTx(jobTxHash, { status: 'failed' });
+  }, [jobConfirmed, jobTxFailed, jobTxHash]);
+
+  // ── Path B: requestService (instance without existing service) ──
   const {
     writeContractAsync: requestServiceWrite,
     data: serviceTxHash,
@@ -108,6 +166,8 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
   // Service error tracking for Path B
   const [serviceError, setServiceError] = useState<string | null>(null);
+  // Pre-flight error (simulation failure, wallet not connected, etc.)
+  const [preflightError, setPreflightError] = useState<string | null>(null);
 
   // Operator discovery (instance mode)
   const { operators, isLoading: operatorsLoading } = useOperators(
@@ -126,13 +186,15 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
   // ── Unified status ──
 
-  const status = useMemo<DeployStatus>(
+  const rawStatus = useMemo<DeployStatus>(
     () => computeStatus({ isNewService, jobStatus, serviceSigning, serviceTxPending, serviceConfirmed, serviceError }),
     [isNewService, jobStatus, serviceSigning, serviceTxPending, serviceConfirmed, serviceError],
   );
+  // Preflight errors (simulation, wallet) override status to 'failed'
+  const status = preflightError ? 'failed' as DeployStatus : rawStatus;
 
   const txHash = isNewService ? serviceTxHash : jobTxHash;
-  const error = isNewService ? serviceError : jobError;
+  const error = preflightError ?? (isNewService ? serviceError : jobError);
 
   // ── Instance provision watching ──
 
@@ -174,6 +236,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
         blueprintId: infraRef.current.blueprintId,
         serviceId: infraRef.current.serviceId || '',
         teeEnabled: isTeeInstanceRef.current,
+        agentIdentifier: String(v.agentIdentifier || '') || undefined,
         status: 'creating',
         txHash: serviceTxHash,
       });
@@ -198,50 +261,127 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   const deploy = useCallback(async () => {
     if (!job || !validate()) return;
 
+    // Verify wallet is fully connected (not just cached from localStorage)
+    setPreflightError(null);
+    setJobError(null);
+    if (!isConnected || !address) {
+      setPreflightError('Wallet not connected. Please connect your wallet and try again.');
+      return;
+    }
+
     const args = encodeJobArgs(job, values);
     const name = String(values.name || '');
 
     // Path A: Submit job to existing service
     if (!isNewService) {
-      const hash = await submitJob({
-        serviceId: BigInt(infra.serviceId || '0'),
-        jobId: job.id,
-        args,
-        label: `${job.label}: ${name}`,
-        value: BigInt(job.pricingMultiplier ?? 50) * 1_000_000_000_000_000n,
-      });
+      const serviceId = BigInt(infra.serviceId || '0');
+      const value = BigInt(job.pricingMultiplier ?? 50) * 1_000_000_000_000_000n;
+      const addrs = getAddresses<SandboxAddresses>();
 
-      if (hash) {
-        const common = {
-          id: name,
-          name,
-          image: String(values.image || ''),
-          cpuCores: Number(values.cpuCores) || 2,
-          memoryMb: Number(values.memoryMb) || 2048,
-          diskGb: Number(values.diskGb) || 10,
-          createdAt: Date.now(),
-          blueprintId: infra.blueprintId,
-          serviceId: infra.serviceId,
-          status: 'creating' as const,
-          txHash: hash,
-        };
-        if (mode === 'sandbox') {
-          addSandbox({ ...common, teeEnabled: isTeeInstance || undefined });
-        } else {
-          addInstance({ ...common, teeEnabled: isTeeInstance });
-        }
+      // Pre-flight: simulate + estimate gas via our publicClient (uses working
+      // Vite RPC proxy). This catches contract errors AND provides gas so
+      // MetaMask doesn't need to estimate using its own (potentially broken) RPC.
+      let gas: bigint;
+      try {
+        await publicClient.simulateContract({
+          address: addrs.jobs,
+          abi: tangleJobsAbi,
+          functionName: 'submitJob',
+          args: [serviceId, job.id, args],
+          value,
+          account: address as Address,
+        });
+        gas = await publicClient.estimateContractGas({
+          address: addrs.jobs,
+          abi: tangleJobsAbi,
+          functionName: 'submitJob',
+          args: [serviceId, job.id, args],
+          value,
+          account: address as Address,
+        });
+        // Add 20% buffer for safety
+        gas = gas + (gas / 5n);
+      } catch (simErr: any) {
+        const simMsg = simErr?.shortMessage ?? simErr?.message ?? 'Simulation failed';
+        console.error('[deploy] Pre-flight simulation failed:', simErr);
+        setPreflightError(`Contract simulation failed: ${simMsg}`);
+        return;
+      }
+
+      // Send to wallet with pre-estimated gas — MetaMask skips its own
+      // gas estimation and goes straight to the confirmation popup.
+      try {
+        await jobWriteAsync({
+          address: addrs.jobs,
+          abi: tangleJobsAbi,
+          functionName: 'submitJob',
+          args: [serviceId, job.id, args],
+          value,
+          gas,
+        });
+      } catch (err: any) {
+        const msg = err?.shortMessage ?? err?.message ?? 'Transaction failed';
+        setJobError(msg);
+        return;
+      }
+
+      // Add to local store (txHash is set by jobWriteAsync via the useWriteContract hook)
+      const agentIdentifier = String(values.agentIdentifier || '');
+      const common = {
+        id: name,
+        name,
+        image: String(values.image || ''),
+        cpuCores: Number(values.cpuCores) || 2,
+        memoryMb: Number(values.memoryMb) || 2048,
+        diskGb: Number(values.diskGb) || 10,
+        createdAt: Date.now(),
+        blueprintId: infra.blueprintId,
+        serviceId: infra.serviceId,
+        status: 'creating' as const,
+        agentIdentifier: agentIdentifier || undefined,
+      };
+      if (mode === 'sandbox') {
+        addSandbox({ ...common, teeEnabled: isTeeInstance || undefined });
+      } else {
+        addInstance({ ...common, teeEnabled: isTeeInstance });
       }
       return;
     }
 
     // Path B: Create new service with config as requestInputs
-    if (!address) return;
     const addrs = getAddresses<SandboxAddresses>();
     const ops = operators.map((o) => o.address);
     if (ops.length === 0) return;
 
     try {
       setServiceError(null);
+
+      // Pre-estimate gas for Path B too
+      let gas: bigint;
+      try {
+        gas = await publicClient.estimateContractGas({
+          address: addrs.services,
+          abi: tangleServicesAbi,
+          functionName: 'requestService',
+          args: [
+            BigInt(infra.blueprintId),
+            ops,
+            args as `0x${string}`,
+            [address as Address],
+            TTL_BLOCKS_30_DAYS,
+            '0x0000000000000000000000000000000000000000' as Address,
+            0n,
+          ],
+          account: address as Address,
+        });
+        gas = gas + (gas / 5n);
+      } catch (estErr: any) {
+        const msg = estErr?.shortMessage ?? estErr?.message ?? 'Gas estimation failed';
+        console.error('[deploy] Path B gas estimation failed:', estErr);
+        setServiceError(`Gas estimation failed: ${msg}`);
+        return;
+      }
+
       await requestServiceWrite({
         address: addrs.services,
         abi: tangleServicesAbi,
@@ -255,6 +395,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
           '0x0000000000000000000000000000000000000000' as Address,
           0n,
         ],
+        gas,
       });
     } catch (err: unknown) {
       const message =
@@ -263,15 +404,17 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
           : String(err);
       setServiceError(message || 'Service creation failed');
     }
-  }, [job, values, infra, validate, isNewService, submitJob, address, operators, requestServiceWrite, mode, isTeeInstance]);
+  }, [job, values, infra, validate, isNewService, isConnected, jobWriteAsync, address, operators, requestServiceWrite, mode, isTeeInstance]);
 
   // ── Reset ──
 
   const reset = useCallback(() => {
-    resetJob();
+    resetJobTx();
     resetServiceTx();
+    setJobError(null);
     setServiceError(null);
-  }, [resetJob, resetServiceTx]);
+    setPreflightError(null);
+  }, [resetJobTx, resetServiceTx]);
 
   // ── Computed flags ──
 
@@ -279,12 +422,18 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   const addrs = getAddresses<SandboxAddresses>();
   const contractsDeployed = isContractDeployed(addrs.jobs) && isContractDeployed(addrs.services);
 
+  const selectedChainId = selectedChainIdStore.get();
+  const correctChain = walletChainId === selectedChainId;
+
+  // Use rawStatus for canDeploy so preflight errors don't permanently disable the button.
+  // The deploy function clears preflightError before each attempt, allowing retries.
   const canDeploy = computeCanDeploy({
     job: !!job,
     hasName: !!values.name,
-    hasAddress: !!address,
-    status,
+    hasAddress: isConnected && !!address,
+    status: rawStatus,
     contractsDeployed,
+    correctChain,
     mode,
     hasValidService,
     isNewService,

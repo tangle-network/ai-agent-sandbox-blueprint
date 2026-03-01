@@ -115,7 +115,7 @@ export default function Dashboard() {
                         <p className="text-xs font-data text-cloud-elements-textTertiary">{sb.image}</p>
                       </div>
                     </div>
-                    <StatusBadge status={sb.status === 'creating' ? 'running' : sb.status} />
+                    <StatusBadge status={sb.status} />
                   </Link>
                 ))}
               </div>
@@ -156,7 +156,7 @@ export default function Dashboard() {
                     </div>
                     <div className="flex items-center gap-2">
                       {inst.teeEnabled && <span className="text-xs text-violet-400 font-data">TEE</span>}
-                      <StatusBadge status={inst.status === 'creating' ? 'running' : inst.status} />
+                      <StatusBadge status={inst.status} />
                     </div>
                   </Link>
                 ))}
