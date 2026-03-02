@@ -1,4 +1,11 @@
+![Tangle Network Banner](https://raw.githubusercontent.com/tangle-network/tangle/refs/heads/main/assets/Tangle%20%20Banner.png)
+
 # AI Agent Sandbox Blueprint
+
+[![Discord](https://img.shields.io/badge/Discord-Join%20Chat-7289da?logo=discord&logoColor=white)](https://discord.gg/cv8EfJu3Tn)
+[![Twitter](https://img.shields.io/twitter/follow/tangle_network?style=social)](https://twitter.com/tangle_network)
+
+**AI Agent Sandbox Blueprint** is a production TEE sandbox runtime for AI agents on Tangle Network. It supports AWS Nitro, Azure, GCP, and Phala backends with sealed secrets, attestation, and managed Docker sandboxes for multi-tenant AI workloads.
 
 ## Overview
 
@@ -163,6 +170,32 @@ cd ui && pnpm install && pnpm test && pnpm dev
 # Local dev (skip BPM bridge)
 cargo run -p ai-agent-sandbox-blueprint-bin -- run --test-mode
 ```
+
+## Key Concepts
+
+- **Blueprint**: A specification for a verifiable, decentralized service on Tangle Network. Blueprints define jobs, handle results, and manage the operator lifecycle.
+- **Operator**: A node runner who registers to provide services defined by a Blueprint. Operators stake assets and earn rewards for honest execution.
+- **TEE (Trusted Execution Environment)**: Hardware-isolated execution environments (such as AWS Nitro Enclaves or Intel SGX) that provide confidentiality and attestation for sensitive computations.
+- **Sealed Secrets**: Encrypted data that can only be decrypted inside a TEE. Secrets are sealed using ChaCha20-Poly1305 encryption and bound to a specific enclave identity.
+- **Attestation**: Cryptographic proof that code is running inside a genuine TEE. Attestation reports are verified on-chain to establish trust.
+- **BlueprintRunner**: The runtime that manages the lifecycle of a Blueprint operator, including job polling, execution, and result submission.
+
+## FAQ
+
+### What is a Tangle Blueprint?
+A **Blueprint** is a specification for an Actively Validated Service (AVS) on the Tangle Network. It defines the jobs an operator can perform, how results are verified, and what on-chain contracts govern the service lifecycle.
+
+### What TEE backends does this sandbox support?
+The sandbox supports **AWS Nitro Enclaves**, **Azure Confidential Computing**, **GCP Confidential VMs**, and **Phala Network** as TEE backends. Each backend provides hardware-level isolation and remote attestation.
+
+### What is the difference between Sandbox and Instance modes?
+**Sandbox mode** runs a multi-tenant fleet of Docker containers managed by the operator, suitable for shared workloads. **Instance mode** runs a single dedicated sandbox per service, providing stronger isolation. **TEE Instance mode** adds hardware attestation and sealed secrets on top of instance mode.
+
+### How are secrets managed in the sandbox?
+Secrets are encrypted using ChaCha20-Poly1305 and stored as sealed data. Only attested TEE enclaves with the correct identity can decrypt them. The operator API provides endpoints for secret provisioning and retrieval within authenticated sessions.
+
+### How do I deploy this Blueprint?
+Install Rust 1.88+, Docker, and Foundry. Build with `cargo build`, deploy the Solidity contracts, and register as an operator using the `cargo-tangle` CLI. See the deployment section above for detailed steps.
 
 ## License
 
