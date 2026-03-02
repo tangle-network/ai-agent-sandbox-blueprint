@@ -1,6 +1,5 @@
 use serde_json::json;
 
-use blueprint_sdk::{error, info};
 use crate::CreateSandboxParams;
 use crate::JsonResponse;
 use crate::ProvisionOutput;
@@ -10,6 +9,7 @@ use crate::runtime::{create_sidecar, delete_sidecar};
 use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 use crate::tee::TeeBackend;
 use crate::{clear_instance_sandbox, require_instance_sandbox, set_instance_sandbox};
+use blueprint_sdk::{error, info};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core logic (reusable by TEE blueprint)
@@ -158,10 +158,12 @@ pub async fn instance_provision(
         return Ok(TangleResult(output));
     }
 
-    let (output, record) = provision_core(&request, None, &caller_hex).await.map_err(|e| {
-        error!("instance_provision failed: {e}");
-        e
-    })?;
+    let (output, record) = provision_core(&request, None, &caller_hex)
+        .await
+        .map_err(|e| {
+            error!("instance_provision failed: {e}");
+            e
+        })?;
     set_instance_sandbox(record).map_err(|e| e.to_string())?;
     info!(sandbox_id = %output.sandbox_id, "instance_provision: provisioned successfully");
     Ok(TangleResult(output))

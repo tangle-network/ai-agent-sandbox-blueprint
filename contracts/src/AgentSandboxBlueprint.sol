@@ -751,7 +751,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         bytes calldata outputs
     ) internal {
         address assigned = _createAssignments[serviceId][jobCallId];
-        if (assigned == address(0)) revert OperatorMismatch(assigned, operator);
+        if (assigned == address(0) || assigned != operator) revert OperatorMismatch(assigned, operator);
 
         SandboxCreateOutput memory result = abi.decode(outputs, (SandboxCreateOutput));
         string memory sandboxId = result.sandboxId;

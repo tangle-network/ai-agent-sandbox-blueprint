@@ -963,7 +963,7 @@ fn build_docker_config(
     // traffic from the docker bridge interface. Port bindings are ignored in host
     // network mode — the sidecar binds directly on host ports.
     let use_host_network =
-        std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+        std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
 
     let mut host_config = HostConfig {
         port_bindings: if use_host_network {
@@ -1045,6 +1045,7 @@ async fn create_sidecar_docker(
     };
 
     ensure_image_pulled(builder, &effective_image).await?;
+    let original_image = effective_image.clone();
 
     let sandbox_id = next_sandbox_id();
     let token = match token_override {
@@ -1107,7 +1108,7 @@ async fn create_sidecar_docker(
         .await?;
 
         let use_host_network =
-            std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+            std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
         let (sidecar_port, ssh_port, extra_port_map) = if use_host_network {
             // Host network mode: container ports bind directly on the host.
             // No Docker port mappings — use the container's internal ports.
@@ -1142,7 +1143,7 @@ async fn create_sidecar_docker(
             snapshot_s3_url: None,
             container_removed_at: None,
             image_removed_at: None,
-            original_image: request.image.clone(),
+            original_image,
             base_env_json: request.env_json.clone(),
             user_env_json: request.user_env_json.clone(),
             snapshot_destination,
@@ -1547,7 +1548,7 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .await?;
 
         let use_host_network =
-            std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+            std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
         let (sidecar_port, ssh_port) = if use_host_network {
             (config.container_port, None)
         } else {
@@ -1634,7 +1635,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         .await?;
 
         let use_host_network =
-            std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+            std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
         let (sidecar_port, ssh_port) = if use_host_network {
             (config.container_port, None)
         } else {
@@ -1710,7 +1711,7 @@ async fn refresh_port_mapping(
     )
     .await?;
     let use_host_network =
-        std::env::var("SIDECAR_NETWORK_HOST").map_or(false, |v| v == "true" || v == "1");
+        std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
     let (sidecar_port, ssh_port, extra) = if use_host_network {
         (container_port, None, HashMap::new())
     } else {
