@@ -28,6 +28,25 @@ Caller ─── Tangle EVM ─── BlueprintRunner ─── Job Handlers
                           Docker / Docktopus ─── Sidecar Containers
 ```
 
+## Layered Architecture
+
+Canonical references:
+- `docs/ARCHITECTURE.md`
+- `docs/CONTRACTS.md`
+
+Hard rule:
+- Jobs are state-changing only.
+- Read-only flows must use `eth_call` or off-chain HTTP/background services.
+
+Layer boundaries:
+- `microvm-blueprint` = infrastructure layer
+- `sandbox-runtime` = runtime contracts/adapters layer
+- `ai-agent-sandbox-blueprint`, `ai-trading-blueprints`, `openclaw-hosting-blueprint` = product layer
+
+Dependency direction:
+- Allowed: Product -> `sandbox-runtime` -> `microvm-blueprint`
+- Forbidden: Product -> `microvm-blueprint` (direct), product -> product
+
 ### Crate Structure
 
 | Crate | Role |
