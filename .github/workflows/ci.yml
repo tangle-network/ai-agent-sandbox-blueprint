@@ -145,8 +145,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: TypeScript check
         run: pnpm exec tsc --noEmit
