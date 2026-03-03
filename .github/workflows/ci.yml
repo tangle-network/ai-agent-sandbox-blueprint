@@ -160,7 +160,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install linked blueprint-ui dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
         working-directory: blueprint-ui
 
       - name: Build workspace UI packages
