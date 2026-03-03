@@ -8,11 +8,9 @@ import './styles/global.scss';
 import '~/lib/blueprints'; // side-effect: register all blueprints
 
 import { Outlet, useRouteError, isRouteErrorResponse } from 'react-router';
+import { AppDocument, AppFooter, AppToaster } from '@tangle/blueprint-ui/components';
 import { Web3Provider } from '~/providers/Web3Provider';
 import { Header } from '~/components/layout/Header';
-import { AppDocument } from '~/components/layout/AppDocument';
-import { AppToaster } from '~/components/layout/AppToaster';
-import { AppFooter } from '~/components/layout/AppFooter';
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (

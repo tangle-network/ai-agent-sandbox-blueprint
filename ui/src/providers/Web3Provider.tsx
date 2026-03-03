@@ -3,26 +3,13 @@ import { ConnectKitProvider, getDefaultConfig } from 'connectkit';
 import { type ReactNode, useEffect } from 'react';
 import { useReconnect } from 'wagmi';
 import {
-  mainnet,
-  resolveRpcUrl,
-  tangleLocal,
-  tangleMainnet,
-  tangleTestnet,
+  createTangleTransports,
+  defaultConnectKitOptions,
+  tangleWalletChains,
 } from '@tangle/blueprint-ui';
-import { http } from 'viem';
-import { Web3Shell } from '~/components/layout/Web3Shell';
+import { Web3Shell } from '@tangle/blueprint-ui/components';
 
 const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || '';
-const tangleWalletChains = [tangleLocal, tangleTestnet, tangleMainnet, mainnet] as const;
-
-function createTangleTransports() {
-  return {
-    [tangleLocal.id]: http(resolveRpcUrl(import.meta.env.VITE_RPC_URL)),
-    [tangleTestnet.id]: http('https://testnet-rpc.tangle.tools'),
-    [tangleMainnet.id]: http('https://rpc.tangle.tools'),
-    [mainnet.id]: http(),
-  };
-}
 
 const config = createConfig(
   getDefaultConfig({
@@ -64,6 +51,7 @@ export function Web3Provider({ children }: { children: ReactNode }) {
         theme="auto"
         mode="auto"
         options={{
+          ...defaultConnectKitOptions,
           initialChainId: undefined,
         }}
       >
