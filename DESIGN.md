@@ -3,9 +3,10 @@
 ## Summary
 
 This blueprint is a sidecar-only model. Operators provide compute by running sidecar containers
-locally via Docker or inside Trusted Execution Environments (TEE). The blueprint runtime provisions
-containers, returns a per-sandbox bearer token, and proxies write-only job calls to the sidecar API.
-No centralized orchestrator is required or used.
+locally via Docker or inside Trusted Execution Environments (TEE). State-changing lifecycle
+operations (create, delete, provision) are on-chain jobs. Read-only and operational actions
+(exec, prompt, task, stop, resume, snapshot, SSH, secrets) are served via the authenticated
+operator HTTP API. No centralized orchestrator is required or used.
 
 When `TEE_BACKEND` is configured, sandboxes requesting `tee_required: true` are deployed inside
 hardware-backed enclaves (Intel TDX, AWS Nitro, AMD SEV-SNP) with attestation and sealed secret
@@ -22,7 +23,7 @@ The sidecar container runs as a non-root user with `/home/agent` as the primary 
 └─────────────┘     JobResult         │                        │
                                       │  ┌──────────────────┐  │
                                       │  │     Router       │  │
-                                      │  │    (18 jobs)     │  │
+                                      │  │    (7 jobs)      │  │
                                       │  └────────┬─────────┘  │
                                       │           │            │
                                       │  ┌────────┴─────────┐  │
@@ -79,37 +80,9 @@ The sidecar container runs as a non-root user with `/home/agent` as the primary 
 - Snapshot via sidecar `/terminals/commands` (tar + curl upload to S3/HTTP destination)
 - Auto-commit container filesystem on stop (`SANDBOX_SNAPSHOT_AUTO_COMMIT`)
 
-Jobs:
+On-chain jobs (state-changing only):
 - `JOB_SANDBOX_CREATE` (0)
-- `JOB_SANDBOX_STOP` (1)
-- `JOB_SANDBOX_RESUME` (2)
-- `JOB_SANDBOX_DELETE` (3)
-- `JOB_SANDBOX_SNAPSHOT` (4)
-
-### Sidecar Execution
-
-- `/terminals/commands` shell command execution
-- `/agents/run` prompt (single turn)
-- `/agents/run` task (multi-turn with session continuity)
-
-All execution jobs update `last_activity_at` via `touch_sandbox()` to track idle time.
-
-Jobs:
-- `JOB_EXEC` (10)
-- `JOB_PROMPT` (11)
-- `JOB_TASK` (12)
-
-### Batch Operations
-
-- Create N sidecars locally (up to `MAX_BATCH_COUNT` = 50)
-- Run task/exec across sidecar URLs (sequential or parallel)
-- Collect in-memory batch results
-
-Jobs:
-- `JOB_BATCH_CREATE` (20)
-- `JOB_BATCH_TASK` (21)
-- `JOB_BATCH_EXEC` (22)
-- `JOB_BATCH_COLLECT` (23)
+- `JOB_SANDBOX_DELETE` (1)
 
 ### Workflows
 
@@ -117,19 +90,23 @@ Jobs:
 - Operators rebuild schedules on startup from on-chain registry (`bootstrap_workflows_from_chain`)
 - Cron tick executes due workflows locally
 
-Jobs:
-- `JOB_WORKFLOW_CREATE` (30)
-- `JOB_WORKFLOW_TRIGGER` (31)
-- `JOB_WORKFLOW_CANCEL` (32)
-- `JOB_WORKFLOW_TICK` (33) (internal scheduler)
+On-chain jobs (state-changing only):
+- `JOB_WORKFLOW_CREATE` (2)
+- `JOB_WORKFLOW_TRIGGER` (3)
+- `JOB_WORKFLOW_CANCEL` (4)
+- `JOB_WORKFLOW_TICK` (255) — internal cron, never submitted on-chain
 
-### SSH Access
+### Instance Provisioning
 
-- Manage authorized_keys via sidecar `/terminals/commands`
+On-chain jobs (state-changing only):
+- `JOB_PROVISION` (5)
+- `JOB_DEPROVISION` (6)
 
-Jobs:
-- `JOB_SSH_PROVISION` (40)
-- `JOB_SSH_REVOKE` (41)
+### Operator API (off-chain)
+
+Read-only and operational actions are served via the authenticated operator HTTP API,
+not as on-chain jobs. This includes exec, prompt, task, stop, resume, snapshot, SSH
+key management, secret injection, batch operations, and port proxying.
 
 ## TEE Architecture
 

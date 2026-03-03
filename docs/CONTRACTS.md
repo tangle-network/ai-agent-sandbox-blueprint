@@ -4,14 +4,15 @@ This document defines interface contracts between infrastructure, runtime, and p
 
 ## Non-Negotiable Contract
 
-Jobs are state-changing only.
+On-chain jobs **must** mutate authoritative state. No exceptions.
 
-Read-only behavior must be implemented via:
-- `eth_call` for on-chain reads
-- off-chain HTTP APIs for operational reads
+Read-only behavior **must** be implemented via:
+- `eth_call` for on-chain view/pure reads
+- off-chain HTTP APIs (operator API) for operational reads
 - off-chain background services for indexed/aggregated reads
 
-State reads must not be encoded as on-chain jobs.
+Encoding a state read as an on-chain job is a compliance violation. If an operation
+does not create, delete, or modify a persistent record, it is not a job.
 
 ## Contract 1: Infrastructure to Runtime (`microvm-blueprint` -> `sandbox-runtime`)
 
@@ -48,14 +49,14 @@ Compatibility policy:
 ## Contract 3: Product Layer
 
 Each product guarantees:
-- Product-owned job catalog only for state transitions
-- Product-owned read APIs implemented as `eth_call` and/or off-chain read services
+- Product-owned job catalog only for state transitions (create, delete, modify persistent records)
+- Product-owned read APIs implemented as `eth_call` and/or off-chain HTTP services
 - No direct dependency on other product repos
 
 Forbidden patterns:
-- Read-only on-chain jobs
-- Direct L2 -> L0 dependency
-- Product-to-product dependency edges
+- Read-only on-chain jobs (compliance violation)
+- Direct L2 -> L0 dependency (must go through L1 adapters)
+- Product-to-product dependency edges (L2 -> L2)
 
 ## Dependency Rules (Enforced)
 
@@ -67,11 +68,11 @@ Forbidden patterns:
 ## API and Job Design Checklist
 
 Before adding a new operation:
-1. Does this operation change authoritative state?
-2. If no, implement as `eth_call` or off-chain read service, not a job.
+1. Does this operation create, delete, or modify a persistent record?
+2. If yes → on-chain job. If no → `eth_call` or off-chain HTTP endpoint. Never both.
 3. Which layer owns this behavior (L0/L1/L2)?
-4. Are we introducing a forbidden dependency edge?
-5. Have versioning and migration notes been updated if interface changes?
+4. Does this introduce a forbidden dependency edge (L2→L0, L2→L2, L1→L2)?
+5. Have versioning and migration notes been updated if an interface changes?
 
 ## Governance
 

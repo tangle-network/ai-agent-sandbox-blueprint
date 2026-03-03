@@ -2,16 +2,16 @@
 
 This document defines the target layer model across the blueprint ecosystem and the dependency rules we enforce.
 
-## Core Rule: Jobs vs Reads
+## Hard Rule: Jobs Are State-Changing Only
 
-On-chain jobs are for state-changing operations only.
+On-chain jobs **must** mutate authoritative state (create, delete, or modify a persistent record).
 
-Read-only access must use one of:
+Read-only access **must** use one of:
 - `eth_call` against view/pure contract methods
-- off-chain HTTP APIs
+- off-chain HTTP APIs (operator API with PASETO auth)
 - off-chain background services (indexers, pollers, caches, metrics, schedulers)
 
-No read-only query should be introduced as an on-chain job.
+Adding a read-only query as an on-chain job is a compliance violation.
 
 ## Layers and Boundaries
 
@@ -67,9 +67,10 @@ Must not own:
 | Products (L2) | N | Y | N |
 
 Interpretation:
-- Flow is strictly upward in abstraction: L2 -> L1 -> L0.
-- L2 -> L0 direct imports/calls are not allowed; integrate through L1 adapters.
-- Product-to-product dependencies are not allowed.
+- Dependency flow is strictly upward in abstraction: L2 -> L1 -> L0.
+- L2 -> L0 direct imports are forbidden; integrate through L1 adapters.
+- L2 -> L2 (product-to-product) dependencies are forbidden.
+- L1 -> L2 and L0 -> L2 reverse dependencies are forbidden.
 
 ## Allowed Interface Types by Layer
 
@@ -80,10 +81,11 @@ Interpretation:
 ## Architecture Decision Guidance
 
 When adding new behavior:
-1. If it is infra-generic and reusable across runtimes, place it in L0.
-2. If it is runtime-generic and reusable across products, place it in L1.
-3. If it is business-feature specific, place it in L2.
-4. If operation is read-only, do not add an on-chain job; use `eth_call` or off-chain read paths.
+1. If it is infra-generic and reusable across runtimes, it belongs in L0.
+2. If it is runtime-generic and reusable across products, it belongs in L1.
+3. If it is product-specific business logic, it belongs in L2.
+4. If the operation is read-only, it **must not** be an on-chain job. Use `eth_call` or the off-chain operator HTTP API.
+5. If the operation mutates authoritative state, it **must** be an on-chain job — not a standalone HTTP endpoint.
 
 ## 4-Week Migration Plan
 

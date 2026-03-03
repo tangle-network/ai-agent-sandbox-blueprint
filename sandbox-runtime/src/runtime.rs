@@ -447,7 +447,11 @@ where
             }
         }
     }
-    Err(last_err.unwrap())
+    Err(last_err.unwrap_or_else(|| {
+        crate::error::SandboxError::Docker(format!(
+            "{op_name}: all retries exhausted with no error"
+        ))
+    }))
 }
 
 /// Start a container with a single retry on transient failure.
