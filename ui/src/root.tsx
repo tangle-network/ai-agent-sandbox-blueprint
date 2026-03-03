@@ -8,10 +8,9 @@ import './styles/global.scss';
 import '~/lib/blueprints'; // side-effect: register all blueprints
 
 import { Outlet, useRouteError, isRouteErrorResponse } from 'react-router';
-import { AppDocument, AppToaster } from '@tangle/blueprint-ui/components';
+import { AppDocument, AppFooter, AppToaster } from '@tangle/blueprint-ui/components';
 import { Web3Provider } from '~/providers/Web3Provider';
 import { Header } from '~/components/layout/Header';
-import { Footer } from '~/components/layout/Footer';
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
@@ -62,7 +61,7 @@ export default function App() {
           <main className="flex-1 pt-[var(--header-height)] relative z-1">
             <Outlet />
           </main>
-          <Footer />
+          <AppFooter tone="cloud" brandText="Sandbox Cloud · Tangle Network" />
         </div>
       </Web3Provider>
     </>
