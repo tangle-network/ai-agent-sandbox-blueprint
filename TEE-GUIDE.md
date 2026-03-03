@@ -132,7 +132,7 @@ User                     Contract                  Operator
   |                         |          1. Read serviceConfig from BSM
   |                         |          2. Deploy sidecar via TEE backend
   |                         |          3. Wait for health + attestation
-  |                         |          4. Submit JOB_PROVISION on-chain
+  |                         |          4. Call reportProvisioned() on-chain
   |                         |                         |
   |                         |<-- provisionResult -----|
   |                         |    (sandbox_id,         |

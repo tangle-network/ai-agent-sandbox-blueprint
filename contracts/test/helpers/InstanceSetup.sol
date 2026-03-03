@@ -4,13 +4,27 @@ pragma solidity ^0.8.26;
 import "forge-std/Test.sol";
 import "../../src/AgentSandboxBlueprint.sol";
 
+/// @dev Minimal tangle core mock for direct instance reporting auth checks.
+contract MockTangleCoreInstance {
+    mapping(uint64 => mapping(address => bool)) private _serviceOperators;
+
+    function setServiceOperator(uint64 serviceId, address operator, bool active) external {
+        _serviceOperators[serviceId][operator] = active;
+    }
+
+    function isServiceOperator(uint64 serviceId, address operator) external view returns (bool) {
+        return _serviceOperators[serviceId][operator];
+    }
+}
+
 /// @title InstanceBlueprintTestSetup
 /// @dev Base test contract providing helpers for instance mode tests.
 ///      Uses the unified AgentSandboxBlueprint with instanceMode=true.
 contract InstanceBlueprintTestSetup is Test {
     AgentSandboxBlueprint public instance;
+    MockTangleCoreInstance internal tangleMock;
 
-    address public tangleCore = address(0x7A);
+    address public tangleCore;
     address public blueprintOwner = address(0xBB);
     uint64 public testBlueprintId = 42;
 
@@ -21,8 +35,14 @@ contract InstanceBlueprintTestSetup is Test {
     uint64 public testServiceId = 1;
 
     function setUp() public virtual {
+        tangleMock = new MockTangleCoreInstance();
+        tangleCore = address(tangleMock);
         instance = new AgentSandboxBlueprint(address(0), true, false);
         instance.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
+    }
+
+    function setServiceOperator(uint64 serviceId, address operator, bool active) internal {
+        tangleMock.setServiceOperator(serviceId, operator, active);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -70,7 +90,7 @@ contract InstanceBlueprintTestSetup is Test {
         return abi.encode(json);
     }
 
-    /// @dev Full provision flow: jobCall + jobResult for a single operator.
+    /// @dev Full provision flow via operator-direct lifecycle reporting.
     function _provisionOperator(address operator) internal {
         _provisionOperatorFull(operator, "http://sidecar:8080", 2222, "");
     }
@@ -82,21 +102,21 @@ contract InstanceBlueprintTestSetup is Test {
         uint32 sshPort,
         string memory attestation
     ) internal {
-        uint64 callId = uint64(uint160(operator)); // unique per operator
-        simulateJobCall(testServiceId, instance.JOB_PROVISION(), callId, bytes(""));
-        simulateJobResult(
+        setServiceOperator(testServiceId, operator, true);
+        vm.prank(operator);
+        instance.reportProvisioned(
             testServiceId,
-            instance.JOB_PROVISION(),
-            callId,
-            operator,
-            bytes(""),
-            encodeProvisionOutputs(
-                string(abi.encodePacked("sb-", vm.toString(operator))),
-                sidecarUrl,
-                sshPort,
-                attestation
-            )
+            string(abi.encodePacked("sb-", vm.toString(operator))),
+            sidecarUrl,
+            sshPort,
+            attestation
         );
+    }
+
+    /// @dev Full deprovision flow via operator-direct lifecycle reporting.
+    function _deprovisionOperator(address operator) internal {
+        vm.prank(operator);
+        instance.reportDeprovisioned(testServiceId);
     }
 }
 
@@ -104,8 +124,9 @@ contract InstanceBlueprintTestSetup is Test {
 /// @dev Base test for the TEE variant. Uses unified contract with teeRequired=true.
 contract TeeInstanceBlueprintTestSetup is Test {
     AgentSandboxBlueprint public teeInstance;
+    MockTangleCoreInstance internal tangleMock;
 
-    address public tangleCore = address(0x7A);
+    address public tangleCore;
     address public blueprintOwner = address(0xBB);
     uint64 public testBlueprintId = 42;
 
@@ -115,8 +136,14 @@ contract TeeInstanceBlueprintTestSetup is Test {
     uint64 public testServiceId = 1;
 
     function setUp() public virtual {
+        tangleMock = new MockTangleCoreInstance();
+        tangleCore = address(tangleMock);
         teeInstance = new AgentSandboxBlueprint(address(0), true, true);
         teeInstance.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
+    }
+
+    function setServiceOperator(uint64 serviceId, address operator, bool active) internal {
+        tangleMock.setServiceOperator(serviceId, operator, active);
     }
 
     function simulateJobCall(
@@ -165,20 +192,19 @@ contract TeeInstanceBlueprintTestSetup is Test {
         uint32 sshPort,
         string memory attestation
     ) internal {
-        uint64 callId = uint64(uint160(operator));
-        simulateJobCall(testServiceId, teeInstance.JOB_PROVISION(), callId, bytes(""));
-        simulateJobResult(
+        setServiceOperator(testServiceId, operator, true);
+        vm.prank(operator);
+        teeInstance.reportProvisioned(
             testServiceId,
-            teeInstance.JOB_PROVISION(),
-            callId,
-            operator,
-            bytes(""),
-            encodeProvisionOutputs(
-                string(abi.encodePacked("sb-", vm.toString(operator))),
-                sidecarUrl,
-                sshPort,
-                attestation
-            )
+            string(abi.encodePacked("sb-", vm.toString(operator))),
+            sidecarUrl,
+            sshPort,
+            attestation
         );
+    }
+
+    function _deprovisionOperator(address operator) internal {
+        vm.prank(operator);
+        teeInstance.reportDeprovisioned(testServiceId);
     }
 }

@@ -24,18 +24,18 @@ describe('Blueprint Registry', () => {
     expect(bp!.jobs.length).toBe(5);
   });
 
-  it('retrieves instance blueprint with 2 on-chain jobs', () => {
+  it('retrieves instance blueprint with 3 on-chain jobs', () => {
     const bp = getBlueprint('ai-agent-instance-blueprint');
     expect(bp).toBeDefined();
     expect(bp!.name).toBe('AI Agent Instance');
-    expect(bp!.jobs.length).toBe(2);
+    expect(bp!.jobs.length).toBe(3);
   });
 
-  it('retrieves TEE instance blueprint with 2 on-chain jobs', () => {
+  it('retrieves TEE instance blueprint with 3 on-chain jobs', () => {
     const bp = getBlueprint('ai-agent-tee-instance-blueprint');
     expect(bp).toBeDefined();
     expect(bp!.name).toBe('AI Agent TEE Instance');
-    expect(bp!.jobs.length).toBe(2);
+    expect(bp!.jobs.length).toBe(3);
   });
 
   it('filters jobs by category', () => {
@@ -79,24 +79,10 @@ describe('Blueprint ABI Metadata', () => {
     expect(job.contextParams![0].abiName).toBe('sandbox_id');
   });
 
-  it('instance provision has sidecar_token as internal field', () => {
-    const job = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
-    const internal = job.fields.filter((f) => f.internal);
-    expect(internal.length).toBeGreaterThan(0);
-    expect(internal.some((f) => f.name === 'sidecarToken')).toBe(true);
-  });
-
-  it('TEE instance provision defaults teeRequired to true', () => {
-    const job = getJobById('ai-agent-tee-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
-    const teeField = job.fields.find((f) => f.name === 'teeRequired');
-    expect(teeField).toBeDefined();
-    expect(teeField!.defaultValue).toBe(true);
-  });
-
-  it('TEE instance provision defaults teeType to TDX (1)', () => {
-    const job = getJobById('ai-agent-tee-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
-    const teeType = job.fields.find((f) => f.name === 'teeType');
-    expect(teeType!.defaultValue).toBe('1');
+  it('instance workflow_create keeps canonical ABI params', () => {
+    const job = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;
+    expect(job.fields.some((f) => f.abiParam === 'workflow_json')).toBe(true);
+    expect(job.fields.some((f) => f.abiParam === 'trigger_type')).toBe(true);
   });
 
   it('every job with requiresSandbox has either contextParams or is instance-scoped', () => {
@@ -137,10 +123,10 @@ describe('Blueprint Categories', () => {
     expect(cats).toContain('workflow');
   });
 
-  it('instance blueprint covers lifecycle category', () => {
+  it('instance blueprint covers workflow category', () => {
     const bp = getBlueprint('ai-agent-instance-blueprint')!;
     const cats = new Set(bp.jobs.map((j) => j.category));
-    expect(cats).toContain('lifecycle');
+    expect(cats).toContain('workflow');
   });
 
   it('every registered category has at least one job', () => {

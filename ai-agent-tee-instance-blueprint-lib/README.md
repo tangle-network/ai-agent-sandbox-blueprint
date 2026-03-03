@@ -4,7 +4,7 @@ TEE-backed variant of the [Instance Blueprint](../ai-agent-instance-blueprint-li
 
 ## Overview
 
-This blueprint reuses all handlers from the base instance blueprint (exec, prompt, task, SSH, snapshot) but replaces **provision** and **deprovision** with TEE-aware versions that:
+This blueprint reuses all handlers from the base instance blueprint (exec, prompt, task, SSH, snapshot) and enforces TEE-backed lifecycle reporting:
 
 1. Deploy the sidecar via a `TeeBackend` (Phala, AWS Nitro, GCP, Azure, or Direct)
 2. Collect hardware attestation from the TEE enclave
@@ -13,28 +13,28 @@ This blueprint reuses all handlers from the base instance blueprint (exec, promp
 
 The on-chain contract enforces `teeRequired=true` and reverts if the operator submits an empty attestation.
 
-## Jobs (2 on-chain)
+## Jobs (3 on-chain)
 
 | ID | Job | Description |
 |----|-----|-------------|
-| 5 | `PROVISION` | Create the singleton TEE sandbox for this operator |
-| 6 | `DEPROVISION` | Destroy the TEE sandbox and clean up cloud resources |
+| 2 | `WORKFLOW_CREATE` | Store/update workflow config |
+| 3 | `WORKFLOW_TRIGGER` | Trigger workflow execution |
+| 4 | `WORKFLOW_CANCEL` | Deactivate workflow |
 
 Read-only operations (exec, prompt, task, stop, resume, snapshot, SSH) are served via the operator HTTP API, not on-chain jobs.
+
+Canonical lifecycle sync is operator-signed direct manager reporting:
+- `reportProvisioned(serviceId, sandboxId, sidecarUrl, sshPort, teeAttestationJson)`
+- `reportDeprovisioned(serviceId)`
 
 ## Architecture
 
 ```
 tee-instance-blueprint-lib
     │
-    ├── jobs/provision.rs      ← TEE-aware provision/deprovision handlers
-    │       │
-    │       ├── tee_provision()    → tee_backend() → provision_core(request, Some(backend))
-    │       └── tee_deprovision()  → tee_backend() → deprovision_core(Some(backend))
-    │
     └── lib.rs                 ← Re-exports from instance-blueprint-lib + TEE router
             │
-            └── tee_router()   → JOB_PROVISION(5) + JOB_DEPROVISION(6)
+            └── tee_router()   → workflow jobs (2,3,4) + tick (255)
 ```
 
 The `provision_core` function (from `instance-blueprint-lib`) handles the shared logic:

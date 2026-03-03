@@ -430,9 +430,9 @@ else
         fi
     fi
 
-    # 4b: Sandbox exec is not an on-chain submitJob in the current 7-job contract.
+    # 4b: Sandbox exec is not an on-chain submitJob in the current 5-job contract.
     # It is handled via operator/sidecar APIs and validated in runtime integration tests.
-    skip "sandbox_exec submitJob (not part of current on-chain 7-job contract)"
+    skip "sandbox_exec submitJob (not part of current on-chain 5-job contract)"
 
     # 4c/4d/4e: Stop/Resume/Delete
     # These require the BSM's sandboxOperator[hash] mapping to be populated, which
@@ -515,54 +515,10 @@ else
     fi
 
     if [ "$INST_USER_PERMITTED" = "true" ]; then
-        # 5a: Provision instance (job=5)
-        # ProvisionRequest: (string name, string image, string stack, string agent_id,
-        #   string env_json, string metadata_json, bool ssh, string ssh_key, bool web_term,
-        #   uint64 max_life, uint64 idle, uint64 cpu, uint64 mem, uint64 disk,
-        #   string sidecar_token, bool tee, uint8 tee_type)
-        INST_ARGS=$(cast abi-encode \
-            "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,string,bool,uint8)" \
-            "e2e-instance" "agent-dev" "default" "default-agent" "{}" "{}" \
-            false "" true \
-            3600 900 2 2048 10 \
-            "" false 0)
-
-        INST_CALL_ID=$(submit_job "$INSTANCE_SERVICE_ID" 5 "$INST_ARGS" 0) || true
-        if [ "$INST_CALL_ID" = "REVERT" ] || [ "$INST_CALL_ID" = "TX_FAIL" ]; then
-            fail "instance_provision submitJob failed ($INST_CALL_ID)"
-        else
-            pass "instance_provision submitted (call_id=$INST_CALL_ID)"
-
-            # Wait for provision
-            echo "  Waiting for instance provision (timeout ${TIMEOUT}s)..."
-            INST_PROV_RESULT=$(poll_provision "$INST_CALL_ID" "ready" "$TIMEOUT") || true
-
-            if echo "$INST_PROV_RESULT" | grep -q "TIMEOUT\|FAILED"; then
-                fail "instance provision did not reach ready ($INST_PROV_RESULT)"
-            else
-                INST_SANDBOX_ID=$(echo "$INST_PROV_RESULT" | jq -r '.sandbox_id // empty')
-                INST_SIDECAR_URL=$(echo "$INST_PROV_RESULT" | jq -r '.sidecar_url // empty')
-                if [ -n "$INST_SANDBOX_ID" ] && [ "$INST_SANDBOX_ID" != "null" ]; then
-                    pass "Instance provisioned: id=$INST_SANDBOX_ID"
-                else
-                    fail "Instance provision missing sandbox_id"
-                fi
-            fi
-        fi
-
-        # 5b: Instance exec is not an on-chain submitJob in the current 7-job contract.
-        skip "instance_exec submitJob (not part of current on-chain 7-job contract)"
-
-        # 5c: Deprovision (job=6)
-        # DeprovisionRequest is just a JsonResponse: (string json)
-        DEPROV_ARGS=$(cast abi-encode "f(string)" '{"reason":"e2e-cleanup"}')
-        DEPROV_CID=$(submit_job "$INSTANCE_SERVICE_ID" 6 "$DEPROV_ARGS" 0) || true
-        if [ "$DEPROV_CID" = "REVERT" ] || [ "$DEPROV_CID" = "TX_FAIL" ]; then
-            fail "instance_deprovision submitJob failed ($DEPROV_CID)"
-        else
-            pass "instance_deprovision submitted (call_id=$DEPROV_CID)"
-            sleep 5
-        fi
+        # Instance lifecycle is now operator-driven:
+        # startup auto-provision + direct manager reporting (reportProvisioned/reportDeprovisioned).
+        skip "instance lifecycle submitJob checks (not part of 5-job protocol)"
+        skip "instance_exec submitJob (handled via operator API)"
     fi
     fi  # end pgrep instance operator check
 fi

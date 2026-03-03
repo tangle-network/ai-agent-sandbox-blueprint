@@ -1,15 +1,13 @@
 //! Auto-provision: reads service config from BSM on-chain, provisions sandbox
-//! automatically on startup without waiting for a manual `JOB_PROVISION` call.
+//! automatically on startup.
 //!
 //! Flow:
 //! 1. On startup, check if already provisioned (`get_instance_sandbox()`)
 //! 2. If not, poll `getServiceConfig(serviceId)` from BSM via RPC
 //! 3. When config available, decode as `ProvisionRequest`, call `provision_core()`
 //! 4. Store sandbox record via `set_instance_sandbox()`
+//! 5. Report provision directly to manager contract (`reportProvisioned`)
 //!
-//! The on-chain `JOB_PROVISION` result is still submitted by the `instance_provision`
-//! handler when Tangle delivers the job. The handler is idempotent: if auto-provision
-//! already created the sandbox, it returns the existing info.
 
 use blueprint_sdk::alloy::primitives::Address;
 use blueprint_sdk::alloy::providers::ProviderBuilder;
@@ -19,7 +17,8 @@ use std::time::Duration;
 
 use crate::tee::TeeBackend;
 use crate::{
-    IBsmRead, ProvisionRequest, get_instance_sandbox, provision_core, set_instance_sandbox,
+    IBsmRead, ProvisionRequest, ensure_local_provision_reported, get_instance_sandbox,
+    provision_core, report_local_provision, set_instance_sandbox,
 };
 
 /// Configuration for auto-provision from environment.
@@ -131,9 +130,10 @@ pub async fn read_service_owner(config: &AutoProvisionConfig) -> Result<String, 
 ///
 /// The on-chain config is stored as ABI-encoded params (flat tuple, no outer offset prefix),
 /// e.g. from `cast abi-encode "f(string,...)" ...` or `abi.encode(field1, field2, ...)`.
-/// Use `abi_decode_params` rather than `abi_decode` to match this encoding.
+/// Accept both params-encoded and tuple-encoded representations.
 pub fn decode_provision_config(config_bytes: &[u8]) -> Result<ProvisionRequest, String> {
     ProvisionRequest::abi_decode_params(config_bytes)
+        .or_else(|_| ProvisionRequest::abi_decode(config_bytes))
         .map_err(|e| format!("Failed to decode ProvisionRequest from service config: {e}"))
 }
 
@@ -147,10 +147,17 @@ pub fn decode_provision_config(config_bytes: &[u8]) -> Result<ProvisionRequest, 
 pub async fn run_auto_provision(
     config: AutoProvisionConfig,
     tee: Option<&dyn TeeBackend>,
+    report_client: Option<blueprint_sdk::contexts::tangle::TangleClient>,
 ) -> Result<(), String> {
-    // Already provisioned?
-    if get_instance_sandbox().map_err(|e| e.to_string())?.is_some() {
-        info!("Auto-provision: instance already provisioned, skipping");
+    // Already provisioned locally?
+    if let Some(record) = get_instance_sandbox().map_err(|e| e.to_string())? {
+        info!(
+            "Auto-provision: local instance already provisioned (sandbox_id='{}')",
+            record.id
+        );
+        if let Some(client) = report_client.as_ref() {
+            ensure_local_provision_reported(client, config.service_id, &record).await?;
+        }
         return Ok(());
     }
 
@@ -198,7 +205,7 @@ pub async fn run_auto_provision(
             }
         }
 
-        // Check if provisioned by another path (e.g., manual JOB_PROVISION)
+        // Check if provisioned by another path.
         if get_instance_sandbox().map_err(|e| e.to_string())?.is_some() {
             info!("Auto-provision: instance was provisioned externally, skipping");
             return Ok(());
@@ -215,22 +222,46 @@ pub async fn run_auto_provision(
     );
 
     // Read service owner from chain so the sandbox record has correct ownership.
-    let owner = match read_service_owner(&config).await {
-        Ok(addr) if !addr.is_empty() => {
-            info!("Auto-provision: service owner = {addr}");
-            addr
+    // We never auto-provision ownerless instances because instance API auth relies on owner.
+    let mut owner_attempts = 0;
+    let owner = loop {
+        owner_attempts += 1;
+        match read_service_owner(&config).await {
+            Ok(addr) if !addr.is_empty() => {
+                info!("Auto-provision: service owner = {addr}");
+                break addr;
+            }
+            Ok(_) => {
+                warn!(
+                    "Auto-provision: service owner not set yet (attempt {}/{})",
+                    owner_attempts, config.max_attempts
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Auto-provision: failed to read service owner (attempt {}/{}): {e}",
+                    owner_attempts, config.max_attempts
+                );
+            }
         }
-        Ok(_) => {
-            warn!("Auto-provision: no service owner set on-chain, sandbox will be unowned");
-            String::new()
+
+        if owner_attempts >= config.max_attempts {
+            return Err(format!(
+                "Auto-provision: service owner unavailable after {} attempts",
+                config.max_attempts
+            ));
         }
-        Err(e) => {
-            warn!("Auto-provision: failed to read service owner ({e}), sandbox will be unowned");
-            String::new()
+
+        // Check if provisioned by another path while waiting for owner.
+        if get_instance_sandbox().map_err(|e| e.to_string())?.is_some() {
+            info!("Auto-provision: instance was provisioned externally, skipping");
+            return Ok(());
         }
+
+        tokio::time::sleep(Duration::from_secs(config.poll_interval_secs)).await;
     };
 
-    // Final check before provisioning (race with manual JOB_PROVISION)
+    // Final check before provisioning.
     if get_instance_sandbox().map_err(|e| e.to_string())?.is_some() {
         info!("Auto-provision: instance was provisioned externally, skipping");
         return Ok(());
@@ -241,6 +272,10 @@ pub async fn run_auto_provision(
 
     // Store record
     set_instance_sandbox(record).map_err(|e| e.to_string())?;
+
+    if let Some(client) = report_client.as_ref() {
+        report_local_provision(client, config.service_id, &output).await?;
+    }
 
     info!(
         "Auto-provision: sandbox '{}' created at {} (ssh_port={})",

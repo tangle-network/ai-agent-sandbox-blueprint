@@ -38,10 +38,6 @@ pub const JOB_SANDBOX_DELETE: u8 = 1;
 pub const JOB_WORKFLOW_CREATE: u8 = 2;
 pub const JOB_WORKFLOW_TRIGGER: u8 = 3;
 pub const JOB_WORKFLOW_CANCEL: u8 = 4;
-/// Instance mode only — defined for cross-crate consistency.
-pub const JOB_PROVISION: u8 = 5;
-/// Instance mode only — defined for cross-crate consistency.
-pub const JOB_DEPROVISION: u8 = 6;
 /// Internal cron job — not registered on-chain, never submitted via submitJob.
 pub const JOB_WORKFLOW_TICK: u8 = 255;
 
@@ -371,7 +367,7 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
 
 /// Router that maps job IDs to handlers.
 ///
-/// Only state-changing operations remain on-chain (7 jobs).
+/// Only state-changing operations remain on-chain (5 jobs).
 /// Read-only ops (exec, prompt, task, stop, resume, snapshot, SSH)
 /// are served via the operator HTTP API.
 pub fn router() -> Router {

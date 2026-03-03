@@ -1,10 +1,13 @@
 //! Blueprint runner for ai-agent-tee-instance-blueprint.
 //!
 //! TEE-backed variant: reads `TEE_BACKEND` env var to select the backend,
-//! then routes provision/deprovision through it. Supports Phala, AWS Nitro,
+//! with direct lifecycle reporting and local TEE-backed provisioning. Supports Phala, AWS Nitro,
 //! GCP Confidential Space, Azure SKR, and direct operator hardware.
 
-use ai_agent_tee_instance_blueprint_lib::{init_tee_backend, tee_router};
+use ai_agent_tee_instance_blueprint_lib::{
+    JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, init_tee_backend, tee_router,
+};
+use blueprint_producers_extra::cron::CronJob;
 use blueprint_sdk::contexts::tangle::TangleClientContext;
 use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
@@ -53,6 +56,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .ok_or_else(|| blueprint_sdk::Error::Other("SERVICE_ID missing".into()))?;
 
     info!("Starting ai-agent-tee-instance-blueprint for service {service_id}");
+
+    if let Err(err) = bootstrap_workflows_from_chain(&tangle_client, service_id).await {
+        error!("Failed to load workflows from chain: {err}");
+    }
 
     // Reconcile stored sandbox state with Docker reality.
     ai_agent_tee_instance_blueprint_lib::reaper::reconcile_on_startup().await;
@@ -103,10 +110,12 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         info!("Auto-provision enabled (BSM={})", ap_config.bsm_address);
         let tee = ai_agent_tee_instance_blueprint_lib::tee_backend()
             .map_err(|e| blueprint_sdk::Error::Other(format!("TEE backend not available: {e}")))?;
+        let report_client = tangle_client.clone();
         Some(tokio::spawn(async move {
             match ai_agent_tee_instance_blueprint_lib::auto_provision::run_auto_provision(
                 ap_config,
                 Some(tee.as_ref()),
+                Some(report_client),
             )
             .await
             {
@@ -213,9 +222,11 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                 let (shutdown_tx, watchdog_rx) = tokio::sync::broadcast::channel::<()>(1);
 
                 let tangle_contract = watchdog_config.tangle_contract;
+                let report_client = tangle_client.clone();
                 ai_agent_tee_instance_blueprint_lib::billing::spawn_watchdog(
                     watchdog_config,
                     watchdog_rx,
+                    Some(report_client),
                 );
                 info!("Escrow watchdog started for service {service_id}");
 
@@ -258,10 +269,16 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     let tangle_consumer = TangleConsumer::new(tangle_client);
 
     let tangle_config = TangleConfig::default();
+    let cron_schedule =
+        std::env::var("WORKFLOW_CRON_SCHEDULE").unwrap_or_else(|_| "0 * * * * *".to_string());
+    let workflow_cron = CronJob::new(JOB_WORKFLOW_TICK, cron_schedule.as_str())
+        .await
+        .map_err(|err| blueprint_sdk::Error::Other(format!("Invalid workflow cron: {err}")))?;
 
     let result = BlueprintRunner::builder(tangle_config, env)
         .router(tee_router())
         .producer(tangle_producer)
+        .producer(workflow_cron)
         .consumer(tangle_consumer)
         .with_shutdown_handler(async move {
             info!("Shutting down ai-agent-tee-instance-blueprint");
@@ -286,14 +303,9 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                 info!("Billing shutdown signal sent");
             }
 
-            // Deprovision sandbox + TEE deployment so they don't outlive the service.
-            let tee = ai_agent_tee_instance_blueprint_lib::tee_backend()
-                .ok()
-                .map(|b| b.as_ref() as &dyn sandbox_runtime::tee::TeeBackend);
-            match ai_agent_tee_instance_blueprint_lib::deprovision_core(tee).await {
-                Ok((_, id)) => info!("Shutdown: deprovisioned sandbox {id}"),
-                Err(e) => info!("Shutdown: no sandbox to deprovision ({e})"),
-            }
+            // Do not deprovision on generic process shutdown.
+            // Lifecycle transitions are reported explicitly by operator logic.
+            info!("Shutdown complete; TEE instance lifecycle is report-driven");
         })
         .run()
         .await;

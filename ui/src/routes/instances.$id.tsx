@@ -4,7 +4,6 @@ import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '@tangle/blueprint-ui/components';
 import { Card, CardContent, CardHeader, CardTitle } from '@tangle/blueprint-ui/components';
 import { Button } from '@tangle/blueprint-ui/components';
-import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
 import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
 import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
@@ -12,10 +11,7 @@ import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
 import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
 import { SidecarAuthPrompt } from '~/components/shared/SidecarAuthPrompt';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
-import { useSubmitJob } from '@tangle/blueprint-ui';
-import { encodeJobArgs } from '@tangle/blueprint-ui';
-import { getBlueprint, getJobById } from '@tangle/blueprint-ui';
-import { INSTANCE_JOB_IDS, INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
+import { getBlueprint } from '@tangle/blueprint-ui';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
@@ -25,7 +21,6 @@ import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { cn } from '@tangle/blueprint-ui';
-import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 
 const TerminalView = lazy(() =>
   import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),
@@ -39,7 +34,6 @@ export default function InstanceDetail() {
   const instances = useStore(instanceListStore);
   const inst = instances.find((s) => s.id === decodedId);
 
-  const { submitJob, status: txStatus } = useSubmitJob();
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
 
@@ -81,33 +75,12 @@ export default function InstanceDetail() {
 
   const ports = useExposedPorts(inst?.status, operatorApiCall);
 
-  // Confirm dialog state
-  const [showConfirmDeprovision, setShowConfirmDeprovision] = useState(false);
-
   const {
     attestation,
     busy: attestationBusy,
     error: attestationError,
     fetchAttestation: handleFetchAttestation,
   } = useTeeAttestation(operatorApiCall);
-
-  /** Compute job value from pricing tier (base rate = 0.001 TNT = 1e15 wei) */
-  const jobValue = (jobId: number): bigint =>
-    BigInt(INSTANCE_PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
-
-  const handleDeprovision = useCallback(async () => {
-    const job = getJobById(bpId, INSTANCE_JOB_IDS.DEPROVISION);
-    if (!job) return;
-    const args = encodeJobArgs(job, { json: '{}' });
-    const hash = await submitJob({
-      serviceId,
-      jobId: INSTANCE_JOB_IDS.DEPROVISION,
-      args,
-      label: 'Deprovision Instance',
-      value: jobValue(INSTANCE_JOB_IDS.DEPROVISION),
-    });
-    if (hash) updateInstanceStatus(decodedId, 'gone');
-  }, [bpId, serviceId, decodedId, submitJob]);
 
   if (!inst) {
     return (
@@ -144,7 +117,7 @@ export default function InstanceDetail() {
       </div>
 
       {/* Header */}
-      <div className="flex items-start justify-between mb-6">
+      <div className="flex items-start mb-6">
         <div className="flex items-center gap-4">
           <div className={cn(
             'w-14 h-14 rounded-xl flex items-center justify-center',
@@ -165,11 +138,6 @@ export default function InstanceDetail() {
             teeStyle="pill"
           />
         </div>
-        <Button variant="destructive" size="sm" onClick={() => setShowConfirmDeprovision(true)} disabled={txStatus !== 'idle'}>
-          <div className="i-ph:trash text-sm" />
-          Deprovision
-          <JobPriceBadge jobIndex={INSTANCE_JOB_IDS.DEPROVISION} pricingMultiplier={INSTANCE_PRICING_TIERS[INSTANCE_JOB_IDS.DEPROVISION]?.multiplier ?? 1} compact />
-        </Button>
       </div>
 
       {/* Tabs */}
@@ -313,15 +281,6 @@ export default function InstanceDetail() {
           />
         </div>
       )}
-      <ConfirmDialog
-        open={showConfirmDeprovision}
-        onOpenChange={setShowConfirmDeprovision}
-        title="Deprovision Instance"
-        description="This is an irreversible on-chain operation that will permanently destroy the instance and all its data."
-        confirmLabel="Deprovision"
-        onConfirm={handleDeprovision}
-        variant="danger"
-      />
     </AnimatedPage>
   );
 }

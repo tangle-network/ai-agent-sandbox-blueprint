@@ -41,13 +41,12 @@ contract ConfigureJobRates is Script {
         console.log("Base rate (wei):", baseRate);
         console.log("");
 
-        string[7] memory jobNames = [
+        string[5] memory jobNames = [
             "SANDBOX_CREATE", "SANDBOX_DELETE",
-            "WORKFLOW_CREATE", "WORKFLOW_TRIGGER", "WORKFLOW_CANCEL",
-            "PROVISION", "DEPROVISION"
+            "WORKFLOW_CREATE", "WORKFLOW_TRIGGER", "WORKFLOW_CANCEL"
         ];
 
-        for (uint256 i = 0; i < 7; i++) {
+        for (uint256 i = 0; i < 5; i++) {
             console.log(
                 string.concat(
                     "  Job ", jobNames[i],

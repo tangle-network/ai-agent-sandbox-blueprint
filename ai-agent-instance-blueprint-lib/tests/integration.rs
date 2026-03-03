@@ -844,8 +844,6 @@ mod job_constants_tests {
         assert_eq!(JOB_WORKFLOW_CREATE, 2);
         assert_eq!(JOB_WORKFLOW_TRIGGER, 3);
         assert_eq!(JOB_WORKFLOW_CANCEL, 4);
-        assert_eq!(JOB_PROVISION, 5);
-        assert_eq!(JOB_DEPROVISION, 6);
     }
 }
 

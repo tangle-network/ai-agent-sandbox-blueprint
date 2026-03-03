@@ -25,9 +25,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     function test_provisionEmitsEvent() public {
-        uint64 callId = uint64(uint160(operator1));
-
-        simulateJobCall(testServiceId, instance.JOB_PROVISION(), callId, bytes(""));
+        setServiceOperator(testServiceId, operator1, true);
 
         vm.expectEmit(true, true, false, true);
         emit AgentSandboxBlueprint.OperatorProvisioned(
@@ -37,40 +35,25 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
             "http://sidecar:8080"
         );
 
-        simulateJobResult(
+        vm.prank(operator1);
+        instance.reportProvisioned(
             testServiceId,
-            instance.JOB_PROVISION(),
-            callId,
-            operator1,
-            bytes(""),
-            encodeProvisionOutputs(
-                string(abi.encodePacked("sb-", vm.toString(operator1))),
-                "http://sidecar:8080",
-                2222,
-                ""
-            )
+            string(abi.encodePacked("sb-", vm.toString(operator1))),
+            "http://sidecar:8080",
+            2222,
+            ""
         );
     }
 
     function test_provisionAlreadyProvisionedReverts() public {
         _provisionOperator(operator1);
 
-        uint64 callId = 999;
-        simulateJobCall(testServiceId, instance.JOB_PROVISION(), callId, bytes(""));
-
-        // Use literal job ID (5 = PROVISION) to avoid staticcall consuming expectRevert
-        vm.prank(tangleCore);
+        setServiceOperator(testServiceId, operator1, true);
+        vm.prank(operator1);
         vm.expectRevert(
             abi.encodeWithSelector(AgentSandboxBlueprint.AlreadyProvisioned.selector, testServiceId, operator1)
         );
-        instance.onJobResult(
-            testServiceId,
-            5, // JOB_PROVISION
-            callId,
-            operator1,
-            bytes(""),
-            encodeProvisionOutputs("sb-dup", "http://dup:8080", 2222, "")
-        );
+        instance.reportProvisioned(testServiceId, "sb-dup", "http://dup:8080", 2222, "");
     }
 
     function test_provisionWithAttestationStoresHash() public {
@@ -81,6 +64,38 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(instance.getAttestationHash(testServiceId, operator1), expectedHash);
     }
 
+    function test_reportProvisionedByActiveServiceOperator() public {
+        setServiceOperator(testServiceId, operator1, true);
+
+        vm.prank(operator1);
+        instance.reportProvisioned(testServiceId, "sb-r1", "http://report-op1:8080", 2222, "");
+
+        assertTrue(instance.isOperatorProvisioned(testServiceId, operator1));
+        assertEq(instance.operatorSidecarUrl(testServiceId, operator1), "http://report-op1:8080");
+        assertEq(instance.getOperatorCount(testServiceId), 1);
+    }
+
+    function test_reportProvisionedNonServiceOperatorReverts() public {
+        vm.prank(operator1);
+        vm.expectRevert(
+            abi.encodeWithSelector(AgentSandboxBlueprint.OperatorNotInService.selector, testServiceId, operator1)
+        );
+        instance.reportProvisioned(testServiceId, "sb-r1", "http://report-op1:8080", 2222, "");
+    }
+
+    function test_reportDeprovisionedByActiveServiceOperator() public {
+        setServiceOperator(testServiceId, operator1, true);
+
+        vm.prank(operator1);
+        instance.reportProvisioned(testServiceId, "sb-r1", "http://report-op1:8080", 2222, "");
+        assertTrue(instance.isOperatorProvisioned(testServiceId, operator1));
+
+        vm.prank(operator1);
+        instance.reportDeprovisioned(testServiceId);
+        assertFalse(instance.isOperatorProvisioned(testServiceId, operator1));
+        assertEq(instance.getOperatorCount(testServiceId), 0);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // DEPROVISION FLOW
     // ═══════════════════════════════════════════════════════════════════════════
@@ -89,20 +104,10 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         _provisionOperator(operator1);
         assertTrue(instance.isOperatorProvisioned(testServiceId, operator1));
 
-        uint64 callId = 500;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-
         vm.expectEmit(true, true, false, false);
         emit AgentSandboxBlueprint.OperatorDeprovisioned(testServiceId, operator1);
 
-        simulateJobResult(
-            testServiceId,
-            instance.JOB_DEPROVISION(),
-            callId,
-            operator1,
-            bytes(""),
-            encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator1);
 
         assertFalse(instance.isOperatorProvisioned(testServiceId, operator1));
         assertEq(instance.getOperatorCount(testServiceId), 0);
@@ -110,22 +115,12 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     function test_deprovisionNotProvisionedReverts() public {
-        uint64 callId = 501;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-
-        // Use literal job ID (6 = DEPROVISION)
-        vm.prank(tangleCore);
+        setServiceOperator(testServiceId, operator1, true);
+        vm.prank(operator1);
         vm.expectRevert(
             abi.encodeWithSelector(AgentSandboxBlueprint.NotProvisioned.selector, testServiceId, operator1)
         );
-        instance.onJobResult(
-            testServiceId,
-            6, // JOB_DEPROVISION
-            callId,
-            operator1,
-            bytes(""),
-            encodeJsonOutputs("{}")
-        );
+        instance.reportDeprovisioned(testServiceId);
     }
 
     function test_deprovisionSwapAndPop() public {
@@ -136,16 +131,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(instance.getOperatorCount(testServiceId), 3);
 
         // Deprovision the middle one (operator2) — triggers swap-and-pop
-        uint64 callId = 502;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-        simulateJobResult(
-            testServiceId,
-            instance.JOB_DEPROVISION(),
-            callId,
-            operator2,
-            bytes(""),
-            encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator2);
 
         assertEq(instance.getOperatorCount(testServiceId), 2);
         assertFalse(instance.isOperatorProvisioned(testServiceId, operator2));
@@ -225,16 +211,15 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
 
     function test_jobMetadata() public view {
         uint8[] memory ids = instance.jobIds();
-        assertEq(ids.length, 7);
+        assertEq(ids.length, 5);
         assertEq(ids[0], 0); // SANDBOX_CREATE
-        assertEq(ids[5], 5); // PROVISION
-        assertEq(ids[6], 6); // DEPROVISION
+        assertEq(ids[4], 4); // WORKFLOW_CANCEL
 
         assertTrue(instance.supportsJob(0));
-        assertTrue(instance.supportsJob(6));
-        assertFalse(instance.supportsJob(7));
+        assertTrue(instance.supportsJob(4));
+        assertFalse(instance.supportsJob(5));
 
-        assertEq(instance.jobCount(), 7);
+        assertEq(instance.jobCount(), 5);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -248,15 +233,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(instance.getOperatorCount(testServiceId), 1);
 
         // 2. Deprovision
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), 802, bytes(""));
-        simulateJobResult(
-            testServiceId,
-            instance.JOB_DEPROVISION(),
-            802,
-            operator1,
-            bytes(""),
-            encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator1);
 
         assertFalse(instance.isProvisioned(testServiceId));
         assertEq(instance.getOperatorCount(testServiceId), 0);
@@ -293,17 +270,8 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         instance.onServiceTermination(testServiceId, blueprintOwner);
 
         // 3. Deprovision both operators
-        uint64 callId1 = 1001;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId1, bytes(""));
-        simulateJobResult(
-            testServiceId, instance.JOB_DEPROVISION(), callId1, operator1, bytes(""), encodeJsonOutputs("{}")
-        );
-
-        uint64 callId2 = 1002;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId2, bytes(""));
-        simulateJobResult(
-            testServiceId, instance.JOB_DEPROVISION(), callId2, operator2, bytes(""), encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator1);
+        _deprovisionOperator(operator2);
 
         // 4. Verify cleanup
         assertEq(instance.getOperatorCount(testServiceId), 0);
@@ -404,12 +372,12 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MODE ENFORCEMENT — INSTANCE MODE REJECTS CLOUD JOBS
+    // MODE ENFORCEMENT — INSTANCE MODE REJECTS SANDBOX FLEET JOBS
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_instanceModeRejectsCloudModeJobCalls() public {
-        // Cloud mode jobs 0-4 should all revert with CloudModeOnly
-        for (uint8 jobId = 0; jobId <= 4; jobId++) {
+        // Fleet-only jobs 0-1 should revert with CloudModeOnly
+        for (uint8 jobId = 0; jobId <= 1; jobId++) {
             vm.prank(tangleCore);
             vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
             instance.onJobCall(testServiceId, jobId, uint64(2000 + jobId), bytes(""));
@@ -417,11 +385,64 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     function test_instanceModeRejectsCloudModeJobResults() public {
-        for (uint8 jobId = 0; jobId <= 4; jobId++) {
+        for (uint8 jobId = 0; jobId <= 1; jobId++) {
             vm.prank(tangleCore);
             vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
             instance.onJobResult(testServiceId, jobId, uint64(2010 + jobId), operator1, bytes(""), bytes(""));
         }
+    }
+
+    function test_instanceModeAllowsWorkflowJobs() public {
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "instance-workflow",
+            workflow_json: "{\"prompt\":\"hello\"}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * * *",
+            sandbox_config_json: "{}"
+        });
+
+        uint64 createCallId = 2100;
+        simulateJobCall(testServiceId, instance.JOB_WORKFLOW_CREATE(), createCallId, abi.encode(req));
+        simulateJobResult(
+            testServiceId,
+            instance.JOB_WORKFLOW_CREATE(),
+            createCallId,
+            operator1,
+            abi.encode(req),
+            bytes("")
+        );
+
+        AgentSandboxBlueprint.WorkflowConfig memory cfg = instance.getWorkflow(createCallId);
+        assertEq(cfg.name, "instance-workflow");
+        assertTrue(cfg.active);
+
+        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl = AgentSandboxBlueprint.WorkflowControlRequest({
+            workflow_id: createCallId
+        });
+
+        uint64 triggerCallId = 2101;
+        simulateJobCall(testServiceId, instance.JOB_WORKFLOW_TRIGGER(), triggerCallId, abi.encode(ctrl));
+        simulateJobResult(
+            testServiceId,
+            instance.JOB_WORKFLOW_TRIGGER(),
+            triggerCallId,
+            operator1,
+            abi.encode(ctrl),
+            bytes("")
+        );
+        assertEq(instance.getWorkflow(createCallId).last_triggered_at, uint64(block.timestamp));
+
+        uint64 cancelCallId = 2102;
+        simulateJobCall(testServiceId, instance.JOB_WORKFLOW_CANCEL(), cancelCallId, abi.encode(ctrl));
+        simulateJobResult(
+            testServiceId,
+            instance.JOB_WORKFLOW_CANCEL(),
+            cancelCallId,
+            operator1,
+            abi.encode(ctrl),
+            bytes("")
+        );
+        assertFalse(instance.getWorkflow(createCallId).active);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -460,20 +481,12 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(instance.totalProvisionedOperators(), 2);
 
         // Deprovision operator1
-        uint64 callId = 3010;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-        simulateJobResult(
-            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator1);
 
         assertEq(instance.totalProvisionedOperators(), 1);
 
         // Deprovision operator2
-        callId = 3011;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-        simulateJobResult(
-            testServiceId, instance.JOB_DEPROVISION(), callId, operator2, bytes(""), encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator2);
 
         assertEq(instance.totalProvisionedOperators(), 0);
     }
@@ -505,11 +518,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(instance.totalProvisionedOperators(), 1);
 
         // Deprovision
-        uint64 callId = 3020;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-        simulateJobResult(
-            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator1);
 
         assertEq(instance.totalProvisionedOperators(), 0);
 
@@ -546,11 +555,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         _provisionOperator(operator1);
 
         // Deprovision
-        uint64 callId = 4050;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-        simulateJobResult(
-            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator1);
 
         assertFalse(instance.isOperatorProvisioned(testServiceId, operator1));
 
@@ -573,11 +578,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertFalse(instance.canLeave(testServiceId, operator1));
 
         // Deprovision
-        uint64 callId = 4060;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-        simulateJobResult(
-            testServiceId, instance.JOB_DEPROVISION(), callId, operator1, bytes(""), encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator1);
 
         assertTrue(instance.canLeave(testServiceId, operator1));
     }
@@ -616,16 +617,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(instance.totalProvisionedOperators(), 0);
 
         // Deprovision should succeed (no underflow revert)
-        uint64 callId = 7000;
-        simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-        simulateJobResult(
-            testServiceId,
-            instance.JOB_DEPROVISION(),
-            callId,
-            operator1,
-            bytes(""),
-            encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator1);
 
         // Counters remain 0 (clamped, not underflowed)
         assertEq(instance.getOperatorCount(testServiceId), 0);
@@ -678,18 +670,9 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     // ═══════════════════════════════════════════════════════════════════════════
 
     function testFuzz_provisionWithArbitrarySandboxId(string calldata sandboxId) public {
-        // Skip empty strings — they are valid in instance mode (no on-chain length check for provision)
-        // Provision encodes sandbox ID in outputs and stores sidecar URL
-        uint64 callId = 9000;
-        simulateJobCall(testServiceId, instance.JOB_PROVISION(), callId, bytes(""));
-        simulateJobResult(
-            testServiceId,
-            instance.JOB_PROVISION(),
-            callId,
-            operator1,
-            bytes(""),
-            abi.encode(sandboxId, "http://sidecar:8080", uint32(2222), "")
-        );
+        setServiceOperator(testServiceId, operator1, true);
+        vm.prank(operator1);
+        instance.reportProvisioned(testServiceId, sandboxId, "http://sidecar:8080", 2222, "");
 
         assertTrue(instance.isOperatorProvisioned(testServiceId, operator1));
         assertEq(instance.getOperatorCount(testServiceId), 1);
@@ -706,20 +689,14 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         for (uint8 i = 0; i < numOps; i++) {
             address op = address(uint160(0x3000 + i));
             ops[i] = op;
-            uint64 callId = uint64(10000 + i);
-            simulateJobCall(testServiceId, instance.JOB_PROVISION(), callId, bytes(""));
-            simulateJobResult(
+            setServiceOperator(testServiceId, op, true);
+            vm.prank(op);
+            instance.reportProvisioned(
                 testServiceId,
-                instance.JOB_PROVISION(),
-                callId,
-                op,
-                bytes(""),
-                abi.encode(
-                    string(abi.encodePacked("sb-fuzz-", vm.toString(i))),
-                    string(abi.encodePacked("http://op", vm.toString(i), ":8080")),
-                    uint32(2222 + i),
-                    ""
-                )
+                string(abi.encodePacked("sb-fuzz-", vm.toString(i))),
+                string(abi.encodePacked("http://op", vm.toString(i), ":8080")),
+                uint32(2222 + i),
+                ""
             );
             assertTrue(instance.isOperatorProvisioned(testServiceId, op));
         }
@@ -730,16 +707,9 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         // Deprovision all operators in reverse order
         for (uint256 i = numOps; i > 0; i--) {
             address op = ops[i - 1];
-            uint64 callId = uint64(20000 + i);
-            simulateJobCall(testServiceId, instance.JOB_DEPROVISION(), callId, bytes(""));
-            simulateJobResult(
-                testServiceId,
-                instance.JOB_DEPROVISION(),
-                callId,
-                op,
-                bytes(""),
-                encodeJsonOutputs("{}")
-            );
+            setServiceOperator(testServiceId, op, true);
+            vm.prank(op);
+            instance.reportDeprovisioned(testServiceId);
             assertFalse(instance.isOperatorProvisioned(testServiceId, op));
         }
 

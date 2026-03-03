@@ -13,6 +13,7 @@
 
 use blueprint_sdk::alloy::primitives::{Address, U256};
 use blueprint_sdk::alloy::sol;
+use blueprint_sdk::contexts::tangle::TangleClient;
 use blueprint_sdk::{error, info, warn};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -394,6 +395,7 @@ pub async fn check_escrow(config: &EscrowWatchdogConfig) -> Result<EscrowStatus,
 pub fn spawn_watchdog(
     config: EscrowWatchdogConfig,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    report_client: Option<TangleClient>,
 ) -> tokio::task::JoinHandle<()> {
     let interval = Duration::from_secs(config.check_interval_secs);
     let grace_period = Duration::from_secs(config.deprovision_grace_period_secs);
@@ -416,7 +418,12 @@ pub fn spawn_watchdog(
                     write_billing_status(&result, &watchdog.config);
 
                     if let WatchdogTickResult::DeprovisionRequired { .. } = result {
-                        trigger_deprovision(grace_period).await;
+                        trigger_deprovision(
+                            grace_period,
+                            watchdog.config.service_id,
+                            report_client.as_ref(),
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -431,7 +438,11 @@ pub fn spawn_watchdog(
 
 /// Trigger graceful deprovision of the instance sandbox.
 /// Waits for the grace period to let in-flight requests complete.
-async fn trigger_deprovision(grace_period: Duration) {
+async fn trigger_deprovision(
+    grace_period: Duration,
+    service_id: u64,
+    report_client: Option<&TangleClient>,
+) {
     if !grace_period.is_zero() {
         warn!(
             "escrow-watchdog: deprovisioning in {}s (grace period for in-flight requests)",
@@ -445,6 +456,7 @@ async fn trigger_deprovision(grace_period: Duration) {
     match crate::deprovision_core(None).await {
         Ok(_) => {
             info!("escrow-watchdog: sandbox deprovisioned successfully");
+            crate::try_report_local_deprovision(report_client, service_id).await;
         }
         Err(e) => {
             error!("escrow-watchdog: deprovision failed: {e}");

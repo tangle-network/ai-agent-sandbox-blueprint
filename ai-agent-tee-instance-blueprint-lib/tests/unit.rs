@@ -2,7 +2,7 @@
 //!
 //! No Docker, no wiremock. Pure unit tests for the TEE lib's own code:
 //! re-exports, TeeBackend global state, router construction, and
-//! core provision/deprovision signatures.
+//! shared ABI/type signatures.
 
 use std::sync::Once;
 
@@ -36,8 +36,10 @@ mod re_export_tests {
 
     #[test]
     fn job_constants_accessible() {
-        assert_eq!(JOB_PROVISION, 5);
-        assert_eq!(JOB_DEPROVISION, 6);
+        assert_eq!(JOB_WORKFLOW_CREATE, 2);
+        assert_eq!(JOB_WORKFLOW_TRIGGER, 3);
+        assert_eq!(JOB_WORKFLOW_CANCEL, 4);
+        assert_eq!(JOB_WORKFLOW_TICK, 255);
     }
 
     #[test]

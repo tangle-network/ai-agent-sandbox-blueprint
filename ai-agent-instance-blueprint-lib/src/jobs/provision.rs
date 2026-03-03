@@ -6,10 +6,8 @@ use crate::ProvisionOutput;
 use crate::ProvisionRequest;
 use crate::SandboxRecord;
 use crate::runtime::{create_sidecar, delete_sidecar};
-use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 use crate::tee::TeeBackend;
-use crate::{clear_instance_sandbox, require_instance_sandbox, set_instance_sandbox};
-use blueprint_sdk::{error, info};
+use crate::{clear_instance_sandbox, require_instance_sandbox};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core logic (reusable by TEE blueprint)
@@ -19,7 +17,6 @@ use blueprint_sdk::{error, info};
 ///
 /// `owner` is the hex address of the service requester (e.g. `"0xabcdef..."`).
 /// When called from auto-provision, this is read from `serviceOwner(serviceId)` on-chain.
-/// When called from the JOB_PROVISION handler, this comes from the `Caller` extractor.
 ///
 /// Returns the `ProvisionOutput` (for on-chain result) and the `SandboxRecord`
 /// (for local persistent storage). The caller is responsible for storing the
@@ -133,46 +130,4 @@ pub async fn deprovision_core(
         },
         sandbox_id,
     ))
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Job handlers (thin wrappers — pass None for TEE backend)
-// ─────────────────────────────────────────────────────────────────────────────
-
-pub async fn instance_provision(
-    Caller(caller): Caller,
-    TangleArg(request): TangleArg<ProvisionRequest>,
-) -> Result<TangleResult<ProvisionOutput>, String> {
-    let caller_hex = super::caller_hex(&caller);
-
-    // Idempotent: if auto-provision already created the sandbox, return existing info.
-    if let Some(record) = crate::get_instance_sandbox().map_err(|e| e.to_string())? {
-        info!(sandbox_id = %record.id, "instance_provision: returning existing sandbox (idempotent)");
-        let output = ProvisionOutput {
-            sandbox_id: record.id.clone(),
-            sidecar_url: record.sidecar_url.clone(),
-            ssh_port: record.ssh_port.unwrap_or(0) as u32,
-            tee_attestation_json: record.tee_attestation_json.clone().unwrap_or_default(),
-            tee_public_key_json: String::new(),
-        };
-        return Ok(TangleResult(output));
-    }
-
-    let (output, record) = provision_core(&request, None, &caller_hex)
-        .await
-        .map_err(|e| {
-            error!("instance_provision failed: {e}");
-            e
-        })?;
-    set_instance_sandbox(record).map_err(|e| e.to_string())?;
-    info!(sandbox_id = %output.sandbox_id, "instance_provision: provisioned successfully");
-    Ok(TangleResult(output))
-}
-
-pub async fn instance_deprovision(
-    Caller(_caller): Caller,
-    TangleArg(_request): TangleArg<JsonResponse>,
-) -> Result<TangleResult<JsonResponse>, String> {
-    let (response, _sandbox_id) = deprovision_core(None).await?;
-    Ok(TangleResult(response))
 }

@@ -1,132 +1,117 @@
 # Layered Architecture
 
-This document defines the target layer model across the blueprint ecosystem and the dependency rules we enforce.
+This document defines the layered blueprint model and import boundaries for:
+
+- `microvm-blueprint` (infrastructure)
+- `sandbox-runtime` (runtime contracts + adapters)
+- `ai-agent-sandbox-blueprint` (product)
+- `ai-trading-blueprints` (product)
+- `openclaw-hosting-blueprint` (product)
 
 ## Hard Rule: Jobs Are State-Changing Only
 
-On-chain jobs **must** mutate authoritative state (create, delete, or modify a persistent record).
+On-chain jobs must mutate authoritative state.
 
-Read-only access **must** use one of:
-- `eth_call` against view/pure contract methods
-- off-chain HTTP APIs (operator API with PASETO auth)
-- off-chain background services (indexers, pollers, caches, metrics, schedulers)
+- Reads must use `eth_call`.
+- Operational read/write I/O (exec/prompt/task/ssh/snapshot/proxy) must use the operator HTTP API.
 
-Adding a read-only query as an on-chain job is a compliance violation.
+## Repo Roles and Boundaries
 
-## Layers and Boundaries
+## Layer 0: `microvm-blueprint` (Infra Only)
 
-### Layer 0: Infrastructure (`microvm-blueprint`)
-
-Purpose:
-- Compute substrate primitives and low-level execution plumbing
-- MicroVM lifecycle foundations and host/runtime integration points
-- Infra concerns needed by multiple runtimes
+Owns:
+- Firecracker/microVM lifecycle primitives
+- Host-level networking/storage/attestation substrate
+- Provider-level failure and capability model
 
 Must not own:
 - Product workflows
-- Product business policy
-- User-facing feature semantics
+- Product routing semantics
+- Product billing/policy decisions
 
-### Layer 1: Runtime Contracts + Adapters (`sandbox-runtime`)
+## Layer 1: `sandbox-runtime` (Runtime Contracts + Adapters)
 
-Purpose:
-- Stable runtime-facing contracts used by products
-- Adapters to infra capabilities from Layer 0
-- Shared auth/session, operator API, provisioning lifecycle, metrics, and policy enforcement hooks
+Owns:
+- Stable runtime interfaces consumed by products
+- Adapter layer to L0 providers
+- Shared auth/session/rate-limit/metrics/provision tracking
 
 Must not own:
-- Product-specific feature decisions
-- Product-specific UX or route semantics
+- Product-specific UX semantics
+- Product-specific business logic
 - Cross-product coupling
 
-### Layer 2: Products
+## Layer 2: Product Blueprints
 
-Products in scope:
-- `ai-agent-sandbox-blueprint`
-- `ai-trading-blueprints`
-- `openclaw-hosting-blueprint`
-
-Purpose:
-- User-facing workflows and business logic
-- Product-specific composition of runtime capabilities
-- Product-specific contract/job catalogs and API endpoints
+Owns:
+- Product workflow and business policy
+- Product service composition
+- Product-facing contract/job catalogs
 
 Must not own:
-- Infra internals from Layer 0
-- Re-implementation of shared runtime abstractions already in Layer 1
-- Direct dependencies on other product repositories
+- Direct L0 imports
+- Runtime re-implementations already in L1
+- Product-to-product imports
 
-## Dependency Direction Matrix
+## Dependency Direction Rules
 
-`Y` = allowed direct dependency, `N` = forbidden direct dependency.
+Allowed:
+- `L2 -> L1`
+- `L1 -> L0`
 
-| From \\ To | `microvm-blueprint` (L0) | `sandbox-runtime` (L1) | Products (L2) |
-|---|---:|---:|---:|
-| `microvm-blueprint` (L0) | N | N | N |
-| `sandbox-runtime` (L1) | Y | N | N |
-| Products (L2) | N | Y | N |
+Forbidden:
+- `L2 -> L0`
+- `L2 -> L2`
+- `L1 -> L2`
 
-Interpretation:
-- Dependency flow is strictly upward in abstraction: L2 -> L1 -> L0.
-- L2 -> L0 direct imports are forbidden; integrate through L1 adapters.
-- L2 -> L2 (product-to-product) dependencies are forbidden.
-- L1 -> L2 and L0 -> L2 reverse dependencies are forbidden.
+Temporary exception (current repo state):
+- `ai-agent-tee-instance-blueprint-lib -> ai-agent-instance-blueprint-lib` exists as same-product variant reuse.
+- Exit plan: move shared instance runtime logic to L1 and remove this edge.
 
-## Allowed Interface Types by Layer
+## Why `microvm-blueprint` Exists Separately
 
-- L0 publishes infra primitives and host-level integration points.
-- L1 publishes stable runtime contracts/adapters and service APIs consumed by products.
-- L2 publishes product APIs and on-chain job definitions for product state transitions.
+Even if `sandbox-runtime` has a microVM adapter, `microvm-blueprint` stays separate because:
 
-## Architecture Decision Guidance
+1. Infra lifecycle evolves at a different cadence than product/runtime APIs.
+2. Multiple runtimes can share the same low-level provider substrate.
+3. Firecracker/security-sensitive code requires tighter isolation and review ownership.
+4. Runtime contracts can remain stable while provider internals change.
 
-When adding new behavior:
-1. If it is infra-generic and reusable across runtimes, it belongs in L0.
-2. If it is runtime-generic and reusable across products, it belongs in L1.
-3. If it is product-specific business logic, it belongs in L2.
-4. If the operation is read-only, it **must not** be an on-chain job. Use `eth_call` or the off-chain operator HTTP API.
-5. If the operation mutates authoritative state, it **must** be an on-chain job — not a standalone HTTP endpoint.
+## Current State (March 3, 2026)
 
-## 4-Week Migration Plan
+- `sandbox-runtime` still contains concrete Docker/TEE integrations directly.
+- L0 is a target boundary, not fully extracted in this repo.
+- Layer docs are normative for new code; existing drift should be reduced incrementally.
 
-### Week 1: Inventory and Rule Enforcement Baseline
+## Migration Phases
 
-- Produce a dependency inventory for each repo (`microvm-blueprint`, `sandbox-runtime`, and each product repo).
-- Tag each module by layer ownership (`L0`, `L1`, `L2`).
-- Identify all on-chain jobs currently used for reads and classify them for replacement.
-- Add CI checks for forbidden dependency edges (L2 -> L0 and L2 -> L2).
+## Phase 0: Now
 
-Exit criteria:
-- Ownership map published.
-- Blocklist CI checks active in all participating repos.
-
-### Week 2: Extract Runtime Contracts and Adapters
-
-- Move shared runtime concerns from product repos into `sandbox-runtime`.
-- Add/normalize adapter interfaces in `sandbox-runtime` for infra access currently done directly by products.
-- Version and publish runtime contracts consumed by all products.
+- Keep unified 5-job protocol and operator API split.
+- Use direct instance lifecycle reporting (`reportProvisioned` / `reportDeprovisioned`) as canonical startup sync path.
+- Enforce no new `L2 -> L0` imports.
+- Document temporary exceptions explicitly in PRs.
 
 Exit criteria:
-- Shared runtime interfaces consumed from `sandbox-runtime`.
-- No new direct L2 -> L0 dependencies introduced.
+- No newly introduced forbidden edges.
+- Contract and README docs align with current runtime behavior.
 
-### Week 3: Product Convergence
+## Phase 1: Next
 
-- Update `ai-agent-sandbox-blueprint`, `ai-trading-blueprints`, and `openclaw-hosting-blueprint` to depend only on L1 for runtime/infra needs.
-- Remove duplicated runtime logic from product repos.
-- Replace read-only jobs with `eth_call` and off-chain HTTP/background reads.
-
-Exit criteria:
-- All read-only flows migrated off jobs.
-- Products compile and pass tests with L2 -> L1 integration only.
-
-### Week 4: Stabilization and Governance
-
-- Add architecture tests/linters for layer boundaries.
-- Freeze contract/adaptor surfaces in `sandbox-runtime` and document versioning policy.
-- Publish migration retrospective and backlog for remaining edge cases.
+- Extract provider contracts and concrete microVM/firecracker utilities into L0.
+- Keep `sandbox-runtime` focused on adapter and runtime contract surfaces.
+- Move shared instance logic used by instance + tee-instance into L1.
 
 Exit criteria:
-- Boundary checks enforced in CI.
-- Layer contracts documented and ratified.
-- Remaining work captured as explicit follow-up issues.
+- No `ai-agent-tee-instance-blueprint-lib -> ai-agent-instance-blueprint-lib` edge.
+- Provider-facing code consumed only through L1 adapters.
+
+## Phase 2: Deprecation
+
+- Deprecate direct provider/internal types leaking through product crates.
+- Add CI guardrails for forbidden imports and layer checks.
+- Publish versioned L1 contract compatibility policy.
+
+Exit criteria:
+- Layer boundaries validated in CI.
+- Deprecated edges removed and tracked as closed migration items.

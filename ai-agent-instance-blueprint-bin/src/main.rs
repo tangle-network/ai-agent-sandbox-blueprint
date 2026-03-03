@@ -1,9 +1,10 @@
 //! Blueprint runner for ai-agent-instance-blueprint.
 //!
 //! Subscription model: each service instance runs exactly one sandbox.
-//! Simpler than the multi-sandbox blueprint — no workflows, no batch, no cron.
+//! Simpler than the multi-sandbox blueprint — singleton lifecycle + workflows.
 
-use ai_agent_instance_blueprint_lib::router;
+use ai_agent_instance_blueprint_lib::{JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, router};
+use blueprint_producers_extra::cron::CronJob;
 use blueprint_sdk::contexts::tangle::TangleClientContext;
 use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
@@ -44,6 +45,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         .ok_or_else(|| blueprint_sdk::Error::Other("SERVICE_ID missing".into()))?;
 
     info!("Starting ai-agent-instance-blueprint for service {service_id}");
+
+    if let Err(err) = bootstrap_workflows_from_chain(&tangle_client, service_id).await {
+        error!("Failed to load workflows from chain: {err}");
+    }
 
     // Reconcile stored sandbox state with Docker reality.
     ai_agent_instance_blueprint_lib::reaper::reconcile_on_startup().await;
@@ -88,9 +93,12 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         ai_agent_instance_blueprint_lib::auto_provision::AutoProvisionConfig::from_env(service_id)
     {
         info!("Auto-provision enabled (BSM={})", ap_config.bsm_address);
+        let report_client = tangle_client.clone();
         Some(tokio::spawn(async move {
             match ai_agent_instance_blueprint_lib::auto_provision::run_auto_provision(
-                ap_config, None,
+                ap_config,
+                None,
+                Some(report_client),
             )
             .await
             {
@@ -199,9 +207,11 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
                 // Escrow watchdog: auto-deprovision when escrow is exhausted.
                 let tangle_contract = watchdog_config.tangle_contract;
+                let report_client = tangle_client.clone();
                 ai_agent_instance_blueprint_lib::billing::spawn_watchdog(
                     watchdog_config,
                     watchdog_rx,
+                    Some(report_client),
                 );
                 info!("Escrow watchdog started for service {service_id}");
 
@@ -244,10 +254,16 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     let tangle_consumer = TangleConsumer::new(tangle_client);
 
     let tangle_config = TangleConfig::default();
+    let cron_schedule =
+        std::env::var("WORKFLOW_CRON_SCHEDULE").unwrap_or_else(|_| "0 * * * * *".to_string());
+    let workflow_cron = CronJob::new(JOB_WORKFLOW_TICK, cron_schedule.as_str())
+        .await
+        .map_err(|err| blueprint_sdk::Error::Other(format!("Invalid workflow cron: {err}")))?;
 
     let result = BlueprintRunner::builder(tangle_config, env)
         .router(router())
         .producer(tangle_producer)
+        .producer(workflow_cron)
         .consumer(tangle_consumer)
         .with_shutdown_handler(async move {
             info!("Shutting down ai-agent-instance-blueprint");
@@ -272,11 +288,9 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                 info!("Billing shutdown signal sent");
             }
 
-            // Deprovision sandbox container so it doesn't outlive the service.
-            match ai_agent_instance_blueprint_lib::deprovision_core(None).await {
-                Ok((_, id)) => info!("Shutdown: deprovisioned sandbox {id}"),
-                Err(e) => info!("Shutdown: no sandbox to deprovision ({e})"),
-            }
+            // Do not deprovision on generic process shutdown.
+            // Lifecycle transitions are reported explicitly by operator logic.
+            info!("Shutdown complete; instance lifecycle is report-driven");
         })
         .run()
         .await;

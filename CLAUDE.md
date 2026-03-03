@@ -17,8 +17,8 @@
 ## Reliability Do/Don't
 - Do health-check both RPC and operator API before assuming local stack is usable.
 - Do keep default local ports (`8645`, `9100`, `9200`) unless there is a port collision.
-- Do treat the on-chain blueprint surface as 7 jobs (`0..6`) for local e2e validation.
-- Do use instance job IDs `5` (provision) and `6` (deprovision) in local submitJob checks.
+- Do treat the on-chain blueprint surface as 5 jobs (`0..4`) for local e2e validation.
+- Do treat instance direct lifecycle reporting as canonical (`reportProvisioned` / `reportDeprovisioned`).
 - Don't treat an existing `.env.local` as proof services are running.
 - Don't test sandbox/instance exec via on-chain `submitJob` in local e2e; validate those via runtime/operator API integration paths.
 - Don't skip `test-e2e.sh` when changing deploy scripts, service registration, or API auth flows.

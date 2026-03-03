@@ -16,7 +16,7 @@ import type { Address } from 'viem';
 
 const SANDBOX_ID_CTX = [{ abiName: 'sandbox_id', abiType: 'string' }] as const;
 
-// ── TEE type options (shared between create and instance provision) ──
+// ── TEE type options ──
 
 export const TEE_TYPE_OPTIONS = [
   { label: 'None', value: '0' },

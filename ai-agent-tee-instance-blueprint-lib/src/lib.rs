@@ -1,8 +1,8 @@
 //! AI Agent TEE Instance Blueprint
 //!
-//! TEE-backed variant of the instance blueprint. Reuses all handlers from the
-//! base instance blueprint except provision/deprovision, which route through
-//! a `TeeBackend` (Phala CVM by default).
+//! TEE-backed variant of the instance blueprint. Reuses the same workflow and
+//! API/runtime handlers as the base instance blueprint, with a configured
+//! `TeeBackend` (Phala CVM by default) for local lifecycle operations.
 //!
 //! Operators deploy this blueprint instead of the base instance blueprint when
 //! they can provide TEE execution. The on-chain contract enforces higher pricing
@@ -10,7 +10,6 @@
 
 #[cfg(feature = "billing")]
 pub use ai_agent_instance_blueprint_lib::billing;
-pub mod jobs;
 
 // Re-export from base instance blueprint — explicit to avoid leaking the base
 // `router()` (callers should use `tee_router()`) and `jobs` module (shadowed
@@ -34,8 +33,10 @@ pub use ai_agent_instance_blueprint_lib::{
     InstanceTaskRequest,
     InstanceTaskResponse,
     // Job IDs
-    JOB_DEPROVISION,
-    JOB_PROVISION,
+    JOB_WORKFLOW_CANCEL,
+    JOB_WORKFLOW_CREATE,
+    JOB_WORKFLOW_TICK,
+    JOB_WORKFLOW_TRIGGER,
     // ABI types
     JsonResponse,
     ProvisionOutput,
@@ -47,6 +48,8 @@ pub use ai_agent_instance_blueprint_lib::{
     TeeType,
     // Modules (runtime, store, reaper, etc.)
     auth,
+    // Core functions (for composition)
+    bootstrap_workflows_from_chain,
     // Exec helpers
     build_agent_payload,
     build_exec_payload,
@@ -63,7 +66,6 @@ pub use ai_agent_instance_blueprint_lib::{
     instance_store,
     metrics,
     parse_agent_response,
-    // Core functions (for composition)
     provision_core,
     // SSH helpers
     provision_key,
@@ -79,6 +81,10 @@ pub use ai_agent_instance_blueprint_lib::{
     tangle,
     tee,
     util,
+    workflow_cancel,
+    workflow_create,
+    workflow_tick_job,
+    workflow_trigger,
 };
 
 use blueprint_sdk::Job;
@@ -94,12 +100,13 @@ pub use sandbox_runtime::tee::{init_tee_backend, tee_backend};
 
 /// Build the TEE instance blueprint router.
 ///
-/// Uses TEE-aware provision/deprovision handlers. Read-only ops (exec,
-/// prompt, task, snapshot, SSH) are served via the operator HTTP API.
+/// Uses the shared workflow handlers.
+/// Read-only ops (exec, prompt, task, snapshot, SSH) are served via the
+/// operator HTTP API.
 pub fn tee_router() -> Router {
-    use jobs::provision::{tee_deprovision, tee_provision};
-
     Router::new()
-        .route(JOB_PROVISION, tee_provision.layer(TangleLayer))
-        .route(JOB_DEPROVISION, tee_deprovision.layer(TangleLayer))
+        .route(JOB_WORKFLOW_CREATE, workflow_create.layer(TangleLayer))
+        .route(JOB_WORKFLOW_TRIGGER, workflow_trigger.layer(TangleLayer))
+        .route(JOB_WORKFLOW_CANCEL, workflow_cancel.layer(TangleLayer))
+        .route(JOB_WORKFLOW_TICK, workflow_tick_job)
 }

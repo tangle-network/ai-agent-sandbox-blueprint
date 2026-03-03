@@ -1,5 +1,4 @@
 import { INSTANCE_JOB_IDS, INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
-import { TEE_TYPE_OPTIONS } from './sandbox-blueprint';
 import { type BlueprintDefinition, type JobDefinition, registerBlueprint } from '@tangle/blueprint-ui';
 import type { Address } from 'viem';
 
@@ -7,81 +6,67 @@ import type { Address } from 'viem';
  * Creates job definitions for the Instance blueprint family.
  * Shared between Instance and TEE Instance (which differs only in pricing and defaults).
  *
- * On-chain jobs: provision and deprovision only.
+ * On-chain jobs: workflows only.
+ * Instance lifecycle is operator-reported (`reportProvisioned`/`reportDeprovisioned`).
  * Read-only ops (exec, prompt, task, ssh, snapshot) are served by the operator API.
  *
  * ABI types verified against ai-agent-instance-blueprint-lib/src/lib.rs sol! macros.
  */
 export function createInstanceJobs(opts?: {
   pricingOverrides?: Record<number, number>;
-  teeDefaults?: boolean;
 }): JobDefinition[] {
   const pricing = (id: number) => opts?.pricingOverrides?.[id] ?? INSTANCE_PRICING_TIERS[id]?.multiplier ?? 1;
-  const teeDefault = opts?.teeDefaults ?? false;
 
   return [
     {
-      // ABI: ProvisionRequest { name, image, stack, agent_identifier, env_json, metadata_json,
-      //   ssh_enabled, ssh_public_key, web_terminal_enabled, max_lifetime_seconds, idle_timeout_seconds,
-      //   cpu_cores, memory_mb, disk_gb, sidecar_token, tee_required, tee_type }
-      id: INSTANCE_JOB_IDS.PROVISION,
-      name: 'provision',
-      label: 'Provision Instance',
-      description: 'Provision a new AI agent instance with Docker isolation and sidecar.',
-      category: 'lifecycle',
-      icon: 'i-ph:plus-circle',
-      pricingMultiplier: pricing(INSTANCE_JOB_IDS.PROVISION),
+      // ABI: WorkflowCreateRequest { name, workflow_json, trigger_type, trigger_config, sandbox_config_json }
+      id: INSTANCE_JOB_IDS.WORKFLOW_CREATE,
+      name: 'workflow_create',
+      label: 'Create Workflow',
+      description: 'Define a scheduled or event-driven workflow for this instance.',
+      category: 'workflow',
+      icon: 'i-ph:flow-arrow',
+      pricingMultiplier: pricing(INSTANCE_JOB_IDS.WORKFLOW_CREATE),
       requiresSandbox: false,
       fields: [
-        { name: 'name', label: 'Instance Name', type: 'text', placeholder: 'my-agent', required: true, abiType: 'string' },
-        { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'ubuntu:22.04', required: true, defaultValue: 'ubuntu:22.04', abiType: 'string',
-          options: [
-            { label: 'Ubuntu 22.04', value: 'ubuntu:22.04' },
-            { label: 'Ubuntu 24.04', value: 'ubuntu:24.04' },
-            { label: 'Debian Bookworm', value: 'debian:bookworm' },
-            { label: 'Python 3.12', value: 'python:3.12' },
-            { label: 'Node 22', value: 'node:22' },
-            { label: 'Rust (latest)', value: 'rust:latest' },
-            { label: 'Alpine 3.20', value: 'alpine:3.20' },
-          ],
-          helperText: 'Select a preset or enter any Docker Hub image' },
-        { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', abiType: 'string', options: [
-          { label: 'Default', value: 'default' },
-          { label: 'Python', value: 'python' },
-          { label: 'Node.js', value: 'nodejs' },
-          { label: 'Rust', value: 'rust' },
+        { name: 'name', label: 'Workflow Name', type: 'text', required: true, abiType: 'string' },
+        { name: 'workflowJson', label: 'Workflow Definition (JSON)', type: 'json', required: true, abiType: 'string', abiParam: 'workflow_json' },
+        { name: 'triggerType', label: 'Trigger Type', type: 'select', required: true, abiType: 'string', abiParam: 'trigger_type', options: [
+          { label: 'Cron Schedule', value: 'cron' },
+          { label: 'Webhook', value: 'webhook' },
+          { label: 'Manual', value: 'manual' },
         ] },
-        { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', placeholder: 'agent-1', helperText: 'Set to enable AI chat. Leave empty for plain compute instances.', abiType: 'string', abiParam: 'agent_identifier' },
-        { name: 'envJson', label: 'Environment Variables (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'env_json' },
-        { name: 'metadataJson', label: 'Metadata (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'metadata_json' },
-        { name: 'sshEnabled', label: 'Enable SSH', type: 'boolean', defaultValue: false, abiType: 'bool', abiParam: 'ssh_enabled' },
-        { name: 'sshPublicKey', label: 'SSH Public Key', type: 'textarea', placeholder: 'ssh-ed25519 AAAA...', abiType: 'string', abiParam: 'ssh_public_key' },
-        { name: 'webTerminalEnabled', label: 'Web Terminal', type: 'boolean', defaultValue: true, abiType: 'bool', abiParam: 'web_terminal_enabled' },
-        { name: 'maxLifetimeSeconds', label: 'Max Lifetime (s)', type: 'number', defaultValue: 86400, min: 0, helperText: '0 = unlimited, 3600 = 1h, 86400 = 24h', abiType: 'uint64', abiParam: 'max_lifetime_seconds' },
-        { name: 'idleTimeoutSeconds', label: 'Idle Timeout (s)', type: 'number', defaultValue: 3600, min: 0, helperText: '0 = disabled, 300 = 5min, 3600 = 1h', abiType: 'uint64', abiParam: 'idle_timeout_seconds' },
-        { name: 'cpuCores', label: 'CPU Cores', type: 'number', defaultValue: 2, min: 1, max: 16, helperText: 'Typical: 1\u20134 for dev, 8\u201316 for production', abiType: 'uint64', abiParam: 'cpu_cores' },
-        { name: 'memoryMb', label: 'Memory (MB)', type: 'number', defaultValue: 2048, min: 512, max: 32768, step: 512, helperText: '512 = 0.5 GB, 2048 = 2 GB, 8192 = 8 GB', abiType: 'uint64', abiParam: 'memory_mb' },
-        { name: 'diskGb', label: 'Disk (GB)', type: 'number', defaultValue: 10, min: 1, max: 100, helperText: '10 GB typical for dev, 50+ for large models', abiType: 'uint64', abiParam: 'disk_gb' },
-        // sidecar_token is internal — auto-generated by the operator, never user-facing
-        { name: 'sidecarToken', label: 'Sidecar Token', type: 'text', internal: true, abiType: 'string', abiParam: 'sidecar_token', defaultValue: '' },
-        { name: 'teeRequired', label: 'TEE Required', type: 'boolean', defaultValue: teeDefault, abiType: 'bool', abiParam: 'tee_required' },
-        { name: 'teeType', label: 'TEE Type', type: 'select', defaultValue: teeDefault ? '1' : '0', abiType: 'uint8', abiParam: 'tee_type', options: TEE_TYPE_OPTIONS },
+        { name: 'triggerConfig', label: 'Trigger Config', type: 'text', placeholder: '0 */6 * * * *', helperText: 'Cron expression or webhook URL', abiType: 'string', abiParam: 'trigger_config' },
+        { name: 'sandboxConfigJson', label: 'Sandbox Config (JSON)', type: 'json', placeholder: '{}', abiType: 'string', abiParam: 'sandbox_config_json' },
       ],
     },
     {
-      // ABI: JsonRequest { json } -> JsonResponse { json }
-      id: INSTANCE_JOB_IDS.DEPROVISION,
-      name: 'deprovision',
-      label: 'Deprovision Instance',
-      description: 'Permanently deprovision the instance and release resources.',
-      category: 'lifecycle',
-      icon: 'i-ph:trash',
-      pricingMultiplier: pricing(INSTANCE_JOB_IDS.DEPROVISION),
-      requiresSandbox: true,
+      // ABI: WorkflowControlRequest { workflow_id }
+      id: INSTANCE_JOB_IDS.WORKFLOW_TRIGGER,
+      name: 'workflow_trigger',
+      label: 'Trigger Workflow',
+      description: 'Manually trigger an existing workflow.',
+      category: 'workflow',
+      icon: 'i-ph:play',
+      pricingMultiplier: pricing(INSTANCE_JOB_IDS.WORKFLOW_TRIGGER),
+      requiresSandbox: false,
       fields: [
-        { name: 'json', label: 'Options (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string' },
+        { name: 'workflowId', label: 'Workflow ID', type: 'number', required: true, min: 0, abiType: 'uint64', abiParam: 'workflow_id' },
       ],
-      warning: 'This action is irreversible. The instance and all its data will be permanently removed.',
+    },
+    {
+      // ABI: WorkflowControlRequest { workflow_id }
+      id: INSTANCE_JOB_IDS.WORKFLOW_CANCEL,
+      name: 'workflow_cancel',
+      label: 'Cancel Workflow',
+      description: 'Deactivate a workflow. Can be re-triggered later.',
+      category: 'workflow',
+      icon: 'i-ph:stop',
+      pricingMultiplier: pricing(INSTANCE_JOB_IDS.WORKFLOW_CANCEL),
+      requiresSandbox: false,
+      fields: [
+        { name: 'workflowId', label: 'Workflow ID', type: 'number', required: true, min: 0, abiType: 'uint64', abiParam: 'workflow_id' },
+      ],
     },
   ];
 }
@@ -92,13 +77,13 @@ export const INSTANCE_BLUEPRINT: BlueprintDefinition = {
   id: 'ai-agent-instance-blueprint',
   name: 'AI Agent Instance',
   version: '0.4.0',
-  description: 'Subscription-based single-instance AI agent with operator API for exec, prompt, task, SSH, and snapshot.',
+  description: 'Subscription-based single-instance AI agent with on-chain workflows and operator-reported lifecycle.',
   icon: 'i-ph:cube',
   color: 'blue',
   contracts: {},
   jobs: createInstanceJobs(),
   categories: [
-    { key: 'lifecycle', label: 'Instance Lifecycle', icon: 'i-ph:cube' },
+    { key: 'workflow', label: 'Workflows', icon: 'i-ph:flow-arrow' },
   ],
 };
 

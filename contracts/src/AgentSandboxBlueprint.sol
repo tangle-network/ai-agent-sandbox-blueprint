@@ -4,23 +4,27 @@ pragma solidity ^0.8.26;
 import "./OperatorSelection.sol";
 import "tnt-core/interfaces/IMultiAssetDelegation.sol";
 
+interface ITangleServiceOperatorView {
+    function isServiceOperator(uint64 serviceId, address operator) external view returns (bool);
+}
+
 /**
  * @title AgentSandboxBlueprint
  * @dev Unified service manager for AI Agent Sandbox Blueprint.
  *      Deployed 3x with different mode flags:
  *        - Cloud mode (instanceMode=false): Multi-operator fleet with capacity-weighted
- *          sandbox assignment, workflow storage, and batch operations.
+ *          sandbox assignment and workflow storage.
  *        - Instance mode (instanceMode=true): Per-service singleton sandbox with
- *          operator self-provisioning. Config stored at service request time.
+ *          operator self-provisioning plus workflow support.
  *        - TEE instance mode (instanceMode=true, teeRequired=true): Same as instance
  *          but requires TEE attestation on provision.
  *
- *      7 on-chain jobs (state-changing only). All read-only operations (exec, prompt,
+ *      5 on-chain jobs (state-changing only). All read-only operations (exec, prompt,
  *      task, stop, resume, snapshot, SSH) are served via the operator HTTP API.
  */
 contract AgentSandboxBlueprint is OperatorSelectionBase {
     // ═══════════════════════════════════════════════════════════════════════════
-    // JOB IDS (7 total — state-changing only)
+    // JOB IDS (5 total — state-changing only)
     // ═══════════════════════════════════════════════════════════════════════════
 
     uint8 public constant JOB_SANDBOX_CREATE = 0;
@@ -28,8 +32,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     uint8 public constant JOB_WORKFLOW_CREATE = 2;
     uint8 public constant JOB_WORKFLOW_TRIGGER = 3;
     uint8 public constant JOB_WORKFLOW_CANCEL = 4;
-    uint8 public constant JOB_PROVISION = 5;      // Instance mode only
-    uint8 public constant JOB_DEPROVISION = 6;    // Instance mode only
 
     // ═══════════════════════════════════════════════════════════════════════════
     // METADATA
@@ -59,10 +61,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     uint256 public constant PRICE_MULT_WORKFLOW_CREATE = 2;
     uint256 public constant PRICE_MULT_WORKFLOW_TRIGGER = 5;
     uint256 public constant PRICE_MULT_WORKFLOW_CANCEL = 1;
-
-    // Instance jobs
-    uint256 public constant PRICE_MULT_PROVISION = 50;
-    uint256 public constant PRICE_MULT_DEPROVISION = 1;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // ARRAY BOUNDS (storage griefing prevention)
@@ -204,6 +202,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     error NotProvisioned(uint64 serviceId, address operator);
     error MissingTeeAttestation(uint64 serviceId, address operator);
     error MaxOperatorsReached(uint64 serviceId);
+    error OperatorNotInService(uint64 serviceId, address operator);
 
     // Mode errors
     error CloudModeOnly();
@@ -232,25 +231,23 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
     /// @notice Returns all supported job IDs for this blueprint.
     function jobIds() external pure returns (uint8[] memory ids) {
-        ids = new uint8[](7);
+        ids = new uint8[](5);
         ids[0] = JOB_SANDBOX_CREATE;
         ids[1] = JOB_SANDBOX_DELETE;
         ids[2] = JOB_WORKFLOW_CREATE;
         ids[3] = JOB_WORKFLOW_TRIGGER;
         ids[4] = JOB_WORKFLOW_CANCEL;
-        ids[5] = JOB_PROVISION;
-        ids[6] = JOB_DEPROVISION;
     }
 
     /// @notice Returns true if this blueprint supports the given job ID.
     /// @param jobId The job ID to check.
     function supportsJob(uint8 jobId) external pure returns (bool) {
-        return jobId <= JOB_DEPROVISION;
+        return jobId <= JOB_WORKFLOW_CANCEL;
     }
 
     /// @notice Returns the total number of on-chain jobs this blueprint supports.
     function jobCount() external pure returns (uint256) {
-        return 7;
+        return 5;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -274,7 +271,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             }
             operatorMaxCapacity[operator] = capacity;
         }
-        // Instance mode: no-op (operators self-provision via JOB_PROVISION)
+        // Instance mode: no-op (operators self-report lifecycle via reportProvisioned/reportDeprovisioned)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -419,9 +416,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             if (routed == address(0)) revert SandboxNotFound(sandboxHash);
             emit OperatorRouted(serviceId, jobCallId, routed);
         } else if (job == JOB_WORKFLOW_CREATE || job == JOB_WORKFLOW_TRIGGER || job == JOB_WORKFLOW_CANCEL) {
-            if (instanceMode) revert CloudModeOnly();
-        } else if (job == JOB_PROVISION || job == JOB_DEPROVISION) {
-            if (!instanceMode) revert InstanceModeOnly();
+            // Supported in both cloud and instance modes.
         } else {
             revert UnknownJobId(job);
         }
@@ -432,7 +427,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// @notice Post-execution hook for job results. Updates on-chain state based on
-    ///         operator-submitted results (sandbox registry, workflows, provisions).
+    ///         operator-submitted results (sandbox registry, workflows).
     /// @param serviceId The service this job belongs to.
     /// @param job The job ID that completed.
     /// @param jobCallId Unique identifier for this job call.
@@ -454,26 +449,46 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             if (instanceMode) revert CloudModeOnly();
             _handleDeleteResult(operator, inputs);
         } else if (job == JOB_WORKFLOW_CREATE) {
-            if (instanceMode) revert CloudModeOnly();
             WorkflowCreateRequest memory request = abi.decode(inputs, (WorkflowCreateRequest));
             _upsertWorkflow(jobCallId, request);
         } else if (job == JOB_WORKFLOW_TRIGGER) {
-            if (instanceMode) revert CloudModeOnly();
             WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
             _markTriggered(request.workflow_id);
         } else if (job == JOB_WORKFLOW_CANCEL) {
-            if (instanceMode) revert CloudModeOnly();
             WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
             _cancelWorkflow(request.workflow_id);
-        } else if (job == JOB_PROVISION) {
-            if (!instanceMode) revert InstanceModeOnly();
-            _handleProvisionResult(serviceId, operator, outputs);
-        } else if (job == JOB_DEPROVISION) {
-            if (!instanceMode) revert InstanceModeOnly();
-            _handleDeprovisionResult(serviceId, operator);
         } else {
             revert UnknownJobId(job);
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DIRECT INSTANCE REPORTING (operator-signed tx path)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// @notice Operator-direct lifecycle report for instance mode provision.
+    /// @dev Auth is the tx signer (`msg.sender`) plus service membership check.
+    ///      This path avoids submitJob caller permission coupling for startup reconciliation.
+    function reportProvisioned(
+        uint64 serviceId,
+        string calldata sandboxId,
+        string calldata sidecarUrl,
+        uint32 sshPort,
+        string calldata teeAttestationJson
+    ) external {
+        if (!instanceMode) revert InstanceModeOnly();
+        _requireActiveServiceOperator(serviceId, msg.sender);
+
+        bytes memory outputs = abi.encode(sandboxId, sidecarUrl, sshPort, teeAttestationJson);
+        _handleProvisionResult(serviceId, msg.sender, outputs);
+    }
+
+    /// @notice Operator-direct lifecycle report for instance mode deprovision.
+    /// @dev Auth is the tx signer (`msg.sender`) plus service membership check.
+    function reportDeprovisioned(uint64 serviceId) external {
+        if (!instanceMode) revert InstanceModeOnly();
+        _requireActiveServiceOperator(serviceId, msg.sender);
+        _handleDeprovisionResult(serviceId, msg.sender);
     }
 
     /// @notice Returns the number of operator results required to finalize a job (always 1).
@@ -660,16 +675,14 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         pure
         returns (uint8[] memory jobIndexes, uint256[] memory rates)
     {
-        jobIndexes = new uint8[](7);
-        rates = new uint256[](7);
+        jobIndexes = new uint8[](5);
+        rates = new uint256[](5);
 
         jobIndexes[0] = JOB_SANDBOX_CREATE;    rates[0] = baseRate * PRICE_MULT_SANDBOX_CREATE;
         jobIndexes[1] = JOB_SANDBOX_DELETE;    rates[1] = baseRate * PRICE_MULT_SANDBOX_DELETE;
         jobIndexes[2] = JOB_WORKFLOW_CREATE;   rates[2] = baseRate * PRICE_MULT_WORKFLOW_CREATE;
         jobIndexes[3] = JOB_WORKFLOW_TRIGGER;  rates[3] = baseRate * PRICE_MULT_WORKFLOW_TRIGGER;
         jobIndexes[4] = JOB_WORKFLOW_CANCEL;   rates[4] = baseRate * PRICE_MULT_WORKFLOW_CANCEL;
-        jobIndexes[5] = JOB_PROVISION;         rates[5] = baseRate * PRICE_MULT_PROVISION;
-        jobIndexes[6] = JOB_DEPROVISION;       rates[6] = baseRate * PRICE_MULT_DEPROVISION;
     }
 
     /// @notice Returns the price multiplier for a given job ID (0 if unknown).
@@ -680,8 +693,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         if (jobId == JOB_WORKFLOW_CREATE)   return PRICE_MULT_WORKFLOW_CREATE;
         if (jobId == JOB_WORKFLOW_TRIGGER)  return PRICE_MULT_WORKFLOW_TRIGGER;
         if (jobId == JOB_WORKFLOW_CANCEL)   return PRICE_MULT_WORKFLOW_CANCEL;
-        if (jobId == JOB_PROVISION)         return PRICE_MULT_PROVISION;
-        if (jobId == JOB_DEPROVISION)       return PRICE_MULT_DEPROVISION;
         return 0;
     }
 
@@ -797,7 +808,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: PROVISION/DEPROVISION (instance mode)
+    // INTERNAL: INSTANCE LIFECYCLE STATE TRANSITIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// @notice Processes a provision result: registers the operator, stores sidecar URL
@@ -808,7 +819,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     function _handleProvisionResult(
         uint64 serviceId,
         address operator,
-        bytes calldata outputs
+        bytes memory outputs
     ) internal {
         if (operatorProvisioned[serviceId][operator]) revert AlreadyProvisioned(serviceId, operator);
 
@@ -923,5 +934,16 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         config.active = false;
         config.updated_at = uint64(block.timestamp);
         emit WorkflowCanceled(workflowId, uint64(block.timestamp));
+    }
+
+    /// @notice Validates that `operator` is currently active on `serviceId` in Tangle.
+    function _requireActiveServiceOperator(uint64 serviceId, address operator) internal view {
+        bool allowed = false;
+        if (tangleCore != address(0)) {
+            try ITangleServiceOperatorView(tangleCore).isServiceOperator(serviceId, operator) returns (bool active) {
+                allowed = active;
+            } catch { }
+        }
+        if (!allowed) revert OperatorNotInService(serviceId, operator);
     }
 }
