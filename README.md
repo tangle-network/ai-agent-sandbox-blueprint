@@ -92,6 +92,19 @@ Extraction rule:
 
 Internal: `JOB_WORKFLOW_TICK` (255) — cron-driven workflow scheduler, never on-chain.
 
+### Runtime Backend Selection
+
+Sandbox creation supports backend selection via `metadata_json.runtime_backend`:
+
+- `docker` (default)
+- `firecracker` (microVM path; requires operator runtime support)
+- `tee` (forces TEE provisioning path)
+
+UI behavior:
+- "Runtime Backend" selector writes to `metadata_json.runtime_backend`.
+- Selecting `tee` forces `tee_required=true`.
+- Selecting `firecracker` forces `tee_required=false` (current release does not support Firecracker+TEE composition).
+
 ### Instance Lifecycle Semantics
 
 - Canonical path is operator-signed direct reporting:

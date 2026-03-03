@@ -55,6 +55,13 @@ pub struct CreateSandboxParams {
     pub port_mappings: Vec<u16>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeBackend {
+    Docker,
+    Firecracker,
+    Tee,
+}
+
 /// Runtime configuration loaded once at startup from environment variables.
 #[derive(Clone, Debug)]
 pub struct SidecarRuntimeConfig {
@@ -782,19 +789,22 @@ async fn create_sidecar_with_token(
     tee: Option<&dyn crate::tee::TeeBackend>,
     token_override: Option<&str>,
 ) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
-    // Route to TEE backend if TEE is required.
-    if let Some(config) = &request.tee_config {
-        if config.required {
+    match resolve_runtime_backend(request)? {
+        RuntimeBackend::Tee => {
             let backend = tee.ok_or_else(|| {
-                SandboxError::Validation("TEE required but no backend configured".into())
+                SandboxError::Validation(
+                    "TEE runtime selected but no TEE backend configured".into(),
+                )
             })?;
-            return create_sidecar_tee(request, backend, token_override).await;
+            create_sidecar_tee(request, backend, token_override).await
         }
+        RuntimeBackend::Firecracker => create_sidecar_firecracker(request, token_override)
+            .await
+            .map(|r| (r, None)),
+        RuntimeBackend::Docker => create_sidecar_docker(request, token_override)
+            .await
+            .map(|r| (r, None)),
     }
-    // Default Docker path.
-    create_sidecar_docker(request, token_override)
-        .await
-        .map(|r| (r, None))
 }
 
 async fn create_sidecar_tee(
@@ -809,9 +819,13 @@ async fn create_sidecar_tee(
         _ => crate::auth::generate_token(),
     };
 
+    let extra_ports = parse_extra_ports(&request.metadata_json, &request.port_mappings);
+    let mut tee_request = request.clone();
+    tee_request.port_mappings = extra_ports;
+
     let tee_params = crate::tee::TeeDeployParams::from_sandbox_params(
         &sandbox_id,
-        request,
+        &tee_request,
         config.container_port,
         config.ssh_port,
         &token,
@@ -865,6 +879,79 @@ async fn create_sidecar_tee(
     crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
 
     Ok((record, Some(deployment.attestation)))
+}
+
+fn parse_runtime_backend_value(value: &str) -> Option<RuntimeBackend> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "docker" | "container" => Some(RuntimeBackend::Docker),
+        "firecracker" | "microvm" => Some(RuntimeBackend::Firecracker),
+        "tee" | "confidential" | "confidential-vm" => Some(RuntimeBackend::Tee),
+        _ => None,
+    }
+}
+
+fn parse_runtime_backend_from_metadata(metadata_json: &str) -> Result<Option<RuntimeBackend>> {
+    let metadata = parse_json_object(metadata_json, "metadata_json")?;
+    let Some(meta) = metadata else {
+        return Ok(None);
+    };
+
+    let backend = meta
+        .get("runtime_backend")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            meta.get("runtime")
+                .and_then(|v| v.get("backend"))
+                .and_then(|v| v.as_str())
+        });
+
+    let Some(raw) = backend else {
+        return Ok(None);
+    };
+
+    parse_runtime_backend_value(raw).map(Some).ok_or_else(|| {
+        SandboxError::Validation(format!(
+            "metadata_json.runtime_backend must be one of: docker, firecracker, tee (got '{raw}')"
+        ))
+    })
+}
+
+fn parse_runtime_backend_from_env() -> Result<RuntimeBackend> {
+    let raw = std::env::var("SANDBOX_RUNTIME_BACKEND").unwrap_or_else(|_| "docker".to_string());
+    parse_runtime_backend_value(&raw).ok_or_else(|| {
+        SandboxError::Validation(format!(
+            "SANDBOX_RUNTIME_BACKEND must be one of: docker, firecracker, tee (got '{raw}')"
+        ))
+    })
+}
+
+fn resolve_runtime_backend(request: &CreateSandboxParams) -> Result<RuntimeBackend> {
+    let metadata_backend = parse_runtime_backend_from_metadata(&request.metadata_json)?;
+    let selected = match metadata_backend {
+        Some(b) => b,
+        None => parse_runtime_backend_from_env()?,
+    };
+
+    let tee_required = request.tee_config.as_ref().is_some_and(|cfg| cfg.required);
+    if tee_required {
+        if selected == RuntimeBackend::Firecracker {
+            return Err(SandboxError::Validation(
+                "runtime_backend=firecracker is incompatible with tee_required=true".into(),
+            ));
+        }
+        return Ok(RuntimeBackend::Tee);
+    }
+
+    Ok(selected)
+}
+
+async fn create_sidecar_firecracker(
+    _request: &CreateSandboxParams,
+    _token_override: Option<&str>,
+) -> Result<SandboxRecord> {
+    Err(SandboxError::Validation(
+        "runtime_backend=firecracker was requested, but Firecracker provisioning is not wired into sandbox-runtime yet".into(),
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1969,6 +2056,79 @@ mod port_mapping_tests {
 }
 
 #[cfg(test)]
+mod runtime_backend_tests {
+    use super::*;
+
+    fn params(metadata_json: &str) -> CreateSandboxParams {
+        CreateSandboxParams {
+            metadata_json: metadata_json.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn parse_runtime_backend_aliases() {
+        assert_eq!(
+            parse_runtime_backend_value("docker"),
+            Some(RuntimeBackend::Docker)
+        );
+        assert_eq!(
+            parse_runtime_backend_value("container"),
+            Some(RuntimeBackend::Docker)
+        );
+        assert_eq!(
+            parse_runtime_backend_value("firecracker"),
+            Some(RuntimeBackend::Firecracker)
+        );
+        assert_eq!(
+            parse_runtime_backend_value("microvm"),
+            Some(RuntimeBackend::Firecracker)
+        );
+        assert_eq!(
+            parse_runtime_backend_value("tee"),
+            Some(RuntimeBackend::Tee)
+        );
+        assert_eq!(
+            parse_runtime_backend_value("confidential-vm"),
+            Some(RuntimeBackend::Tee)
+        );
+        assert_eq!(parse_runtime_backend_value("unknown"), None);
+    }
+
+    #[test]
+    fn resolve_runtime_backend_from_metadata() {
+        let resolved = resolve_runtime_backend(&params(r#"{"runtime_backend":"firecracker"}"#));
+        assert_eq!(resolved.unwrap(), RuntimeBackend::Firecracker);
+
+        let resolved_nested =
+            resolve_runtime_backend(&params(r#"{"runtime":{"backend":"tee"}}"#)).unwrap();
+        assert_eq!(resolved_nested, RuntimeBackend::Tee);
+    }
+
+    #[test]
+    fn resolve_runtime_backend_forces_tee_when_required() {
+        let mut request = params(r#"{"runtime_backend":"docker"}"#);
+        request.tee_config = Some(crate::tee::TeeConfig {
+            required: true,
+            tee_type: crate::tee::TeeType::Tdx,
+        });
+        let resolved = resolve_runtime_backend(&request).unwrap();
+        assert_eq!(resolved, RuntimeBackend::Tee);
+    }
+
+    #[test]
+    fn resolve_runtime_backend_rejects_firecracker_plus_tee_required() {
+        let mut request = params(r#"{"runtime_backend":"firecracker"}"#);
+        request.tee_config = Some(crate::tee::TeeConfig {
+            required: true,
+            tee_type: crate::tee::TeeType::Tdx,
+        });
+        let err = resolve_runtime_backend(&request).unwrap_err().to_string();
+        assert!(err.contains("incompatible"));
+    }
+}
+
+#[cfg(test)]
 mod tee_tests {
     use super::*;
     use std::sync::Once;
@@ -2010,7 +2170,7 @@ mod tee_tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("TEE required but no backend configured"),
+            err.contains("TEE runtime selected but no TEE backend configured"),
             "unexpected: {err}"
         );
     }

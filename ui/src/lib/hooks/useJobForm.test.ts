@@ -76,6 +76,7 @@ describe('useJobForm with real blueprint jobs', () => {
     const v = result.current.values;
     expect(v.name).toBe('');
     expect(v.image).toBe('ubuntu:22.04');
+    expect(v.runtimeBackend).toBe('docker');
     expect(v.stack).toBe('default');
     expect(v.cpuCores).toBe(2);
     expect(v.memoryMb).toBe(2048);

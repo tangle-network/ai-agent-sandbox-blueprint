@@ -25,6 +25,12 @@ export const TEE_TYPE_OPTIONS = [
   { label: 'SEV (AMD)', value: '3' },
 ];
 
+export const RUNTIME_BACKEND_OPTIONS = [
+  { label: 'Docker (default)', value: 'docker' },
+  { label: 'Firecracker (microVM)', value: 'firecracker' },
+  { label: 'TEE (confidential)', value: 'tee' },
+];
+
 // ── Jobs ──
 
 const SANDBOX_JOBS: JobDefinition[] = [
@@ -54,6 +60,8 @@ const SANDBOX_JOBS: JobDefinition[] = [
           { label: 'Alpine 3.20', value: 'alpine:3.20' },
         ],
         helperText: 'Select a preset or enter any Docker Hub image' },
+      { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: RUNTIME_BACKEND_OPTIONS,
+        helperText: 'Merged into metadata_json.runtime_backend for operator-side routing' },
       { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', abiType: 'string', options: [
         { label: 'Default', value: 'default' },
         { label: 'Python', value: 'python' },
@@ -149,7 +157,7 @@ export const SANDBOX_BLUEPRINT: BlueprintDefinition = {
   id: 'ai-agent-sandbox-blueprint',
   name: 'AI Agent Sandbox',
   version: '0.5.0',
-  description: 'Provision isolated AI agent sandboxes with Docker, SSH, sidecar AI execution, and scheduled workflows.',
+  description: 'Provision isolated AI agent sandboxes with selectable runtime backend, SSH, sidecar AI execution, and scheduled workflows.',
   icon: 'i-ph:cloud',
   color: 'teal',
   contracts: {},
