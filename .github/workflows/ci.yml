@@ -161,7 +161,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Link workspace node_modules for symlinked blueprint-ui resolution
-        run: ln -sfn "$GITHUB_WORKSPACE/node_modules" "$GITHUB_WORKSPACE/../node_modules"
+        run: ln -sfn "$GITHUB_WORKSPACE/ui/node_modules" "$GITHUB_WORKSPACE/../node_modules"
 
       - name: Build workspace UI packages
         run: pnpm build
