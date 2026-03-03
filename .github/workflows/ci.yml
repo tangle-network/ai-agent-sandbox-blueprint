@@ -142,9 +142,13 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@tangle-network'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: TypeScript check
         run: pnpm exec tsc --noEmit
