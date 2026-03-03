@@ -159,6 +159,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install linked blueprint-ui dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: blueprint-ui
+
+      - name: Build workspace UI packages
+        run: pnpm build
+        working-directory: packages/agent-ui
+
       - name: TypeScript check
         run: pnpm exec tsc --noEmit
         working-directory: ui
