@@ -4,7 +4,7 @@ This document explains the pricing model for the AI Agent Sandbox Blueprint, inc
 
 ## Pricing Model Overview
 
-The blueprint uses a **multiplier-based pricing model**. The blueprint owner sets a single **base rate** (the cost of the cheapest operation, `EXEC`), and all 17 job types are priced as multiples of that base rate.
+The blueprint uses a **multiplier-based pricing model** for its **7 on-chain jobs**. The blueprint owner sets a single **base rate** (the cost of the cheapest on-chain operation), and all job types are priced as multiples of that base rate. Operations that do not mutate on-chain state (exec, prompt, task, stop, resume, snapshot, SSH, batch) are served via the off-chain operator HTTP API and are not priced as on-chain jobs.
 
 This design:
 - Adapts automatically to token price changes (just adjust the base rate)
@@ -12,28 +12,40 @@ This design:
 - Is simple for operators to reason about
 - Can be reconfigured via `setJobEventRates()` on the Tangle contract
 
-### Quick Reference
+### On-Chain Job Pricing (7 jobs)
 
-| Tier | Mult | Jobs | Rationale |
-|------|------|------|-----------|
-| 1 | 1x | EXEC, STOP, RESUME, DELETE, BATCH_COLLECT, WORKFLOW_CANCEL, SSH_REVOKE | Trivial ops, <100ms CPU |
-| 2 | 2x | SSH_PROVISION, WORKFLOW_CREATE | Light state changes |
-| 3 | 5x | SNAPSHOT, WORKFLOW_TRIGGER | I/O-heavy operations |
-| 4 | 20x | PROMPT | Single LLM inference call |
-| 5 | 50x | SANDBOX_CREATE, BATCH_EXEC | Container lifecycle |
-| 6 | 100x | BATCH_CREATE | Batch container creation |
-| 7 | 250x | TASK | Multi-turn AI agent |
-| 8 | 500x | BATCH_TASK | Batch agent tasks |
+These are the only operations priced as on-chain jobs. Each job **must** mutate authoritative state.
+
+| Mult | Job | ID | Rationale |
+|------|-----|----|-----------|
+| 1x | SANDBOX_DELETE | 1 | Trivial teardown |
+| 1x | WORKFLOW_CANCEL | 4 | Flag update |
+| 1x | DEPROVISION | 6 | Instance teardown |
+| 2x | WORKFLOW_CREATE | 2 | Config validation + storage |
+| 5x | WORKFLOW_TRIGGER | 3 | Initiates execution pipeline |
+| 50x | SANDBOX_CREATE | 0 | Container lifecycle + prepaid runtime |
+| 50x | PROVISION | 5 | Instance auto-provision |
+
+### Off-Chain Operations (operator API)
+
+These operations are served via the authenticated operator HTTP API and are **not** on-chain jobs.
+Operators set their own pricing for these via RFQ or subscription models:
+
+- **Trivial** (<100ms): exec, stop, resume, SSH revoke
+- **Light**: SSH provision, secret injection
+- **I/O-heavy**: snapshot
+- **LLM**: prompt (single inference), task (multi-turn agent)
+- **Batch**: batch exec, batch create, batch task, batch collect
 
 ### Example Pricing (base rate = 0.001 TNT, assuming 1 TNT ≈ $1)
 
 | Job | Rate (TNT) | Rate (USD) |
 |-----|-----------|-----------|
-| EXEC | 0.001 | $0.001 |
+| SANDBOX_DELETE | 0.001 | $0.001 |
+| WORKFLOW_CREATE | 0.002 | $0.002 |
+| WORKFLOW_TRIGGER | 0.005 | $0.005 |
 | SANDBOX_CREATE | 0.050 | $0.050 |
-| PROMPT | 0.020 | $0.020 |
-| TASK | 0.250 | $0.250 |
-| BATCH_TASK | 0.500 | $0.500 |
+| PROVISION | 0.050 | $0.050 |
 
 ---
 
@@ -145,54 +157,39 @@ This design:
 
 ---
 
-## Per-Job Pricing Derivation
+## Per-Job Pricing Derivation (On-Chain Jobs Only)
 
-### Tier 1 (1x) — Trivial Operations
+Only state-changing operations are on-chain jobs. Off-chain operations (exec, prompt, task,
+stop, resume, snapshot, SSH, batch) are priced by operators via their own billing models.
 
-**Jobs:** EXEC, STOP, RESUME, DELETE, BATCH_COLLECT, WORKFLOW_CANCEL, SSH_REVOKE
+### 1x — Trivial Teardown / Flag Updates
+
+**On-chain jobs:** SANDBOX_DELETE, WORKFLOW_CANCEL, DEPROVISION
 
 **Cost basis:**
 - Raw cost: $0.00001-0.0001 per operation
-- Single `docker exec` or state flag update
-- <100ms CPU, no external calls, no I/O
+- Single state flag update or container removal
+- <100ms CPU, no external calls
 
-**Competitive positioning:** Below E2B's per-second rate ($0.000014/vCPU/s × 0.1s = $0.0000014). We charge slightly more because each job submission has on-chain transaction overhead.
+### 2x — Config Validation + Storage
 
-### Tier 2 (2x) — Light State Changes
-
-**Jobs:** SSH_PROVISION, WORKFLOW_CREATE
+**On-chain jobs:** WORKFLOW_CREATE
 
 **Cost basis:**
-- SSH key generation: ~$0.0002 (CPU burst for key derivation)
-- Workflow config validation + storage: ~$0.0002
-- Slightly more compute than a trivial exec
+- Workflow config validation + on-chain storage: ~$0.0002
+- Slightly more compute than a trivial delete
 
-### Tier 3 (5x) — I/O-Heavy Operations
+### 5x — Execution Pipeline Trigger
 
-**Jobs:** SNAPSHOT, WORKFLOW_TRIGGER
-
-**Cost basis:**
-- Snapshot: Docker commit (~300MB), 5-15s of disk I/O, $0.001-0.002 compute + $0.01/month storage
-- Workflow trigger: Initiates sandbox creation + task execution pipeline
-- Competitors: Vercel charges $0.60/million creations; our 5x rate is still very competitive
-
-### Tier 4 (20x) — Single LLM Call
-
-**Jobs:** PROMPT
+**On-chain jobs:** WORKFLOW_TRIGGER
 
 **Cost basis:**
-- Budget models: $0.001/call → 10x base rate would cover it
-- Mid-tier models: $0.015/call → 15x needed
-- Premium models: $0.035/call → 35x needed
-- **20x is the geometric mean**, covering mid-tier models with margin
+- Initiates sandbox creation + task execution pipeline
+- Triggers downstream workflow execution on operators
 
-**Competitive positioning:**
-- Together AI code sandbox: $0.03/session (entire session, not per-call)
-- Our 20x at $0.001 base = $0.02/prompt — competitive with mid-tier models
+### 50x — Container Lifecycle
 
-### Tier 5 (50x) — Container Lifecycle
-
-**Jobs:** SANDBOX_CREATE, BATCH_EXEC
+**On-chain jobs:** SANDBOX_CREATE, PROVISION
 
 **Cost basis:**
 - Container creation + 10min prepaid runtime:
@@ -204,40 +201,7 @@ This design:
 **Competitive positioning:**
 - E2B 10min session: $0.014
 - GitHub Codespaces 10min: $0.030
-- Our rate ($0.05) includes creation overhead and operator margin — premium for on-demand, no subscription required
-
-### Tier 6 (100x) — Batch Container Creation
-
-**Jobs:** BATCH_CREATE
-
-**Cost basis:**
-- Multiple sandbox creations in one transaction
-- Priced at 2x SANDBOX_CREATE to reflect batch overhead + coordination cost
-- Actual per-sandbox cost is lower due to amortized setup
-
-### Tier 7 (250x) — Multi-Turn AI Agent
-
-**Jobs:** TASK
-
-**Cost basis:**
-- 7-turn average with token accumulation
-- Budget model: $0.01, Mid: $0.10 (cached), Premium: $0.17 (cached)
-- Plus compute time (30-300s active): $0.001-0.01
-- **250x base at $0.001 = $0.25** — covers mid-tier model with caching + margin
-
-**Competitive positioning:**
-- Replit agent tasks: $0.25-$10+ (effort-based)
-- Our $0.25 is at the low end of Replit's range
-- Operators can use RFQ system to quote higher for premium model tasks
-
-### Tier 8 (500x) — Batch Agent Tasks
-
-**Jobs:** BATCH_TASK
-
-**Cost basis:**
-- Multiple agent tasks in one submission
-- 2x TASK rate to reflect coordination + parallel execution overhead
-- Operators may process these across multiple containers concurrently
+- Our rate ($0.05) includes creation overhead and operator margin
 
 ---
 
@@ -254,12 +218,11 @@ This design:
 
 ### Breakeven Analysis (mid-tier operator, Hetzner infrastructure)
 
-| Monthly Volume | Revenue | Infra Cost | LLM Cost | Net Margin |
-|---------------|---------|-----------|----------|-----------|
-| 10K EXEC jobs | $10 | $1 | $0 | $9 (90%) |
-| 1K SANDBOX_CREATE | $50 | $12 | $0 | $38 (76%) |
-| 1K PROMPT jobs | $20 | $1 | $15 | $4 (20%) |
-| 500 TASK jobs | $125 | $5 | $50 | $70 (56%) |
+| Monthly Volume | Revenue | Infra Cost | Net Margin |
+|---------------|---------|-----------|-----------|
+| 1K SANDBOX_CREATE | $50 | $12 | $38 (76%) |
+| 5K WORKFLOW_TRIGGER | $25 | $3 | $22 (88%) |
+| 1K SANDBOX_DELETE | $1 | $0.10 | $0.90 (90%) |
 
 ### RFQ System for Custom Pricing
 
@@ -290,22 +253,22 @@ forge script contracts/script/ConfigureJobRates.s.sol:ConfigureJobRates \
 
 ### Base Rate Guidelines
 
-| If 1 TNT ≈ | Set BASE_RATE to | EXEC cost | CREATE cost | TASK cost |
-|------------|-----------------|-----------|-------------|-----------|
-| $0.01 | 1e17 (0.1 TNT) | $0.001 | $0.05 | $0.25 |
-| $0.10 | 1e16 (0.01 TNT) | $0.001 | $0.05 | $0.25 |
-| $1.00 | 1e15 (0.001 TNT) | $0.001 | $0.05 | $0.25 |
-| $10.00 | 1e14 (0.0001 TNT) | $0.001 | $0.05 | $0.25 |
+| If 1 TNT ≈ | Set BASE_RATE to | DELETE cost (1x) | CREATE cost (50x) |
+|------------|-----------------|-------------------|-------------------|
+| $0.01 | 1e17 (0.1 TNT) | $0.001 | $0.05 |
+| $0.10 | 1e16 (0.01 TNT) | $0.001 | $0.05 |
+| $1.00 | 1e15 (0.001 TNT) | $0.001 | $0.05 |
+| $10.00 | 1e14 (0.0001 TNT) | $0.001 | $0.05 |
 
 ### Overriding Individual Rates
 
-Blueprint owners can override any individual rate by calling `setJobEventRates()` directly on the Tangle contract with a subset of job indexes:
+Blueprint owners can override any individual rate by calling `setJobEventRates()` directly on the Tangle contract with a subset of job indexes (0-6):
 
 ```solidity
-// Make TASK jobs cheaper (e.g., you use budget LLMs)
+// Make SANDBOX_CREATE cheaper (e.g., lightweight containers)
 uint8[] memory jobs = new uint8[](1);
 uint256[] memory rates = new uint256[](1);
-jobs[0] = 12; // JOB_TASK
-rates[0] = 100 * baseRate; // 100x instead of default 250x
+jobs[0] = 0; // JOB_SANDBOX_CREATE
+rates[0] = 25 * baseRate; // 25x instead of default 50x
 tangle.setJobEventRates(blueprintId, jobs, rates);
 ```

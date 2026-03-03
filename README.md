@@ -28,6 +28,25 @@ Caller ─── Tangle EVM ─── BlueprintRunner ─── Job Handlers
                           Docker / Docktopus ─── Sidecar Containers
 ```
 
+## Layered Architecture
+
+Canonical references:
+- `docs/ARCHITECTURE.md`
+- `docs/CONTRACTS.md`
+
+Hard rules:
+- On-chain jobs **must** mutate authoritative state. No read-only jobs.
+- Read-only flows **must** use `eth_call` or the off-chain operator HTTP API.
+
+Layer boundaries:
+- `microvm-blueprint` = infrastructure layer
+- `sandbox-runtime` = runtime contracts/adapters layer
+- `ai-agent-sandbox-blueprint`, `ai-trading-blueprints`, `openclaw-hosting-blueprint` = product layer
+
+Dependency direction:
+- Allowed: Product -> `sandbox-runtime` -> `microvm-blueprint`
+- Forbidden: Product -> `microvm-blueprint` (direct), product -> product
+
 ### Crate Structure
 
 | Crate | Role |
@@ -85,22 +104,25 @@ All data endpoints require PASETO v4 session auth (EIP-191 challenge-response).
 
 ### Sandbox Operations (cloud mode: `/api/sandboxes/{id}/...`)
 - `GET /api/sandboxes` — List caller's sandboxes
+- `GET /api/sandboxes/{id}/ports` — List exposed container ports
 - `POST /api/sandboxes/{id}/exec` — Execute a command
 - `POST /api/sandboxes/{id}/prompt` — Run an AI prompt
 - `POST /api/sandboxes/{id}/task` — Run an AI task
 - `POST /api/sandboxes/{id}/stop` — Stop a sandbox
 - `POST /api/sandboxes/{id}/resume` — Resume a stopped sandbox
 - `POST /api/sandboxes/{id}/snapshot` — Upload a snapshot
-- `POST /api/sandboxes/{id}/ssh/provision` — Provision SSH key
-- `POST /api/sandboxes/{id}/ssh/revoke` — Revoke SSH key
+- `POST /api/sandboxes/{id}/ssh` — Provision SSH key
+- `DELETE /api/sandboxes/{id}/ssh` — Revoke SSH key
 - `POST /api/sandboxes/{id}/secrets` — Inject secrets
 - `DELETE /api/sandboxes/{id}/secrets` — Wipe secrets
+- `ANY /api/sandboxes/{id}/port/{port}` — Proxy to container port
 
 ### Instance Operations (instance mode: `/api/sandbox/...`)
 Same operations as above but scoped to the singleton instance sandbox.
 
 ### Infrastructure
-- `GET /health` — Docker + store health check
+- `GET /health` — Docker + store health check (503 when degraded)
+- `GET /readyz` — Strict readiness probe (503 unless all subsystems healthy)
 - `GET /metrics` — Prometheus metrics
 - `GET /api/provisions` — List provision status
 

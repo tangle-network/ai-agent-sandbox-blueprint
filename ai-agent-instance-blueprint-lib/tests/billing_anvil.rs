@@ -86,7 +86,7 @@ async fn discover_blueprint_configs_slot<P: Provider>(
     provider: &P,
     contract: Address,
 ) -> Result<u64> {
-    let marker = U256::from(0xDEADBEEF_42u64);
+    let marker = U256::from(0x0000_00DE_ADBE_EF42_u64);
     let read = ITangleRead::new(contract, provider);
 
     for candidate in 0..=80 {
@@ -117,7 +117,7 @@ async fn discover_service_escrows_slot<P: Provider>(
     provider: &P,
     contract: Address,
 ) -> Result<u64> {
-    let marker = U256::from(0xCAFEBABE_42u64);
+    let marker = U256::from(0x0000_00CA_FEBA_BE42_u64);
     let read = ITangleRead::new(contract, provider);
 
     for candidate in 0..=80 {

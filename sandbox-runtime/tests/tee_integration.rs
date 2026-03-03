@@ -15,6 +15,7 @@
 //! ```
 
 #[cfg(all(feature = "tee-direct", feature = "test-utils"))]
+#[allow(clippy::needless_return)]
 mod tee_integration {
     use sandbox_runtime::error::SandboxError;
     use sandbox_runtime::runtime::{SandboxRecord, SandboxState};
