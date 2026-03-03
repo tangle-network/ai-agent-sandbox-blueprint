@@ -194,18 +194,18 @@ section "1" "On-Chain State Validation"
 
 # Verify sandbox BSM is accessible
 SANDBOX_JOB_COUNT=$(cast call "$SANDBOX_BSM" "jobCount()(uint256)" --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
-if [ "$SANDBOX_JOB_COUNT" -ge 17 ] 2>/dev/null; then
-    pass "Sandbox BSM has $SANDBOX_JOB_COUNT jobs (expected >=17)"
+if [ "$SANDBOX_JOB_COUNT" -ge 7 ] 2>/dev/null; then
+    pass "Sandbox BSM has $SANDBOX_JOB_COUNT jobs (expected >=7)"
 else
-    fail "Sandbox BSM jobCount=$SANDBOX_JOB_COUNT (expected >=17)"
+    fail "Sandbox BSM jobCount=$SANDBOX_JOB_COUNT (expected >=7)"
 fi
 
 # Verify instance BSM is accessible
 INSTANCE_JOB_COUNT=$(cast call "$INSTANCE_BSM" "jobCount()(uint256)" --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
-if [ "$INSTANCE_JOB_COUNT" -ge 8 ] 2>/dev/null; then
-    pass "Instance BSM has $INSTANCE_JOB_COUNT jobs (expected >=8)"
+if [ "$INSTANCE_JOB_COUNT" -ge 7 ] 2>/dev/null; then
+    pass "Instance BSM has $INSTANCE_JOB_COUNT jobs (expected >=7)"
 else
-    fail "Instance BSM jobCount=$INSTANCE_JOB_COUNT (expected >=8)"
+    fail "Instance BSM jobCount=$INSTANCE_JOB_COUNT (expected >=7)"
 fi
 
 # Verify operators have capacity on sandbox BSM
@@ -430,29 +430,9 @@ else
         fi
     fi
 
-    # 4b: Execute command via submitJob
-    if [ -n "$SIDECAR_URL" ] && [ "$SIDECAR_URL" != "null" ]; then
-        EXEC_RATE=$(get_job_rate "$SANDBOX_BLUEPRINT_ID" 5)
-        if [ "$EXEC_RATE" = "0" ] || [ -z "$EXEC_RATE" ]; then
-            EXEC_RATE="1000000000000000"
-        fi
-
-        # SandboxExecRequest: (string sidecar_url, string command, string cwd, string env_json, uint64 timeout_ms)
-        EXEC_ARGS=$(cast abi-encode \
-            "f(string,string,string,string,uint64)" \
-            "$SIDECAR_URL" "echo e2e-exec-ok" "" "" 30000)
-
-        EXEC_CALL_ID=$(submit_job "$SANDBOX_SERVICE_ID" 5 "$EXEC_ARGS" "$EXEC_RATE") || true
-        if [ "$EXEC_CALL_ID" = "REVERT" ] || [ "$EXEC_CALL_ID" = "TX_FAIL" ]; then
-            fail "sandbox_exec submitJob failed ($EXEC_CALL_ID)"
-        else
-            pass "sandbox_exec submitted (call_id=$EXEC_CALL_ID)"
-            # Give operator time to process
-            sleep 5
-        fi
-    else
-        skip "sandbox_exec (no sidecar_url)"
-    fi
+    # 4b: Sandbox exec is not an on-chain submitJob in the current 7-job contract.
+    # It is handled via operator/sidecar APIs and validated in runtime integration tests.
+    skip "sandbox_exec submitJob (not part of current on-chain 7-job contract)"
 
     # 4c/4d/4e: Stop/Resume/Delete
     # These require the BSM's sandboxOperator[hash] mapping to be populated, which
@@ -535,7 +515,7 @@ else
     fi
 
     if [ "$INST_USER_PERMITTED" = "true" ]; then
-        # 5a: Provision instance
+        # 5a: Provision instance (job=5)
         # ProvisionRequest: (string name, string image, string stack, string agent_id,
         #   string env_json, string metadata_json, bool ssh, string ssh_key, bool web_term,
         #   uint64 max_life, uint64 idle, uint64 cpu, uint64 mem, uint64 disk,
@@ -547,7 +527,7 @@ else
             3600 900 2 2048 10 \
             "" false 0)
 
-        INST_CALL_ID=$(submit_job "$INSTANCE_SERVICE_ID" 0 "$INST_ARGS" 0) || true
+        INST_CALL_ID=$(submit_job "$INSTANCE_SERVICE_ID" 5 "$INST_ARGS" 0) || true
         if [ "$INST_CALL_ID" = "REVERT" ] || [ "$INST_CALL_ID" = "TX_FAIL" ]; then
             fail "instance_provision submitJob failed ($INST_CALL_ID)"
         else
@@ -570,31 +550,13 @@ else
             fi
         fi
 
-        # 5b: Exec on instance (job=1)
-        # Instance ExecRequest uses a simpler struct since the instance is singleton-scoped.
-        # Check what the instance exec ABI looks like.
-        if [ -n "${INST_SIDECAR_URL:-}" ] && [ "$INST_SIDECAR_URL" != "null" ]; then
-            # Instance exec: (string command, string cwd, string env_json, uint64 timeout_ms)
-            # Note: instance exec doesn't need sidecar_url — it's singleton-scoped
-            INST_EXEC_ARGS=$(cast abi-encode \
-                "f(string,string,string,uint64)" \
-                "echo instance-e2e-ok" "" "" 30000)
+        # 5b: Instance exec is not an on-chain submitJob in the current 7-job contract.
+        skip "instance_exec submitJob (not part of current on-chain 7-job contract)"
 
-            INST_EXEC_CID=$(submit_job "$INSTANCE_SERVICE_ID" 1 "$INST_EXEC_ARGS" 0) || true
-            if [ "$INST_EXEC_CID" = "REVERT" ] || [ "$INST_EXEC_CID" = "TX_FAIL" ]; then
-                fail "instance_exec submitJob failed ($INST_EXEC_CID)"
-            else
-                pass "instance_exec submitted (call_id=$INST_EXEC_CID)"
-                sleep 5
-            fi
-        else
-            skip "instance_exec (no sidecar_url)"
-        fi
-
-        # 5c: Deprovision (job=7)
+        # 5c: Deprovision (job=6)
         # DeprovisionRequest is just a JsonResponse: (string json)
         DEPROV_ARGS=$(cast abi-encode "f(string)" '{"reason":"e2e-cleanup"}')
-        DEPROV_CID=$(submit_job "$INSTANCE_SERVICE_ID" 7 "$DEPROV_ARGS" 0) || true
+        DEPROV_CID=$(submit_job "$INSTANCE_SERVICE_ID" 6 "$DEPROV_ARGS" 0) || true
         if [ "$DEPROV_CID" = "REVERT" ] || [ "$DEPROV_CID" = "TX_FAIL" ]; then
             fail "instance_deprovision submitJob failed ($DEPROV_CID)"
         else
