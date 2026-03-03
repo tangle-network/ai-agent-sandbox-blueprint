@@ -44,8 +44,10 @@ pub use jobs::snapshot::run_instance_snapshot;
 pub use jobs::ssh::{provision_key, revoke_key};
 pub use jobs::workflow::{workflow_cancel, workflow_create, workflow_tick_job, workflow_trigger};
 pub use reporting::{
-    ensure_local_provision_reported, report_local_deprovision, report_local_provision,
-    try_report_local_deprovision,
+    clear_pending_provision_report, ensure_local_provision_reported, get_pending_provision_report,
+    mark_pending_provision_report, provision_output_from_record, report_local_deprovision,
+    report_local_provision, retry_pending_provision_report_once,
+    spawn_pending_provision_report_worker, try_report_local_deprovision,
 };
 pub use workflows::bootstrap_workflows_from_chain;
 

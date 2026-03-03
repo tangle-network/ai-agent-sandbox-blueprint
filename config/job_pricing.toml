@@ -8,7 +8,7 @@
 # 4 WORKFLOW_CANCEL
 #
 # Instance lifecycle is operator-reported (reportProvisioned/reportDeprovisioned),
-# so there are no provision/deprovision on-chain jobs in this pricing model.
+# so instance and tee_instance modes only price workflow jobs (2..4).
 
 [sandbox]
 
@@ -50,23 +50,6 @@ price      = "0"
 
 [instance]
 
-[instance.jobs.0]
-name       = "SANDBOX_CREATE"
-mode       = "dynamic"
-multiplier = 50
-base_price = "50000000000000000"
-
-[instance.jobs.0.dynamic]
-cpu_rate_per_core = "5000000000000000"
-mem_rate_per_gb   = "3000000000000000"
-disk_rate_per_gb  = "1000000000000000"
-
-[instance.jobs.1]
-name       = "SANDBOX_DELETE"
-mode       = "flat"
-multiplier = 1
-price      = "1000000000000000"
-
 [instance.jobs.2]
 name       = "WORKFLOW_CREATE"
 mode       = "flat"
@@ -86,23 +69,6 @@ multiplier = 1
 price      = "0"
 
 [tee_instance]
-
-[tee_instance.jobs.0]
-name       = "SANDBOX_CREATE"
-mode       = "dynamic"
-multiplier = 50
-base_price = "50000000000000000"
-
-[tee_instance.jobs.0.dynamic]
-cpu_rate_per_core = "5000000000000000"
-mem_rate_per_gb   = "3000000000000000"
-disk_rate_per_gb  = "1000000000000000"
-
-[tee_instance.jobs.1]
-name       = "SANDBOX_DELETE"
-mode       = "flat"
-multiplier = 1
-price      = "1000000000000000"
 
 [tee_instance.jobs.2]
 name       = "WORKFLOW_CREATE"

@@ -194,18 +194,18 @@ section "1" "On-Chain State Validation"
 
 # Verify sandbox BSM is accessible
 SANDBOX_JOB_COUNT=$(cast call "$SANDBOX_BSM" "jobCount()(uint256)" --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
-if [ "$SANDBOX_JOB_COUNT" -ge 7 ] 2>/dev/null; then
-    pass "Sandbox BSM has $SANDBOX_JOB_COUNT jobs (expected >=7)"
+if [ "$SANDBOX_JOB_COUNT" -eq 5 ] 2>/dev/null; then
+    pass "Sandbox BSM has $SANDBOX_JOB_COUNT jobs (expected 5)"
 else
-    fail "Sandbox BSM jobCount=$SANDBOX_JOB_COUNT (expected >=7)"
+    fail "Sandbox BSM jobCount=$SANDBOX_JOB_COUNT (expected 5)"
 fi
 
 # Verify instance BSM is accessible
 INSTANCE_JOB_COUNT=$(cast call "$INSTANCE_BSM" "jobCount()(uint256)" --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
-if [ "$INSTANCE_JOB_COUNT" -ge 7 ] 2>/dev/null; then
-    pass "Instance BSM has $INSTANCE_JOB_COUNT jobs (expected >=7)"
+if [ "$INSTANCE_JOB_COUNT" -eq 3 ] 2>/dev/null; then
+    pass "Instance BSM has $INSTANCE_JOB_COUNT jobs (expected 3 workflow jobs)"
 else
-    fail "Instance BSM jobCount=$INSTANCE_JOB_COUNT (expected >=7)"
+    fail "Instance BSM jobCount=$INSTANCE_JOB_COUNT (expected 3)"
 fi
 
 # Verify operators have capacity on sandbox BSM

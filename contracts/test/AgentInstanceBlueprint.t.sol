@@ -181,6 +181,8 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_unknownJobPriceReturnsZero() public view {
+        assertEq(instance.getJobPriceMultiplier(0), 0);
+        assertEq(instance.getJobPriceMultiplier(1), 0);
         assertEq(instance.getJobPriceMultiplier(255), 0);
         assertEq(instance.getJobPriceMultiplier(8), 0);
     }
@@ -211,15 +213,17 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
 
     function test_jobMetadata() public view {
         uint8[] memory ids = instance.jobIds();
-        assertEq(ids.length, 5);
-        assertEq(ids[0], 0); // SANDBOX_CREATE
-        assertEq(ids[4], 4); // WORKFLOW_CANCEL
+        assertEq(ids.length, 3);
+        assertEq(ids[0], 2); // WORKFLOW_CREATE
+        assertEq(ids[2], 4); // WORKFLOW_CANCEL
 
-        assertTrue(instance.supportsJob(0));
+        assertFalse(instance.supportsJob(0));
+        assertFalse(instance.supportsJob(1));
+        assertTrue(instance.supportsJob(2));
         assertTrue(instance.supportsJob(4));
         assertFalse(instance.supportsJob(5));
 
-        assertEq(instance.jobCount(), 5);
+        assertEq(instance.jobCount(), 3);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

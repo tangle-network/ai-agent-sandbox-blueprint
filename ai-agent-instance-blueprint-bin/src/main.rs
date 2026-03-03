@@ -3,7 +3,10 @@
 //! Subscription model: each service instance runs exactly one sandbox.
 //! Simpler than the multi-sandbox blueprint — singleton lifecycle + workflows.
 
-use ai_agent_instance_blueprint_lib::{JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, router};
+use ai_agent_instance_blueprint_lib::{
+    JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, router,
+    spawn_pending_provision_report_worker,
+};
 use blueprint_producers_extra::cron::CronJob;
 use blueprint_sdk::contexts::tangle::TangleClientContext;
 use blueprint_sdk::runner::BlueprintRunner;
@@ -86,6 +89,13 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             }
         })
     };
+
+    // Retry any pending direct lifecycle reports left by transient RPC/tx failures.
+    let _pending_report_handle = spawn_pending_provision_report_worker(
+        tangle_client.clone(),
+        service_id,
+        api_shutdown_tx.subscribe(),
+    );
 
     // Auto-provision: read service config from BSM and provision sandbox on startup.
     // Track the JoinHandle so we can abort it during shutdown if it's still running.

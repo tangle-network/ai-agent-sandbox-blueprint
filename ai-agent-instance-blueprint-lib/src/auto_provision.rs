@@ -18,7 +18,7 @@ use std::time::Duration;
 use crate::tee::TeeBackend;
 use crate::{
     IBsmRead, ProvisionRequest, ensure_local_provision_reported, get_instance_sandbox,
-    provision_core, report_local_provision, set_instance_sandbox,
+    mark_pending_provision_report, provision_core, report_local_provision, set_instance_sandbox,
 };
 
 /// Configuration for auto-provision from environment.
@@ -156,7 +156,16 @@ pub async fn run_auto_provision(
             record.id
         );
         if let Some(client) = report_client.as_ref() {
-            ensure_local_provision_reported(client, config.service_id, &record).await?;
+            if let Err(err) =
+                ensure_local_provision_reported(client, config.service_id, &record).await
+            {
+                warn!(
+                    service_id = config.service_id,
+                    error = %err,
+                    sandbox_id = %record.id,
+                    "Auto-provision: reconcile report failed; pending report will be retried"
+                );
+            }
         }
         return Ok(());
     }
@@ -274,7 +283,15 @@ pub async fn run_auto_provision(
     set_instance_sandbox(record).map_err(|e| e.to_string())?;
 
     if let Some(client) = report_client.as_ref() {
-        report_local_provision(client, config.service_id, &output).await?;
+        if let Err(err) = report_local_provision(client, config.service_id, &output).await {
+            warn!(
+                service_id = config.service_id,
+                error = %err,
+                sandbox_id = %output.sandbox_id,
+                "Auto-provision: direct report failed; queued pending report for retry"
+            );
+            mark_pending_provision_report(config.service_id, &output, &err)?;
+        }
     }
 
     info!(

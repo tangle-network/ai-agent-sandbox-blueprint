@@ -5,7 +5,8 @@
 //! GCP Confidential Space, Azure SKR, and direct operator hardware.
 
 use ai_agent_tee_instance_blueprint_lib::{
-    JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, init_tee_backend, tee_router,
+    JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, init_tee_backend,
+    spawn_pending_provision_report_worker, tee_router,
 };
 use blueprint_producers_extra::cron::CronJob;
 use blueprint_sdk::contexts::tangle::TangleClientContext;
@@ -100,6 +101,13 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             }
         })
     };
+
+    // Retry any pending direct lifecycle reports left by transient RPC/tx failures.
+    let _pending_report_handle = spawn_pending_provision_report_worker(
+        tangle_client.clone(),
+        service_id,
+        api_shutdown_tx.subscribe(),
+    );
 
     // Auto-provision: read service config from BSM and provision sandbox on startup.
     // Track the JoinHandle so we can abort it during shutdown if it's still running.

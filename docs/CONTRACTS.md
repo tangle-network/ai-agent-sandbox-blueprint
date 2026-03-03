@@ -12,12 +12,18 @@ On-chain jobs are for state transitions only.
 ## Current State (March 3, 2026)
 
 - `sandbox-runtime` currently contains both runtime contracts and concrete Docker/TEE integrations.
+- Minimal runtime contracts are now codified in `sandbox-runtime/src/contracts.rs`.
 - `microvm-blueprint` is the target L0 substrate and should be consumed only via L1 adapters.
 - `ai-agent-tee-instance-blueprint-lib` currently depends on `ai-agent-instance-blueprint-lib` (same-product variant coupling). This is a temporary exception that should be removed by extracting shared instance runtime logic to L1.
 
 ## Contract 1: `SandboxProvider` (L0/L1 boundary)
 
 Infra-facing lifecycle contract. Implemented by Docker/microVM/TEE providers.
+
+Reference implementation:
+- `sandbox-runtime/src/contracts.rs`:
+  - trait `SandboxProvider`
+  - struct `DockerSandboxProvider`
 
 ```rust
 #[async_trait]
@@ -57,6 +63,11 @@ pub struct CreateSandboxResult {
 ## Contract 2: `RuntimeAdapter` (L1 stable surface)
 
 Product-facing runtime contract. Products should consume this instead of provider internals.
+
+Reference implementation:
+- `sandbox-runtime/src/contracts.rs`:
+  - trait `RuntimeAdapter`
+  - struct `DefaultRuntimeAdapter<P: SandboxProvider>`
 
 ```rust
 #[async_trait]
@@ -171,3 +182,7 @@ Validation rules:
 - Additive fields are allowed with safe defaults.
 - Removing or changing field semantics requires a major version bump.
 - Any contract-breaking change requires migration notes and rollout plan in PR.
+Reference implementation:
+- `sandbox-runtime/src/contracts.rs`:
+  - trait `TemplatePack`
+  - struct `StaticTemplatePack`

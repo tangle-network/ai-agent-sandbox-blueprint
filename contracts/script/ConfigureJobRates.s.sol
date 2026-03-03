@@ -25,6 +25,15 @@ interface ITangleSetJobRates {
 }
 
 contract ConfigureJobRates is Script {
+    function _jobName(uint8 jobId) internal pure returns (string memory) {
+        if (jobId == 0) return "SANDBOX_CREATE";
+        if (jobId == 1) return "SANDBOX_DELETE";
+        if (jobId == 2) return "WORKFLOW_CREATE";
+        if (jobId == 3) return "WORKFLOW_TRIGGER";
+        if (jobId == 4) return "WORKFLOW_CANCEL";
+        return "UNKNOWN";
+    }
+
     function run() external {
         uint256 baseRate = vm.envUint("BASE_RATE");
         uint64 blueprintId = uint64(vm.envUint("BLUEPRINT_ID"));
@@ -41,15 +50,11 @@ contract ConfigureJobRates is Script {
         console.log("Base rate (wei):", baseRate);
         console.log("");
 
-        string[5] memory jobNames = [
-            "SANDBOX_CREATE", "SANDBOX_DELETE",
-            "WORKFLOW_CREATE", "WORKFLOW_TRIGGER", "WORKFLOW_CANCEL"
-        ];
-
-        for (uint256 i = 0; i < 5; i++) {
+        for (uint256 i = 0; i < jobIndexes.length; i++) {
+            string memory jobName = _jobName(jobIndexes[i]);
             console.log(
                 string.concat(
-                    "  Job ", jobNames[i],
+                    "  Job ", jobName,
                     " (", vm.toString(jobIndexes[i]), "): ",
                     vm.toString(rates[i]), " wei"
                 )

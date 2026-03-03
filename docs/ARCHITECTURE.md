@@ -80,6 +80,8 @@ Even if `sandbox-runtime` has a microVM adapter, `microvm-blueprint` stays separ
 ## Current State (March 3, 2026)
 
 - `sandbox-runtime` still contains concrete Docker/TEE integrations directly.
+- L1 layer contracts are codified in `sandbox-runtime/src/contracts.rs`
+  (`SandboxProvider`, `RuntimeAdapter`, `DefaultRuntimeAdapter`, `DockerSandboxProvider`).
 - L0 is a target boundary, not fully extracted in this repo.
 - Layer docs are normative for new code; existing drift should be reduced incrementally.
 

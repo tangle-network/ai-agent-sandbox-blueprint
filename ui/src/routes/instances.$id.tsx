@@ -10,6 +10,7 @@ import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
 import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
 import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
 import { SidecarAuthPrompt } from '~/components/shared/SidecarAuthPrompt';
+import { ResourceTabs } from '~/components/shared/ResourceTabs';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
 import { getBlueprint } from '@tangle/blueprint-ui';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
@@ -140,24 +141,7 @@ export default function InstanceDetail() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 mb-6 border-b border-cloud-elements-dividerColor">
-        {tabs.filter((t) => !t.hidden).map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={cn(
-              'flex items-center gap-2 px-4 py-2.5 text-sm font-display font-medium transition-colors border-b-2 -mb-px',
-              tab === t.key
-                ? 'border-violet-500 text-cloud-elements-textPrimary'
-                : 'border-transparent text-cloud-elements-textTertiary hover:text-cloud-elements-textSecondary',
-            )}
-          >
-            <div className={`${t.icon} text-base`} />
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-6" />
 
       {/* Overview */}
       {tab === 'overview' && (

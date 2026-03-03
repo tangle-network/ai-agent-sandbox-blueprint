@@ -229,8 +229,17 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // JOB METADATA
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Returns all supported job IDs for this blueprint.
-    function jobIds() external pure returns (uint8[] memory ids) {
+    /// @notice Returns all supported job IDs for this deployment mode.
+    /// @dev Instance mode only exposes workflow jobs (2..4).
+    function jobIds() external view returns (uint8[] memory ids) {
+        if (instanceMode) {
+            ids = new uint8[](3);
+            ids[0] = JOB_WORKFLOW_CREATE;
+            ids[1] = JOB_WORKFLOW_TRIGGER;
+            ids[2] = JOB_WORKFLOW_CANCEL;
+            return ids;
+        }
+
         ids = new uint8[](5);
         ids[0] = JOB_SANDBOX_CREATE;
         ids[1] = JOB_SANDBOX_DELETE;
@@ -241,13 +250,16 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
     /// @notice Returns true if this blueprint supports the given job ID.
     /// @param jobId The job ID to check.
-    function supportsJob(uint8 jobId) external pure returns (bool) {
+    function supportsJob(uint8 jobId) external view returns (bool) {
+        if (instanceMode) {
+            return jobId >= JOB_WORKFLOW_CREATE && jobId <= JOB_WORKFLOW_CANCEL;
+        }
         return jobId <= JOB_WORKFLOW_CANCEL;
     }
 
-    /// @notice Returns the total number of on-chain jobs this blueprint supports.
-    function jobCount() external pure returns (uint256) {
-        return 5;
+    /// @notice Returns the total number of on-chain jobs exposed in this deployment mode.
+    function jobCount() external view returns (uint256) {
+        return instanceMode ? 3 : 5;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -672,9 +684,19 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @param baseRate The base rate to multiply against each job's price multiplier.
     function getDefaultJobRates(uint256 baseRate)
         external
-        pure
+        view
         returns (uint8[] memory jobIndexes, uint256[] memory rates)
     {
+        if (instanceMode) {
+            jobIndexes = new uint8[](3);
+            rates = new uint256[](3);
+
+            jobIndexes[0] = JOB_WORKFLOW_CREATE;   rates[0] = baseRate * PRICE_MULT_WORKFLOW_CREATE;
+            jobIndexes[1] = JOB_WORKFLOW_TRIGGER;  rates[1] = baseRate * PRICE_MULT_WORKFLOW_TRIGGER;
+            jobIndexes[2] = JOB_WORKFLOW_CANCEL;   rates[2] = baseRate * PRICE_MULT_WORKFLOW_CANCEL;
+            return (jobIndexes, rates);
+        }
+
         jobIndexes = new uint8[](5);
         rates = new uint256[](5);
 
@@ -687,7 +709,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
     /// @notice Returns the price multiplier for a given job ID (0 if unknown).
     /// @param jobId The job ID to look up.
-    function getJobPriceMultiplier(uint8 jobId) external pure returns (uint256) {
+    function getJobPriceMultiplier(uint8 jobId) external view returns (uint256) {
+        if (instanceMode && jobId < JOB_WORKFLOW_CREATE) return 0;
         if (jobId == JOB_SANDBOX_CREATE)    return PRICE_MULT_SANDBOX_CREATE;
         if (jobId == JOB_SANDBOX_DELETE)    return PRICE_MULT_SANDBOX_DELETE;
         if (jobId == JOB_WORKFLOW_CREATE)   return PRICE_MULT_WORKFLOW_CREATE;

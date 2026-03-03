@@ -77,6 +77,7 @@ pub use ai_agent_instance_blueprint_lib::{
     run_instance_task,
     runtime,
     set_instance_sandbox,
+    spawn_pending_provision_report_worker,
     store,
     tangle,
     tee,

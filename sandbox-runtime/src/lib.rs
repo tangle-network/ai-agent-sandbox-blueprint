@@ -7,6 +7,7 @@
 pub mod api_types;
 pub mod auth;
 pub mod circuit_breaker;
+pub mod contracts;
 pub mod error;
 pub mod http;
 pub mod instance_types;

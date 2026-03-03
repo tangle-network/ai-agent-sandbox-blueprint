@@ -16,7 +16,7 @@ export const INSTANCE_PRICING_TIERS: Record<number, { label: string; multiplier:
   [INSTANCE_JOB_IDS.WORKFLOW_CANCEL]: { label: 'Cancel Workflow', multiplier: 1 },
 };
 
-/** Pricing tiers for TEE instance (higher multipliers for TEE overhead) */
+/** Pricing tiers for TEE instance */
 export const TEE_INSTANCE_PRICING_TIERS: Record<number, { label: string; multiplier: number }> = {
   [INSTANCE_JOB_IDS.WORKFLOW_CREATE]: { label: 'Create Workflow', multiplier: 2 },
   [INSTANCE_JOB_IDS.WORKFLOW_TRIGGER]: { label: 'Trigger Workflow', multiplier: 5 },

@@ -33,6 +33,7 @@ Caller ─── Tangle EVM ─── BlueprintRunner ─── Job Handlers
 Canonical references:
 - `docs/ARCHITECTURE.md`
 - `docs/CONTRACTS.md`
+- `BLUEPRINT_FACTORY_STATUS.md`
 
 Hard rules:
 - On-chain jobs **must** mutate authoritative state. No read-only jobs.
@@ -51,7 +52,7 @@ Dependency direction:
 
 | Crate | Role |
 |-------|------|
-| `sandbox-runtime` | Shared library: Docker lifecycle, operator API, session auth, rate limiting, metrics, encryption |
+| `sandbox-runtime` | Shared library: Docker lifecycle, operator API, session auth, rate limiting, metrics, encryption, and L1 contracts (`SandboxProvider`/`RuntimeAdapter`) |
 | `ai-agent-sandbox-blueprint-lib` | Cloud/sandbox mode job handlers + workflows |
 | `ai-agent-instance-blueprint-lib` | Instance mode: auto-provision + billing |
 | `ai-agent-tee-instance-blueprint-lib` | TEE instance: attestation + sealed secrets |
