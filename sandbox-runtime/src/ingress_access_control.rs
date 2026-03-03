@@ -21,8 +21,7 @@ const DEFAULT_TOKEN_BYTES: usize = 32;
 /// Per-instance UI ingress bearer credential.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UiBearerCredential {
-    pub auth_scheme: String,
-    pub token: String,
+    token: String,
 }
 
 impl UiBearerCredential {
@@ -39,13 +38,29 @@ impl UiBearerCredential {
         let clean_prefix = if prefix.trim().is_empty() {
             DEFAULT_TOKEN_PREFIX
         } else {
-            prefix
+            prefix.trim()
         };
 
         Self {
-            auth_scheme: AUTH_MODE_BEARER.to_string(),
             token: format!("{clean_prefix}{}", hex::encode(bytes)),
         }
+    }
+
+    /// Build a credential from an externally supplied bearer token.
+    pub fn from_token(token: impl Into<String>) -> Self {
+        Self {
+            token: token.into(),
+        }
+    }
+
+    /// Auth scheme used by this credential (`bearer`).
+    pub fn auth_scheme(&self) -> &'static str {
+        AUTH_MODE_BEARER
+    }
+
+    /// Bearer token value.
+    pub fn token(&self) -> &str {
+        &self.token
     }
 
     /// Build canonical env bindings.
@@ -53,9 +68,12 @@ impl UiBearerCredential {
         vec![
             (
                 INGRESS_UI_AUTH_MODE_ENV.to_string(),
-                self.auth_scheme.clone(),
+                self.auth_scheme().to_string(),
             ),
-            (INGRESS_UI_BEARER_TOKEN_ENV.to_string(), self.token.clone()),
+            (
+                INGRESS_UI_BEARER_TOKEN_ENV.to_string(),
+                self.token().to_string(),
+            ),
         ]
     }
 
@@ -69,6 +87,7 @@ impl UiBearerCredential {
     {
         let mut envs = self.container_env_bindings();
         let mut seen = BTreeSet::new();
+        seen.insert(INGRESS_UI_AUTH_MODE_ENV.to_string());
         seen.insert(INGRESS_UI_BEARER_TOKEN_ENV.to_string());
 
         for key in alias_token_env_keys {
@@ -79,7 +98,7 @@ impl UiBearerCredential {
             if !seen.insert(trimmed.to_string()) {
                 continue;
             }
-            envs.push((trimmed.to_string(), self.token.clone()));
+            envs.push((trimmed.to_string(), self.token().to_string()));
         }
         envs
     }
@@ -92,29 +111,26 @@ mod tests {
     #[test]
     fn generated_credential_uses_default_prefix() {
         let credential = UiBearerCredential::generate();
-        assert_eq!(credential.auth_scheme, AUTH_MODE_BEARER);
-        assert!(credential.token.starts_with(DEFAULT_TOKEN_PREFIX));
-        assert!(credential.token.len() > DEFAULT_TOKEN_PREFIX.len());
+        assert_eq!(credential.auth_scheme(), AUTH_MODE_BEARER);
+        assert!(credential.token().starts_with(DEFAULT_TOKEN_PREFIX));
+        assert!(credential.token().len() > DEFAULT_TOKEN_PREFIX.len());
     }
 
     #[test]
     fn generated_credential_uses_custom_prefix() {
         let credential = UiBearerCredential::generate_with_prefix("claw_ui_");
-        assert!(credential.token.starts_with("claw_ui_"));
+        assert!(credential.token().starts_with("claw_ui_"));
     }
 
     #[test]
     fn blank_prefix_falls_back_to_default() {
         let credential = UiBearerCredential::generate_with_prefix("  ");
-        assert!(credential.token.starts_with(DEFAULT_TOKEN_PREFIX));
+        assert!(credential.token().starts_with(DEFAULT_TOKEN_PREFIX));
     }
 
     #[test]
     fn env_bindings_include_canonical_and_aliases() {
-        let credential = UiBearerCredential {
-            auth_scheme: AUTH_MODE_BEARER.to_string(),
-            token: "tok".to_string(),
-        };
+        let credential = UiBearerCredential::from_token("tok");
 
         let envs = credential.container_env_bindings_with_aliases([
             "OPENCLAW_GATEWAY_TOKEN",
@@ -146,5 +162,21 @@ mod tests {
             .filter(|(k, _)| k == INGRESS_UI_BEARER_TOKEN_ENV)
             .count();
         assert_eq!(canonical_count, 1);
+    }
+
+    #[test]
+    fn aliases_cannot_override_canonical_keys() {
+        let credential = UiBearerCredential::from_token("tok");
+        let envs = credential.container_env_bindings_with_aliases([
+            INGRESS_UI_AUTH_MODE_ENV,
+            INGRESS_UI_BEARER_TOKEN_ENV,
+        ]);
+
+        let auth_mode_values = envs
+            .iter()
+            .filter(|(k, _)| k == INGRESS_UI_AUTH_MODE_ENV)
+            .map(|(_, v)| v.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(auth_mode_values, vec![AUTH_MODE_BEARER]);
     }
 }
