@@ -214,7 +214,9 @@ pub async fn workflow_tick() -> Result<Value, String> {
         // Check if this workflow is already running (prevents concurrent
         // executions when cron fires faster than the workflow completes).
         {
-            let mut running = RUNNING_WORKFLOWS.lock().unwrap();
+            let mut running = RUNNING_WORKFLOWS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if running.contains(&workflow_id) {
                 tracing::debug!("Workflow {workflow_id} already running, skipping");
                 continue;
@@ -226,7 +228,10 @@ pub async fn workflow_tick() -> Result<Value, String> {
         let entry = match workflows()?.get(&key).map_err(|e| e.to_string())? {
             Some(e) if e.active => e,
             _ => {
-                RUNNING_WORKFLOWS.lock().unwrap().remove(&workflow_id);
+                RUNNING_WORKFLOWS
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&workflow_id);
                 continue;
             }
         };
@@ -263,7 +268,10 @@ pub async fn workflow_tick() -> Result<Value, String> {
         }
 
         // Release the running lock after execution completes.
-        RUNNING_WORKFLOWS.lock().unwrap().remove(&workflow_id);
+        RUNNING_WORKFLOWS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&workflow_id);
     }
 
     Ok(json!({

@@ -273,7 +273,7 @@ by GC. The `is_operator_s3()` check compares the snapshot URL against
 
 On startup, `reconcile_on_startup()` syncs the persistent store with Docker reality:
 - Records pointing to missing containers are cleaned up
-- Running containers not in the store are left alone (may belong to other services)
+- Running containers not in the store are not deleted — they may belong to other services
 
 ## Sidecar Auth Model
 
@@ -319,7 +319,7 @@ submits them on-chain via `blueprint-qos`.
 
 ## Operator Selection
 
-Operator selection is validated on-chain and can be deterministic. Clients should call
+Operator selection is validated on-chain and can be deterministic. Clients **must** call
 `previewOperatorSelection(count, seed)` and pass the selected operators plus the encoded
 `SelectionRequest` in `requestInputs`.
 
@@ -331,12 +331,15 @@ struct SelectionRequest {
 }
 ```
 
-Batch jobs require results from all operators; other jobs accept a single result.
-
 The on-chain contract also tracks per-operator capacity (`operatorMaxCapacity`,
 `operatorActiveSandboxes`) for capacity-weighted assignment.
 
 ## Job Argument Schemas
+
+### On-Chain Job Arguments
+
+These structs define the ABI-encoded arguments for the 7 on-chain jobs. Each job **must** mutate
+authoritative state.
 
 ```solidity
 struct SandboxCreateRequest {
@@ -369,7 +372,15 @@ struct SandboxIdRequest {
 
 // Auth note: sidecar tokens are stored server-side and looked up from the sandbox record.
 // They never appear in on-chain calldata. Secrets are injected via the operator API.
+```
 
+### Operator API Payloads (Off-Chain)
+
+These structs are used as typed payloads for the off-chain operator HTTP API. They are
+**not** on-chain jobs — they do not mutate authoritative state and must not be submitted
+as on-chain job arguments.
+
+```solidity
 struct SandboxSnapshotRequest {
     string sidecar_url;
     string destination;
