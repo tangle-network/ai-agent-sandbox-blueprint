@@ -135,6 +135,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout blueprint-ui dependency
+        uses: actions/checkout@v4
+        with:
+          repository: tangle-network/blueprint-ui
+          path: blueprint-ui
+
+      - name: Link blueprint-ui at expected local path
+        run: ln -sfn "$GITHUB_WORKSPACE/blueprint-ui" "$GITHUB_WORKSPACE/../blueprint-ui"
+
       - uses: pnpm/action-setup@v4
         with:
           version: 9
