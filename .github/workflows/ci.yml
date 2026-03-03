@@ -130,6 +130,8 @@ jobs:
   ui:
     name: UI build & typecheck
     runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN != '' && secrets.GH_PACKAGES_TOKEN || (secrets.NPM_TOKEN != '' && secrets.NPM_TOKEN || secrets.GITHUB_TOKEN) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -147,8 +149,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: TypeScript check
         run: pnpm exec tsc --noEmit
