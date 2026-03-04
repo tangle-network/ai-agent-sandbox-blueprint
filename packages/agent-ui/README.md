@@ -44,7 +44,10 @@ If Sandbox and Arena share substantial agent-facing code (roughly 20+ lines), ex
 
 - Publish target: npm package `@tangle-network/agent-ui`
 - Workflow: `.github/workflows/publish-agent-ui.yml`
-- Tag format: `agent-ui-vX.Y.Z` (must match `packages/agent-ui/package.json` version)
+- Triggers:
+  - Push tag `agent-ui-vX.Y.Z` (must match `packages/agent-ui/package.json` version)
+  - Manual `workflow_dispatch` with `version` input (must match package version)
+- Publish auth: npm Trusted Publishing (OIDC), no long-lived npm token required once configured
 
 ## Repo Strategy
 
