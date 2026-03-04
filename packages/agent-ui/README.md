@@ -1,14 +1,14 @@
-# @tangle/agent-ui
+# @tangle-network/agent-ui
 
 Shared agent-facing UI package for Tangle apps.
 
 ## Scope
 
-Put code in `@tangle/agent-ui` when it is:
+Put code in `@tangle-network/agent-ui` when it is:
 - Agent chat/session UX (`ChatContainer`, run timeline, tool previews)
 - Agent markdown rendering and tool/result presentation
 - Sidecar auth/session orchestration and PTY terminal integration
-- Reusable agent-focused primitives/hooks (`@tangle/agent-ui/primitives`)
+- Reusable agent-focused primitives/hooks (`@tangle-network/agent-ui/primitives`)
 
 Do not put code here when it is:
 - Chain/contract/provisioning infra (belongs in `@tangle/blueprint-ui`)
@@ -18,21 +18,21 @@ Do not put code here when it is:
 ## Public API
 
 Entrypoints:
-- `@tangle/agent-ui`: main agent components/hooks/types
-- `@tangle/agent-ui/primitives`: small shared helpers/hooks for consumer UIs
-- `@tangle/agent-ui/terminal`: lazy terminal view entry
-- `@tangle/agent-ui/styles`: package stylesheet
+- `@tangle-network/agent-ui`: main agent components/hooks/types
+- `@tangle-network/agent-ui/primitives`: small shared helpers/hooks for consumer UIs
+- `@tangle-network/agent-ui/terminal`: lazy terminal view entry
+- `@tangle-network/agent-ui/styles`: package stylesheet
 
 Treat exported symbols as stable contract; prefer additive changes over breaking renames/removals.
 
 ## Usage
 
 ```tsx
-import { ChatContainer, useWagmiSidecarAuth } from '@tangle/agent-ui';
-import { copyText, timeAgo } from '@tangle/agent-ui/primitives';
+import { ChatContainer, useWagmiSidecarAuth } from '@tangle-network/agent-ui';
+import { copyText, timeAgo } from '@tangle-network/agent-ui/primitives';
 
 const TerminalView = React.lazy(() =>
-  import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),
+  import('@tangle-network/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),
 );
 ```
 
@@ -42,13 +42,13 @@ If Sandbox and Arena share substantial agent-facing code (roughly 20+ lines), ex
 
 ## Release
 
-- Publish target: npm package `@tangle/agent-ui`
+- Publish target: npm package `@tangle-network/agent-ui`
 - Workflow: `.github/workflows/publish-agent-ui.yml`
 - Tag format: `agent-ui-vX.Y.Z` (must match `packages/agent-ui/package.json` version)
 
 ## Repo Strategy
 
-`@tangle/agent-ui` is a cross-product package for shared agent experience building blocks.
+`@tangle-network/agent-ui` is a cross-product package for shared agent experience building blocks.
 
 Keep it in this repo while:
 1. Most API changes are driven by sandbox-runtime sidecar integration work.
@@ -63,6 +63,6 @@ Split to its own repo when:
 
 Before merging changes that touch agent UX:
 1. Check if the same pattern exists in both UIs.
-2. If yes and app-agnostic, move it into `@tangle/agent-ui`.
+2. If yes and app-agnostic, move it into `@tangle-network/agent-ui`.
 3. Keep exports explicit in `src/index.ts` or `src/primitives.ts`.
 4. Verify both consumers still typecheck/build after the change.

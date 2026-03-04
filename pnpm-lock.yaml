@@ -108,7 +108,7 @@ importers:
       '@react-router/node':
         specifier: ^7.13.0
         version: 7.13.0(react-router@7.13.0(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(typescript@5.9.3)
-      '@tangle/agent-ui':
+      '@tangle-network/agent-ui':
         specifier: workspace:*
         version: link:../packages/agent-ui
       '@tangle/blueprint-ui':

@@ -1,5 +1,5 @@
 import { atom } from 'nanostores';
-import type { SessionMessage, SessionPart } from '@tangle/agent-ui';
+import type { SessionMessage, SessionPart } from '@tangle-network/agent-ui';
 
 // ---------------------------------------------------------------------------
 // Types

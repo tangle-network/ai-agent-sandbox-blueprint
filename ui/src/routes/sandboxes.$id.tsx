@@ -32,7 +32,7 @@ import { cn } from '@tangle/blueprint-ui';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 
 const TerminalView = lazy(() =>
-  import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView }))
+  import('@tangle-network/agent-ui/terminal').then((m) => ({ default: m.TerminalView }))
 );
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation';

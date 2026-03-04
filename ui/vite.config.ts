@@ -124,7 +124,7 @@ export default defineConfig({
     // Force Vite to bundle workspace-linked packages during SSR module
     // evaluation instead of trying to resolve them via Node.
     noExternal: [
-      '@tangle/agent-ui',
+      '@tangle-network/agent-ui',
       '@tangle/blueprint-ui',
     ],
   },
@@ -142,7 +142,7 @@ export default defineConfig({
       '@radix-ui/react-separator',
       '@radix-ui/react-slot',
       '@radix-ui/react-tabs',
-      '@tangle/agent-ui',
+      '@tangle-network/agent-ui',
       'blo',
       'class-variance-authority',
       'clsx',

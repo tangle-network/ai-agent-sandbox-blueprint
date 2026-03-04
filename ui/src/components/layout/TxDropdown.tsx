@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react';
 import { txListStore, pendingCount, clearTxs, type TrackedTx } from '@tangle/blueprint-ui';
-import { timeAgo, useDropdownMenu } from '@tangle/agent-ui/primitives';
+import { timeAgo, useDropdownMenu } from '@tangle-network/agent-ui/primitives';
 
 function StatusIcon({ status }: { status: TrackedTx['status'] }) {
   if (status === 'pending') return <div className="w-4 h-4 rounded-full border-2 border-violet-500/40 border-t-violet-400 animate-spin shrink-0" />;

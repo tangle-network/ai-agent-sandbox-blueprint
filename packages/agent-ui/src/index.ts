@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// @tangle/agent-ui — shared components for agentic chat UIs
+// @tangle-network/agent-ui — shared components for agentic chat UIs
 // ---------------------------------------------------------------------------
 
 // Types
