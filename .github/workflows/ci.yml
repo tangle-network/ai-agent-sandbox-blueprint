@@ -285,6 +285,7 @@ jobs:
       FIRECRACKER_HOST_AGENT_URL: ${{ secrets.FIRECRACKER_HOST_AGENT_URL }}
       FIRECRACKER_HOST_AGENT_API_KEY: ${{ secrets.FIRECRACKER_HOST_AGENT_API_KEY }}
       FIRECRACKER_SIDECAR_AUTH_DISABLED: "true"
+      FIRECRACKER_TEST_IMAGE: ${{ vars.FIRECRACKER_TEST_IMAGE != '' && vars.FIRECRACKER_TEST_IMAGE || '/var/lib/firecracker/rootfs/sidecar.ext4' }}
       REQUEST_TIMEOUT_SECS: "60"
     steps:
       - uses: actions/checkout@v4

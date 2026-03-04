@@ -253,6 +253,14 @@ cd ui && pnpm install && pnpm test && pnpm dev
 
 # Local dev (skip BPM bridge)
 cargo run -p ai-agent-sandbox-blueprint-bin -- run --test-mode
+
+# Real Firecracker job-path E2E (requires reachable host-agent + KVM host)
+FIRECRACKER_E2E=1 FIRECRACKER_REAL_E2E=1 \
+FIRECRACKER_HOST_AGENT_URL=http://127.0.0.1:3101 \
+FIRECRACKER_HOST_AGENT_API_KEY=fc-test-key \
+FIRECRACKER_SIDECAR_AUTH_DISABLED=true \
+FIRECRACKER_TEST_IMAGE=/var/lib/firecracker/rootfs/sidecar.ext4 \
+cargo test -p ai-agent-sandbox-blueprint-lib --test anvil runs_firecracker_jobs_end_to_end -- --nocapture --test-threads=1
 ```
 
 ## Key Concepts

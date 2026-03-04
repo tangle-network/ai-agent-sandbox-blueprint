@@ -486,6 +486,10 @@ async fn runs_firecracker_jobs_end_to_end() -> Result<()> {
         };
 
         let real_mode = std::env::var("FIRECRACKER_REAL_E2E").ok().as_deref() == Some("1");
+        let firecracker_image = std::env::var("FIRECRACKER_TEST_IMAGE")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "sidecar.ext4".to_string());
         let mut host_state: Option<Arc<AsyncMutex<MockFirecrackerHostState>>> = None;
         let mut expected_sidecar_url: Option<String> = None;
         if real_mode {
@@ -515,7 +519,7 @@ async fn runs_firecracker_jobs_end_to_end() -> Result<()> {
 
         let create_payload = SandboxCreateRequest {
             name: "agent-firecracker-sandbox".to_string(),
-            image: "sidecar.ext4".to_string(),
+            image: firecracker_image,
             stack: "default".to_string(),
             agent_identifier: "default-agent".to_string(),
             env_json: "{}".to_string(),
