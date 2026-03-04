@@ -52,6 +52,8 @@ fn validate_ssh_public_key(key: &str) -> Result<(), String> {
 pub struct ExecApiRequest {
     pub command: String,
     #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
     pub cwd: String,
     #[serde(default)]
     pub env_json: String,
@@ -408,6 +410,7 @@ mod tests {
     fn exec_request_empty_command() {
         let req = ExecApiRequest {
             command: String::new(),
+            session_id: String::new(),
             cwd: String::new(),
             env_json: String::new(),
             timeout_ms: 0,
@@ -419,6 +422,7 @@ mod tests {
     fn exec_request_valid() {
         let req = ExecApiRequest {
             command: "ls -la".into(),
+            session_id: String::new(),
             cwd: String::new(),
             env_json: String::new(),
             timeout_ms: 0,

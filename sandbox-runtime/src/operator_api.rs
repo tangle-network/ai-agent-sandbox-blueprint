@@ -19,12 +19,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::api_types::*;
 use crate::circuit_breaker;
 use crate::http::sidecar_post_json;
+use crate::live_operator_sessions::{
+    LiveChatSession, LiveJsonEvent, LiveSessionStore, LiveTerminalSession, sse_from_json_events,
+    sse_from_terminal_output,
+};
 use crate::metrics;
 use crate::provision_progress;
 use crate::rate_limit;
@@ -45,6 +50,14 @@ const SIDECAR_AGENT_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Timeout for other sidecar calls (snapshot, SSH provisioning, etc.).
 const SIDECAR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Live terminal session output ring-buffer size.
+const LIVE_TERMINAL_OUTPUT_BUFFER: usize = 512;
+/// Live chat event ring-buffer size.
+const LIVE_CHAT_EVENTS_BUFFER: usize = 256;
+
+/// Shared in-memory live chat/terminal sessions.
+static LIVE_SESSIONS: Lazy<LiveSessionStore<Value>> = Lazy::new(LiveSessionStore::default);
 
 // ---------------------------------------------------------------------------
 // Request ID middleware
@@ -131,6 +144,105 @@ pub(crate) fn api_error(
     msg: impl Into<String>,
 ) -> (StatusCode, Json<ApiError>) {
     (status, Json(ApiError { error: msg.into() }))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CreateLiveChatSessionRequest {
+    #[serde(default)]
+    title: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveSessionSummary {
+    session_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    title: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveChatSessionDetail {
+    session_id: String,
+    title: String,
+    messages: Vec<Value>,
+}
+
+fn live_scope_sandbox(sandbox_id: &str) -> String {
+    format!("sandbox:{sandbox_id}")
+}
+
+fn live_scope_instance(record: &SandboxRecord) -> String {
+    format!("instance:{}", record.id)
+}
+
+fn terminal_session_matches(session: &LiveTerminalSession, scope: &str, owner: &str) -> bool {
+    session.scope_id == scope && session.owner.eq_ignore_ascii_case(owner)
+}
+
+fn chat_session_matches(session: &LiveChatSession<Value>, scope: &str, owner: &str) -> bool {
+    session.scope_id == scope && session.owner.eq_ignore_ascii_case(owner)
+}
+
+struct ChatTurnPublish<'a> {
+    session_id: &'a str,
+    user_message: &'a str,
+    assistant_message: &'a str,
+    trace_id: &'a str,
+    success: bool,
+    error: &'a str,
+}
+
+fn publish_terminal_output(scope: &str, owner: &str, session_id: &str, stdout: &str, stderr: &str) {
+    if session_id.trim().is_empty() {
+        return;
+    }
+    let session = match LIVE_SESSIONS.get_terminal(session_id) {
+        Ok(Some(s)) if terminal_session_matches(&s, scope, owner) => s,
+        _ => return,
+    };
+    if !stdout.is_empty() {
+        let _ = session.output_tx.send(stdout.to_string());
+    }
+    if !stderr.is_empty() {
+        let _ = session.output_tx.send(format!("[stderr] {stderr}"));
+    }
+}
+
+fn publish_chat_turn(scope: &str, owner: &str, turn: ChatTurnPublish<'_>) {
+    if turn.session_id.trim().is_empty() {
+        return;
+    }
+    let Ok(Some(chat)) = LIVE_SESSIONS.get_chat(turn.session_id) else {
+        return;
+    };
+    if !chat_session_matches(&chat, scope, owner) {
+        return;
+    }
+
+    let user_payload = json!({
+        "role": "user",
+        "content": turn.user_message,
+    });
+    let assistant_payload = json!({
+        "role": "assistant",
+        "content": turn.assistant_message,
+        "trace_id": turn.trace_id,
+        "success": turn.success,
+        "error": turn.error,
+    });
+
+    let _ = LIVE_SESSIONS.update_chat(turn.session_id, |session| {
+        session.messages.push(user_payload.clone());
+        let _ = session.events_tx.send(LiveJsonEvent {
+            event_type: "user_message".to_string(),
+            payload: user_payload,
+        });
+
+        session.messages.push(assistant_payload.clone());
+        let _ = session.events_tx.send(LiveJsonEvent {
+            event_type: "assistant_message".to_string(),
+            payload: assistant_payload,
+        });
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +397,339 @@ async fn revoke_session(headers: HeaderMap) -> impl IntoResponse {
         }
         None => api_error(StatusCode::BAD_REQUEST, "Missing Authorization header").into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Live chat / terminal session endpoints
+// ---------------------------------------------------------------------------
+
+fn create_terminal_session(
+    scope_id: String,
+    owner: &str,
+) -> Result<LiveSessionSummary, (StatusCode, Json<ApiError>)> {
+    let session =
+        LiveTerminalSession::new(scope_id, owner.to_string(), LIVE_TERMINAL_OUTPUT_BUFFER);
+    let summary = LiveSessionSummary {
+        session_id: session.id.clone(),
+        title: String::new(),
+    };
+    LIVE_SESSIONS
+        .insert_terminal(session)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(summary)
+}
+
+fn list_terminal_sessions(
+    scope_id: &str,
+    owner: &str,
+) -> Result<Vec<LiveSessionSummary>, (StatusCode, Json<ApiError>)> {
+    LIVE_SESSIONS
+        .list_terminals()
+        .map(|sessions| {
+            sessions
+                .into_iter()
+                .filter(|s| terminal_session_matches(s, scope_id, owner))
+                .map(|s| LiveSessionSummary {
+                    session_id: s.id,
+                    title: String::new(),
+                })
+                .collect()
+        })
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+fn stream_terminal_session(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let session = LIVE_SESSIONS
+        .get_terminal(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Terminal session not found"))?;
+    if !terminal_session_matches(&session, scope_id, owner) {
+        return Err(api_error(
+            StatusCode::NOT_FOUND,
+            "Terminal session not found",
+        ));
+    }
+    let rx = session.output_tx.subscribe();
+    Ok(sse_from_terminal_output(rx).into_response())
+}
+
+fn delete_terminal_session(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+) -> Result<serde_json::Value, (StatusCode, Json<ApiError>)> {
+    let session = LIVE_SESSIONS
+        .get_terminal(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Terminal session not found"))?;
+    if !terminal_session_matches(&session, scope_id, owner) {
+        return Err(api_error(
+            StatusCode::NOT_FOUND,
+            "Terminal session not found",
+        ));
+    }
+    let _ = LIVE_SESSIONS
+        .remove_terminal(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(json!({ "deleted": true, "session_id": session_id }))
+}
+
+fn create_chat_session(
+    scope_id: String,
+    owner: &str,
+    title: String,
+) -> Result<LiveSessionSummary, (StatusCode, Json<ApiError>)> {
+    let session_title = if title.trim().is_empty() {
+        "Chat Session".to_string()
+    } else {
+        title
+    };
+    let session = LiveChatSession::new(
+        scope_id,
+        owner.to_string(),
+        session_title.clone(),
+        LIVE_CHAT_EVENTS_BUFFER,
+    );
+    let summary = LiveSessionSummary {
+        session_id: session.id.clone(),
+        title: session_title,
+    };
+    LIVE_SESSIONS
+        .insert_chat(session)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(summary)
+}
+
+fn list_chat_sessions(
+    scope_id: &str,
+    owner: &str,
+) -> Result<Vec<LiveSessionSummary>, (StatusCode, Json<ApiError>)> {
+    LIVE_SESSIONS
+        .list_chats()
+        .map(|sessions| {
+            sessions
+                .into_iter()
+                .filter(|s| chat_session_matches(s, scope_id, owner))
+                .map(|s| LiveSessionSummary {
+                    session_id: s.id,
+                    title: s.title,
+                })
+                .collect()
+        })
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+fn get_chat_session(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+) -> Result<LiveChatSessionDetail, (StatusCode, Json<ApiError>)> {
+    let session = LIVE_SESSIONS
+        .get_chat(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
+    if !chat_session_matches(&session, scope_id, owner) {
+        return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
+    }
+    Ok(LiveChatSessionDetail {
+        session_id: session.id,
+        title: session.title,
+        messages: session.messages,
+    })
+}
+
+fn stream_chat_session(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let session = LIVE_SESSIONS
+        .get_chat(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
+    if !chat_session_matches(&session, scope_id, owner) {
+        return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
+    }
+    let rx = session.events_tx.subscribe();
+    Ok(sse_from_json_events(rx).into_response())
+}
+
+fn delete_chat_session(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+) -> Result<serde_json::Value, (StatusCode, Json<ApiError>)> {
+    let session = LIVE_SESSIONS
+        .get_chat(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
+    if !chat_session_matches(&session, scope_id, owner) {
+        return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
+    }
+    let _ = LIVE_SESSIONS
+        .remove_chat(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(json!({ "deleted": true, "session_id": session_id }))
+}
+
+async fn sandbox_terminal_session_create_handler(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let summary = create_terminal_session(live_scope_sandbox(&record.id), &address)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
+}
+
+async fn sandbox_terminal_session_list_handler(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let sessions = list_terminal_sessions(&live_scope_sandbox(&record.id), &address)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "sessions": sessions }))))
+}
+
+async fn sandbox_terminal_session_stream_handler(
+    SessionAuth(address): SessionAuth,
+    Path((sandbox_id, session_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    stream_terminal_session(&live_scope_sandbox(&record.id), &address, &session_id)
+}
+
+async fn sandbox_terminal_session_delete_handler(
+    SessionAuth(address): SessionAuth,
+    Path((sandbox_id, session_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let resp = delete_terminal_session(&live_scope_sandbox(&record.id), &address, &session_id)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
+async fn sandbox_chat_session_create_handler(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+    Json(req): Json<CreateLiveChatSessionRequest>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let summary = create_chat_session(live_scope_sandbox(&record.id), &address, req.title)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
+}
+
+async fn sandbox_chat_session_list_handler(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let sessions = list_chat_sessions(&live_scope_sandbox(&record.id), &address)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "sessions": sessions }))))
+}
+
+async fn sandbox_chat_session_get_handler(
+    SessionAuth(address): SessionAuth,
+    Path((sandbox_id, session_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let detail = get_chat_session(&live_scope_sandbox(&record.id), &address, &session_id)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(detail)))
+}
+
+async fn sandbox_chat_session_stream_handler(
+    SessionAuth(address): SessionAuth,
+    Path((sandbox_id, session_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    stream_chat_session(&live_scope_sandbox(&record.id), &address, &session_id)
+}
+
+async fn sandbox_chat_session_delete_handler(
+    SessionAuth(address): SessionAuth,
+    Path((sandbox_id, session_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let resp = delete_chat_session(&live_scope_sandbox(&record.id), &address, &session_id)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
+async fn instance_terminal_session_create_handler(
+    SessionAuth(address): SessionAuth,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let summary = create_terminal_session(live_scope_instance(&record), &address)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
+}
+
+async fn instance_terminal_session_list_handler(
+    SessionAuth(address): SessionAuth,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let sessions = list_terminal_sessions(&live_scope_instance(&record), &address)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "sessions": sessions }))))
+}
+
+async fn instance_terminal_session_stream_handler(
+    SessionAuth(address): SessionAuth,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    stream_terminal_session(&live_scope_instance(&record), &address, &session_id)
+}
+
+async fn instance_terminal_session_delete_handler(
+    SessionAuth(address): SessionAuth,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let resp = delete_terminal_session(&live_scope_instance(&record), &address, &session_id)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
+async fn instance_chat_session_create_handler(
+    SessionAuth(address): SessionAuth,
+    Json(req): Json<CreateLiveChatSessionRequest>,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let summary = create_chat_session(live_scope_instance(&record), &address, req.title)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
+}
+
+async fn instance_chat_session_list_handler(
+    SessionAuth(address): SessionAuth,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let sessions = list_chat_sessions(&live_scope_instance(&record), &address)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "sessions": sessions }))))
+}
+
+async fn instance_chat_session_get_handler(
+    SessionAuth(address): SessionAuth,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let detail = get_chat_session(&live_scope_instance(&record), &address, &session_id)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(detail)))
+}
+
+async fn instance_chat_session_stream_handler(
+    SessionAuth(address): SessionAuth,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    stream_chat_session(&live_scope_instance(&record), &address, &session_id)
+}
+
+async fn instance_chat_session_delete_handler(
+    SessionAuth(address): SessionAuth,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let resp = delete_chat_session(&live_scope_instance(&record), &address, &session_id)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
 // ---------------------------------------------------------------------------
@@ -767,7 +1212,15 @@ async fn sandbox_exec_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    let scope = live_scope_sandbox(&record.id);
     let resp = exec_on_sidecar(&record, &req).await?;
+    publish_terminal_output(
+        &scope,
+        &address,
+        &req.session_id,
+        &resp.stdout,
+        &resp.stderr,
+    );
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
@@ -778,7 +1231,15 @@ async fn instance_exec_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
+    let scope = live_scope_instance(&record);
     let resp = exec_on_sidecar(&record, &req).await?;
+    publish_terminal_output(
+        &scope,
+        &address,
+        &req.session_id,
+        &resp.stdout,
+        &resp.stderr,
+    );
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
@@ -792,6 +1253,7 @@ async fn sandbox_prompt_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    let scope = live_scope_sandbox(&record.id);
     let ar = agent_on_sidecar(
         &record,
         &req.message,
@@ -802,6 +1264,23 @@ async fn sandbox_prompt_handler(
         None,
     )
     .await?;
+    let live_session_id = if req.session_id.trim().is_empty() {
+        ar.session_id.as_str()
+    } else {
+        req.session_id.as_str()
+    };
+    publish_chat_turn(
+        &scope,
+        &address,
+        ChatTurnPublish {
+            session_id: live_session_id,
+            user_message: &req.message,
+            assistant_message: &ar.response,
+            trace_id: &ar.trace_id,
+            success: ar.success,
+            error: &ar.error,
+        },
+    );
     metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
@@ -824,6 +1303,7 @@ async fn instance_prompt_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
+    let scope = live_scope_instance(&record);
     let ar = agent_on_sidecar(
         &record,
         &req.message,
@@ -834,6 +1314,23 @@ async fn instance_prompt_handler(
         None,
     )
     .await?;
+    let live_session_id = if req.session_id.trim().is_empty() {
+        ar.session_id.as_str()
+    } else {
+        req.session_id.as_str()
+    };
+    publish_chat_turn(
+        &scope,
+        &address,
+        ChatTurnPublish {
+            session_id: live_session_id,
+            user_message: &req.message,
+            assistant_message: &ar.response,
+            trace_id: &ar.trace_id,
+            success: ar.success,
+            error: &ar.error,
+        },
+    );
     metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
@@ -859,6 +1356,7 @@ async fn sandbox_task_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    let scope = live_scope_sandbox(&record.id);
     let ar = agent_on_sidecar(
         &record,
         &req.prompt,
@@ -869,6 +1367,23 @@ async fn sandbox_task_handler(
         Some(req.max_turns),
     )
     .await?;
+    let live_session_id = if req.session_id.trim().is_empty() {
+        ar.session_id.as_str()
+    } else {
+        req.session_id.as_str()
+    };
+    publish_chat_turn(
+        &scope,
+        &address,
+        ChatTurnPublish {
+            session_id: live_session_id,
+            user_message: &req.prompt,
+            assistant_message: &ar.response,
+            trace_id: &ar.trace_id,
+            success: ar.success,
+            error: &ar.error,
+        },
+    );
     metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
@@ -892,6 +1407,7 @@ async fn instance_task_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
+    let scope = live_scope_instance(&record);
     let ar = agent_on_sidecar(
         &record,
         &req.prompt,
@@ -902,6 +1418,23 @@ async fn instance_task_handler(
         Some(req.max_turns),
     )
     .await?;
+    let live_session_id = if req.session_id.trim().is_empty() {
+        ar.session_id.as_str()
+    } else {
+        req.session_id.as_str()
+    };
+    publish_chat_turn(
+        &scope,
+        &address,
+        ChatTurnPublish {
+            session_id: live_session_id,
+            user_message: &req.prompt,
+            assistant_message: &ar.response,
+            trace_id: &ar.trace_id,
+            success: ar.success,
+            error: &ar.error,
+        },
+    );
     metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
@@ -1508,6 +2041,46 @@ pub fn operator_api_router_with_tee(
             get(sandbox_ports_handler),
         )
         .route("/api/sandbox/ports", get(instance_ports_handler))
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/terminal/sessions",
+            get(sandbox_terminal_session_list_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/terminal/sessions/{session_id}/stream",
+            get(sandbox_terminal_session_stream_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/chat/sessions",
+            get(sandbox_chat_session_list_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/chat/sessions/{session_id}",
+            get(sandbox_chat_session_get_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/chat/sessions/{session_id}/stream",
+            get(sandbox_chat_session_stream_handler),
+        )
+        .route(
+            "/api/sandbox/live/terminal/sessions",
+            get(instance_terminal_session_list_handler),
+        )
+        .route(
+            "/api/sandbox/live/terminal/sessions/{session_id}/stream",
+            get(instance_terminal_session_stream_handler),
+        )
+        .route(
+            "/api/sandbox/live/chat/sessions",
+            get(instance_chat_session_list_handler),
+        )
+        .route(
+            "/api/sandbox/live/chat/sessions/{session_id}",
+            get(instance_chat_session_get_handler),
+        )
+        .route(
+            "/api/sandbox/live/chat/sessions/{session_id}/stream",
+            get(instance_chat_session_stream_handler),
+        )
         .layer(middleware::from_fn(rate_limit::read_rate_limit));
 
     // Write endpoints: 30 req/min per IP
@@ -1515,6 +2088,38 @@ pub fn operator_api_router_with_tee(
         .route(
             "/api/sandboxes/{sandbox_id}/secrets",
             post(inject_secrets).delete(wipe_secrets),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/terminal/sessions",
+            post(sandbox_terminal_session_create_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/terminal/sessions/{session_id}",
+            axum::routing::delete(sandbox_terminal_session_delete_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/chat/sessions",
+            post(sandbox_chat_session_create_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/chat/sessions/{session_id}",
+            axum::routing::delete(sandbox_chat_session_delete_handler),
+        )
+        .route(
+            "/api/sandbox/live/terminal/sessions",
+            post(instance_terminal_session_create_handler),
+        )
+        .route(
+            "/api/sandbox/live/terminal/sessions/{session_id}",
+            axum::routing::delete(instance_terminal_session_delete_handler),
+        )
+        .route(
+            "/api/sandbox/live/chat/sessions",
+            post(instance_chat_session_create_handler),
+        )
+        .route(
+            "/api/sandbox/live/chat/sessions/{session_id}",
+            axum::routing::delete(instance_chat_session_delete_handler),
         )
         .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
@@ -2057,6 +2662,20 @@ mod tests {
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
+    /// Insert a singleton instance record (stored under key "instance").
+    fn insert_instance_sandbox(id: &str, owner: &str) {
+        insert_plain_sandbox(id, owner);
+        let record = sandboxes()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .expect("sandbox exists");
+        runtime::instance_store()
+            .unwrap()
+            .insert("instance".to_string(), record)
+            .unwrap();
+    }
+
     // Use a distinct owner for TEE tests so sandbox inserts don't pollute
     // the test_list_sandboxes_empty assertion (which uses a different address).
     const TEE_TEST_OWNER: &str = "0xTEE0000000000000000000000000000000000001";
@@ -2436,5 +3055,174 @@ mod tests {
             Some("DENY"),
             "missing or wrong X-Frame-Options header"
         );
+    }
+
+    #[tokio::test]
+    async fn test_live_terminal_session_sandbox_crud_and_stream() {
+        insert_plain_sandbox("live-term-1", OP_TEST_OWNER);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/live-term-1/live/terminal/sessions")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let created = body_json(create.into_body()).await;
+        let session_id = created["session_id"].as_str().unwrap().to_string();
+
+        let list = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/live-term-1/live/terminal/sessions")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        let listed = body_json(list.into_body()).await;
+        let ids: Vec<&str> = listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.get("session_id").and_then(|s| s.as_str()))
+            .collect();
+        assert!(ids.iter().any(|id| *id == session_id));
+
+        let stream = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/sandboxes/live-term-1/live/terminal/sessions/{session_id}/stream"
+                    ))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+        let ct = stream
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("text/event-stream"));
+
+        let deleted = app()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/api/sandboxes/live-term-1/live/terminal/sessions/{session_id}"
+                    ))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_live_chat_session_instance_crud_and_stream() {
+        insert_instance_sandbox("live-inst-1", OP_TEST_OWNER);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create_body = serde_json::json!({ "title": "Ops Chat" });
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/live/chat/sessions")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&create_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let created = body_json(create.into_body()).await;
+        let session_id = created["session_id"].as_str().unwrap().to_string();
+        assert_eq!(created["title"], "Ops Chat");
+
+        let list = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandbox/live/chat/sessions")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        let listed = body_json(list.into_body()).await;
+        let ids: Vec<&str> = listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.get("session_id").and_then(|s| s.as_str()))
+            .collect();
+        assert!(ids.iter().any(|id| *id == session_id));
+
+        let detail = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sandbox/live/chat/sessions/{session_id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.status(), StatusCode::OK);
+        let detail_json = body_json(detail.into_body()).await;
+        assert_eq!(detail_json["session_id"], session_id);
+        assert_eq!(detail_json["title"], "Ops Chat");
+        assert!(detail_json["messages"].is_array());
+
+        let stream = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/sandbox/live/chat/sessions/{session_id}/stream"
+                    ))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+        let ct = stream
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("text/event-stream"));
+
+        let deleted = app()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/sandbox/live/chat/sessions/{session_id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::OK);
     }
 }

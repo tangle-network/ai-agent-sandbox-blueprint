@@ -125,6 +125,16 @@ where
             .remove(session_id))
     }
 
+    pub fn list_terminals(&self) -> Result<Vec<LiveTerminalSession>, String> {
+        Ok(self
+            .terminals
+            .lock()
+            .map_err(|e| format!("terminal session lock poisoned: {e}"))?
+            .values()
+            .cloned()
+            .collect())
+    }
+
     pub fn insert_chat(&self, session: LiveChatSession<M>) -> Result<(), String> {
         self.chats
             .lock()
