@@ -5,9 +5,9 @@ export default defineConfig({
   plugins: [tsconfigPaths()],
   resolve: {
     alias: {
-      // @tangle/agent-ui is an optional peer dep of blueprint-ui — stub it
+      // @tangle-network/agent-ui is an optional peer dep of blueprint-ui — stub it
       // so the optimizer doesn't fail when pre-bundling blueprint-ui.
-      '@tangle/agent-ui': new URL('./src/test/stubs/agent-ui.ts', import.meta.url).pathname,
+      '@tangle-network/agent-ui': new URL('./src/test/stubs/agent-ui.ts', import.meta.url).pathname,
     },
     dedupe: [
       'class-variance-authority',
@@ -30,7 +30,7 @@ export default defineConfig({
       optimizer: {
         web: {
           include: ['@tangle/blueprint-ui'],
-          exclude: ['@tangle/agent-ui'],
+          exclude: ['@tangle-network/agent-ui'],
         },
       },
     },

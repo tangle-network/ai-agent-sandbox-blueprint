@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useStore } from '@nanostores/react';
-import { ChatContainer, type AgentBranding } from '@tangle/agent-ui';
+import { ChatContainer, type AgentBranding } from '@tangle-network/agent-ui';
 import type { SandboxClient } from '~/lib/api/sandboxClient';
 import {
   chatSessionsStore,

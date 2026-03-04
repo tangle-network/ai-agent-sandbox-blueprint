@@ -24,7 +24,7 @@ import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { cn } from '@tangle/blueprint-ui';
 
 const TerminalView = lazy(() =>
-  import('@tangle/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),
+  import('@tangle-network/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),
 );
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'attestation';

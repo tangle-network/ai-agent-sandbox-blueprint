@@ -1,5 +1,5 @@
 {
-  "name": "@tangle/agent-ui",
+  "name": "@tangle-network/agent-ui",
   "version": "0.2.0",
   "description": "Shared agent UI components and sidecar integration hooks for Tangle blueprints",
   "type": "module",
@@ -38,11 +38,21 @@
     "wagmi": "^3.0.0"
   },
   "peerDependenciesMeta": {
-    "@tanstack/react-query": { "optional": true },
-    "@xterm/xterm": { "optional": true },
-    "@xterm/addon-fit": { "optional": true },
-    "@xterm/addon-web-links": { "optional": true },
-    "wagmi": { "optional": true }
+    "@tanstack/react-query": {
+      "optional": true
+    },
+    "@xterm/xterm": {
+      "optional": true
+    },
+    "@xterm/addon-fit": {
+      "optional": true
+    },
+    "@xterm/addon-web-links": {
+      "optional": true
+    },
+    "wagmi": {
+      "optional": true
+    }
   },
   "dependencies": {
     "clsx": "^2.1.1",

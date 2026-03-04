@@ -68,12 +68,14 @@ The UI uses two shared packages. Keep responsibilities strict to avoid copy/past
   - Blueprint and chain infrastructure (`publicClient`, chain/address helpers, ABI exports)
   - Job/provisioning/quote utilities, infra/session/tx stores
   - Reusable cross-blueprint UI primitives and layout components
-- `@tangle/agent-ui`:
+- `@tangle-network/agent-ui`:
   - Agent chat/session rendering, run/tool timeline UI, markdown/tool previews
   - Sidecar auth/session hooks and PTY terminal integration
-  - Shared lightweight UI utilities in `@tangle/agent-ui/primitives`
+  - Shared lightweight UI utilities in `@tangle-network/agent-ui/primitives`
+  - Published from this repo via `.github/workflows/publish-agent-ui.yml`
 - App-local (`ui/src/**`):
   - Sandbox-specific routes, workflows, feature copy, and product behavior
+  - Sandbox-only shell/layout styling concerns
 
 Extraction rule:
 - If Sandbox UI and Arena UI carry the same non-trivial implementation (roughly 20+ lines), promote it to the appropriate shared package instead of creating a third copy.

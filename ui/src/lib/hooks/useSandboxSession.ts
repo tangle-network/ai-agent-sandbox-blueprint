@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import type { SessionMessage, SessionPart, TextPart, ToolPart } from '@tangle/agent-ui';
+import type { SessionMessage, SessionPart, TextPart, ToolPart } from '@tangle-network/agent-ui';
 import type { SandboxClient } from '~/lib/api/sandboxClient';
 import {
   appendMessage,

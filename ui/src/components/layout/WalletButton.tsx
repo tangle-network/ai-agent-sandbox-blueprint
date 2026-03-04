@@ -13,7 +13,7 @@ import {
   truncateAddress,
   useDropdownMenu,
   useWalletEthBalance,
-} from '@tangle/agent-ui/primitives';
+} from '@tangle-network/agent-ui/primitives';
 import { toast } from 'sonner';
 
 /**

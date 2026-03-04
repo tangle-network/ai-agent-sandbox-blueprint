@@ -1,7 +1,7 @@
 # Project Instructions
 
 ## Mission
-`@tangle/agent-ui` is a shared package for agent-facing UX primitives and flows. Treat it as a reusable library, not an app.
+`@tangle-network/agent-ui` is a shared package for agent-facing UX primitives and flows. Treat it as a reusable library, not an app.
 
 ## Scope
 Include:

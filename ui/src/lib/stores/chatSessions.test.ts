@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { SessionMessage, SessionPart } from '@tangle/agent-ui';
+import type { SessionMessage, SessionPart } from '@tangle-network/agent-ui';
 import {
   chatSessionsStore,
   createSession,
