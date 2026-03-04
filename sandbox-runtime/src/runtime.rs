@@ -5,7 +5,7 @@ use docktopus::bollard::container::{
 use docktopus::bollard::models::{HostConfig, PortBinding, PortMap};
 use docktopus::container::Container;
 use once_cell::sync::OnceCell;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
@@ -898,6 +898,34 @@ fn parse_runtime_backend_value(value: &str) -> Option<RuntimeBackend> {
     }
 }
 
+fn runtime_backend_name(backend: RuntimeBackend) -> &'static str {
+    match backend {
+        RuntimeBackend::Docker => "docker",
+        RuntimeBackend::Firecracker => "firecracker",
+        RuntimeBackend::Tee => "tee",
+    }
+}
+
+fn metadata_with_runtime_backend(metadata_json: &str, backend: RuntimeBackend) -> Result<String> {
+    let mut map = match parse_json_object(metadata_json, "metadata_json")? {
+        Some(Value::Object(map)) => map,
+        None => Map::new(),
+        Some(_) => {
+            return Err(SandboxError::Validation(
+                "metadata_json must be a JSON object".into(),
+            ));
+        }
+    };
+
+    map.insert(
+        "runtime_backend".to_string(),
+        Value::String(runtime_backend_name(backend).to_string()),
+    );
+
+    serde_json::to_string(&Value::Object(map))
+        .map_err(|e| SandboxError::Validation(format!("failed to serialize metadata_json: {e}")))
+}
+
 fn parse_runtime_backend_from_metadata(metadata_json: &str) -> Result<Option<RuntimeBackend>> {
     let metadata = parse_json_object(metadata_json, "metadata_json")?;
     let Some(meta) = metadata else {
@@ -953,14 +981,176 @@ fn resolve_runtime_backend(request: &CreateSandboxParams) -> Result<RuntimeBacke
     Ok(selected)
 }
 
+fn runtime_backend_for_record(record: &SandboxRecord) -> RuntimeBackend {
+    if record.tee_deployment_id.is_some() {
+        return RuntimeBackend::Tee;
+    }
+    match parse_runtime_backend_from_metadata(&record.metadata_json) {
+        Ok(Some(backend)) => backend,
+        Ok(None) => RuntimeBackend::Docker,
+        Err(err) => {
+            tracing::warn!(
+                sandbox_id = %record.id,
+                error = %err,
+                "invalid metadata_json.runtime_backend on stored record; defaulting to docker backend"
+            );
+            RuntimeBackend::Docker
+        }
+    }
+}
+
+pub(crate) fn record_uses_firecracker(record: &SandboxRecord) -> bool {
+    runtime_backend_for_record(record) == RuntimeBackend::Firecracker
+}
+
+fn parse_url_port(url: &str) -> Option<u16> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.port_or_known_default())
+}
+
 async fn create_sidecar_firecracker(
-    _request: &CreateSandboxParams,
-    _token_override: Option<&str>,
-    _sandbox_id_override: Option<&str>,
+    request: &CreateSandboxParams,
+    token_override: Option<&str>,
+    sandbox_id_override: Option<&str>,
 ) -> Result<SandboxRecord> {
-    Err(SandboxError::Validation(
-        "runtime_backend=firecracker was requested, but Firecracker provisioning is not wired into sandbox-runtime yet".into(),
-    ))
+    let config = SidecarRuntimeConfig::load();
+
+    if config.sandbox_max_count > 0 {
+        let current = sandboxes()?.values()?.len();
+        if current >= config.sandbox_max_count {
+            return Err(SandboxError::Validation(format!(
+                "Sandbox limit reached ({current}/{max}). Delete unused sandboxes before creating new ones.",
+                max = config.sandbox_max_count,
+            )));
+        }
+    }
+
+    let extra_ports = parse_extra_ports(&request.metadata_json, &request.port_mappings);
+    if !extra_ports.is_empty() {
+        return Err(SandboxError::Validation(
+            "runtime_backend=firecracker currently does not support metadata_json.ports port mappings"
+                .into(),
+        ));
+    }
+
+    let effective_image = if request.image.is_empty() {
+        config.image.clone()
+    } else {
+        request.image.clone()
+    };
+
+    let sandbox_id = sandbox_id_override
+        .map(ToString::to_string)
+        .unwrap_or_else(next_sandbox_id);
+
+    let metadata_raw = parse_json_object(&request.metadata_json, "metadata_json")?;
+    let snapshot_destination = metadata_raw
+        .as_ref()
+        .and_then(|v| v.get("snapshot_destination"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let metadata = merge_metadata(metadata_raw, &request.image, &request.stack)?;
+    let labels = match metadata {
+        Some(Value::Object(map)) => map
+            .into_iter()
+            .filter_map(|(k, v)| v.as_str().map(|v| (k, v.to_string())))
+            .collect::<HashMap<String, String>>(),
+        _ => HashMap::new(),
+    };
+
+    let effective_env = merge_env_json(&request.env_json, &request.user_env_json);
+    let mut env = HashMap::new();
+    env.insert(
+        "SIDECAR_PORT".to_string(),
+        config.container_port.to_string(),
+    );
+    if !effective_env.trim().is_empty() {
+        if let Some(Value::Object(map)) = parse_json_object(&effective_env, "env_json")? {
+            for (key, value) in map {
+                let val = match value {
+                    Value::String(v) => v,
+                    Value::Number(v) => v.to_string(),
+                    Value::Bool(v) => v.to_string(),
+                    _ => continue,
+                };
+                env.insert(key, val);
+            }
+        }
+    }
+
+    let create_request = crate::firecracker::FirecrackerCreateRequest {
+        session_id: sandbox_id.clone(),
+        image: effective_image.clone(),
+        env,
+        labels,
+        cpu_cores: request.cpu_cores,
+        memory_mb: request.memory_mb,
+        disk_gb: request.disk_gb,
+    };
+
+    let provisioned = crate::firecracker::create_and_start(create_request).await?;
+    let sidecar_url = provisioned.container.endpoint.ok_or_else(|| {
+        SandboxError::Unavailable(format!(
+            "firecracker host-agent started sandbox {sandbox_id}, but did not return an endpoint"
+        ))
+    })?;
+
+    let generated_token = match token_override {
+        Some(t) if !t.trim().is_empty() => t.to_string(),
+        _ => crate::auth::generate_token(),
+    };
+    let token = provisioned.sidecar_auth_token.unwrap_or(generated_token);
+    let metadata_json =
+        metadata_with_runtime_backend(&request.metadata_json, RuntimeBackend::Firecracker)?;
+    let sidecar_port = parse_url_port(&sidecar_url).unwrap_or(config.container_port);
+
+    let now = crate::util::now_ts();
+    let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
+    let max_lifetime = config.effective_max_lifetime(request.max_lifetime_seconds);
+
+    let record = SandboxRecord {
+        id: sandbox_id.clone(),
+        container_id: provisioned.container.id,
+        sidecar_url,
+        sidecar_port,
+        ssh_port: None,
+        token,
+        created_at: now,
+        cpu_cores: request.cpu_cores,
+        memory_mb: request.memory_mb,
+        state: SandboxState::Running,
+        idle_timeout_seconds: idle_timeout,
+        max_lifetime_seconds: max_lifetime,
+        last_activity_at: now,
+        stopped_at: None,
+        snapshot_image_id: None,
+        snapshot_s3_url: None,
+        container_removed_at: None,
+        image_removed_at: None,
+        original_image: effective_image,
+        base_env_json: request.env_json.clone(),
+        user_env_json: request.user_env_json.clone(),
+        snapshot_destination,
+        tee_deployment_id: None,
+        tee_metadata_json: None,
+        tee_attestation_json: None,
+        name: request.name.clone(),
+        agent_identifier: request.agent_identifier.clone(),
+        metadata_json,
+        disk_gb: request.disk_gb,
+        stack: request.stack.clone(),
+        owner: request.owner.clone(),
+        tee_config: None,
+        extra_ports: HashMap::new(),
+    };
+
+    let mut sealed = record.clone();
+    seal_record(&mut sealed)?;
+    sandboxes()?.insert(sandbox_id, sealed)?;
+    crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
+
+    Ok(record)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1303,6 +1493,16 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
         }
     }
 
+    if record_uses_firecracker(record) {
+        crate::firecracker::stop(&record.container_id).await?;
+        let now = crate::util::now_ts();
+        let _ = sandboxes()?.update(&record.id, |r| {
+            r.state = SandboxState::Stopped;
+            r.stopped_at = Some(now);
+        });
+        return Ok(());
+    }
+
     // Standard Docker path.
     let builder = docker_builder().await?;
     let mut container = docker_timeout(
@@ -1346,6 +1546,34 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
             "Sandbox is already running".into(),
         ));
     }
+    if record_uses_firecracker(record) {
+        let resumed = crate::firecracker::start(&record.container_id).await?;
+        let sidecar_url = resumed.endpoint.ok_or_else(|| {
+            SandboxError::Unavailable(format!(
+                "firecracker sandbox {} resumed without sidecar endpoint",
+                record.id
+            ))
+        })?;
+        let sidecar_port =
+            parse_url_port(&sidecar_url).unwrap_or(SidecarRuntimeConfig::load().container_port);
+        let now = crate::util::now_ts();
+        let _ = sandboxes()?.update(&record.id, |r| {
+            r.state = SandboxState::Running;
+            r.stopped_at = None;
+            r.last_activity_at = now;
+            r.sidecar_url = sidecar_url.clone();
+            r.sidecar_port = sidecar_port;
+        });
+
+        if !wait_for_sidecar_health(&sidecar_url, 30).await {
+            blueprint_sdk::info!(
+                "resume: firecracker sidecar slow to respond for sandbox {}",
+                record.id
+            );
+        }
+        return Ok(());
+    }
+
     // For TEE-managed sandboxes, tee_deployment_id holds the real Docker container
     // ID (Direct backend) or cloud deployment ID (cloud backends). Use it for
     // Docker operations when available so the `tee-` prefixed container_id is
@@ -1477,6 +1705,11 @@ pub async fn delete_sidecar(
         crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
         return Ok(());
     }
+    if record_uses_firecracker(record) {
+        crate::firecracker::delete(&record.container_id).await?;
+        crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
+        return Ok(());
+    }
     // Default Docker removal path.
     delete_sidecar_docker(record).await
 }
@@ -1573,6 +1806,11 @@ async fn delete_sidecar_docker(record: &SandboxRecord) -> Result<()> {
 
 /// Docker-commit a stopped container to preserve filesystem state. Returns the image ID.
 pub async fn commit_container(record: &SandboxRecord) -> Result<String> {
+    if record_uses_firecracker(record) {
+        return Err(SandboxError::Validation(
+            "Snapshot image commit is not supported for runtime_backend=firecracker".into(),
+        ));
+    }
     let builder = docker_builder().await?;
     use docktopus::bollard::image::CommitContainerOptions;
     let options = CommitContainerOptions {

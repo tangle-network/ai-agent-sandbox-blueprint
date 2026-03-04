@@ -9,9 +9,10 @@ On-chain jobs are for state transitions only.
 - If an operation mutates authoritative state: on-chain job.
 - If an operation is read-only or operational I/O: `eth_call` and/or operator HTTP API.
 
-## Current State (March 3, 2026)
+## Current State (March 4, 2026)
 
 - `sandbox-runtime` currently contains both runtime contracts and concrete Docker/TEE integrations.
+- `runtime_backend=firecracker` now executes through host-agent lifecycle APIs in `sandbox-runtime` while preserving the same L1 job/operator API surface.
 - Minimal runtime contracts are now codified in `sandbox-runtime/src/contracts.rs`.
 - `microvm-blueprint` is the target L0 substrate and should be consumed only via L1 adapters.
 - `ai-agent-tee-instance-blueprint-lib` currently depends on `ai-agent-instance-blueprint-lib` (same-product variant coupling). This is a temporary exception that should be removed by extracting shared instance runtime logic to L1.

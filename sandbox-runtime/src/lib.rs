@@ -9,6 +9,7 @@ pub mod auth;
 pub mod circuit_breaker;
 pub mod contracts;
 pub mod error;
+pub mod firecracker;
 pub mod http;
 pub mod ingress_access_control;
 pub mod instance_types;

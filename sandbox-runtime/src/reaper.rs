@@ -7,7 +7,7 @@
 use crate::metrics::metrics;
 use crate::runtime::{
     SandboxState, SidecarRuntimeConfig, commit_container, delete_sidecar, docker_builder,
-    remove_snapshot_image, sandboxes, stop_sidecar,
+    record_uses_firecracker, remove_snapshot_image, sandboxes, stop_sidecar,
 };
 use blueprint_sdk::{error, info};
 use docktopus::bollard::container::InspectContainerOptions;
@@ -101,7 +101,10 @@ pub async fn reaper_tick() {
 
             // Post-stop: docker commit to preserve filesystem.
             // TEE sandboxes have no Docker container to commit — skip.
-            if config.snapshot_auto_commit && record.tee_deployment_id.is_none() {
+            if config.snapshot_auto_commit
+                && record.tee_deployment_id.is_none()
+                && !record_uses_firecracker(&record)
+            {
                 match commit_container(&record).await {
                     Ok(image_id) => {
                         if let Ok(store) = sandboxes() {
@@ -155,6 +158,54 @@ pub async fn gc_tick() {
         // is managed by the TEE backend, not Docker GC.
         if record.tee_deployment_id.is_some() {
             continue;
+        }
+
+        if record_uses_firecracker(&record) {
+            if let (Some(container_removed_at), Some(s3_url)) =
+                (record.container_removed_at, &record.snapshot_s3_url)
+            {
+                if container_removed_at + config.sandbox_gc_cold_retention <= now {
+                    let is_operator_managed = is_operator_s3(s3_url, &record, config);
+                    if is_operator_managed {
+                        info!(
+                            "gc: firecracker cold->gone for sandbox {} (deleting S3 snapshot)",
+                            record.id
+                        );
+                        if let Err(err) = delete_s3_snapshot(s3_url).await {
+                            error!(
+                                "gc: failed to delete firecracker S3 snapshot for sandbox {}: {err}",
+                                record.id
+                            );
+                        }
+                        metrics().record_gc_s3_cleaned();
+                    } else {
+                        info!(
+                            "gc: removing firecracker record for sandbox {} (user BYOS3 preserved at {s3_url})",
+                            record.id
+                        );
+                    }
+                    if let Ok(store) = sandboxes() {
+                        let _ = store.remove(&record.id);
+                    }
+                    metrics().record_garbage_collected();
+                    continue;
+                }
+            }
+
+            if record.container_removed_at.is_some()
+                && record.snapshot_image_id.is_none()
+                && record.snapshot_s3_url.is_none()
+            {
+                info!(
+                    "gc: cleaning up empty firecracker record for sandbox {}",
+                    record.id
+                );
+                if let Ok(store) = sandboxes() {
+                    let _ = store.remove(&record.id);
+                }
+                metrics().record_garbage_collected();
+                continue;
+            }
         }
 
         let stopped_at = match record.stopped_at {
@@ -314,6 +365,75 @@ pub async fn reconcile_on_startup() {
         // managed by the TEE backend, not Docker. The `container_id` field has a
         // `tee-` prefix and doesn't correspond to a real Docker container.
         if record.tee_deployment_id.is_some() {
+            continue;
+        }
+
+        if record_uses_firecracker(&record) {
+            match crate::firecracker::status(&record.container_id).await {
+                Ok(crate::firecracker::FirecrackerContainerStatus::Missing) => {
+                    let has_snapshot =
+                        record.snapshot_image_id.is_some() || record.snapshot_s3_url.is_some();
+                    if has_snapshot {
+                        info!(
+                            "reconcile: firecracker VM gone for sandbox {}, preserving snapshot record",
+                            record.id
+                        );
+                        if let Ok(store) = sandboxes() {
+                            let _ = store.update(&record.id, |r| {
+                                r.state = SandboxState::Stopped;
+                                if r.stopped_at.is_none() {
+                                    r.stopped_at = Some(now);
+                                }
+                                if r.container_removed_at.is_none() {
+                                    r.container_removed_at = Some(now);
+                                }
+                            });
+                        }
+                    } else {
+                        info!(
+                            "reconcile: removing orphan firecracker record for sandbox {} (vm {} gone)",
+                            record.id, record.container_id
+                        );
+                        if let Ok(store) = sandboxes() {
+                            let _ = store.remove(&record.id);
+                        }
+                    }
+                }
+                Ok(crate::firecracker::FirecrackerContainerStatus::Running) => {
+                    if record.state == SandboxState::Stopped {
+                        info!(
+                            "reconcile: marking firecracker sandbox {} as Running",
+                            record.id
+                        );
+                        if let Ok(store) = sandboxes() {
+                            let _ = store.update(&record.id, |r| {
+                                r.state = SandboxState::Running;
+                                r.stopped_at = None;
+                            });
+                        }
+                    }
+                }
+                Ok(crate::firecracker::FirecrackerContainerStatus::Stopped) => {
+                    if record.state == SandboxState::Running {
+                        info!(
+                            "reconcile: marking firecracker sandbox {} as Stopped",
+                            record.id
+                        );
+                        if let Ok(store) = sandboxes() {
+                            let _ = store.update(&record.id, |r| {
+                                r.state = SandboxState::Stopped;
+                                r.stopped_at = Some(now);
+                            });
+                        }
+                    }
+                }
+                Err(err) => {
+                    error!(
+                        "reconcile: failed to inspect firecracker sandbox {}: {err}",
+                        record.id
+                    );
+                }
+            }
             continue;
         }
 

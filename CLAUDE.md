@@ -32,6 +32,8 @@
 - Sandbox identity is immutable across secrets inject/wipe recreation. Preserve the same `sandbox_id`.
 - `stop` and `resume` are idempotent API actions. "already stopped/running" must return success behavior, not 500.
 - Circuit breaker is sandbox-scoped, not endpoint-scoped. After successful `resume`, clear breaker state for that sandbox.
+- `runtime_backend=firecracker` is a real lifecycle path (host-agent `/v1/containers`), not a stub.
+- Firecracker records must persist `metadata_json.runtime_backend="firecracker"` so stop/resume/delete/reconcile route correctly.
 - Live sessions are strictly owner+scope isolated:
   - sandbox scope: `sandbox:{sandbox_id}`
   - instance scope: `instance:{sandbox_id}`
@@ -46,6 +48,8 @@
 - Stderr markers may appear in `stderr` or `stdout` depending on sidecar behavior; tests should accept either when validating command output markers.
 - Snapshot destination policy currently rejects `http://` and accepts `https://` / `s3://`; e2e should validate this policy, not old behavior.
 - Agent endpoints may return `502` (backend unavailable) followed by `503` (breaker cooldown). This is acceptable in optional-agent local e2e.
+- Firecracker startup requires `FIRECRACKER_HOST_AGENT_URL` (or `HOST_AGENT_URL`); without it, create must fail fast with validation error.
+- Firecracker currently does not support `metadata_json.ports` host mappings in this runtime; reject at create-time.
 
 ## Regression Gate (Run Before Merge)
 - `cargo test -p sandbox-runtime`

@@ -77,10 +77,12 @@ Even if `sandbox-runtime` has a microVM adapter, `microvm-blueprint` stays separ
 3. Firecracker/security-sensitive code requires tighter isolation and review ownership.
 4. Runtime contracts can remain stable while provider internals change.
 
-## Current State (March 3, 2026)
+## Current State (March 4, 2026)
 
 - `sandbox-runtime` still contains concrete Docker/TEE integrations directly.
-- Runtime selection contract is wired (`metadata_json.runtime_backend`), but Firecracker provider execution is not yet implemented in this repo.
+- Runtime selection contract is wired (`metadata_json.runtime_backend`).
+- `runtime_backend=firecracker` is now implemented in `sandbox-runtime` via host-agent adapter calls (`/v1/containers` create/start/stop/delete + status reconcile).
+- Current Firecracker parity gap in this repo: no extra host port mapping (`metadata_json.ports`) support yet.
 - L1 layer contracts are codified in `sandbox-runtime/src/contracts.rs`
   (`SandboxProvider`, `RuntimeAdapter`, `DefaultRuntimeAdapter`, `DockerSandboxProvider`).
 - L0 is a target boundary, not fully extracted in this repo.

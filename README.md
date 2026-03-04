@@ -160,7 +160,7 @@ All data endpoints require PASETO v4 session auth (EIP-191 challenge-response).
 Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is currently sandbox-scoped (`/api/sandboxes/{id}/secrets`).
 
 ### Infrastructure
-- `GET /health` — Docker + store health check (503 when degraded)
+- `GET /health` — Runtime backend + store health check (503 when degraded)
 - `GET /readyz` — Strict readiness probe (503 unless all subsystems healthy)
 - `GET /metrics` — Prometheus metrics
 - `GET /api/provisions` — List provision status
@@ -202,6 +202,12 @@ Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is cu
 | `SANDBOX_DEFAULT_MAX_LIFETIME` | `86400` | Max lifetime (seconds) |
 | `SANDBOX_REAPER_INTERVAL` | `30` | Reaper check interval |
 | `SANDBOX_GC_INTERVAL` | `3600` | GC interval |
+| `SANDBOX_RUNTIME_BACKEND` | `docker` | Default runtime backend (`docker`, `firecracker`, `tee`) |
+| `FIRECRACKER_HOST_AGENT_URL` | — | Base URL for Firecracker host-agent API (required for `runtime_backend=firecracker`) |
+| `FIRECRACKER_HOST_AGENT_API_KEY` | — | Optional API key header (`x-api-key`) for host-agent |
+| `FIRECRACKER_HOST_AGENT_NETWORK` | `bridge` | Network value sent in host-agent create payload |
+| `FIRECRACKER_HOST_AGENT_PIDS_LIMIT` | `512` | PIDs limit sent in host-agent create payload |
+| `FIRECRACKER_SIDECAR_AUTH_TOKEN` | — | Optional static sidecar auth token to persist in Firecracker records |
 | `WORKFLOW_CRON_SCHEDULE` | `0 * * * * *` | Cron schedule for workflow ticks |
 | `CORS_ALLOWED_ORIGINS` | `localhost only` | Comma-separated CORS origins |
 | `BSM_ADDRESS` | — | BSM contract address (instance mode) |
