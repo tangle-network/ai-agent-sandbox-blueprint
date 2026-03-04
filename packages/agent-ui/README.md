@@ -25,6 +25,14 @@ Entrypoints:
 
 Treat exported symbols as stable contract; prefer additive changes over breaking renames/removals.
 
+## Installation
+
+```bash
+npm install @tangle-network/agent-ui
+# or
+pnpm add @tangle-network/agent-ui
+```
+
 ## Usage
 
 ```tsx
