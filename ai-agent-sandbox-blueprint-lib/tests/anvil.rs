@@ -4,11 +4,20 @@ use ai_agent_sandbox_blueprint_lib::{
     SandboxIdRequest, WorkflowControlRequest, WorkflowCreateRequest, router,
 };
 use anyhow::{Context, Result};
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    routing::{delete, post},
+};
 use blueprint_anvil_testing_utils::{BlueprintHarness, missing_tnt_core_artifacts};
 use blueprint_sdk::alloy::primitives::Bytes;
 use blueprint_sdk::alloy::sol_types::SolValue;
 use once_cell::sync::Lazy;
+use serde::Deserialize;
+use serde_json::json;
 use std::net::TcpListener;
+use std::sync::Arc;
 use std::sync::Once;
 use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
@@ -19,6 +28,147 @@ const JOB_RESULT_TIMEOUT: Duration = Duration::from_secs(180);
 
 static HARNESS_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
 static LOG_INIT: Once = Once::new();
+
+#[derive(Clone, Debug, Default)]
+struct MockFirecrackerHostState {
+    sidecar_url: String,
+    containers: std::collections::HashSet<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FirecrackerCreateContainerRequest {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+}
+
+fn require_api_key(
+    headers: &HeaderMap,
+    expected: &str,
+) -> std::result::Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let key = headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if key == expected {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"missing or invalid api key","code":"UNAUTHORIZED"})),
+        ))
+    }
+}
+
+fn firecracker_container_json(id: &str, endpoint: &str, running: bool) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": id,
+        "sessionId": id,
+        "image": "mock-rootfs",
+        "status": if running { "running" } else { "created" },
+        "state": if running { "running" } else { "terminated" },
+        "endpoint": if running { endpoint } else { "" },
+        "createdAt": 0,
+        "labels": {},
+        "resources": { "cpu": 1, "memory": 512, "disk": 1024, "pids": 128 }
+    })
+}
+
+async fn spawn_firecracker_host_agent_mock(
+    api_key: String,
+    sidecar_url: String,
+) -> Result<(String, Arc<AsyncMutex<MockFirecrackerHostState>>)> {
+    let state = Arc::new(AsyncMutex::new(MockFirecrackerHostState {
+        sidecar_url: sidecar_url.clone(),
+        containers: std::collections::HashSet::new(),
+    }));
+
+    let create_key = api_key.clone();
+    let start_key = api_key.clone();
+    let delete_key = api_key;
+
+    let app = Router::new()
+        .route(
+            "/v1/containers",
+            post(
+                move |State(state): State<Arc<AsyncMutex<MockFirecrackerHostState>>>,
+                      headers: HeaderMap,
+                      Json(body): Json<FirecrackerCreateContainerRequest>| {
+                    let create_key = create_key.clone();
+                    async move {
+                        require_api_key(&headers, &create_key)?;
+                        let mut guard = state.lock().await;
+                        guard.containers.insert(body.session_id.clone());
+                        Ok::<_, (StatusCode, Json<serde_json::Value>)>((
+                            StatusCode::CREATED,
+                            Json(firecracker_container_json(
+                                &body.session_id,
+                                &guard.sidecar_url,
+                                false,
+                            )),
+                        ))
+                    }
+                },
+            ),
+        )
+        .route(
+            "/v1/containers/{id}/start",
+            post(
+                move |State(state): State<Arc<AsyncMutex<MockFirecrackerHostState>>>,
+                      headers: HeaderMap,
+                      Path(id): Path<String>| {
+                    let start_key = start_key.clone();
+                    async move {
+                        require_api_key(&headers, &start_key)?;
+                        let guard = state.lock().await;
+                        if !guard.containers.contains(&id) {
+                            return Err((
+                                StatusCode::NOT_FOUND,
+                                Json(json!({"error":"not found","code":"NOT_FOUND"})),
+                            ));
+                        }
+                        Ok::<_, (StatusCode, Json<serde_json::Value>)>((
+                            StatusCode::OK,
+                            Json(firecracker_container_json(&id, &guard.sidecar_url, true)),
+                        ))
+                    }
+                },
+            ),
+        )
+        .route(
+            "/v1/containers/{id}",
+            delete(
+                move |State(state): State<Arc<AsyncMutex<MockFirecrackerHostState>>>,
+                      headers: HeaderMap,
+                      Path(id): Path<String>| {
+                    let delete_key = delete_key.clone();
+                    async move {
+                        require_api_key(&headers, &delete_key)?;
+                        let mut guard = state.lock().await;
+                        if guard.containers.remove(&id) {
+                            Ok::<_, (StatusCode, Json<serde_json::Value>)>((
+                                StatusCode::OK,
+                                Json(json!({"ok": true})),
+                            ))
+                        } else {
+                            Err((
+                                StatusCode::NOT_FOUND,
+                                Json(json!({"error":"not found","code":"NOT_FOUND"})),
+                            ))
+                        }
+                    }
+                },
+            ),
+        )
+        .with_state(state.clone());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    Ok((format!("http://{}:{}", addr.ip(), addr.port()), state))
+}
 
 fn setup_log() {
     LOG_INIT.call_once(|| {
@@ -306,6 +456,95 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
 
     drop(guard);
     result.context("runs_sandbox_jobs_end_to_end timed out")?
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn runs_firecracker_jobs_end_to_end() -> Result<()> {
+    setup_log();
+    let guard = HARNESS_LOCK.lock().await;
+    let result = timeout(ANVIL_TEST_TIMEOUT, async {
+        if std::env::var("FIRECRACKER_E2E").ok().as_deref() != Some("1") {
+            return Ok(());
+        }
+
+        let Some(harness) = spawn_harness().await? else {
+            return Ok(());
+        };
+
+        let host_agent_key = "fc-test-key".to_string();
+        let expected_sidecar_url = "http://127.0.0.1:65535".to_string();
+        let (host_agent_url, host_state) =
+            spawn_firecracker_host_agent_mock(host_agent_key.clone(), expected_sidecar_url.clone())
+                .await?;
+        unsafe {
+            std::env::set_var("FIRECRACKER_HOST_AGENT_URL", &host_agent_url);
+            std::env::set_var("FIRECRACKER_HOST_AGENT_API_KEY", &host_agent_key);
+        }
+
+        let create_payload = SandboxCreateRequest {
+            name: "agent-firecracker-sandbox".to_string(),
+            image: "sidecar.ext4".to_string(),
+            stack: "default".to_string(),
+            agent_identifier: "default-agent".to_string(),
+            env_json: "{}".to_string(),
+            metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 3600,
+            idle_timeout_seconds: 900,
+            cpu_cores: 2,
+            memory_mb: 4096,
+            disk_gb: 20,
+            tee_required: false,
+            tee_type: 0,
+        }
+        .abi_encode();
+
+        let create_submission = harness
+            .submit_job(JOB_SANDBOX_CREATE, Bytes::from(create_payload))
+            .await?;
+        let create_output = harness
+            .wait_for_job_result_with_deadline(create_submission, JOB_RESULT_TIMEOUT)
+            .await?;
+        let create_receipt = SandboxCreateOutput::abi_decode(&create_output)?;
+        let create_json: serde_json::Value =
+            serde_json::from_str(&create_receipt.json).context("create response must be json")?;
+        assert_eq!(create_json["sidecarUrl"], expected_sidecar_url);
+        eprintln!(
+            "Firecracker sandbox created: id={}, url={}",
+            create_receipt.sandboxId, expected_sidecar_url
+        );
+
+        let delete_payload = SandboxIdRequest {
+            sandbox_id: create_receipt.sandboxId.clone(),
+        }
+        .abi_encode();
+        let delete_submission = harness
+            .submit_job(JOB_SANDBOX_DELETE, Bytes::from(delete_payload))
+            .await?;
+        let delete_output = harness
+            .wait_for_job_result_with_deadline(delete_submission, JOB_RESULT_TIMEOUT)
+            .await?;
+        let delete_receipt = JsonResponse::abi_decode(&delete_output)?;
+        let delete_json: serde_json::Value =
+            serde_json::from_str(&delete_receipt.json).context("delete response must be json")?;
+        assert_eq!(delete_json["deleted"], true);
+
+        let host_guard = host_state.lock().await;
+        assert!(
+            host_guard.containers.is_empty(),
+            "host-agent mock should have no live containers after delete"
+        );
+        drop(host_guard);
+
+        harness.shutdown().await;
+        Ok(())
+    })
+    .await;
+
+    drop(guard);
+    result.context("runs_firecracker_jobs_end_to_end timed out")?
 }
 
 async fn spawn_harness() -> Result<Option<BlueprintHarness>> {

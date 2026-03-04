@@ -278,6 +278,12 @@ pub(crate) async fn status(container_id: &str) -> Result<FirecrackerContainerSta
     }
 }
 
+pub(crate) async fn health() -> Result<()> {
+    let config = FirecrackerHostAgentConfig::load()?;
+    let _ = request_json(&config, Method::GET, "/v1/health", None).await?;
+    Ok(())
+}
+
 fn container_from_value(value: Value) -> Result<FirecrackerContainer> {
     let parsed: HostAgentContainerResponse = serde_json::from_value(value)
         .map_err(|e| SandboxError::Unavailable(format!("invalid host-agent response body: {e}")))?;

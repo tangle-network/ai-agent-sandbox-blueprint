@@ -797,20 +797,99 @@ async fn wipe_secrets(
 // Health & metrics endpoints (unauthenticated)
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug)]
+enum RuntimeProbeBackend {
+    Docker,
+    Firecracker,
+    Tee,
+}
+
+impl RuntimeProbeBackend {
+    fn as_str(self) -> &'static str {
+        match self {
+            RuntimeProbeBackend::Docker => "docker",
+            RuntimeProbeBackend::Firecracker => "firecracker",
+            RuntimeProbeBackend::Tee => "tee",
+        }
+    }
+}
+
+fn configured_runtime_probe_backend() -> Result<RuntimeProbeBackend, String> {
+    let raw = std::env::var("SANDBOX_RUNTIME_BACKEND").unwrap_or_else(|_| "docker".to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "docker" | "container" => Ok(RuntimeProbeBackend::Docker),
+        "firecracker" | "microvm" => Ok(RuntimeProbeBackend::Firecracker),
+        "tee" | "confidential" | "confidential-vm" => Ok(RuntimeProbeBackend::Tee),
+        _ => Err(format!(
+            "invalid SANDBOX_RUNTIME_BACKEND '{raw}' (expected docker|firecracker|tee)"
+        )),
+    }
+}
+
+async fn probe_runtime_backend() -> (String, bool, Option<String>) {
+    let backend = match configured_runtime_probe_backend() {
+        Ok(v) => v,
+        Err(err) => return ("invalid".to_string(), false, Some(err)),
+    };
+
+    match backend {
+        RuntimeProbeBackend::Docker => {
+            let ok = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let builder = runtime::docker_builder().await.ok()?;
+                builder.client().ping().await.ok()?;
+                Some(())
+            })
+            .await
+            .is_ok_and(|v| v.is_some());
+
+            (
+                backend.as_str().to_string(),
+                ok,
+                if ok {
+                    None
+                } else {
+                    Some("docker daemon unreachable".to_string())
+                },
+            )
+        }
+        RuntimeProbeBackend::Firecracker => {
+            let checked = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::firecracker::health(),
+            )
+            .await;
+            match checked {
+                Ok(Ok(())) => (backend.as_str().to_string(), true, None),
+                Ok(Err(err)) => (backend.as_str().to_string(), false, Some(err.to_string())),
+                Err(_) => (
+                    backend.as_str().to_string(),
+                    false,
+                    Some("firecracker host-agent health check timed out".to_string()),
+                ),
+            }
+        }
+        RuntimeProbeBackend::Tee => {
+            let ok = crate::tee::try_tee_backend().is_some();
+            (
+                backend.as_str().to_string(),
+                ok,
+                if ok {
+                    None
+                } else {
+                    Some("tee backend not initialized".to_string())
+                },
+            )
+        }
+    }
+}
+
 async fn health() -> impl IntoResponse {
-    // Check Docker daemon connectivity (5s timeout to prevent hung health checks).
-    // The outer timeout covers both docker_builder() init (first call may connect) and ping.
-    let docker_ok = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let builder = runtime::docker_builder().await.ok()?;
-        builder.client().ping().await.ok()
-    })
-    .await
-    .is_ok_and(|r| r.is_some());
+    let (runtime_backend, runtime_ok, runtime_error) = probe_runtime_backend().await;
 
     // Check persistent store readability.
     let store_ok = runtime::sandboxes().and_then(|s| s.values()).is_ok();
 
-    let (status, code) = match (docker_ok, store_ok) {
+    let (status, code) = match (runtime_ok, store_ok) {
         (true, true) => ("ok", StatusCode::OK),
         _ => ("degraded", StatusCode::SERVICE_UNAVAILABLE),
     };
@@ -828,9 +907,11 @@ async fn health() -> impl IntoResponse {
         Json(json!({
             "status": status,
             "checks": {
-                "docker": check(docker_ok),
+                "runtime": check(runtime_ok),
                 "store": check(store_ok),
-            }
+            },
+            "runtime_backend": runtime_backend,
+            "runtime_error": runtime_error,
         })),
     )
 }
@@ -840,23 +921,19 @@ async fn health() -> impl IntoResponse {
 /// when either subsystem is degraded. Kubernetes should route traffic only
 /// to ready instances (`readinessProbe` on this endpoint).
 async fn readyz() -> impl IntoResponse {
-    let docker_ok = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let builder = runtime::docker_builder().await.ok()?;
-        builder.client().ping().await.ok()
-    })
-    .await
-    .is_ok_and(|r| r.is_some());
-
+    let (runtime_backend, runtime_ok, runtime_error) = probe_runtime_backend().await;
     let store_ok = runtime::sandboxes().and_then(|s| s.values()).is_ok();
 
-    if docker_ok && store_ok {
+    if runtime_ok && store_ok {
         (StatusCode::OK, Json(json!({ "status": "ready" })))
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
                 "status": "not_ready",
-                "docker": docker_ok,
+                "runtime_backend": runtime_backend,
+                "runtime": runtime_ok,
+                "runtime_error": runtime_error,
                 "store": store_ok,
             })),
         )
@@ -2623,12 +2700,16 @@ mod tests {
         let json = body_json(response.into_body()).await;
         assert!(json["status"].is_string(), "missing status field");
         assert!(
-            json["checks"]["docker"]["status"].is_string(),
-            "missing checks.docker.status"
+            json["checks"]["runtime"]["status"].is_string(),
+            "missing checks.runtime.status"
         );
         assert!(
             json["checks"]["store"]["status"].is_string(),
             "missing checks.store.status"
+        );
+        assert!(
+            json["runtime_backend"].is_string(),
+            "missing runtime_backend field"
         );
     }
 
@@ -3127,6 +3208,13 @@ mod tests {
         );
         let json = body_json(response.into_body()).await;
         assert!(json["status"].is_string(), "missing status field");
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            assert!(
+                json["runtime"].is_boolean(),
+                "missing runtime boolean in not_ready payload"
+            );
+            assert!(json["store"].is_boolean(), "missing store boolean");
+        }
     }
 
     #[tokio::test]
