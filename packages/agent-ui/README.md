@@ -48,7 +48,7 @@ If Sandbox and Arena share substantial agent-facing code (roughly 20+ lines), ex
 
 ## Repo Strategy
 
-`@tangle/agent-ui` is a cross-product package, not `sandbox-ui`.
+`@tangle/agent-ui` is a cross-product package for shared agent experience building blocks.
 
 Keep it in this repo while:
 1. Most API changes are driven by sandbox-runtime sidecar integration work.
