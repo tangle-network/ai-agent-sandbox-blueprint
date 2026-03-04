@@ -780,7 +780,7 @@ pub async fn create_sidecar(
     request: &CreateSandboxParams,
     tee: Option<&dyn crate::tee::TeeBackend>,
 ) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
-    create_sidecar_with_token(request, tee, None).await
+    create_sidecar_with_token(request, tee, None, None).await
 }
 
 /// Internal: create sidecar with optional token override.
@@ -788,6 +788,7 @@ async fn create_sidecar_with_token(
     request: &CreateSandboxParams,
     tee: Option<&dyn crate::tee::TeeBackend>,
     token_override: Option<&str>,
+    sandbox_id_override: Option<&str>,
 ) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
     match resolve_runtime_backend(request)? {
         RuntimeBackend::Tee => {
@@ -796,14 +797,18 @@ async fn create_sidecar_with_token(
                     "TEE runtime selected but no TEE backend configured".into(),
                 )
             })?;
-            create_sidecar_tee(request, backend, token_override).await
+            create_sidecar_tee(request, backend, token_override, sandbox_id_override).await
         }
-        RuntimeBackend::Firecracker => create_sidecar_firecracker(request, token_override)
-            .await
-            .map(|r| (r, None)),
-        RuntimeBackend::Docker => create_sidecar_docker(request, token_override)
-            .await
-            .map(|r| (r, None)),
+        RuntimeBackend::Firecracker => {
+            create_sidecar_firecracker(request, token_override, sandbox_id_override)
+                .await
+                .map(|r| (r, None))
+        }
+        RuntimeBackend::Docker => {
+            create_sidecar_docker(request, token_override, sandbox_id_override)
+                .await
+                .map(|r| (r, None))
+        }
     }
 }
 
@@ -811,9 +816,12 @@ async fn create_sidecar_tee(
     request: &CreateSandboxParams,
     backend: &dyn crate::tee::TeeBackend,
     token_override: Option<&str>,
+    sandbox_id_override: Option<&str>,
 ) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
     let config = SidecarRuntimeConfig::load();
-    let sandbox_id = next_sandbox_id();
+    let sandbox_id = sandbox_id_override
+        .map(ToString::to_string)
+        .unwrap_or_else(next_sandbox_id);
     let token = match token_override {
         Some(t) if !t.trim().is_empty() => t.to_string(),
         _ => crate::auth::generate_token(),
@@ -948,6 +956,7 @@ fn resolve_runtime_backend(request: &CreateSandboxParams) -> Result<RuntimeBacke
 async fn create_sidecar_firecracker(
     _request: &CreateSandboxParams,
     _token_override: Option<&str>,
+    _sandbox_id_override: Option<&str>,
 ) -> Result<SandboxRecord> {
     Err(SandboxError::Validation(
         "runtime_backend=firecracker was requested, but Firecracker provisioning is not wired into sandbox-runtime yet".into(),
@@ -1111,6 +1120,7 @@ fn build_docker_config(
 async fn create_sidecar_docker(
     request: &CreateSandboxParams,
     token_override: Option<&str>,
+    sandbox_id_override: Option<&str>,
 ) -> Result<SandboxRecord> {
     let config = SidecarRuntimeConfig::load();
 
@@ -1138,7 +1148,9 @@ async fn create_sidecar_docker(
     ensure_image_pulled(builder, &effective_image).await?;
     let original_image = effective_image.clone();
 
-    let sandbox_id = next_sandbox_id();
+    let sandbox_id = sandbox_id_override
+        .map(ToString::to_string)
+        .unwrap_or_else(next_sandbox_id);
     let token = match token_override {
         Some(t) if !t.trim().is_empty() => t.to_string(),
         _ => crate::auth::generate_token(),
@@ -1534,7 +1546,7 @@ pub async fn recreate_sidecar_with_env(
 
     // Preserve the original token so existing workflows/references keep working.
     let (new_record, _attestation) =
-        create_sidecar_with_token(&params, tee, Some(&old_token)).await?;
+        create_sidecar_with_token(&params, tee, Some(&old_token), Some(&old.id)).await?;
     Ok(new_record)
 }
 

@@ -1456,15 +1456,31 @@ async fn instance_task_handler(
 /// Timeout for stop/resume operations (Docker stop + potential health polling).
 const STOP_RESUME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
+fn handle_lifecycle_outcome(
+    result: Result<(), crate::SandboxError>,
+    already_message: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(crate::SandboxError::Validation(msg))
+            if msg.to_ascii_lowercase().contains(already_message) =>
+        {
+            // Idempotent lifecycle call: already in target state.
+            Ok(())
+        }
+        Err(e) => Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
 async fn sandbox_stop_handler(
     SessionAuth(address): SessionAuth,
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::stop_sidecar(&record))
+    let stop_result = tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::stop_sidecar(&record))
         .await
-        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Stop operation timed out"))?
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Stop operation timed out"))?;
+    handle_lifecycle_outcome(stop_result, "already stopped")?;
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
         Json(LifecycleApiResponse {
@@ -1480,10 +1496,12 @@ async fn sandbox_resume_handler(
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::resume_sidecar(&record))
+    let resume_result = tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::resume_sidecar(&record))
         .await
-        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Resume operation timed out"))?
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Resume operation timed out"))?;
+    handle_lifecycle_outcome(resume_result, "already running")?;
+    // Resume transitions the sandbox back to service; clear any stale breaker state.
+    circuit_breaker::mark_healthy(&record.id);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
         Json(LifecycleApiResponse {
@@ -1497,10 +1515,10 @@ async fn sandbox_resume_handler(
 async fn instance_stop_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
     let id = record.id.clone();
-    tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::stop_sidecar(&record))
+    let stop_result = tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::stop_sidecar(&record))
         .await
-        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Stop operation timed out"))?
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Stop operation timed out"))?;
+    handle_lifecycle_outcome(stop_result, "already stopped")?;
 
     // Sync updated state back to instance store.
     if let Ok(Some(updated)) = sandboxes().and_then(|s| s.get(&id)) {
@@ -1520,10 +1538,11 @@ async fn instance_stop_handler(SessionAuth(address): SessionAuth) -> impl IntoRe
 async fn instance_resume_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
     let id = record.id.clone();
-    tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::resume_sidecar(&record))
+    let resume_result = tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::resume_sidecar(&record))
         .await
-        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Resume operation timed out"))?
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Resume operation timed out"))?;
+    handle_lifecycle_outcome(resume_result, "already running")?;
+    circuit_breaker::mark_healthy(&id);
 
     // Sync updated record (port mappings may have changed) back to instance store.
     if let Ok(Some(updated)) = sandboxes().and_then(|s| s.get(&id)) {
@@ -2254,11 +2273,15 @@ pub fn operator_api_router_with_tee(
 mod tests {
     use super::*;
     use axum::body::Body;
+    use axum::extract::State;
     use axum::http::Request;
     use http_body_util::BodyExt;
     use tower::util::ServiceExt;
 
-    use std::sync::Once;
+    use std::sync::{Arc, Mutex, Once};
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
     static INIT: Once = Once::new();
     fn init() {
         INIT.call_once(|| {
@@ -2281,6 +2304,101 @@ mod tests {
     fn test_auth_header() -> String {
         let token = session_auth::create_test_token("0x1234567890abcdef1234567890abcdef12345678");
         format!("Bearer {token}")
+    }
+
+    #[derive(Clone, Default)]
+    struct MockSidecarState {
+        last_exec_payload: Arc<Mutex<Option<Value>>>,
+        last_agent_payload: Arc<Mutex<Option<Value>>>,
+    }
+
+    async fn mock_sidecar_exec(
+        State(state): State<MockSidecarState>,
+        Json(payload): Json<Value>,
+    ) -> Json<Value> {
+        *state.last_exec_payload.lock().expect("exec lock") = Some(payload);
+        Json(json!({
+            "result": {
+                "exitCode": 0,
+                "stdout": "mock-exec-stdout",
+                "stderr": ""
+            }
+        }))
+    }
+
+    async fn mock_sidecar_agent(
+        State(state): State<MockSidecarState>,
+        Json(payload): Json<Value>,
+    ) -> Json<Value> {
+        *state.last_agent_payload.lock().expect("agent lock") = Some(payload.clone());
+        let session_id = payload
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("mock-agent-session");
+        Json(json!({
+            "success": true,
+            "response": "mock-agent-response",
+            "traceId": "trace-mock-1",
+            "sessionId": session_id,
+            "usage": {
+                "input_tokens": 2,
+                "output_tokens": 3
+            }
+        }))
+    }
+
+    async fn spawn_mock_sidecar() -> (String, MockSidecarState, JoinHandle<()>) {
+        let state = MockSidecarState::default();
+        let app = Router::new()
+            .route(
+                "/health",
+                get(|| async { (StatusCode::OK, Json(json!({"status":"ok"}))) }),
+            )
+            .route("/terminals/commands", post(mock_sidecar_exec))
+            .route("/agents/run", post(mock_sidecar_agent))
+            .with_state(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock sidecar");
+        let addr = listener.local_addr().expect("mock sidecar addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve mock sidecar");
+        });
+
+        let sidecar_url = format!("http://{addr}");
+        let health_url = format!("{sidecar_url}/health");
+        for _ in 0..20 {
+            if let Ok(resp) = reqwest::get(&health_url).await {
+                if resp.status().is_success() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        (sidecar_url, state, server)
+    }
+
+    async fn read_first_sse_frame(mut body: Body) -> Option<String> {
+        tokio::time::timeout(Duration::from_secs(3), async move {
+            loop {
+                let frame = body.frame().await?;
+                let frame = frame.ok()?;
+                let Ok(data) = frame.into_data() else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(&data).to_string();
+                if !text.trim().is_empty() {
+                    return Some(text);
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     #[tokio::test]
@@ -2620,13 +2738,13 @@ mod tests {
     }
 
     /// Insert a non-TEE sandbox into the store.
-    fn insert_plain_sandbox(id: &str, owner: &str) {
+    fn insert_plain_sandbox_with_url(id: &str, owner: &str, sidecar_url: &str) {
         init();
         use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
         let mut record = SandboxRecord {
             id: id.to_string(),
             container_id: format!("ctr-{id}"),
-            sidecar_url: "http://localhost:9999".into(),
+            sidecar_url: sidecar_url.to_string(),
             sidecar_port: 9999,
             ssh_port: None,
             token: "plain-token".into(),
@@ -2662,9 +2780,13 @@ mod tests {
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
+    fn insert_plain_sandbox(id: &str, owner: &str) {
+        insert_plain_sandbox_with_url(id, owner, "http://localhost:9999");
+    }
+
     /// Insert a singleton instance record (stored under key "instance").
-    fn insert_instance_sandbox(id: &str, owner: &str) {
-        insert_plain_sandbox(id, owner);
+    fn insert_instance_sandbox_with_url(id: &str, owner: &str, sidecar_url: &str) {
+        insert_plain_sandbox_with_url(id, owner, sidecar_url);
         let record = sandboxes()
             .unwrap()
             .get(id)
@@ -2674,6 +2796,10 @@ mod tests {
             .unwrap()
             .insert("instance".to_string(), record)
             .unwrap();
+    }
+
+    fn insert_instance_sandbox(id: &str, owner: &str) {
+        insert_instance_sandbox_with_url(id, owner, "http://localhost:9999");
     }
 
     // Use a distinct owner for TEE tests so sandbox inserts don't pollute
@@ -3224,5 +3350,177 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_live_terminal_stream_receives_exec_output() {
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("live-exec-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/live-exec-1/live/terminal/sessions")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let create_json = body_json(create.into_body()).await;
+        let session_id = create_json["session_id"]
+            .as_str()
+            .expect("session_id")
+            .to_string();
+
+        let stream = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/sandboxes/live-exec-1/live/terminal/sessions/{session_id}/stream"
+                    ))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+
+        let exec_body = json!({
+            "command": "echo hello",
+            "session_id": session_id,
+        });
+        let exec = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/live-exec-1/exec")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&exec_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(exec.status(), StatusCode::OK);
+        let exec_json = body_json(exec.into_body()).await;
+        assert_eq!(exec_json["stdout"], "mock-exec-stdout");
+
+        let frame = read_first_sse_frame(stream.into_body())
+            .await
+            .expect("sse frame");
+        assert!(
+            frame.contains("mock-exec-stdout"),
+            "expected terminal stream to include exec output, got: {frame}"
+        );
+
+        let exec_payload = sidecar_state
+            .last_exec_payload
+            .lock()
+            .expect("exec payload lock")
+            .clone()
+            .expect("exec payload");
+        assert_eq!(exec_payload["command"], "echo hello");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_live_chat_prompt_updates_instance_stream_and_history() {
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create_body = json!({ "title": "Live Prompt" });
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/live/chat/sessions")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&create_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let create_json = body_json(create.into_body()).await;
+        let session_id = create_json["session_id"]
+            .as_str()
+            .expect("chat session_id")
+            .to_string();
+
+        let stream = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/sandbox/live/chat/sessions/{session_id}/stream"
+                    ))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+
+        let prompt_body = json!({
+            "message": "hello from live stream",
+            "session_id": session_id,
+        });
+        let prompt = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&prompt_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prompt.status(), StatusCode::OK);
+        let prompt_json = body_json(prompt.into_body()).await;
+        assert_eq!(prompt_json["response"], "mock-agent-response");
+
+        let frame = read_first_sse_frame(stream.into_body())
+            .await
+            .expect("chat sse frame");
+        assert!(
+            frame.contains("user_message") || frame.contains("assistant_message"),
+            "expected chat stream event, got: {frame}"
+        );
+
+        let detail = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sandbox/live/chat/sessions/{session_id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.status(), StatusCode::OK);
+        let detail_json = body_json(detail.into_body()).await;
+        let messages = detail_json["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+
+        let agent_payload = sidecar_state
+            .last_agent_payload
+            .lock()
+            .expect("agent payload lock")
+            .clone()
+            .expect("agent payload");
+        assert_eq!(agent_payload["message"], "hello from live stream");
+        assert_eq!(agent_payload["sessionId"], session_id);
+        server.abort();
     }
 }

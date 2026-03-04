@@ -9,7 +9,6 @@ import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
 import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
 import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
 import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
-import { SidecarAuthPrompt } from '~/components/shared/SidecarAuthPrompt';
 import { ResourceTabs } from '~/components/shared/ResourceTabs';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
 import { getBlueprint } from '@tangle-network/blueprint-ui';
@@ -19,7 +18,7 @@ import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
 import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
 import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
-import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
+import { createDirectClient, createProxiedInstanceClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { cn } from '@tangle-network/blueprint-ui';
 
@@ -63,16 +62,17 @@ export default function InstanceDetail() {
   const { token: sidecarToken, isAuthenticated: isSidecarAuthed, authenticate: sidecarAuth, isAuthenticating } =
     useWagmiSidecarAuth(decodedId, sidecarUrl);
 
-  const client: SandboxClient | null = useMemo(() => {
-    if (!sidecarUrl || !sidecarToken) return null;
-    return createDirectClient(sidecarUrl, sidecarToken);
-  }, [sidecarUrl, sidecarToken]);
-
   // Operator API auth for attestation
   const operatorUrl = INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL;
   const { getToken: getOperatorToken } = useOperatorAuth(operatorUrl);
   const buildPath = useCallback((action: string) => `/api/sandbox/${action}`, []);
   const operatorApiCall = useOperatorApiCall(operatorUrl, getOperatorToken, buildPath);
+  const client: SandboxClient | null = useMemo(() => {
+    if (sidecarUrl && sidecarToken) {
+      return createDirectClient(sidecarUrl, sidecarToken);
+    }
+    return createProxiedInstanceClient(getOperatorToken, operatorUrl);
+  }, [sidecarUrl, sidecarToken, getOperatorToken, operatorUrl]);
 
   const ports = useExposedPorts(inst?.status, operatorApiCall);
 
@@ -231,23 +231,12 @@ export default function InstanceDetail() {
         <Card className="overflow-hidden">
           <CardContent className="p-0">
             <div className="h-[min(600px,65vh)]">
-              {!isSidecarAuthed ? (
-                <SidecarAuthPrompt
-                  message="Authenticate to start chatting"
-                  actionLabel="Authenticate"
-                  busyLabel="Authenticating..."
-                  isBusy={isAuthenticating}
-                  isWaiting={!sidecarUrl}
-                  onAuthenticate={sidecarAuth}
-                />
-              ) : (
-                <SessionSidebar
-                  sandboxId={decodedId}
-                  client={client}
-                  systemPrompt={systemPrompt}
-                  onSystemPromptChange={setSystemPrompt}
-                />
-              )}
+              <SessionSidebar
+                sandboxId={decodedId}
+                client={client}
+                systemPrompt={systemPrompt}
+                onSystemPromptChange={setSystemPrompt}
+              />
             </div>
           </CardContent>
         </Card>

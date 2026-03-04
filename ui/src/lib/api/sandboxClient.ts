@@ -18,8 +18,12 @@ export interface SandboxClientConfig {
   operatorApiUrl?: string;
   /** Proxied mode: session PASETO token */
   sessionToken?: string;
+  /** Proxied mode: lazily resolve a fresh session token */
+  sessionTokenProvider?: () => Promise<string | null>;
   /** Sandbox ID for proxied mode routing */
   sandboxId?: string;
+  /** Proxied mode: explicit resource path prefix (e.g. `/api/sandbox`) */
+  resourcePath?: string;
 }
 
 export interface ExecResult {
@@ -53,18 +57,54 @@ export class SandboxClient {
     return this.config.operatorApiUrl ?? '';
   }
 
-  private get headers(): Record<string, string> {
-    const h: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
+  private get proxiedResourcePath(): string {
+    if (this.config.resourcePath) return this.config.resourcePath;
+    if (this.config.sandboxId) return `/api/sandboxes/${encodeURIComponent(this.config.sandboxId)}`;
+    return '/api/sandbox';
+  }
 
-    if (this.config.mode === 'direct' && this.config.sidecarToken) {
-      h['Authorization'] = `Bearer ${this.config.sidecarToken}`;
-    } else if (this.config.mode === 'proxied' && this.config.sessionToken) {
-      h['Authorization'] = `Bearer ${this.config.sessionToken}`;
+  private async resolveAuthHeaders(includeJsonContentType = true): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {};
+    if (includeJsonContentType) headers['Content-Type'] = 'application/json';
+
+    if (this.config.mode === 'direct') {
+      if (this.config.sidecarToken) {
+        headers.Authorization = `Bearer ${this.config.sidecarToken}`;
+      }
+      return headers;
     }
 
-    return h;
+    const token =
+      this.config.sessionToken
+      ?? (this.config.sessionTokenProvider
+        ? await this.config.sessionTokenProvider()
+        : null);
+    if (!token) {
+      throw new Error('Operator session token unavailable');
+    }
+    headers.Authorization = `Bearer ${token}`;
+    return headers;
+  }
+
+  private async ensureProxiedChatSessionId(existingSessionId?: string): Promise<string | undefined> {
+    if (this.config.mode !== 'proxied') return existingSessionId;
+    if (existingSessionId?.trim()) return existingSessionId;
+
+    const res = await fetch(`${this.baseUrl}${this.proxiedResourcePath}/live/chat/sessions`, {
+      method: 'POST',
+      headers: await this.resolveAuthHeaders(true),
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Create chat session failed (${res.status}): ${body}`);
+    }
+    const data = await res.json();
+    const created = data.session_id ?? data.sessionId;
+    if (!created || typeof created !== 'string') {
+      throw new Error('Create chat session failed: missing session_id');
+    }
+    return created;
   }
 
   /** Execute a shell command in the sandbox. */
@@ -72,11 +112,11 @@ export class SandboxClient {
     const url =
       this.config.mode === 'direct'
         ? `${this.baseUrl}/terminals/commands`
-        : `${this.baseUrl}/api/sandboxes/${this.config.sandboxId}/exec`;
+        : `${this.baseUrl}${this.proxiedResourcePath}/exec`;
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: this.headers,
+      headers: await this.resolveAuthHeaders(true),
       body: JSON.stringify({ command }),
     });
 
@@ -98,15 +138,23 @@ export class SandboxClient {
     const url =
       this.config.mode === 'direct'
         ? `${this.baseUrl}/agent/prompt`
-        : `${this.baseUrl}/api/sandboxes/${this.config.sandboxId}/prompt`;
+        : `${this.baseUrl}${this.proxiedResourcePath}/prompt`;
 
-    const body: Record<string, unknown> = { prompt: text };
-    if (systemPrompt) body.system_prompt = systemPrompt;
-    if (sessionId) body.session_id = sessionId;
+    const resolvedSessionId = await this.ensureProxiedChatSessionId(sessionId);
+    const body: Record<string, unknown> = this.config.mode === 'direct'
+      ? { prompt: text }
+      : { message: text };
+
+    if (this.config.mode === 'direct') {
+      if (systemPrompt) body.system_prompt = systemPrompt;
+    } else if (systemPrompt) {
+      body.context_json = JSON.stringify({ system_prompt: systemPrompt });
+    }
+    if (resolvedSessionId) body.session_id = resolvedSessionId;
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: this.headers,
+      headers: await this.resolveAuthHeaders(true),
       body: JSON.stringify(body),
     });
 
@@ -118,7 +166,7 @@ export class SandboxClient {
     const data = await res.json();
     return {
       response: data.response ?? data.text ?? '',
-      sessionId: data.session_id ?? data.sessionId,
+      sessionId: data.session_id ?? data.sessionId ?? resolvedSessionId,
     };
   }
 
@@ -127,15 +175,23 @@ export class SandboxClient {
     const url =
       this.config.mode === 'direct'
         ? `${this.baseUrl}/agent/task`
-        : `${this.baseUrl}/api/sandboxes/${this.config.sandboxId}/task`;
+        : `${this.baseUrl}${this.proxiedResourcePath}/task`;
 
-    const body: Record<string, unknown> = { task: description };
-    if (systemPrompt) body.system_prompt = systemPrompt;
-    if (sessionId) body.session_id = sessionId;
+    const resolvedSessionId = await this.ensureProxiedChatSessionId(sessionId);
+    const body: Record<string, unknown> = this.config.mode === 'direct'
+      ? { task: description }
+      : { prompt: description };
+
+    if (this.config.mode === 'direct') {
+      if (systemPrompt) body.system_prompt = systemPrompt;
+    } else if (systemPrompt) {
+      body.context_json = JSON.stringify({ system_prompt: systemPrompt });
+    }
+    if (resolvedSessionId) body.session_id = resolvedSessionId;
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: this.headers,
+      headers: await this.resolveAuthHeaders(true),
       body: JSON.stringify(body),
     });
 
@@ -146,8 +202,8 @@ export class SandboxClient {
 
     const data = await res.json();
     return {
-      response: data.response ?? data.text ?? '',
-      sessionId: data.session_id ?? data.sessionId,
+      response: data.result ?? data.response ?? data.text ?? '',
+      sessionId: data.session_id ?? data.sessionId ?? resolvedSessionId,
       isComplete: data.is_complete ?? data.isComplete ?? true,
     };
   }
@@ -158,9 +214,9 @@ export class SandboxClient {
       const url =
         this.config.mode === 'direct'
           ? `${this.baseUrl}/health`
-          : `${this.baseUrl}/api/sandboxes/${this.config.sandboxId}/health`;
+          : `${this.baseUrl}/health`;
 
-      const res = await fetch(url, { headers: this.headers });
+      const res = await fetch(url, { headers: await this.resolveAuthHeaders(false) });
       return res.ok;
     } catch {
       return false;
@@ -180,13 +236,30 @@ export function createDirectClient(sidecarUrl: string, sidecarToken: string): Sa
 /** Create a proxied-mode client via operator API. */
 export function createProxiedClient(
   sandboxId: string,
-  sessionToken: string,
+  sessionTokenOrProvider: string | (() => Promise<string | null>),
   operatorApiUrl?: string,
 ): SandboxClient {
   return new SandboxClient({
     mode: 'proxied',
     sandboxId,
-    sessionToken,
+    sessionToken: typeof sessionTokenOrProvider === 'string' ? sessionTokenOrProvider : undefined,
+    sessionTokenProvider:
+      typeof sessionTokenOrProvider === 'function' ? sessionTokenOrProvider : undefined,
+    operatorApiUrl: operatorApiUrl ?? import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090',
+  });
+}
+
+/** Create a proxied-mode client for singleton instance endpoints (`/api/sandbox/*`). */
+export function createProxiedInstanceClient(
+  sessionTokenOrProvider: string | (() => Promise<string | null>),
+  operatorApiUrl?: string,
+): SandboxClient {
+  return new SandboxClient({
+    mode: 'proxied',
+    resourcePath: '/api/sandbox',
+    sessionToken: typeof sessionTokenOrProvider === 'string' ? sessionTokenOrProvider : undefined,
+    sessionTokenProvider:
+      typeof sessionTokenOrProvider === 'function' ? sessionTokenOrProvider : undefined,
     operatorApiUrl: operatorApiUrl ?? import.meta.env.VITE_OPERATOR_API_URL ?? 'http://localhost:9090',
   });
 }

@@ -13,7 +13,6 @@ import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
 import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
 import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
 import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
-import { SidecarAuthPrompt } from '~/components/shared/SidecarAuthPrompt';
 import { ResourceTabs } from '~/components/shared/ResourceTabs';
 import { sandboxListStore, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
@@ -27,7 +26,7 @@ import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
 import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
 import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
-import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
+import { createDirectClient, createProxiedClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '@tangle-network/blueprint-ui';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 
@@ -118,11 +117,13 @@ export default function SandboxDetail() {
   const operatorApiCall = useOperatorApiCall(operatorUrl, getOperatorToken, buildPath);
   const ports = useExposedPorts(sb?.status, operatorApiCall);
 
-  // Create sandbox client for direct API access (uses authenticated sidecar token)
+  // Chat client: direct sidecar mode when authed, otherwise proxied operator mode.
   const client: SandboxClient | null = useMemo(() => {
-    if (!sb?.sidecarUrl || !sidecarToken) return null;
-    return createDirectClient(sb.sidecarUrl, sidecarToken);
-  }, [sb?.sidecarUrl, sidecarToken]);
+    if (sb?.sidecarUrl && sidecarToken) {
+      return createDirectClient(sb.sidecarUrl, sidecarToken);
+    }
+    return createProxiedClient(decodedId, getOperatorToken, operatorUrl);
+  }, [sb?.sidecarUrl, sidecarToken, decodedId, getOperatorToken, operatorUrl]);
 
   const bpId = 'ai-agent-sandbox-blueprint';
 
@@ -491,26 +492,12 @@ export default function SandboxDetail() {
         <Card className="overflow-hidden">
           <CardContent className="p-0">
             <div className="h-[min(600px,65vh)]">
-              {!isSidecarAuthed ? (
-                <SidecarAuthPrompt
-                  message="Authenticate to start chatting"
-                  hint="Sign a message with your wallet to verify ownership"
-                  actionLabel="Connect"
-                  busyLabel="Signing..."
-                  waitingLabel="Waiting for sidecar..."
-                  isBusy={isAuthenticating}
-                  isWaiting={!sidecarUrl}
-                  onAuthenticate={() => sidecarAuth()}
-                  buttonVariant="secondary"
-                />
-              ) : (
-                <SessionSidebar
-                  sandboxId={decodedId}
-                  client={client}
-                  systemPrompt={systemPrompt}
-                  onSystemPromptChange={setSystemPrompt}
-                />
-              )}
+              <SessionSidebar
+                sandboxId={decodedId}
+                client={client}
+                systemPrompt={systemPrompt}
+                onSystemPromptChange={setSystemPrompt}
+              />
             </div>
           </CardContent>
         </Card>
