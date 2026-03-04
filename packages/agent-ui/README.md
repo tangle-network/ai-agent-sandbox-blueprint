@@ -13,6 +13,7 @@ Put code in `@tangle/agent-ui` when it is:
 Do not put code here when it is:
 - Chain/contract/provisioning infra (belongs in `@tangle/blueprint-ui`)
 - Product-specific route composition, copy, or business workflows (belongs in the app)
+- Sandbox-only shell/layout styling concerns (belongs in the sandbox app)
 
 ## Public API
 
@@ -38,6 +39,25 @@ const TerminalView = React.lazy(() =>
 ## Extraction Rule
 
 If Sandbox and Arena share substantial agent-facing code (roughly 20+ lines), extract it here instead of duplicating app-local logic.
+
+## Release
+
+- Publish target: npm package `@tangle/agent-ui`
+- Workflow: `.github/workflows/publish-agent-ui.yml`
+- Tag format: `agent-ui-vX.Y.Z` (must match `packages/agent-ui/package.json` version)
+
+## Repo Strategy
+
+`@tangle/agent-ui` is a cross-product package, not `sandbox-ui`.
+
+Keep it in this repo while:
+1. Most API changes are driven by sandbox-runtime sidecar integration work.
+2. Release cadence matches this monorepo.
+
+Split to its own repo when:
+1. There are 3+ external consumers with independent release cadence.
+2. Separate ownership/review boundaries are needed.
+3. Most changes no longer depend on this monorepo internals.
 
 ## Consumer Checklist
 

@@ -1,0 +1,55 @@
+name: Publish agent-ui to npm
+
+on:
+  push:
+    tags:
+      - 'agent-ui-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck package
+        run: pnpm -C packages/agent-ui typecheck
+
+      - name: Build package
+        run: pnpm -C packages/agent-ui build
+
+      - name: Ensure tag matches package version
+        if: startsWith(github.ref, 'refs/tags/agent-ui-v')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#agent-ui-v}"
+          PKG_VERSION="$(node -p "require('./packages/agent-ui/package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match @tangle/agent-ui version ($PKG_VERSION)"
+            exit 1
+          fi
+
+      - name: Publish package
+        working-directory: packages/agent-ui
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
