@@ -8,27 +8,13 @@ use serde::{Deserialize, Serialize};
 
 /// Maximum allowed length for command/prompt/message strings (100 KB).
 const MAX_TEXT_LEN: usize = 100 * 1024;
-
-/// Maximum allowed SSH public key length (16 KB).
-const MAX_SSH_KEY_LEN: usize = 16 * 1024;
-
-/// Maximum username length.
-const MAX_USERNAME_LEN: usize = 32;
+#[cfg(test)]
+const MAX_SSH_KEY_LEN: usize = crate::ssh_validation::MAX_SSH_KEY_LEN;
+#[cfg(test)]
+const MAX_USERNAME_LEN: usize = crate::ssh_validation::MAX_USERNAME_LEN;
 
 /// Maximum number of secret keys.
 const MAX_SECRET_KEYS: usize = 256;
-
-/// Accepted SSH key type prefixes.
-const SSH_KEY_PREFIXES: &[&str] = &[
-    "ssh-rsa ",
-    "ssh-ed25519 ",
-    "ssh-dss ",
-    "ecdsa-sha2-nistp256 ",
-    "ecdsa-sha2-nistp384 ",
-    "ecdsa-sha2-nistp521 ",
-    "sk-ssh-ed25519@openssh.com ",
-    "sk-ecdsa-sha2-nistp256@openssh.com ",
-];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Validation helpers
@@ -45,49 +31,17 @@ fn validate_required(field: &str, value: &str, max_len: usize) -> Result<(), Str
     Ok(())
 }
 
-/// Validate SSH public key format.
-fn validate_ssh_public_key(key: &str) -> Result<(), String> {
-    let trimmed = key.trim();
-    if trimmed.is_empty() {
-        return Err("public_key is required".into());
-    }
-    if trimmed.len() > MAX_SSH_KEY_LEN {
-        return Err(format!(
-            "public_key exceeds maximum length ({MAX_SSH_KEY_LEN} bytes)"
-        ));
-    }
-    if !SSH_KEY_PREFIXES.iter().any(|p| trimmed.starts_with(p)) {
-        return Err(
-            "public_key must start with a valid SSH key type (e.g., ssh-ed25519, ssh-rsa)"
-                .to_string(),
-        );
-    }
-    // Must have at least type + base64 data
-    let parts: Vec<&str> = trimmed.split_whitespace().collect();
-    if parts.len() < 2 {
-        return Err("public_key must contain type and key data".into());
-    }
-    Ok(())
-}
-
 /// Validate username (alphanumeric, dashes, underscores, dots; max 32 chars).
 fn validate_username(name: &str) -> Result<(), String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Ok(()); // Will default to "agent"
+    if name.trim().is_empty() {
+        return Ok(());
     }
-    if trimmed.len() > MAX_USERNAME_LEN {
-        return Err(format!(
-            "username exceeds maximum length ({MAX_USERNAME_LEN} chars)"
-        ));
-    }
-    if !trimmed
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-    {
-        return Err("username must be alphanumeric (with dashes, underscores, dots)".into());
-    }
-    Ok(())
+    crate::ssh_validation::validate_ssh_username(name)
+}
+
+/// Validate SSH public key format.
+fn validate_ssh_public_key(key: &str) -> Result<(), String> {
+    crate::ssh_validation::validate_ssh_public_key(key)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
