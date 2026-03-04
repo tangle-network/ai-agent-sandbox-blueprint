@@ -14,6 +14,7 @@ import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
 import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
 import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
 import { SidecarAuthPrompt } from '~/components/shared/SidecarAuthPrompt';
+import { ResourceTabs } from '~/components/shared/ResourceTabs';
 import { sandboxListStore, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
@@ -373,27 +374,7 @@ export default function SandboxDetail() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-1 mb-6 border-b border-cloud-elements-dividerColor pb-px">
-        {tabs.filter((t) => !t.hidden).map((t) => (
-          <button
-            key={t.key}
-            onClick={() => !t.disabled && setTab(t.key)}
-            disabled={t.disabled}
-            className={cn(
-              'flex items-center gap-1.5 px-3 py-2 text-sm font-display font-medium transition-colors border-b-2 -mb-px',
-              tab === t.key
-                ? 'text-violet-700 dark:text-violet-400 border-violet-500'
-                : t.disabled
-                  ? 'text-cloud-elements-textTertiary border-transparent cursor-not-allowed opacity-50'
-                  : 'text-cloud-elements-textSecondary border-transparent hover:text-cloud-elements-textPrimary hover:border-cloud-elements-borderColor',
-            )}
-          >
-            <div className={`${t.icon} text-sm`} />
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-6" />
 
       {/* Provision Progress (shown when creating) */}
       {sb.status === 'creating' && sb.callId && (

@@ -48,7 +48,7 @@ const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }
 
 const PROVISION_SECTIONS: FormSection[] = [
   { label: 'Identity', fields: ['name', 'agentIdentifier'] },
-  { label: 'Image & Stack', fields: ['image', 'stack'] },
+  { label: 'Image & Stack', fields: ['image', 'runtimeBackend', 'stack'] },
   { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
   { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
   { label: 'Features', fields: ['sshEnabled', 'sshPublicKey', 'webTerminalEnabled'] },
@@ -131,19 +131,60 @@ export default function CreatePage() {
   // Extra ports input (not an ABI field — merged into metadataJson before deploy)
   const [portsInput, setPortsInput] = useState('');
 
-  // Merge ports into metadataJson so they reach the backend via metadata_json.ports
+  // Keep TEE controls in sync with runtime backend selection.
+  useEffect(() => {
+    const backend = String(values.runtimeBackend || 'docker').toLowerCase();
+    if (backend === 'tee' && values.teeRequired !== true) {
+      onChange('teeRequired', true);
+      return;
+    }
+    if (backend === 'firecracker') {
+      if (values.teeRequired) {
+        onChange('teeRequired', false);
+      }
+      if (String(values.teeType ?? '0') !== '0') {
+        onChange('teeType', '0');
+      }
+    }
+  }, [values.runtimeBackend, values.teeRequired, values.teeType, onChange]);
+
+  // Merge runtime backend + ports into metadataJson.
   const mergedValues = useMemo(() => {
+    const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
     const ports = portsInput
       .split(',')
       .map((s) => parseInt(s.trim(), 10))
       .filter((n) => n > 0 && n <= 65535);
-    if (ports.length === 0) return values;
+
+    let metadata: Record<string, unknown> = {};
     try {
-      const existing = JSON.parse(String(values.metadataJson || '{}'));
-      return { ...values, metadataJson: JSON.stringify({ ...existing, ports }) };
+      const parsed = JSON.parse(String(values.metadataJson || '{}'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        metadata = parsed as Record<string, unknown>;
+      }
     } catch {
-      return { ...values, metadataJson: JSON.stringify({ ports }) };
+      metadata = {};
     }
+
+    metadata.runtime_backend = runtimeBackend;
+    if (ports.length > 0) {
+      metadata.ports = ports;
+    } else {
+      delete metadata.ports;
+    }
+
+    const nextValues: Record<string, unknown> = {
+      ...values,
+      metadataJson: JSON.stringify(metadata),
+    };
+    if (runtimeBackend === 'tee') {
+      nextValues.teeRequired = true;
+    } else if (runtimeBackend === 'firecracker') {
+      nextValues.teeRequired = false;
+      nextValues.teeType = '0';
+    }
+
+    return nextValues;
   }, [values, portsInput]);
 
   // Unified deploy hook — manages both submitJob and requestService paths
@@ -468,6 +509,13 @@ function DeployStep({
 
   const name = String(values.name || '');
   const image = String(values.image || '');
+  const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
+  const runtimeLabel =
+    runtimeBackend === 'firecracker'
+      ? 'Firecracker'
+      : runtimeBackend === 'tee'
+        ? 'TEE'
+        : 'Docker';
   const cpuCores = Number(values.cpuCores) || 2;
   const memoryMb = Number(values.memoryMb) || 2048;
   const diskGb = Number(values.diskGb) || 10;
@@ -512,6 +560,7 @@ function DeployStep({
 
         {/* Resource pills */}
         <div className="flex items-center gap-2 mt-4">
+          <ResourcePill icon="i-ph:stack" label={runtimeLabel} />
           <ResourcePill icon="i-ph:cpu" label={`${cpuCores} CPU`} />
           <ResourcePill icon="i-ph:memory" label={`${memoryMb} MB`} />
           <ResourcePill icon="i-ph:hard-drive" label={`${diskGb} GB`} />
@@ -584,6 +633,22 @@ function DeployStep({
           <span className="text-xs text-cloud-elements-textTertiary">
             <span className="font-data font-semibold text-cloud-elements-textSecondary">{String(capacity)}</span> capacity slots available
           </span>
+        </div>
+      )}
+
+      {status === 'idle' && runtimeBackend === 'firecracker' && (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
+          <div className="flex items-center gap-3">
+            <div className="i-ph:warning-circle text-lg text-amber-400" />
+            <div className="flex-1">
+              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+                Firecracker requires an operator runtime with Firecracker provisioning enabled
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
+                This mode is mutually exclusive with TEE in the current release.
+              </p>
+            </div>
+          </div>
         </div>
       )}
 

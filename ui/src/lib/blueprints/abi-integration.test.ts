@@ -24,10 +24,7 @@ import {
   SANDBOX_ID_ABI,
   WORKFLOW_CREATE_ABI,
   WORKFLOW_CONTROL_ABI,
-  INSTANCE_PROVISION_ABI,
-  JSON_REQUEST_ABI,
   SANDBOX_CREATE_VALUES,
-  INSTANCE_PROVISION_VALUES,
   WORKFLOW_CREATE_VALUES,
   SANDBOX_ID_CONTEXT,
 } from '~/test/fixtures';
@@ -124,23 +121,12 @@ describe('Sandbox Blueprint ABI Integration', () => {
 describe('Instance Blueprint ABI Integration', () => {
   const BP = 'ai-agent-instance-blueprint';
 
-  it('provision encodes ProvisionRequest with sidecar_token', () => {
-    const decoded = encodeAndDecode(BP, INSTANCE_JOB_IDS.PROVISION, INSTANCE_PROVISION_VALUES, undefined, INSTANCE_PROVISION_ABI);
-    const d = decoded as readonly unknown[];
-    expect(d[0]).toBe('test-instance');       // name
-    expect(d[1]).toBe('ubuntu:22.04');       // image
-    expect(d[14]).toBe('');                  // sidecar_token (internal, default empty)
-    expect(d[15]).toBe(false);              // tee_required
-    expect(d[16]).toBe(0);                  // tee_type
-  });
-
-  it('deprovision encodes JsonRequest', () => {
-    const decoded = encodeAndDecode(BP, INSTANCE_JOB_IDS.DEPROVISION, { json: '{}' }, undefined, JSON_REQUEST_ABI);
-    expect((decoded as readonly unknown[])[0]).toBe('{}');
-  });
-
-  it('all 2 on-chain jobs exist and are encodable', () => {
-    for (const id of [INSTANCE_JOB_IDS.PROVISION, INSTANCE_JOB_IDS.DEPROVISION]) {
+  it('all 3 on-chain jobs exist and are encodable', () => {
+    for (const id of [
+      INSTANCE_JOB_IDS.WORKFLOW_CREATE,
+      INSTANCE_JOB_IDS.WORKFLOW_TRIGGER,
+      INSTANCE_JOB_IDS.WORKFLOW_CANCEL,
+    ]) {
       const job = getJobById(BP, id);
       expect(job, `Instance job ${id} should exist`).toBeDefined();
       expect(() => encodeJobArgs(job!, {})).not.toThrow();
@@ -153,20 +139,12 @@ describe('Instance Blueprint ABI Integration', () => {
 describe('TEE Instance Blueprint ABI Integration', () => {
   const BP = 'ai-agent-tee-instance-blueprint';
 
-  it('provision encodes ProvisionRequest with TEE defaults', () => {
-    const decoded = encodeAndDecode(BP, INSTANCE_JOB_IDS.PROVISION, {
-      ...INSTANCE_PROVISION_VALUES,
-      teeRequired: true,
-      teeType: '1',
-    }, undefined, INSTANCE_PROVISION_ABI);
-    const d = decoded as readonly unknown[];
-    expect(d[0]).toBe('test-instance');
-    expect(d[15]).toBe(true);  // tee_required
-    expect(d[16]).toBe(1);     // tee_type = TDX
-  });
-
-  it('all 2 on-chain jobs exist and are encodable', () => {
-    for (const id of [INSTANCE_JOB_IDS.PROVISION, INSTANCE_JOB_IDS.DEPROVISION]) {
+  it('all 3 on-chain jobs exist and are encodable', () => {
+    for (const id of [
+      INSTANCE_JOB_IDS.WORKFLOW_CREATE,
+      INSTANCE_JOB_IDS.WORKFLOW_TRIGGER,
+      INSTANCE_JOB_IDS.WORKFLOW_CANCEL,
+    ]) {
       const job = getJobById(BP, id);
       expect(job, `TEE instance job ${id} should exist`).toBeDefined();
       expect(() => encodeJobArgs(job!, {})).not.toThrow();
@@ -177,22 +155,22 @@ describe('TEE Instance Blueprint ABI Integration', () => {
 // ── Cross-Blueprint Consistency ──
 
 describe('Cross-Blueprint Consistency', () => {
-  it('TEE instance and standard instance produce identical ABI encoding for same values', () => {
-    const stdJob = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
-    const teeJob = getJobById('ai-agent-tee-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
+  it('TEE instance and standard instance produce identical workflow encoding', () => {
+    const stdJob = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;
+    const teeJob = getJobById('ai-agent-tee-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;
 
-    const stdEncoded = encodeJobArgs(stdJob, INSTANCE_PROVISION_VALUES);
-    const teeEncoded = encodeJobArgs(teeJob, INSTANCE_PROVISION_VALUES);
+    const stdEncoded = encodeJobArgs(stdJob, WORKFLOW_CREATE_VALUES);
+    const teeEncoded = encodeJobArgs(teeJob, WORKFLOW_CREATE_VALUES);
     expect(stdEncoded).toBe(teeEncoded);
   });
 
-  it('field count matches Rust struct field count for all provision jobs', () => {
+  it('field count matches Rust struct field count for workflow jobs', () => {
     // SandboxCreateRequest: 16 fields
     const sandboxCreate = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.SANDBOX_CREATE)!;
     expect(sandboxCreate.fields.filter(f => f.abiType).length).toBe(16);
 
-    // ProvisionRequest: 17 fields (14 shared + sidecar_token + tee_required + tee_type)
-    const instanceProvision = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
-    expect(instanceProvision.fields.filter(f => f.abiType).length).toBe(17);
+    // WorkflowCreateRequest: 5 fields
+    const instanceWorkflowCreate = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;
+    expect(instanceWorkflowCreate.fields.filter(f => f.abiType).length).toBe(5);
   });
 });

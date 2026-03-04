@@ -1,84 +1,188 @@
 # Layer Contracts
 
-This document defines interface contracts between infrastructure, runtime, and product layers.
+This document defines the minimal cross-layer contracts for the blueprint family.
 
-## Non-Negotiable Contract
+## Non-Negotiable Rule
 
-On-chain jobs **must** mutate authoritative state. No exceptions.
+On-chain jobs are for state transitions only.
 
-Read-only behavior **must** be implemented via:
-- `eth_call` for on-chain view/pure reads
-- off-chain HTTP APIs (operator API) for operational reads
-- off-chain background services for indexed/aggregated reads
+- If an operation mutates authoritative state: on-chain job.
+- If an operation is read-only or operational I/O: `eth_call` and/or operator HTTP API.
 
-Encoding a state read as an on-chain job is a compliance violation. If an operation
-does not create, delete, or modify a persistent record, it is not a job.
+## Current State (March 3, 2026)
 
-## Contract 1: Infrastructure to Runtime (`microvm-blueprint` -> `sandbox-runtime`)
+- `sandbox-runtime` currently contains both runtime contracts and concrete Docker/TEE integrations.
+- Minimal runtime contracts are now codified in `sandbox-runtime/src/contracts.rs`.
+- `microvm-blueprint` is the target L0 substrate and should be consumed only via L1 adapters.
+- `ai-agent-tee-instance-blueprint-lib` currently depends on `ai-agent-instance-blueprint-lib` (same-product variant coupling). This is a temporary exception that should be removed by extracting shared instance runtime logic to L1.
 
-Provider (`microvm-blueprint`) guarantees:
-- Stable infra primitives for execution/provisioning lifecycle
-- Deterministic, documented failure modes
-- Versioned capability surfaces
+## Contract 1: `SandboxProvider` (L0/L1 boundary)
 
-Consumer (`sandbox-runtime`) guarantees:
-- Uses infra primitives through adapter boundaries, not product policy logic
-- Translates infra errors into runtime-domain errors
-- Does not leak infra-only types into product APIs unless explicitly versioned
+Infra-facing lifecycle contract. Implemented by Docker/microVM/TEE providers.
 
-Compatibility policy:
-- Breaking changes require version bump and migration notes.
-- Deprecated interfaces must have a defined removal window.
+Reference implementation:
+- `sandbox-runtime/src/contracts.rs`:
+  - trait `SandboxProvider`
+  - struct `DockerSandboxProvider`
 
-## Contract 2: Runtime to Products (`sandbox-runtime` -> product repos)
+```rust
+#[async_trait]
+pub trait SandboxProvider: Send + Sync {
+    async fn create(&self, req: CreateSandboxRequest) -> Result<CreateSandboxResult, ProviderError>;
+    async fn stop(&self, sandbox_id: &str) -> Result<(), ProviderError>;
+    async fn resume(&self, sandbox_id: &str) -> Result<ResumeResult, ProviderError>;
+    async fn destroy(&self, sandbox_id: &str) -> Result<(), ProviderError>;
+    async fn status(&self, sandbox_id: &str) -> Result<SandboxStatus, ProviderError>;
+}
+```
 
-Provider (`sandbox-runtime`) guarantees:
-- Stable runtime contracts for auth, sessioning, provisioning, operator APIs, and lifecycle hooks
-- Backward-compatible adapter behavior within a major version
-- Clear semantics for state transitions exposed to products
+Data contract:
 
-Consumers (`ai-agent-sandbox-blueprint`, `ai-trading-blueprints`, `openclaw-hosting-blueprint`) guarantee:
-- Depend on runtime contracts instead of directly binding to infra internals
-- Keep business/workflow logic in product layer only
-- Avoid cross-product imports and shared hidden coupling
+```rust
+pub struct CreateSandboxRequest {
+    pub sandbox_id: String,
+    pub owner: String,
+    pub image: String,
+    pub cpu_cores: u64,
+    pub memory_mb: u64,
+    pub disk_gb: u64,
+    pub env: BTreeMap<String, String>,
+    pub labels: BTreeMap<String, String>,
+    pub tee: Option<TeeRequest>,
+}
 
-Compatibility policy:
-- Runtime contract changes require changelog entries and upgrade notes.
-- Products must pin compatible runtime versions and upgrade intentionally.
+pub struct CreateSandboxResult {
+    pub sandbox_id: String,
+    pub sidecar_url: String,
+    pub ssh_port: Option<u16>,
+    pub attestation_json: Option<String>,
+    pub tee_deployment_id: Option<String>,
+}
+```
 
-## Contract 3: Product Layer
+## Contract 2: `RuntimeAdapter` (L1 stable surface)
 
-Each product guarantees:
-- Product-owned job catalog only for state transitions (create, delete, modify persistent records)
-- Product-owned read APIs implemented as `eth_call` and/or off-chain HTTP services
-- No direct dependency on other product repos
+Product-facing runtime contract. Products should consume this instead of provider internals.
 
-Forbidden patterns:
-- Read-only on-chain jobs (compliance violation)
-- Direct L2 -> L0 dependency (must go through L1 adapters)
-- Product-to-product dependency edges (L2 -> L2)
+Reference implementation:
+- `sandbox-runtime/src/contracts.rs`:
+  - trait `RuntimeAdapter`
+  - struct `DefaultRuntimeAdapter<P: SandboxProvider>`
 
-## Dependency Rules (Enforced)
+```rust
+#[async_trait]
+pub trait RuntimeAdapter: Send + Sync {
+    async fn provision(&self, req: RuntimeProvisionRequest) -> Result<RuntimeProvisionResult, RuntimeError>;
+    async fn deprovision(&self, req: RuntimeDeprovisionRequest) -> Result<(), RuntimeError>;
+    async fn exec(&self, req: RuntimeExecRequest) -> Result<RuntimeExecResult, RuntimeError>;
+    async fn prompt(&self, req: RuntimePromptRequest) -> Result<RuntimePromptResult, RuntimeError>;
+    async fn task(&self, req: RuntimeTaskRequest) -> Result<RuntimeTaskResult, RuntimeError>;
+}
+```
 
-- Allowed: L2 -> L1 -> L0
-- Forbidden: L2 -> L0
-- Forbidden: L2 -> L2
-- Forbidden: L1 -> L2
+Data contract:
 
-## API and Job Design Checklist
+```rust
+pub struct RuntimeProvisionRequest {
+    pub service_id: u64,
+    pub owner: String,
+    pub template_id: String,
+    pub tenant: TenantProfile,
+}
 
-Before adding a new operation:
-1. Does this operation create, delete, or modify a persistent record?
-2. If yes → on-chain job. If no → `eth_call` or off-chain HTTP endpoint. Never both.
-3. Which layer owns this behavior (L0/L1/L2)?
-4. Does this introduce a forbidden dependency edge (L2→L0, L2→L2, L1→L2)?
-5. Have versioning and migration notes been updated if an interface changes?
+pub struct RuntimeProvisionResult {
+    pub sandbox_id: String,
+    pub sidecar_url: String,
+    pub ssh_port: Option<u16>,
+    pub tee_attestation_json: Option<String>,
+    pub tee_public_key_json: Option<String>,
+}
+```
 
-## Governance
+## Contract 3: `TemplatePack` (product -> runtime configuration bundle)
 
-- Architecture PRs that cross layer boundaries must include:
-  - dependency impact
-  - compatibility impact
-  - migration/rollback plan
-- Boundary violations should fail CI.
-- Exceptions require time-boxed waivers and explicit issue tracking.
+Versioned configuration pack for runtime provisioning and policy defaults.
+
+```rust
+pub trait TemplatePack: Send + Sync {
+    fn id(&self) -> &str;
+    fn version(&self) -> &str;
+    fn sidecar_image(&self) -> &str;
+    fn env_defaults(&self) -> &BTreeMap<String, String>;
+    fn runtime_limits(&self) -> RuntimeLimits;
+}
+```
+
+Data contract:
+
+```rust
+pub struct RuntimeLimits {
+    pub max_lifetime_seconds: u64,
+    pub idle_timeout_seconds: u64,
+    pub cpu_cores: u64,
+    pub memory_mb: u64,
+    pub disk_gb: u64,
+}
+```
+
+## Contract 4: `TenantProfile` (authz + quota policy input)
+
+Tenant-specific policy used by runtime and operator API enforcement.
+
+```rust
+pub struct TenantProfile {
+    pub tenant_id: String,
+    pub owner_address: String,
+    pub permitted_callers: Vec<String>,
+    pub rate_tier: RateTier,
+    pub quota: TenantQuota,
+    pub metadata: serde_json::Value,
+}
+
+pub struct TenantQuota {
+    pub max_sandboxes: u32,
+    pub max_concurrent_execs: u32,
+    pub max_storage_gb: u32,
+}
+```
+
+## Contract 5: `InstanceLifecycleReporter` (operator -> manager on-chain sync)
+
+Direct instance lifecycle sync surface for operator-signed transactions.
+
+```rust
+pub trait InstanceLifecycleReporter {
+    fn report_provisioned(
+        service_id: u64,
+        sandbox_id: String,
+        sidecar_url: String,
+        ssh_port: u32,
+        tee_attestation_json: String,
+    );
+
+    fn report_deprovisioned(service_id: u64);
+}
+```
+
+Validation rules:
+- `msg.sender` must be an active service operator (`isServiceOperator`).
+- `instanceMode` must be enabled on manager.
+- TEE manager requires non-empty attestation on provision.
+- Direct report is canonical for startup reconciliation.
+
+## Dependency Rules
+
+- Allowed: `Product (L2) -> RuntimeAdapter (L1) -> SandboxProvider (L0)`
+- Forbidden: `L2 -> L0` direct dependencies
+- Forbidden: cross-product dependencies (`L2 -> L2`)
+- Temporary exception: tee-instance crate reusing instance crate internals inside this repo; remove by extracting shared logic into L1.
+
+## Compatibility Policy
+
+- Additive fields are allowed with safe defaults.
+- Removing or changing field semantics requires a major version bump.
+- Any contract-breaking change requires migration notes and rollout plan in PR.
+Reference implementation:
+- `sandbox-runtime/src/contracts.rs`:
+  - trait `TemplatePack`
+  - struct `StaticTemplatePack`

@@ -10,11 +10,9 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_provisionWithEmptyAttestationReverts() public {
-        uint64 callId = 100;
-        simulateJobCall(testServiceId, teeInstance.JOB_PROVISION(), callId, bytes(""));
+        setServiceOperator(testServiceId, operator1, true);
 
-        // Use literal job ID (5 = PROVISION)
-        vm.prank(tangleCore);
+        vm.prank(operator1);
         vm.expectRevert(
             abi.encodeWithSelector(
                 AgentSandboxBlueprint.MissingTeeAttestation.selector,
@@ -22,14 +20,7 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
                 operator1
             )
         );
-        teeInstance.onJobResult(
-            testServiceId,
-            5, // JOB_PROVISION
-            callId,
-            operator1,
-            bytes(""),
-            encodeProvisionOutputs("sb-1", "http://sidecar:8080", 2222, "")
-        );
+        teeInstance.reportProvisioned(testServiceId, "sb-1", "http://sidecar:8080", 2222, "");
     }
 
     function test_provisionWithAttestationSucceeds() public {
@@ -38,6 +29,32 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
         assertTrue(teeInstance.isProvisioned(testServiceId));
         assertTrue(teeInstance.isOperatorProvisioned(testServiceId, operator1));
         assertEq(teeInstance.getOperatorCount(testServiceId), 1);
+    }
+
+    function test_reportProvisionedWithEmptyAttestationReverts() public {
+        setServiceOperator(testServiceId, operator1, true);
+
+        vm.prank(operator1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AgentSandboxBlueprint.MissingTeeAttestation.selector,
+                testServiceId,
+                operator1
+            )
+        );
+        teeInstance.reportProvisioned(testServiceId, "sb-r1", "http://tee-op1:8080", 2222, "");
+    }
+
+    function test_reportProvisionedWithAttestationSucceeds() public {
+        setServiceOperator(testServiceId, operator1, true);
+
+        string memory attestation = '{"tee":"phala","quote":"abc123"}';
+        vm.prank(operator1);
+        teeInstance.reportProvisioned(testServiceId, "sb-r1", "http://tee-op1:8080", 2222, attestation);
+
+        assertTrue(teeInstance.isOperatorProvisioned(testServiceId, operator1));
+        assertEq(teeInstance.getOperatorCount(testServiceId), 1);
+        assertEq(teeInstance.getAttestationHash(testServiceId, operator1), keccak256(bytes(attestation)));
     }
 
     function test_attestationHashAlwaysStored() public {
@@ -66,20 +83,10 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
         _provisionOperator(operator1);
         assertTrue(teeInstance.isProvisioned(testServiceId));
 
-        uint64 callId = 200;
-        simulateJobCall(testServiceId, teeInstance.JOB_DEPROVISION(), callId, bytes(""));
-
         vm.expectEmit(true, true, false, false);
         emit AgentSandboxBlueprint.OperatorDeprovisioned(testServiceId, operator1);
 
-        simulateJobResult(
-            testServiceId,
-            teeInstance.JOB_DEPROVISION(),
-            callId,
-            operator1,
-            bytes(""),
-            encodeJsonOutputs("{}")
-        );
+        _deprovisionOperator(operator1);
 
         assertFalse(teeInstance.isProvisioned(testServiceId));
         assertEq(teeInstance.getOperatorCount(testServiceId), 0);

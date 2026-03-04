@@ -12,6 +12,8 @@ pub mod auto_provision;
 #[cfg(feature = "billing")]
 pub mod billing;
 pub mod jobs;
+pub mod reporting;
+pub mod workflows;
 
 // Re-export sandbox-runtime modules.
 pub use sandbox_runtime::instance_types::{
@@ -37,11 +39,17 @@ pub use jobs::exec::{
     AgentResponse, build_agent_payload, build_exec_payload, call_agent, extract_exec_fields,
     parse_agent_response, run_instance_exec, run_instance_prompt, run_instance_task,
 };
-pub use jobs::provision::{
-    deprovision_core, instance_deprovision, instance_provision, provision_core,
-};
+pub use jobs::provision::{deprovision_core, provision_core};
 pub use jobs::snapshot::run_instance_snapshot;
 pub use jobs::ssh::{provision_key, revoke_key};
+pub use jobs::workflow::{workflow_cancel, workflow_create, workflow_tick_job, workflow_trigger};
+pub use reporting::{
+    clear_pending_provision_report, ensure_local_provision_reported, get_pending_provision_report,
+    mark_pending_provision_report, provision_output_from_record, report_local_deprovision,
+    report_local_provision, retry_pending_provision_report_once,
+    spawn_pending_provision_report_worker, try_report_local_deprovision,
+};
+pub use workflows::bootstrap_workflows_from_chain;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Job IDs — must match the sequential indices in RegisterBlueprint.s.sol.
@@ -51,14 +59,14 @@ pub use jobs::ssh::{provision_key, revoke_key};
 pub const JOB_SANDBOX_CREATE: u8 = 0;
 /// Cloud mode only — defined for cross-crate consistency.
 pub const JOB_SANDBOX_DELETE: u8 = 1;
-/// Cloud mode only — defined for cross-crate consistency.
+/// Workflow job shared across cloud and instance modes.
 pub const JOB_WORKFLOW_CREATE: u8 = 2;
-/// Cloud mode only — defined for cross-crate consistency.
+/// Workflow job shared across cloud and instance modes.
 pub const JOB_WORKFLOW_TRIGGER: u8 = 3;
-/// Cloud mode only — defined for cross-crate consistency.
+/// Workflow job shared across cloud and instance modes.
 pub const JOB_WORKFLOW_CANCEL: u8 = 4;
-pub const JOB_PROVISION: u8 = 5;
-pub const JOB_DEPROVISION: u8 = 6;
+/// Internal cron job — not registered on-chain, never submitted via submitJob.
+pub const JOB_WORKFLOW_TICK: u8 = 255;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ABI types
@@ -131,6 +139,20 @@ sol! {
         bool include_workspace;
         bool include_state;
     }
+
+    // ── Workflows (shared ABI with cloud mode) ────────────────────────────
+
+    struct WorkflowCreateRequest {
+        string name;
+        string workflow_json;
+        string trigger_type;
+        string trigger_config;
+        string sandbox_config_json;
+    }
+
+    struct WorkflowControlRequest {
+        uint64 workflow_id;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,7 +188,7 @@ pub fn get_instance_sandbox() -> error::Result<Option<SandboxRecord>> {
 pub fn require_instance_sandbox() -> Result<SandboxRecord, String> {
     get_instance_sandbox()
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Instance not provisioned — call JOB_PROVISION first".to_string())
+        .ok_or_else(|| "Instance not provisioned".to_string())
 }
 
 /// Store the provisioned sandbox record.
@@ -269,11 +291,13 @@ pub fn extract_agent_fields(parsed: &Value) -> (bool, String, String, String) {
 
 /// Router that maps job IDs to handlers.
 ///
-/// Only state-changing operations remain on-chain (provision + deprovision).
+/// State-changing operations remain on-chain (workflow + provision lifecycle).
 /// Read-only ops (exec, prompt, task, snapshot, SSH) are served via the
 /// operator HTTP API.
 pub fn router() -> Router {
     Router::new()
-        .route(JOB_PROVISION, instance_provision.layer(TangleLayer))
-        .route(JOB_DEPROVISION, instance_deprovision.layer(TangleLayer))
+        .route(JOB_WORKFLOW_CREATE, workflow_create.layer(TangleLayer))
+        .route(JOB_WORKFLOW_TRIGGER, workflow_trigger.layer(TangleLayer))
+        .route(JOB_WORKFLOW_CANCEL, workflow_cancel.layer(TangleLayer))
+        .route(JOB_WORKFLOW_TICK, workflow_tick_job)
 }

@@ -4,7 +4,7 @@
 
 This blueprint is a sidecar-only model. Operators provide compute by running sidecar containers
 locally via Docker or inside Trusted Execution Environments (TEE). State-changing lifecycle
-operations (create, delete, provision) are on-chain jobs. Read-only and operational actions
+operations (create, delete, workflow lifecycle) are on-chain jobs. Read-only and operational actions
 (exec, prompt, task, stop, resume, snapshot, SSH, secrets) are served via the authenticated
 operator HTTP API. No centralized orchestrator is required or used.
 
@@ -23,7 +23,7 @@ The sidecar container runs as a non-root user with `/home/agent` as the primary 
 └─────────────┘     JobResult         │                        │
                                       │  ┌──────────────────┐  │
                                       │  │     Router       │  │
-                                      │  │    (7 jobs)      │  │
+                                      │  │    (5 jobs)      │  │
                                       │  └────────┬─────────┘  │
                                       │           │            │
                                       │  ┌────────┴─────────┐  │
@@ -98,9 +98,9 @@ On-chain jobs (state-changing only):
 
 ### Instance Provisioning
 
-On-chain jobs (state-changing only):
-- `JOB_PROVISION` (5)
-- `JOB_DEPROVISION` (6)
+Lifecycle sync is operator-driven and report-based:
+- `reportProvisioned(serviceId, sandboxId, sidecarUrl, sshPort, teeAttestationJson)`
+- `reportDeprovisioned(serviceId)`
 
 ### Operator API (off-chain)
 
@@ -338,7 +338,7 @@ The on-chain contract also tracks per-operator capacity (`operatorMaxCapacity`,
 
 ### On-Chain Job Arguments
 
-These structs define the ABI-encoded arguments for the 7 on-chain jobs. Each job **must** mutate
+These structs define the ABI-encoded arguments for the 5 on-chain jobs. Each job **must** mutate
 authoritative state.
 
 ```solidity

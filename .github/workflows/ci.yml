@@ -130,8 +130,20 @@ jobs:
   ui:
     name: UI build & typecheck
     runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN != '' && secrets.GH_PACKAGES_TOKEN || (secrets.NPM_TOKEN != '' && secrets.NPM_TOKEN || secrets.GITHUB_TOKEN) }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Checkout blueprint-ui dependency
+        uses: actions/checkout@v4
+        with:
+          repository: tangle-network/blueprint-ui
+          ref: df2f81193b88a05b07ff6a816b7e672805129935
+          path: blueprint-ui
+
+      - name: Link blueprint-ui at expected local path
+        run: ln -sfn "$GITHUB_WORKSPACE/blueprint-ui" "$GITHUB_WORKSPACE/../blueprint-ui"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -142,9 +154,18 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@tangle-network'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Link workspace node_modules for symlinked blueprint-ui resolution
+        run: ln -sfn "$GITHUB_WORKSPACE/ui/node_modules" "$GITHUB_WORKSPACE/../node_modules"
+
+      - name: Build workspace UI packages
+        run: pnpm build
+        working-directory: packages/agent-ui
 
       - name: TypeScript check
         run: pnpm exec tsc --noEmit

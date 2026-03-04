@@ -79,6 +79,7 @@ version = "0.1.0"
 dependencies = [
  "ai-agent-instance-blueprint-lib",
  "axum",
+ "blueprint-producers-extra",
  "blueprint-qos",
  "blueprint-sdk",
  "blueprint-tangle-extra",
@@ -95,6 +96,8 @@ dependencies = [
  "axum",
  "blueprint-anvil-testing-utils",
  "blueprint-sdk",
+ "chrono",
+ "cron",
  "docktopus",
  "futures-util",
  "hex",
@@ -104,8 +107,10 @@ dependencies = [
  "sandbox-runtime",
  "serde",
  "serde_json",
+ "tempfile",
  "tiny-keccak",
  "tokio",
+ "tracing",
  "tracing-subscriber 0.3.22",
  "url",
  "wiremock",
@@ -161,6 +166,7 @@ version = "0.1.0"
 dependencies = [
  "ai-agent-tee-instance-blueprint-lib",
  "axum",
+ "blueprint-producers-extra",
  "blueprint-sdk",
  "blueprint-tangle-extra",
  "sandbox-runtime",
@@ -175,6 +181,7 @@ dependencies = [
  "ai-agent-instance-blueprint-lib",
  "blueprint-sdk",
  "sandbox-runtime",
+ "serde_json",
  "tokio",
  "tracing",
 ]

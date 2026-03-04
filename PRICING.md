@@ -4,7 +4,7 @@ This document explains the pricing model for the AI Agent Sandbox Blueprint, inc
 
 ## Pricing Model Overview
 
-The blueprint uses a **multiplier-based pricing model** for its **7 on-chain jobs**. The blueprint owner sets a single **base rate** (the cost of the cheapest on-chain operation), and all job types are priced as multiples of that base rate. Operations that do not mutate on-chain state (exec, prompt, task, stop, resume, snapshot, SSH, batch) are served via the off-chain operator HTTP API and are not priced as on-chain jobs.
+The blueprint uses a **multiplier-based pricing model** for its **5 on-chain jobs**. The blueprint owner sets a single **base rate** (the cost of the cheapest on-chain operation), and all job types are priced as multiples of that base rate. Operations that do not mutate on-chain state (exec, prompt, task, stop, resume, snapshot, SSH, batch) are served via the off-chain operator HTTP API and are not priced as on-chain jobs.
 
 This design:
 - Adapts automatically to token price changes (just adjust the base rate)
@@ -12,7 +12,7 @@ This design:
 - Is simple for operators to reason about
 - Can be reconfigured via `setJobEventRates()` on the Tangle contract
 
-### On-Chain Job Pricing (7 jobs)
+### On-Chain Job Pricing (5 jobs)
 
 These are the only operations priced as on-chain jobs. Each job **must** mutate authoritative state.
 
@@ -20,11 +20,9 @@ These are the only operations priced as on-chain jobs. Each job **must** mutate 
 |------|-----|----|-----------|
 | 1x | SANDBOX_DELETE | 1 | Trivial teardown |
 | 1x | WORKFLOW_CANCEL | 4 | Flag update |
-| 1x | DEPROVISION | 6 | Instance teardown |
 | 2x | WORKFLOW_CREATE | 2 | Config validation + storage |
 | 5x | WORKFLOW_TRIGGER | 3 | Initiates execution pipeline |
 | 50x | SANDBOX_CREATE | 0 | Container lifecycle + prepaid runtime |
-| 50x | PROVISION | 5 | Instance auto-provision |
 
 ### Off-Chain Operations (operator API)
 
@@ -45,7 +43,6 @@ Operators set their own pricing for these via RFQ or subscription models:
 | WORKFLOW_CREATE | 0.002 | $0.002 |
 | WORKFLOW_TRIGGER | 0.005 | $0.005 |
 | SANDBOX_CREATE | 0.050 | $0.050 |
-| PROVISION | 0.050 | $0.050 |
 
 ---
 
@@ -164,7 +161,7 @@ stop, resume, snapshot, SSH, batch) are priced by operators via their own billin
 
 ### 1x — Trivial Teardown / Flag Updates
 
-**On-chain jobs:** SANDBOX_DELETE, WORKFLOW_CANCEL, DEPROVISION
+**On-chain jobs:** SANDBOX_DELETE, WORKFLOW_CANCEL
 
 **Cost basis:**
 - Raw cost: $0.00001-0.0001 per operation
@@ -189,7 +186,7 @@ stop, resume, snapshot, SSH, batch) are priced by operators via their own billin
 
 ### 50x — Container Lifecycle
 
-**On-chain jobs:** SANDBOX_CREATE, PROVISION
+**On-chain jobs:** SANDBOX_CREATE
 
 **Cost basis:**
 - Container creation + 10min prepaid runtime:

@@ -7,8 +7,10 @@
 pub mod api_types;
 pub mod auth;
 pub mod circuit_breaker;
+pub mod contracts;
 pub mod error;
 pub mod http;
+pub mod ingress_access_control;
 pub mod instance_types;
 pub mod metrics;
 pub mod operator_api;
@@ -26,6 +28,10 @@ pub mod util;
 pub mod test_utils;
 
 pub use error::SandboxError;
+pub use ingress_access_control::{
+    AUTH_MODE_BEARER, DEFAULT_TOKEN_PREFIX, INGRESS_UI_AUTH_MODE_ENV, INGRESS_UI_BEARER_TOKEN_ENV,
+    UiBearerCredential,
+};
 pub use runtime::{CreateSandboxParams, SandboxRecord, SandboxState};
 pub use tee::{
     AttestationReport, TeeBackend, TeeConfig, TeeDeployParams, TeeDeployment, TeeType,

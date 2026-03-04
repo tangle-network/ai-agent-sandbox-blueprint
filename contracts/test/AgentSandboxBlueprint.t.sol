@@ -516,8 +516,8 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_SANDBOX_CREATE()), 1);
         assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_SANDBOX_DELETE()), 1);
         assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_WORKFLOW_CREATE()), 1);
-        assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_PROVISION()), 1);
-        assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_DEPROVISION()), 1);
+        assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_WORKFLOW_TRIGGER()), 1);
+        assertEq(blueprint.getRequiredResultCount(1, blueprint.JOB_WORKFLOW_CANCEL()), 1);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -584,19 +584,23 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // MODE ENFORCEMENT — CLOUD MODE REJECTS INSTANCE JOBS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function test_cloudModeRejectsInstanceModeJobs() public {
-        // onJobCall rejects PROVISION (5) and DEPROVISION (6)
+    function test_cloudModeRejectsUnknownJobs() public {
         for (uint8 jobId = 5; jobId <= 6; jobId++) {
             vm.prank(tangleCore);
-            vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
+            vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, jobId));
             blueprint.onJobCall(1, jobId, uint64(960 + jobId), bytes(""));
         }
-        // onJobResult rejects PROVISION (5) and DEPROVISION (6)
         for (uint8 jobId = 5; jobId <= 6; jobId++) {
             vm.prank(tangleCore);
-            vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
+            vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, jobId));
             blueprint.onJobResult(1, jobId, uint64(962 + jobId), operator1, bytes(""), bytes(""));
         }
+    }
+
+    function test_cloudModeRejectsDirectInstanceReporting() public {
+        vm.prank(operator1);
+        vm.expectRevert(AgentSandboxBlueprint.InstanceModeOnly.selector);
+        blueprint.reportProvisioned(1, "sb-r1", "http://op1:8080", 2222, "");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -806,8 +810,8 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         // It will revert on overflow due to Solidity 0.8 checked math.
         vm.assume(baseRate <= type(uint256).max / 50);
         (uint8[] memory jobs, uint256[] memory rates) = blueprint.getDefaultJobRates(baseRate);
-        assertTrue(jobs.length == 7);
-        assertTrue(rates.length == 7);
+        assertTrue(jobs.length == 5);
+        assertTrue(rates.length == 5);
         // Verify all rates are >= baseRate (multiplied by >= 1)
         for (uint256 i = 0; i < rates.length; i++) {
             assertTrue(rates[i] >= baseRate);

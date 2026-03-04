@@ -51,18 +51,38 @@ contract RegisterBlueprint is Script {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // Blueprint Definition builders — all use 7 jobs
+    // Blueprint Definition builders
     // ═════════════════════════════════════════════════════════════════════════
 
-    function _buildJobs() internal pure returns (Types.JobDefinition[] memory jobs) {
-        jobs = new Types.JobDefinition[](7);
+    function _buildCloudJobs() internal pure returns (Types.JobDefinition[] memory jobs) {
+        jobs = new Types.JobDefinition[](5);
         jobs[0] = Types.JobDefinition("sandbox_create", "Create a new AI sandbox", "", "", "");
         jobs[1] = Types.JobDefinition("sandbox_delete", "Delete an AI sandbox", "", "", "");
         jobs[2] = Types.JobDefinition("workflow_create", "Create or update a workflow", "", "", "");
         jobs[3] = Types.JobDefinition("workflow_trigger", "Trigger a workflow execution", "", "", "");
         jobs[4] = Types.JobDefinition("workflow_cancel", "Cancel an active workflow", "", "", "");
-        jobs[5] = Types.JobDefinition("provision", "Provision operator for instance mode", "", "", "");
-        jobs[6] = Types.JobDefinition("deprovision", "Deprovision operator instance", "", "", "");
+    }
+
+    function _buildInstanceJobs() internal pure returns (Types.JobDefinition[] memory jobs) {
+        jobs = new Types.JobDefinition[](5);
+        // IDs are positional in Tangle metadata. Keep 0/1 reserved so workflow IDs stay 2/3/4.
+        jobs[0] = Types.JobDefinition(
+            "cloud_only_reserved_sandbox_create",
+            "Reserved in instance mode (cloud sandbox lifecycle only)",
+            "",
+            "",
+            ""
+        );
+        jobs[1] = Types.JobDefinition(
+            "cloud_only_reserved_sandbox_delete",
+            "Reserved in instance mode (cloud sandbox lifecycle only)",
+            "",
+            "",
+            ""
+        );
+        jobs[2] = Types.JobDefinition("workflow_create", "Create or update a workflow", "", "", "");
+        jobs[3] = Types.JobDefinition("workflow_trigger", "Trigger a workflow execution", "", "", "");
+        jobs[4] = Types.JobDefinition("workflow_cancel", "Cancel an active workflow", "", "", "");
     }
 
     function _buildSandboxDefinition(address manager)
@@ -97,7 +117,7 @@ contract RegisterBlueprint is Script {
             profilingData: ""
         });
 
-        def.jobs = _buildJobs();
+        def.jobs = _buildCloudJobs();
 
         def.registrationSchema = "";
         def.requestSchema = "";
@@ -159,7 +179,7 @@ contract RegisterBlueprint is Script {
             profilingData: ""
         });
 
-        def.jobs = _buildJobs();
+        def.jobs = _buildInstanceJobs();
 
         def.registrationSchema = "";
         def.requestSchema = "";
@@ -221,7 +241,7 @@ contract RegisterBlueprint is Script {
             profilingData: ""
         });
 
-        def.jobs = _buildJobs();
+        def.jobs = _buildInstanceJobs();
 
         def.registrationSchema = "";
         def.requestSchema = "";

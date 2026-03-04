@@ -14,6 +14,7 @@ ai-agent-instance-blueprint-lib = { path = "../ai-agent-instance-blueprint-lib" 
 sandbox-runtime = { path = "../sandbox-runtime", features = ["tee-all"] }
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tracing", "macros", "tangle", "local-store"] }
 tracing = "0.1"
+serde_json = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

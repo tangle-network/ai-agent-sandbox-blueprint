@@ -819,7 +819,7 @@ async fn test_spawn_watchdog_shutdown() {
     config.check_interval_secs = 60; // long interval so we test shutdown, not ticking
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let handle = billing::spawn_watchdog(config, shutdown_rx);
+    let handle = billing::spawn_watchdog(config, shutdown_rx, None);
 
     // Give it a moment to start
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

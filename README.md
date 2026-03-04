@@ -33,6 +33,7 @@ Caller ─── Tangle EVM ─── BlueprintRunner ─── Job Handlers
 Canonical references:
 - `docs/ARCHITECTURE.md`
 - `docs/CONTRACTS.md`
+- `BLUEPRINT_FACTORY_STATUS.md`
 
 Hard rules:
 - On-chain jobs **must** mutate authoritative state. No read-only jobs.
@@ -51,7 +52,7 @@ Dependency direction:
 
 | Crate | Role |
 |-------|------|
-| `sandbox-runtime` | Shared library: Docker lifecycle, operator API, session auth, rate limiting, metrics, encryption |
+| `sandbox-runtime` | Shared library: Docker lifecycle, operator API, session auth, rate limiting, metrics, encryption, and L1 contracts (`SandboxProvider`/`RuntimeAdapter`) |
 | `ai-agent-sandbox-blueprint-lib` | Cloud/sandbox mode job handlers + workflows |
 | `ai-agent-instance-blueprint-lib` | Instance mode: auto-provision + billing |
 | `ai-agent-tee-instance-blueprint-lib` | TEE instance: attestation + sealed secrets |
@@ -79,19 +80,42 @@ Extraction rule:
 - Recommended duplication check:
   - `npx jscpd --min-lines 8 --min-tokens 80 --format ts,tsx --ignore "**/node_modules/**,**/.next/**,**/dist/**,**/build/**" /home/drew/code/blueprint-ui/src /home/drew/code/ai-agent-sandbox-blueprint/packages/agent-ui/src /home/drew/code/ai-agent-sandbox-blueprint/ui/src /home/drew/code/ai-trading-blueprints/arena/src`
 
-## On-Chain Jobs (7 total)
+## On-Chain Jobs (5 total)
 
 | ID | Name | Mode | Description |
 |----|------|------|-------------|
 | 0 | `SANDBOX_CREATE` | Cloud | Create a new sandbox container |
 | 1 | `SANDBOX_DELETE` | Cloud | Delete a sandbox and clean up |
-| 2 | `WORKFLOW_CREATE` | Cloud | Register a workflow template |
-| 3 | `WORKFLOW_TRIGGER` | Cloud | Trigger a registered workflow |
-| 4 | `WORKFLOW_CANCEL` | Cloud | Cancel an active workflow |
-| 5 | `PROVISION` | Instance | Report auto-provision result on-chain |
-| 6 | `DEPROVISION` | Instance | Report deprovision result on-chain |
+| 2 | `WORKFLOW_CREATE` | Cloud + Instance | Register a workflow template |
+| 3 | `WORKFLOW_TRIGGER` | Cloud + Instance | Trigger a registered workflow |
+| 4 | `WORKFLOW_CANCEL` | Cloud + Instance | Cancel an active workflow |
 
 Internal: `JOB_WORKFLOW_TICK` (255) — cron-driven workflow scheduler, never on-chain.
+
+### Runtime Backend Selection
+
+Sandbox creation supports backend selection via `metadata_json.runtime_backend`:
+
+- `docker` (default)
+- `firecracker` (microVM path; requires operator runtime support)
+- `tee` (forces TEE provisioning path)
+
+UI behavior:
+- "Runtime Backend" selector writes to `metadata_json.runtime_backend`.
+- Selecting `tee` forces `tee_required=true`.
+- Selecting `firecracker` forces `tee_required=false` (current release does not support Firecracker+TEE composition).
+
+### Instance Lifecycle Semantics
+
+- Canonical path is operator-signed direct reporting:
+  - `reportProvisioned(serviceId, sandboxId, sidecarUrl, sshPort, teeAttestationJson)`
+  - `reportDeprovisioned(serviceId)`
+- Authentication is `msg.sender` + Tangle membership (`isServiceOperator(serviceId, msg.sender)`).
+- `onServiceInitialized` stores desired state (`owner/config`) but does not claim runtime readiness.
+- Runtime startup auto-provisions locally, then reports provision directly to manager.
+- State machine remains strict:
+  - report provision when already provisioned => revert `AlreadyProvisioned`
+  - report deprovision when not provisioned => revert `NotProvisioned`
 
 ## Operator API (HTTP)
 
@@ -118,7 +142,18 @@ All data endpoints require PASETO v4 session auth (EIP-191 challenge-response).
 - `ANY /api/sandboxes/{id}/port/{port}` — Proxy to container port
 
 ### Instance Operations (instance mode: `/api/sandbox/...`)
-Same operations as above but scoped to the singleton instance sandbox.
+- `GET /api/sandbox/ports` — List singleton sandbox ports
+- `POST /api/sandbox/exec` — Execute a command
+- `POST /api/sandbox/prompt` — Run an AI prompt
+- `POST /api/sandbox/task` — Run an AI task
+- `POST /api/sandbox/stop` — Stop the singleton sandbox
+- `POST /api/sandbox/resume` — Resume the singleton sandbox
+- `POST /api/sandbox/snapshot` — Upload a snapshot
+- `POST /api/sandbox/ssh` — Provision SSH key
+- `DELETE /api/sandbox/ssh` — Revoke SSH key
+- `ANY /api/sandbox/port/{port}` — Proxy to singleton container port
+
+Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is currently sandbox-scoped (`/api/sandboxes/{id}/secrets`).
 
 ### Infrastructure
 - `GET /health` — Docker + store health check (503 when degraded)

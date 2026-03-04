@@ -76,6 +76,7 @@ describe('useJobForm with real blueprint jobs', () => {
     const v = result.current.values;
     expect(v.name).toBe('');
     expect(v.image).toBe('ubuntu:22.04');
+    expect(v.runtimeBackend).toBe('docker');
     expect(v.stack).toBe('default');
     expect(v.cpuCores).toBe(2);
     expect(v.memoryMb).toBe(2048);
@@ -90,18 +91,19 @@ describe('useJobForm with real blueprint jobs', () => {
     expect(v).not.toHaveProperty('sidecarToken');
   });
 
-  it('initializes instance_provision with sidecarToken excluded', () => {
-    const job = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
+  it('initializes instance workflow_create defaults', () => {
+    const job = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;
     const { result } = renderHook(() => useJobForm(job));
-    expect(result.current.values).not.toHaveProperty('sidecarToken');
     expect(result.current.values.name).toBe('');
+    expect(result.current.values.workflowJson).toBe('');
+    expect(result.current.values.triggerType).toBe('');
   });
 
-  it('initializes TEE instance_provision with teeRequired=true', () => {
-    const job = getJobById('ai-agent-tee-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
+  it('initializes TEE instance workflow_create defaults', () => {
+    const job = getJobById('ai-agent-tee-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;
     const { result } = renderHook(() => useJobForm(job));
-    expect(result.current.values.teeRequired).toBe(true);
-    expect(result.current.values.teeType).toBe('1');
+    expect(result.current.values.name).toBe('');
+    expect(result.current.values.workflowJson).toBe('');
   });
 });
 

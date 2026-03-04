@@ -1,14 +1,14 @@
 //! End-to-end test: Instance blueprint lifecycle through Tangle + operator API.
 //!
 //! This exercises the FULL production path for the instance blueprint:
-//!   1. Provision instance via Tangle job (BlueprintHarness → Anvil → Runner → Docker)
+//!   1. Provision instance locally (BlueprintHarness → Anvil → Runner → Docker)
 //!   2. Start operator API server
 //!   3. Authenticate via EIP-191 challenge → PASETO session token
 //!   4. Exercise EVERY instance operator API endpoint against the real sidecar
 //!   5. Test secrets inject/wipe through sandbox-scoped endpoint
 //!   6. Verify cross-owner tenant isolation
 //!   7. Test every input validation path, error path, and idempotency
-//!   8. Deprovision via Tangle job
+//!   8. Deprovision via local lifecycle path
 //!
 //! Run:
 //!   SIDECAR_E2E=1 cargo test -p ai-agent-instance-blueprint-lib \
@@ -20,12 +20,10 @@
 //!   - TNT core artifacts (run scripts/fetch-localtestnet-fixtures.sh)
 
 use ai_agent_instance_blueprint_lib::{
-    JOB_DEPROVISION, JOB_PROVISION, JsonResponse, ProvisionOutput, ProvisionRequest, router,
+    ProvisionRequest, deprovision_core, provision_core, router, set_instance_sandbox,
 };
 use anyhow::{Context, Result};
 use blueprint_anvil_testing_utils::{BlueprintHarness, missing_tnt_core_artifacts};
-use blueprint_sdk::alloy::primitives::Bytes;
-use blueprint_sdk::alloy::sol_types::SolValue;
 use once_cell::sync::Lazy;
 use sandbox_runtime::e2e_step;
 use sandbox_runtime::test_utils::*;
@@ -35,7 +33,6 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
 const ANVIL_TEST_TIMEOUT: Duration = Duration::from_secs(600);
-const JOB_RESULT_TIMEOUT: Duration = Duration::from_secs(180);
 
 static HARNESS_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
 
@@ -82,8 +79,8 @@ async fn instance_full_lifecycle() -> Result<()> {
         };
         eprintln!("  Owner address: {owner_address}");
 
-        // ─── Step 2: Provision instance via Tangle ───────────────────────
-        e2e_step!(2, "Submitting JOB_PROVISION via Tangle...");
+        // ─── Step 2: Provision instance locally ───────────────────────────
+        e2e_step!(2, "Provisioning local instance runtime...");
         let provision_payload = ProvisionRequest {
             name: "e2e-instance".to_string(),
             image: "agent-dev".to_string(),
@@ -102,20 +99,12 @@ async fn instance_full_lifecycle() -> Result<()> {
             sidecar_token: String::new(),
             tee_required: false,
             tee_type: 0,
-        }
-        .abi_encode();
+        };
 
-        let provision_sub = harness
-            .submit_job(JOB_PROVISION, Bytes::from(provision_payload))
-            .await?;
-        let provision_output = harness
-            .wait_for_job_result_with_deadline(provision_sub, JOB_RESULT_TIMEOUT)
+        let (provision_receipt, record) = provision_core(&provision_payload, None, &owner_address)
             .await
-            .context("provision job result not received")?;
-
-        // Verify on-chain result is valid ABI
-        let provision_receipt = ProvisionOutput::abi_decode(&provision_output)
-            .context("failed to ABI-decode ProvisionOutput from on-chain result")?;
+            .map_err(anyhow::Error::msg)?;
+        set_instance_sandbox(record)?;
         let sandbox_id = provision_receipt.sandbox_id.clone();
         let initial_sidecar_url = provision_receipt.sidecar_url.clone();
 
@@ -561,22 +550,11 @@ async fn instance_full_lifecycle() -> Result<()> {
         .await;
         eprintln!("  Cross-owner isolation confirmed (list, exec, secrets)");
 
-        // ─── Step 26: Deprovision via Tangle ─────────────────────────────
-        e2e_step!(26, "Deprovisioning via Tangle...");
-        let deprovision_payload = JsonResponse {
-            json: json!({"action": "deprovision"}).to_string(),
-        }
-        .abi_encode();
-        let deprovision_sub = harness
-            .submit_job(JOB_DEPROVISION, Bytes::from(deprovision_payload))
-            .await?;
-        let deprovision_output = harness
-            .wait_for_job_result_with_deadline(deprovision_sub, JOB_RESULT_TIMEOUT)
+        // ─── Step 26: Deprovision locally ─────────────────────────────────
+        e2e_step!(26, "Deprovisioning local instance runtime...");
+        let (deprovision_result, _) = deprovision_core(None)
             .await
-            .context("deprovision job result not received")?;
-
-        let deprovision_result = JsonResponse::abi_decode(&deprovision_output)
-            .context("failed to decode deprovision result")?;
+            .map_err(anyhow::Error::msg)?;
         let deprovision_json: Value = serde_json::from_str(&deprovision_result.json)?;
         assert_eq!(
             deprovision_json["deprovisioned"], true,

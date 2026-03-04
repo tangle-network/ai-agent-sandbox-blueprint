@@ -148,7 +148,6 @@ echo "  TEE Instance BSM:  $TEE_INSTANCE_BSM (blueprint #$TEE_INSTANCE_BLUEPRINT
 # ── [2/11] Configure per-job pricing ────────────────────────────────
 echo "[2/11] Configuring per-job pricing (base rate: $BASE_RATE wei)..."
 
-# All 3 blueprints use the same unified ConfigureJobRates script (7 jobs each).
 for BP_LABEL_ID in "Sandbox:$SANDBOX_BLUEPRINT_ID:$SANDBOX_BSM" \
                    "Instance:$INSTANCE_BLUEPRINT_ID:$INSTANCE_BSM" \
                    "TEE Instance:$TEE_INSTANCE_BLUEPRINT_ID:$TEE_INSTANCE_BSM"; do
@@ -159,7 +158,7 @@ for BP_LABEL_ID in "Sandbox:$SANDBOX_BLUEPRINT_ID:$SANDBOX_BSM" \
     BSM_ADDRESS=$BSM_ADDR \
     forge script "$ROOT_DIR/contracts/script/ConfigureJobRates.s.sol:ConfigureJobRates" \
         --rpc-url "$RPC_URL" --broadcast --slow --disable-code-size-limit > /dev/null 2>&1 || true
-    echo "  $BP_LABEL: 7 job rates configured"
+    echo "  $BP_LABEL: job rates configured"
 done
 
 # ── [3/11] Register operators ────────────────────────────────────────

@@ -5,7 +5,7 @@ import type { Address } from 'viem';
 
 /**
  * TEE Instance Blueprint — identical to Instance but provisions through a TEE backend.
- * Higher pricing multipliers reflect TEE overhead. TEE fields default to enabled.
+ * Lifecycle is operator-reported; on-chain surface is workflows only.
  */
 
 export const TEE_INSTANCE_BLUEPRINT: BlueprintDefinition = {
@@ -20,10 +20,9 @@ export const TEE_INSTANCE_BLUEPRINT: BlueprintDefinition = {
     pricingOverrides: Object.fromEntries(
       Object.entries(TEE_INSTANCE_PRICING_TIERS).map(([k, v]) => [Number(k), v.multiplier]),
     ),
-    teeDefaults: true,
   }),
   categories: [
-    { key: 'lifecycle', label: 'TEE Lifecycle', icon: 'i-ph:shield-check' },
+    { key: 'workflow', label: 'Workflows', icon: 'i-ph:flow-arrow' },
   ],
 };
 
