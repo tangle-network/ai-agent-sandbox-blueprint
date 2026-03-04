@@ -419,10 +419,19 @@ pub async fn capacity_test_lock_async() -> tokio::sync::MutexGuard<'static, ()> 
 
 /// Extract a Bearer token from an Authorization header value.
 pub fn extract_bearer_token(auth_header: &str) -> Option<&str> {
-    auth_header
-        .strip_prefix("Bearer ")
-        .or_else(|| auth_header.strip_prefix("bearer "))
-        .map(|t| t.trim())
+    let mut parts = auth_header.split_whitespace();
+    let scheme = parts.next()?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = parts.next()?;
+    if token.trim().is_empty() {
+        return None;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(token.trim())
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +721,11 @@ mod tests {
     fn extract_bearer() {
         assert_eq!(extract_bearer_token("Bearer abc123"), Some("abc123"));
         assert_eq!(extract_bearer_token("bearer xyz"), Some("xyz"));
+        assert_eq!(extract_bearer_token("BEARER token"), Some("token"));
+        assert_eq!(extract_bearer_token("bEaReR Mixed"), Some("Mixed"));
+        assert_eq!(extract_bearer_token("Bearer"), None);
+        assert_eq!(extract_bearer_token("Bearer   "), None);
+        assert_eq!(extract_bearer_token("Bearer a b"), None);
         assert_eq!(extract_bearer_token("Basic abc"), None);
     }
 

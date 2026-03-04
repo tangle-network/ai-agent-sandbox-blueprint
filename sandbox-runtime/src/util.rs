@@ -78,12 +78,7 @@ pub fn merge_metadata(
 pub fn normalize_username(username: &str) -> Result<String> {
     let trimmed = username.trim();
     let name = if trimmed.is_empty() { "root" } else { trimmed };
-    if !name
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
-    {
-        return Err(SandboxError::Validation("Invalid SSH username".into()));
-    }
+    crate::ssh_validation::validate_ssh_username(name).map_err(SandboxError::Validation)?;
     Ok(name.to_string())
 }
 
