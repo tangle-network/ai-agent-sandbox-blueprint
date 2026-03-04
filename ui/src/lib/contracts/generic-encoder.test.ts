@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { decodeAbiParameters } from 'viem';
-import { encodeJobArgs } from '@tangle/blueprint-ui';
+import { encodeJobArgs } from '@tangle-network/blueprint-ui';
 import { makeJob, makeField } from '~/test/fixtures';
 
 // ── Unit tests: coercion, context params, edge cases ──

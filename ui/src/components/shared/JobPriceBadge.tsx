@@ -1,8 +1,8 @@
 import { useStore } from '@nanostores/react';
-import { infraStore } from '@tangle/blueprint-ui';
-import { useJobPrice } from '@tangle/blueprint-ui';
-import { formatCost } from '@tangle/blueprint-ui';
-import { cn } from '@tangle/blueprint-ui';
+import { infraStore } from '@tangle-network/blueprint-ui';
+import { useJobPrice } from '@tangle-network/blueprint-ui';
+import { formatCost } from '@tangle-network/blueprint-ui';
+import { cn } from '@tangle-network/blueprint-ui';
 
 interface JobPriceBadgeProps {
   jobIndex: number;

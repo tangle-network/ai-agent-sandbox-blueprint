@@ -1,9 +1,9 @@
 import { useParams, Link } from 'react-router';
 import { lazy, Suspense, useState, useCallback, useMemo, useEffect } from 'react';
 import { useStore } from '@nanostores/react';
-import { AnimatedPage } from '@tangle/blueprint-ui/components';
-import { Card, CardContent, CardHeader, CardTitle } from '@tangle/blueprint-ui/components';
-import { Button } from '@tangle/blueprint-ui/components';
+import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
+import { Card, CardContent, CardHeader, CardTitle } from '@tangle-network/blueprint-ui/components';
+import { Button } from '@tangle-network/blueprint-ui/components';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
 import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
 import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
@@ -12,7 +12,7 @@ import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
 import { SidecarAuthPrompt } from '~/components/shared/SidecarAuthPrompt';
 import { ResourceTabs } from '~/components/shared/ResourceTabs';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
-import { getBlueprint } from '@tangle/blueprint-ui';
+import { getBlueprint } from '@tangle-network/blueprint-ui';
 import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
@@ -21,7 +21,7 @@ import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { createDirectClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
-import { cn } from '@tangle/blueprint-ui';
+import { cn } from '@tangle-network/blueprint-ui';
 
 const TerminalView = lazy(() =>
   import('@tangle-network/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),

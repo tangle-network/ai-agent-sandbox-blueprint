@@ -1,4 +1,4 @@
-import { Button } from '@tangle/blueprint-ui/components';
+import { Button } from '@tangle-network/blueprint-ui/components';
 
 interface SidecarAuthPromptProps {
   message: string;

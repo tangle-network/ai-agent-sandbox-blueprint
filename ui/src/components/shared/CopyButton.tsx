@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { cn } from '@tangle/blueprint-ui';
+import { cn } from '@tangle-network/blueprint-ui';
 
 interface CopyButtonProps {
   value: string;

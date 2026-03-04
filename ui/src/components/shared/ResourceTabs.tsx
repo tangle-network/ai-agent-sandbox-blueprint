@@ -1,5 +1,5 @@
-import { Tabs, TabsList, TabsTrigger } from '@tangle/blueprint-ui/components';
-import { cn } from '@tangle/blueprint-ui';
+import { Tabs, TabsList, TabsTrigger } from '@tangle-network/blueprint-ui/components';
+import { cn } from '@tangle-network/blueprint-ui';
 
 export interface ResourceTab<T extends string = string> {
   key: T;

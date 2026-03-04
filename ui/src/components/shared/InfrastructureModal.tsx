@@ -7,19 +7,19 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from '@tangle/blueprint-ui/components';
-import { Button } from '@tangle/blueprint-ui/components';
-import { Input } from '@tangle/blueprint-ui/components';
-import { Badge } from '@tangle/blueprint-ui/components';
-import { Card, CardContent } from '@tangle/blueprint-ui/components';
-import { Identicon } from '@tangle/blueprint-ui/components';
-import { infraStore, updateInfra } from '@tangle/blueprint-ui';
-import { useServiceValidation } from '@tangle/blueprint-ui';
-import { useOperators, type DiscoveredOperator } from '@tangle/blueprint-ui';
-import { useQuotes, formatCost } from '@tangle/blueprint-ui';
-import { tangleServicesAbi } from '@tangle/blueprint-ui';
-import { getAddresses } from '@tangle/blueprint-ui';
-import { cn } from '@tangle/blueprint-ui';
+} from '@tangle-network/blueprint-ui/components';
+import { Button } from '@tangle-network/blueprint-ui/components';
+import { Input } from '@tangle-network/blueprint-ui/components';
+import { Badge } from '@tangle-network/blueprint-ui/components';
+import { Card, CardContent } from '@tangle-network/blueprint-ui/components';
+import { Identicon } from '@tangle-network/blueprint-ui/components';
+import { infraStore, updateInfra } from '@tangle-network/blueprint-ui';
+import { useServiceValidation } from '@tangle-network/blueprint-ui';
+import { useOperators, type DiscoveredOperator } from '@tangle-network/blueprint-ui';
+import { useQuotes, formatCost } from '@tangle-network/blueprint-ui';
+import { tangleServicesAbi } from '@tangle-network/blueprint-ui';
+import { getAddresses } from '@tangle-network/blueprint-ui';
+import { cn } from '@tangle-network/blueprint-ui';
 import { BlueprintBadgeInline } from './InfraSummaryBits';
 import type { Address } from 'viem';
 

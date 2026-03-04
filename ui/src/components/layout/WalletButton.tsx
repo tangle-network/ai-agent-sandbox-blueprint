@@ -5,8 +5,8 @@ import { useCallback } from 'react';
 import type { Address } from 'viem';
 import { numberToHex } from 'viem';
 import { networks } from '~/lib/contracts/chains';
-import { publicClient, selectedChainIdStore } from '@tangle/blueprint-ui';
-import { Identicon } from '@tangle/blueprint-ui/components';
+import { publicClient, selectedChainIdStore } from '@tangle-network/blueprint-ui';
+import { Identicon } from '@tangle-network/blueprint-ui/components';
 import {
   ConnectWalletCta,
   copyText,

@@ -1,4 +1,4 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, Button } from '@tangle/blueprint-ui/components';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, Button } from '@tangle-network/blueprint-ui/components';
 import { bytesToHex, type AttestationData } from '~/lib/tee';
 import { LabeledValueRow } from './LabeledValueRow';
 

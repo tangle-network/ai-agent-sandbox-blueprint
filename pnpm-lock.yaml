@@ -111,7 +111,7 @@ importers:
       '@tangle-network/agent-ui':
         specifier: workspace:*
         version: link:../packages/agent-ui
-      '@tangle/blueprint-ui':
+      '@tangle-network/blueprint-ui':
         specifier: link:../../blueprint-ui
         version: link:../../blueprint-ui
       '@tanstack/react-query':

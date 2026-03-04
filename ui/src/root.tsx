@@ -8,7 +8,7 @@ import './styles/global.scss';
 import '~/lib/blueprints'; // side-effect: register all blueprints
 
 import { Outlet, useRouteError, isRouteErrorResponse } from 'react-router';
-import { AppDocument, AppFooter, AppToaster } from '@tangle/blueprint-ui/components';
+import { AppDocument, AppFooter, AppToaster } from '@tangle-network/blueprint-ui/components';
 import { Web3Provider } from '~/providers/Web3Provider';
 import { Header } from '~/components/layout/Header';
 

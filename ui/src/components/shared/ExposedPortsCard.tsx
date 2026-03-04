@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from '@tangle/blueprint-ui/components';
+import { Card, CardContent, CardHeader, CardTitle } from '@tangle-network/blueprint-ui/components';
 
 interface ExposedPort {
   container_port: number;

@@ -1,6 +1,6 @@
 import { Link } from 'react-router';
-import { Card, CardContent } from '@tangle/blueprint-ui/components';
-import { cn } from '@tangle/blueprint-ui';
+import { Card, CardContent } from '@tangle-network/blueprint-ui/components';
+import { cn } from '@tangle-network/blueprint-ui';
 import { ResourceIdentity } from './ResourceIdentity';
 
 interface ProvisionedResourceListCardProps {

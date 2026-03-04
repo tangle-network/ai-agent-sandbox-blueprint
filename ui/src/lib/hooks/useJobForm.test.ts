@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { useJobForm } from '@tangle/blueprint-ui';
+import { useJobForm } from '@tangle-network/blueprint-ui';
 import { makeJob, makeField } from '~/test/fixtures';
-import { getJobById } from '@tangle/blueprint-ui';
+import { getJobById } from '@tangle-network/blueprint-ui';
 import { JOB_IDS } from '~/lib/types/sandbox';
 import { INSTANCE_JOB_IDS } from '~/lib/types/instance';
 import '~/lib/blueprints'; // auto-register

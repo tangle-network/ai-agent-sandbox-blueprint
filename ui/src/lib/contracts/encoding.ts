@@ -2,7 +2,7 @@ import { decodeAbiParameters } from 'viem';
 
 /**
  * ABI decoding helpers for Tangle blueprint jobs.
- * For encoding, import { encodeJobArgs } from '@tangle/blueprint-ui' directly.
+ * For encoding, import { encodeJobArgs } from '@tangle-network/blueprint-ui' directly.
  */
 
 export function decodeJobResult(data: `0x${string}`): { success: boolean; output: string } {

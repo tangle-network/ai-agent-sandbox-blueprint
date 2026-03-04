@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import './index'; // auto-register all blueprints
-import { getAllBlueprints, getBlueprint, getBlueprintJobs, getJobById } from '@tangle/blueprint-ui';
+import { getAllBlueprints, getBlueprint, getBlueprintJobs, getJobById } from '@tangle-network/blueprint-ui';
 import { JOB_IDS } from '~/lib/types/sandbox';
 import { INSTANCE_JOB_IDS } from '~/lib/types/instance';
 

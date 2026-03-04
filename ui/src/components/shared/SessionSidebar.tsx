@@ -11,7 +11,7 @@ import {
   deleteSession,
 } from '~/lib/stores/chatSessions';
 import { useSandboxSession } from '~/lib/hooks/useSandboxSession';
-import { cn } from '@tangle/blueprint-ui';
+import { cn } from '@tangle-network/blueprint-ui';
 
 // ---------------------------------------------------------------------------
 // Branding

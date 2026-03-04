@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { cn } from '@tangle/blueprint-ui';
+import { cn } from '@tangle-network/blueprint-ui';
 import {
   useProvisionProgress,
   getPhaseLabel,
   isTerminalPhase,
   type ProvisionPhase,
-} from '@tangle/blueprint-ui';
+} from '@tangle-network/blueprint-ui';
 
 // ---------------------------------------------------------------------------
 // Phase steps for visual indicator

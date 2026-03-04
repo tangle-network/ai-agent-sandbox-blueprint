@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Button } from '@tangle/blueprint-ui/components';
-import { cn } from '@tangle/blueprint-ui';
+import { Button } from '@tangle-network/blueprint-ui/components';
+import { cn } from '@tangle-network/blueprint-ui';
 
 interface EnvEditorProps {
   value: string;

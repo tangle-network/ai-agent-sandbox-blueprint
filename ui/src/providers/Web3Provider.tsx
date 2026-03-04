@@ -6,8 +6,8 @@ import {
   createTangleTransports,
   defaultConnectKitOptions,
   tangleWalletChains,
-} from '@tangle/blueprint-ui';
-import { Web3Shell } from '@tangle/blueprint-ui/components';
+} from '@tangle-network/blueprint-ui';
+import { Web3Shell } from '@tangle-network/blueprint-ui/components';
 
 const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || '';
 

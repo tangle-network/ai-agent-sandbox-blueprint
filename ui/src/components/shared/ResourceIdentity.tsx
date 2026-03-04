@@ -1,4 +1,4 @@
-import { cn } from '@tangle/blueprint-ui';
+import { cn } from '@tangle-network/blueprint-ui';
 import { StatusBadge } from './StatusBadge';
 
 interface ResourceIdentityProps {

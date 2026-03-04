@@ -11,7 +11,7 @@ Put code in `@tangle-network/agent-ui` when it is:
 - Reusable agent-focused primitives/hooks (`@tangle-network/agent-ui/primitives`)
 
 Do not put code here when it is:
-- Chain/contract/provisioning infra (belongs in `@tangle/blueprint-ui`)
+- Chain/contract/provisioning infra (belongs in `@tangle-network/blueprint-ui`)
 - Product-specific route composition, copy, or business workflows (belongs in the app)
 - Sandbox-only shell/layout styling concerns (belongs in the sandbox app)
 
