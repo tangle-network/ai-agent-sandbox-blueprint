@@ -229,6 +229,8 @@ async fn firecracker_backend_lifecycle_flows_through_host_agent() {
         );
         std::env::set_var("FIRECRACKER_HOST_AGENT_URL", host_url);
         std::env::set_var("FIRECRACKER_HOST_AGENT_API_KEY", API_KEY);
+        std::env::set_var("FIRECRACKER_SIDECAR_AUTH_DISABLED", "true");
+        std::env::remove_var("FIRECRACKER_SIDECAR_AUTH_TOKEN");
     }
 
     let params = CreateSandboxParams {

@@ -273,6 +273,57 @@ jobs:
         if: steps.sidecar.outputs.available != 'true'
         run: echo "E2E tests skipped — sidecar Docker image not available. Publish ghcr.io/tangle-network/sidecar:latest to enable."
 
+  firecracker-real-e2e:
+    name: Firecracker real E2E (KVM)
+    if: ${{ vars.ENABLE_FIRECRACKER_REAL_E2E == 'true' }}
+    runs-on: [self-hosted, linux, x64, kvm]
+    timeout-minutes: 60
+    needs: [test]
+    env:
+      FIRECRACKER_E2E: "1"
+      FIRECRACKER_REAL_E2E: "1"
+      FIRECRACKER_HOST_AGENT_URL: ${{ secrets.FIRECRACKER_HOST_AGENT_URL }}
+      FIRECRACKER_HOST_AGENT_API_KEY: ${{ secrets.FIRECRACKER_HOST_AGENT_API_KEY }}
+      FIRECRACKER_SIDECAR_AUTH_DISABLED: "true"
+      REQUEST_TIMEOUT_SECS: "60"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify KVM availability
+        run: |
+          test -e /dev/kvm || (echo "/dev/kvm not found on runner" && exit 1)
+          test -r /dev/kvm || (echo "/dev/kvm is not readable" && exit 1)
+
+      - name: Verify Firecracker host-agent config
+        run: |
+          test -n "${FIRECRACKER_HOST_AGENT_URL}" || (echo "FIRECRACKER_HOST_AGENT_URL secret is required" && exit 1)
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install Solidity Dependencies
+        run: forge soldeer update -d
+
+      - name: Forge build
+        run: forge update && forge build
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "true"
+
+      - name: Fetch TNT core artifacts
+        run: scripts/fetch-localtestnet-fixtures.sh
+
+      - name: Run Firecracker real-path anvil E2E
+        run: cargo test -p ai-agent-sandbox-blueprint-lib --test anvil runs_firecracker_jobs_end_to_end -- --nocapture --test-threads=1
+
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest

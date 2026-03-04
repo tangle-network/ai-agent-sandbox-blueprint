@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    routing::{delete, post},
+    routing::{delete, get, post},
 };
 use blueprint_anvil_testing_utils::{BlueprintHarness, missing_tnt_core_artifacts};
 use blueprint_sdk::alloy::primitives::Bytes;
@@ -84,10 +84,24 @@ async fn spawn_firecracker_host_agent_mock(
     }));
 
     let create_key = api_key.clone();
+    let health_key = api_key.clone();
     let start_key = api_key.clone();
     let delete_key = api_key;
 
     let app = Router::new()
+        .route(
+            "/v1/health",
+            get(move |headers: HeaderMap| {
+                let health_key = health_key.clone();
+                async move {
+                    require_api_key(&headers, &health_key)?;
+                    Ok::<_, (StatusCode, Json<serde_json::Value>)>((
+                        StatusCode::OK,
+                        Json(json!({"ok": true})),
+                    ))
+                }
+            }),
+        )
         .route(
             "/v1/containers",
             post(
@@ -471,14 +485,32 @@ async fn runs_firecracker_jobs_end_to_end() -> Result<()> {
             return Ok(());
         };
 
-        let host_agent_key = "fc-test-key".to_string();
-        let expected_sidecar_url = "http://127.0.0.1:65535".to_string();
-        let (host_agent_url, host_state) =
-            spawn_firecracker_host_agent_mock(host_agent_key.clone(), expected_sidecar_url.clone())
-                .await?;
+        let real_mode = std::env::var("FIRECRACKER_REAL_E2E").ok().as_deref() == Some("1");
+        let mut host_state: Option<Arc<AsyncMutex<MockFirecrackerHostState>>> = None;
+        let mut expected_sidecar_url: Option<String> = None;
+        if real_mode {
+            anyhow::ensure!(
+                std::env::var("FIRECRACKER_HOST_AGENT_URL")
+                    .ok()
+                    .is_some_and(|v| !v.trim().is_empty()),
+                "FIRECRACKER_REAL_E2E=1 requires FIRECRACKER_HOST_AGENT_URL"
+            );
+        } else {
+            let host_agent_key = "fc-test-key".to_string();
+            let mock_sidecar_url = "http://127.0.0.1:65535".to_string();
+            let (host_agent_url, state) =
+                spawn_firecracker_host_agent_mock(host_agent_key.clone(), mock_sidecar_url.clone())
+                    .await?;
+            expected_sidecar_url = Some(mock_sidecar_url);
+            host_state = Some(state);
+            unsafe {
+                std::env::set_var("FIRECRACKER_HOST_AGENT_URL", &host_agent_url);
+                std::env::set_var("FIRECRACKER_HOST_AGENT_API_KEY", &host_agent_key);
+            }
+        }
         unsafe {
-            std::env::set_var("FIRECRACKER_HOST_AGENT_URL", &host_agent_url);
-            std::env::set_var("FIRECRACKER_HOST_AGENT_API_KEY", &host_agent_key);
+            std::env::set_var("FIRECRACKER_SIDECAR_AUTH_DISABLED", "true");
+            std::env::remove_var("FIRECRACKER_SIDECAR_AUTH_TOKEN");
         }
 
         let create_payload = SandboxCreateRequest {
@@ -510,10 +542,21 @@ async fn runs_firecracker_jobs_end_to_end() -> Result<()> {
         let create_receipt = SandboxCreateOutput::abi_decode(&create_output)?;
         let create_json: serde_json::Value =
             serde_json::from_str(&create_receipt.json).context("create response must be json")?;
-        assert_eq!(create_json["sidecarUrl"], expected_sidecar_url);
+        let sidecar_url = create_json["sidecarUrl"]
+            .as_str()
+            .context("missing sidecarUrl in firecracker create response")?
+            .to_string();
+        if let Some(expected) = expected_sidecar_url {
+            assert_eq!(sidecar_url, expected);
+        } else {
+            assert!(
+                sidecar_url.starts_with("http://") || sidecar_url.starts_with("https://"),
+                "unexpected sidecarUrl format: {sidecar_url}"
+            );
+        }
         eprintln!(
             "Firecracker sandbox created: id={}, url={}",
-            create_receipt.sandboxId, expected_sidecar_url
+            create_receipt.sandboxId, sidecar_url
         );
 
         let delete_payload = SandboxIdRequest {
@@ -531,12 +574,14 @@ async fn runs_firecracker_jobs_end_to_end() -> Result<()> {
             serde_json::from_str(&delete_receipt.json).context("delete response must be json")?;
         assert_eq!(delete_json["deleted"], true);
 
-        let host_guard = host_state.lock().await;
-        assert!(
-            host_guard.containers.is_empty(),
-            "host-agent mock should have no live containers after delete"
-        );
-        drop(host_guard);
+        if let Some(state) = host_state {
+            let host_guard = state.lock().await;
+            assert!(
+                host_guard.containers.is_empty(),
+                "host-agent mock should have no live containers after delete"
+            );
+            drop(host_guard);
+        }
 
         harness.shutdown().await;
         Ok(())

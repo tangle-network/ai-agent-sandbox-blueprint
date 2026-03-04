@@ -10,6 +10,8 @@ const DEFAULT_HOST_AGENT_NETWORK: &str = "bridge";
 const DEFAULT_PIDS_LIMIT: u64 = 512;
 const DEFAULT_MEMORY_MB: u64 = 512;
 const DEFAULT_DISK_MB: u64 = 10 * 1024;
+const ENV_SIDECAR_AUTH_DISABLED: &str = "FIRECRACKER_SIDECAR_AUTH_DISABLED";
+const ENV_SIDECAR_AUTH_TOKEN: &str = "FIRECRACKER_SIDECAR_AUTH_TOKEN";
 
 #[derive(Clone, Debug)]
 pub(crate) struct FirecrackerHostAgentConfig {
@@ -69,16 +71,30 @@ impl FirecrackerHostAgentConfig {
             .filter(|v| *v > 0)
             .unwrap_or(DEFAULT_PIDS_LIMIT);
 
-        let sidecar_auth_token = std::env::var("FIRECRACKER_SIDECAR_AUTH_TOKEN")
-            .ok()
-            .and_then(|v| {
-                let trimmed = v.trim().to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            });
+        let sidecar_auth_disabled = parse_bool_env(ENV_SIDECAR_AUTH_DISABLED, false)?;
+
+        let sidecar_auth_token = std::env::var(ENV_SIDECAR_AUTH_TOKEN).ok().and_then(|v| {
+            let trimmed = v.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
+        match (sidecar_auth_disabled, sidecar_auth_token.is_some()) {
+            (true, true) => {
+                return Err(SandboxError::Validation(format!(
+                    "{ENV_SIDECAR_AUTH_DISABLED}=true cannot be combined with {ENV_SIDECAR_AUTH_TOKEN}"
+                )));
+            }
+            (false, false) => {
+                return Err(SandboxError::Validation(format!(
+                    "firecracker requires explicit sidecar auth mode: set {ENV_SIDECAR_AUTH_DISABLED}=true to disable sidecar auth, or set {ENV_SIDECAR_AUTH_TOKEN} when {ENV_SIDECAR_AUTH_DISABLED}=false"
+                )));
+            }
+            _ => {}
+        }
 
         Ok(Self {
             base_url,
@@ -87,6 +103,19 @@ impl FirecrackerHostAgentConfig {
             pids_limit,
             sidecar_auth_token,
         })
+    }
+}
+
+fn parse_bool_env(name: &str, default: bool) -> Result<bool> {
+    let Some(raw) = std::env::var(name).ok() else {
+        return Ok(default);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(SandboxError::Validation(format!(
+            "{name} must be a boolean (true/false/1/0/yes/no/on/off), got '{raw}'"
+        ))),
     }
 }
 
@@ -407,4 +436,68 @@ fn parse_host_agent_error(body: &str) -> String {
     }
 
     trimmed.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn set_or_unset(key: &str, value: Option<&str>) {
+        match value {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    #[test]
+    fn load_requires_explicit_sidecar_auth_mode() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
+        set_or_unset(ENV_SIDECAR_AUTH_DISABLED, None);
+        set_or_unset(ENV_SIDECAR_AUTH_TOKEN, None);
+
+        let err = FirecrackerHostAgentConfig::load().expect_err("expected validation failure");
+        let msg = err.to_string();
+        assert!(msg.contains("explicit sidecar auth mode"), "{msg}");
+    }
+
+    #[test]
+    fn load_rejects_disabled_plus_token() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
+        set_or_unset(ENV_SIDECAR_AUTH_DISABLED, Some("true"));
+        set_or_unset(ENV_SIDECAR_AUTH_TOKEN, Some("secret-token"));
+
+        let err = FirecrackerHostAgentConfig::load().expect_err("expected validation failure");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot be combined"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_accepts_disabled_mode() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
+        set_or_unset(ENV_SIDECAR_AUTH_DISABLED, Some("true"));
+        set_or_unset(ENV_SIDECAR_AUTH_TOKEN, None);
+
+        let cfg = FirecrackerHostAgentConfig::load().expect("disabled mode should be valid");
+        assert!(cfg.sidecar_auth_token.is_none());
+    }
+
+    #[test]
+    fn load_accepts_token_mode() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
+        set_or_unset(ENV_SIDECAR_AUTH_DISABLED, Some("false"));
+        set_or_unset(ENV_SIDECAR_AUTH_TOKEN, Some("secret-token"));
+
+        let cfg = FirecrackerHostAgentConfig::load().expect("token mode should be valid");
+        assert_eq!(cfg.sidecar_auth_token.as_deref(), Some("secret-token"));
+    }
 }

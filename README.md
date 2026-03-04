@@ -108,6 +108,7 @@ UI behavior:
 - "Runtime Backend" selector writes to `metadata_json.runtime_backend`.
 - Selecting `tee` forces `tee_required=true`.
 - Selecting `firecracker` forces `tee_required=false` (current release does not support Firecracker+TEE composition).
+- Selecting `firecracker` disables `metadata_json.ports` input (current Firecracker runtime does not support explicit port mappings).
 
 ### Instance Lifecycle Semantics
 
@@ -165,6 +166,17 @@ Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is cu
 - `GET /metrics` — Prometheus metrics
 - `GET /api/provisions` — List provision status
 
+`GET /health` response contract:
+- `status`: `"ok"` or `"degraded"`
+- `checks.runtime.status`: runtime probe status (`"ok"` or `"error"`)
+- `checks.store.status`: local state-store status (`"ok"` or `"error"`)
+- `runtime_backend`: active runtime backend label (`docker` / `firecracker` / `tee` / `invalid`)
+- `runtime_error`: nullable backend error string when runtime probe fails
+
+`GET /readyz` response contract:
+- `200`: `{ "status": "ready" }`
+- `503`: includes `runtime_backend`, `runtime` (boolean), `store` (boolean), and `runtime_error`
+
 ## Security
 
 - **Auth**: EIP-191 challenge-response → PASETO v4.local tokens (1h TTL)
@@ -207,11 +219,16 @@ Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is cu
 | `FIRECRACKER_HOST_AGENT_API_KEY` | — | Optional API key header (`x-api-key`) for host-agent |
 | `FIRECRACKER_HOST_AGENT_NETWORK` | `bridge` | Network value sent in host-agent create payload |
 | `FIRECRACKER_HOST_AGENT_PIDS_LIMIT` | `512` | PIDs limit sent in host-agent create payload |
-| `FIRECRACKER_SIDECAR_AUTH_TOKEN` | — | Optional static sidecar auth token to persist in Firecracker records |
+| `FIRECRACKER_SIDECAR_AUTH_DISABLED` | `false` | Explicitly disable sidecar auth for Firecracker (`true` only when sidecar auth is intentionally off) |
+| `FIRECRACKER_SIDECAR_AUTH_TOKEN` | — | Static sidecar auth token for Firecracker records when auth is enabled |
 | `WORKFLOW_CRON_SCHEDULE` | `0 * * * * *` | Cron schedule for workflow ticks |
 | `CORS_ALLOWED_ORIGINS` | `localhost only` | Comma-separated CORS origins |
 | `BSM_ADDRESS` | — | BSM contract address (instance mode) |
 | `HTTP_RPC_ENDPOINT` / `RPC_URL` | — | Chain RPC endpoint |
+
+Firecracker auth mode is explicit and mutually exclusive:
+- set `FIRECRACKER_SIDECAR_AUTH_DISABLED=true` and leave `FIRECRACKER_SIDECAR_AUTH_TOKEN` unset, or
+- set `FIRECRACKER_SIDECAR_AUTH_DISABLED=false` with `FIRECRACKER_SIDECAR_AUTH_TOKEN` set.
 
 ## Development
 

@@ -49,6 +49,9 @@
 - Snapshot destination policy currently rejects `http://` and accepts `https://` / `s3://`; e2e should validate this policy, not old behavior.
 - Agent endpoints may return `502` (backend unavailable) followed by `503` (breaker cooldown). This is acceptable in optional-agent local e2e.
 - Firecracker startup requires `FIRECRACKER_HOST_AGENT_URL` (or `HOST_AGENT_URL`); without it, create must fail fast with validation error.
+- Firecracker sidecar auth mode is explicit:
+  - either `FIRECRACKER_SIDECAR_AUTH_DISABLED=true` with no token
+  - or `FIRECRACKER_SIDECAR_AUTH_DISABLED=false` plus `FIRECRACKER_SIDECAR_AUTH_TOKEN`
 - Firecracker currently does not support `metadata_json.ports` host mappings in this runtime; reject at create-time.
 
 ## Regression Gate (Run Before Merge)

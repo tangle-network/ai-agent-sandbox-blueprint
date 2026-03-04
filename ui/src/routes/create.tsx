@@ -65,6 +65,13 @@ const STEPS: { key: WizardStep; label: string; icon: string }[] = [
   { key: 'deploy', label: 'Deploy', icon: 'i-ph:lightning' },
 ];
 
+function parsePortsInput(value: string): number[] {
+  return value
+    .split(',')
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => n > 0 && n <= 65535);
+}
+
 export default function CreatePage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -130,15 +137,16 @@ export default function CreatePage() {
 
   // Extra ports input (not an ABI field — merged into metadataJson before deploy)
   const [portsInput, setPortsInput] = useState('');
+  const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
+  const supportsMetadataPorts = runtimeBackend !== 'firecracker';
 
   // Keep TEE controls in sync with runtime backend selection.
   useEffect(() => {
-    const backend = String(values.runtimeBackend || 'docker').toLowerCase();
-    if (backend === 'tee' && values.teeRequired !== true) {
+    if (runtimeBackend === 'tee' && values.teeRequired !== true) {
       onChange('teeRequired', true);
       return;
     }
-    if (backend === 'firecracker') {
+    if (runtimeBackend === 'firecracker') {
       if (values.teeRequired) {
         onChange('teeRequired', false);
       }
@@ -146,15 +154,18 @@ export default function CreatePage() {
         onChange('teeType', '0');
       }
     }
-  }, [values.runtimeBackend, values.teeRequired, values.teeType, onChange]);
+  }, [runtimeBackend, values.teeRequired, values.teeType, onChange]);
+
+  // Firecracker backend does not support metadata_json.ports in this runtime.
+  useEffect(() => {
+    if (!supportsMetadataPorts && portsInput.trim().length > 0) {
+      setPortsInput('');
+    }
+  }, [supportsMetadataPorts, portsInput]);
 
   // Merge runtime backend + ports into metadataJson.
   const mergedValues = useMemo(() => {
-    const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
-    const ports = portsInput
-      .split(',')
-      .map((s) => parseInt(s.trim(), 10))
-      .filter((n) => n > 0 && n <= 65535);
+    const ports = parsePortsInput(portsInput);
 
     let metadata: Record<string, unknown> = {};
     try {
@@ -167,7 +178,7 @@ export default function CreatePage() {
     }
 
     metadata.runtime_backend = runtimeBackend;
-    if (ports.length > 0) {
+    if (supportsMetadataPorts && ports.length > 0) {
       metadata.ports = ports;
     } else {
       delete metadata.ports;
@@ -185,7 +196,7 @@ export default function CreatePage() {
     }
 
     return nextValues;
-  }, [values, portsInput]);
+  }, [runtimeBackend, supportsMetadataPorts, values, portsInput]);
 
   // Unified deploy hook — manages both submitJob and requestService paths
   const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values: mergedValues, infra, validate });
@@ -326,11 +337,17 @@ export default function CreatePage() {
                   type="text"
                   value={portsInput}
                   onChange={(e) => setPortsInput(e.target.value)}
-                  placeholder="e.g. 3000, 8080, 5432"
-                  className="w-full px-3 py-2 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus:outline-none focus:border-cloud-elements-borderColorActive transition-colors"
+                  disabled={!supportsMetadataPorts}
+                  placeholder={supportsMetadataPorts ? 'e.g. 3000, 8080, 5432' : 'Not supported for Firecracker runtime'}
+                  className={cn(
+                    'w-full px-3 py-2 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus:outline-none focus:border-cloud-elements-borderColorActive transition-colors',
+                    !supportsMetadataPorts && 'opacity-60 cursor-not-allowed',
+                  )}
                 />
                 <p className="text-[11px] text-cloud-elements-textTertiary">
-                  Comma-separated container ports to expose through the operator API proxy.
+                  {supportsMetadataPorts
+                    ? 'Comma-separated container ports to expose through the operator API proxy.'
+                    : 'Firecracker backend currently does not support metadata_json.ports mappings.'}
                 </p>
               </div>
             </CardContent>
@@ -348,7 +365,7 @@ export default function CreatePage() {
           blueprint={selectedBlueprint}
           job={createJob}
           values={values}
-          ports={portsInput.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n > 0 && n <= 65535)}
+          ports={supportsMetadataPorts ? parsePortsInput(portsInput) : []}
           infra={infra}
           entityLabel={entityLabel}
           deploy={deploy}
