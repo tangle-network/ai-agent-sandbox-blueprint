@@ -1,16 +1,16 @@
 import { useState, useCallback } from 'react';
-import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle/blueprint-ui/components';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle/blueprint-ui/components';
-import { Button } from '@tangle/blueprint-ui/components';
-import { Badge } from '@tangle/blueprint-ui/components';
-import { Input } from '@tangle/blueprint-ui/components';
-import { Select } from '@tangle/blueprint-ui/components';
+import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle-network/blueprint-ui/components';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
+import { Button } from '@tangle-network/blueprint-ui/components';
+import { Badge } from '@tangle-network/blueprint-ui/components';
+import { Input } from '@tangle-network/blueprint-ui/components';
+import { Select } from '@tangle-network/blueprint-ui/components';
 import { useWorkflowIds, useWorkflowBatch } from '~/lib/hooks/useSandboxReads';
-import { useSubmitJob } from '@tangle/blueprint-ui';
-import { encodeJobArgs } from '@tangle/blueprint-ui';
-import { getJobById } from '@tangle/blueprint-ui';
+import { useSubmitJob } from '@tangle-network/blueprint-ui';
+import { encodeJobArgs } from '@tangle-network/blueprint-ui';
+import { getJobById } from '@tangle-network/blueprint-ui';
 import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
-import { cn } from '@tangle/blueprint-ui';
+import { cn } from '@tangle-network/blueprint-ui';
 
 export default function Workflows() {
   const { data: workflowIds, isLoading } = useWorkflowIds(false);

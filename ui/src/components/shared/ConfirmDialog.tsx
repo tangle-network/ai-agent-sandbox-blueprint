@@ -4,8 +4,8 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from '@tangle/blueprint-ui/components';
-import { Button } from '@tangle/blueprint-ui/components';
+} from '@tangle-network/blueprint-ui/components';
+import { Button } from '@tangle-network/blueprint-ui/components';
 
 interface ConfirmDialogProps {
   open: boolean;

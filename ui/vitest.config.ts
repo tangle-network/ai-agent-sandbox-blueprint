@@ -29,7 +29,7 @@ export default defineConfig({
     deps: {
       optimizer: {
         web: {
-          include: ['@tangle/blueprint-ui'],
+          include: ['@tangle-network/blueprint-ui'],
           exclude: ['@tangle-network/agent-ui'],
         },
       },

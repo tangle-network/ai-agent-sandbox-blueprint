@@ -13,8 +13,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { decodeAbiParameters } from 'viem';
-import { encodeJobArgs } from '@tangle/blueprint-ui';
-import { getJobById } from '@tangle/blueprint-ui';
+import { encodeJobArgs } from '@tangle-network/blueprint-ui';
+import { getJobById } from '@tangle-network/blueprint-ui';
 import './index'; // auto-register all blueprints
 import { JOB_IDS } from '~/lib/types/sandbox';
 import { INSTANCE_JOB_IDS } from '~/lib/types/instance';

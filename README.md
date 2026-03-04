@@ -64,7 +64,7 @@ Dependency direction:
 
 The UI uses two shared packages. Keep responsibilities strict to avoid copy/paste drift:
 
-- `@tangle/blueprint-ui`:
+- `@tangle-network/blueprint-ui`:
   - Blueprint and chain infrastructure (`publicClient`, chain/address helpers, ABI exports)
   - Job/provisioning/quote utilities, infra/session/tx stores
   - Reusable cross-blueprint UI primitives and layout components

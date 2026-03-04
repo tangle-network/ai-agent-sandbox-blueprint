@@ -1,5 +1,5 @@
 import { INSTANCE_JOB_IDS, INSTANCE_PRICING_TIERS } from '~/lib/types/instance';
-import { type BlueprintDefinition, type JobDefinition, registerBlueprint } from '@tangle/blueprint-ui';
+import { type BlueprintDefinition, type JobDefinition, registerBlueprint } from '@tangle-network/blueprint-ui';
 import type { Address } from 'viem';
 
 /**

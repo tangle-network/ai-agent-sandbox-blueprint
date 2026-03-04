@@ -1,6 +1,6 @@
 /**
  * Sandbox-specific network configuration.
- * For chain/network primitives, import from '@tangle/blueprint-ui' directly.
+ * For chain/network primitives, import from '@tangle-network/blueprint-ui' directly.
  */
 import type { Address } from 'viem';
 import {
@@ -11,7 +11,7 @@ import {
   configureNetworks,
   getNetworks,
   type CoreAddresses,
-} from '@tangle/blueprint-ui';
+} from '@tangle-network/blueprint-ui';
 
 /** Sandbox-specific addresses — extends CoreAddresses with blueprint BSM addresses. */
 export interface SandboxAddresses extends CoreAddresses {

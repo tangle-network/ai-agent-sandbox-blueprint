@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react';
-import { txListStore, pendingCount, clearTxs, type TrackedTx } from '@tangle/blueprint-ui';
+import { txListStore, pendingCount, clearTxs, type TrackedTx } from '@tangle-network/blueprint-ui';
 import { timeAgo, useDropdownMenu } from '@tangle-network/agent-ui/primitives';
 
 function StatusIcon({ status }: { status: TrackedTx['status'] }) {

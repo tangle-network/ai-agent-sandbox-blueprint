@@ -14,12 +14,12 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useChainId } from 'wagmi';
 import { decodeEventLog } from 'viem';
-import { encodeJobArgs } from '@tangle/blueprint-ui';
-import { tangleServicesAbi } from '@tangle/blueprint-ui';
-import { getAddresses, publicClient } from '@tangle/blueprint-ui';
-import { tangleJobsAbi, addTx, updateTx } from '@tangle/blueprint-ui';
-import { useOperators, type DiscoveredOperator } from '@tangle/blueprint-ui';
-import { selectedChainIdStore } from '@tangle/blueprint-ui';
+import { encodeJobArgs } from '@tangle-network/blueprint-ui';
+import { tangleServicesAbi } from '@tangle-network/blueprint-ui';
+import { getAddresses, publicClient } from '@tangle-network/blueprint-ui';
+import { tangleJobsAbi, addTx, updateTx } from '@tangle-network/blueprint-ui';
+import { useOperators, type DiscoveredOperator } from '@tangle-network/blueprint-ui';
+import { selectedChainIdStore } from '@tangle-network/blueprint-ui';
 import {
   deriveMode,
   computeStatus,
@@ -31,9 +31,9 @@ import {
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { addInstance, updateInstanceStatus } from '~/lib/stores/instances';
-import type { BlueprintDefinition, JobDefinition } from '@tangle/blueprint-ui';
+import type { BlueprintDefinition, JobDefinition } from '@tangle-network/blueprint-ui';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
-import type { InfraConfig } from '@tangle/blueprint-ui';
+import type { InfraConfig } from '@tangle-network/blueprint-ui';
 import type { Address } from 'viem';
 
 // Re-export types from logic module for external consumers

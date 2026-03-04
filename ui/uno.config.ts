@@ -1,6 +1,6 @@
 import { icons as phIcons } from '@iconify-json/ph';
 import { defineConfig, presetIcons, transformerDirectives } from 'unocss';
-import { bpThemeTokens } from '@tangle/blueprint-ui/preset';
+import { bpThemeTokens } from '@tangle-network/blueprint-ui/preset';
 import { presetAnimations } from 'unocss-preset-animations';
 import { presetWind4 } from 'unocss/preset-wind4';
 

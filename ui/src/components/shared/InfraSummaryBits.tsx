@@ -1,4 +1,4 @@
-import { Badge } from '@tangle/blueprint-ui/components';
+import { Badge } from '@tangle-network/blueprint-ui/components';
 
 export function BlueprintBadgeInline({ blueprintId }: { blueprintId: string }) {
   return (

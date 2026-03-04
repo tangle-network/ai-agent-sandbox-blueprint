@@ -1,4 +1,4 @@
-import { Badge } from '@tangle/blueprint-ui/components';
+import { Badge } from '@tangle-network/blueprint-ui/components';
 import type { SandboxStatus } from '~/lib/types/sandbox';
 
 const statusConfig: Record<SandboxStatus, { label: string; variant: 'running' | 'stopped' | 'cold' | 'destructive' | 'secondary' | 'accent'; dot: string }> = {

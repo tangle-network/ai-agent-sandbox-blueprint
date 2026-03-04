@@ -11,7 +11,7 @@ Include:
 - Reusable agent-centric helpers/hooks for consuming apps
 
 Exclude:
-- Chain/contract/provisioning logic (`@tangle/blueprint-ui`)
+- Chain/contract/provisioning logic (`@tangle-network/blueprint-ui`)
 - Product-specific route orchestration, copy, and workflow logic (consumer app)
 - Direct imports from any consuming app source tree
 
@@ -22,7 +22,7 @@ Exclude:
 
 ## Shared-Extraction Rule
 - If Sandbox and Arena share agent-facing code above roughly 20 lines, extract it here.
-- If duplication is chain/infra oriented, extract to `@tangle/blueprint-ui` instead.
+- If duplication is chain/infra oriented, extract to `@tangle-network/blueprint-ui` instead.
 - Keep app-specific behavior in the app when reuse would require brittle abstractions.
 
 ## Dependency Rules

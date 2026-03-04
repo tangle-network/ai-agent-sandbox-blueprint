@@ -5,7 +5,7 @@
  * instead of duplicating factory functions.
  */
 
-import type { JobDefinition, JobFieldDef, AbiContextParam, JobCategory } from '@tangle/blueprint-ui';
+import type { JobDefinition, JobFieldDef, AbiContextParam, JobCategory } from '@tangle-network/blueprint-ui';
 
 // ── Job factory ──
 

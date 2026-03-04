@@ -125,7 +125,7 @@ export default defineConfig({
     // evaluation instead of trying to resolve them via Node.
     noExternal: [
       '@tangle-network/agent-ui',
-      '@tangle/blueprint-ui',
+      '@tangle-network/blueprint-ui',
     ],
   },
   resolve: {

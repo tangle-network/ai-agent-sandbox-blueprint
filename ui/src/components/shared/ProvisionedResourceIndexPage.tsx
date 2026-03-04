@@ -7,7 +7,7 @@ import {
   StaggerContainer,
   StaggerItem,
   Button,
-} from '@tangle/blueprint-ui/components';
+} from '@tangle-network/blueprint-ui/components';
 
 interface ProvisionedResourceIndexPageProps<T> {
   title: string;

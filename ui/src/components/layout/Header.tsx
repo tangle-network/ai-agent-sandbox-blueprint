@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router';
-import { ChainSwitcher, ThemeToggle } from '@tangle/blueprint-ui/components';
+import { ChainSwitcher, ThemeToggle } from '@tangle-network/blueprint-ui/components';
 import { TxDropdown } from './TxDropdown';
 import { WalletButton } from './WalletButton';
-import { TangleLogo } from '@tangle/blueprint-ui/components';
-import { cn } from '@tangle/blueprint-ui';
+import { TangleLogo } from '@tangle-network/blueprint-ui/components';
+import { cn } from '@tangle-network/blueprint-ui';
 
 const navItems = [
   { label: 'Dashboard', href: '/', icon: 'i-ph:house' },

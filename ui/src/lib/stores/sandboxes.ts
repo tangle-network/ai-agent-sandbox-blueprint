@@ -1,5 +1,5 @@
 import { atom, computed } from 'nanostores';
-import { persistedAtom } from '@tangle/blueprint-ui';
+import { persistedAtom } from '@tangle-network/blueprint-ui';
 
 /**
  * Local sandbox registry — tracks sandboxes the user has created or interacted with.
