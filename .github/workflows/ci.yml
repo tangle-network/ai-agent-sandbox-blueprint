@@ -119,7 +119,7 @@ jobs:
         run: cargo nextest run
 
       - name: TEE unit tests
-        run: cargo nextest run -p sandbox-runtime --features tee-all
+        run: cargo nextest run -p sandbox-runtime --features tee-all,test-utils
 
       - name: TEE instance lib tests
         run: cargo nextest run -p ai-agent-tee-instance-blueprint-lib

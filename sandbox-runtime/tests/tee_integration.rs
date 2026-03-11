@@ -4,15 +4,8 @@
 //! in "skip device" mode — real Docker orchestration, real HTTP health checks,
 //! real port extraction — everything except the native TEE ioctl.
 //!
-//! **Requirements:**
-//! - Docker daemon running
-//! - Sidecar image available (`tangle-sidecar:local` or `ghcr.io/tangle-network/sidecar:latest`)
-//! - `TEE_INTEGRATION=1` env var set
-//!
-//! Run with:
-//! ```bash
-//! TEE_INTEGRATION=1 cargo test -p sandbox-runtime --features tee-all,test-utils -- tee_integration
-//! ```
+//! The deterministic tests in this file are part of the Phase 1 TEE Rust suite.
+//! Optional real-Docker lifecycle experiments remain commented out below.
 
 #[cfg(all(feature = "tee-direct", feature = "test-utils"))]
 #[allow(clippy::needless_return)]
@@ -23,10 +16,6 @@ mod tee_integration {
     use sandbox_runtime::tee::{TeeBackend, TeeDeployParams, TeeType};
     use std::collections::HashMap;
 
-    fn should_run() -> bool {
-        std::env::var("TEE_INTEGRATION").ok().as_deref() == Some("1")
-    }
-
     // ── Bug fix regression tests (no Docker needed) ─────────────────────────
 
     #[test]
@@ -36,9 +25,6 @@ mod tee_integration {
         // Docker, just verifies the skip logic exists by checking the code path.
         // The real gc_tick test requires a persistent store, which is tested via
         // the full integration path below.
-        if !should_run() {
-            return;
-        }
         // TEE records have tee_deployment_id set — gc_tick should skip them.
         // We verify this by creating a TEE record and checking that gc_tick
         // doesn't panic or error on it (it would if it tried Docker ops).
@@ -48,10 +34,6 @@ mod tee_integration {
 
     #[test]
     fn recreate_sidecar_rejects_tee() {
-        if !should_run() {
-            return;
-        }
-
         // We can't easily call recreate_sidecar_with_env without a full store
         // setup, but we can verify the guard exists by checking that a TEE
         // record would be rejected. The actual guard is tested by checking
@@ -76,10 +58,6 @@ mod tee_integration {
 
     #[test]
     fn direct_no_device_constructor_exists() {
-        if !should_run() {
-            return;
-        }
-
         // Verify the test constructor is available.
         let backend = DirectTeeBackend::new_without_device(TeeType::Tdx);
         assert_eq!(backend.tee_type(), TeeType::Tdx);
@@ -87,10 +65,6 @@ mod tee_integration {
 
     #[test]
     fn tee_deploy_params_includes_extra_ports() {
-        if !should_run() {
-            return;
-        }
-
         use sandbox_runtime::CreateSandboxParams;
 
         let params = CreateSandboxParams {
@@ -114,7 +88,7 @@ mod tee_integration {
     // ── Full Docker lifecycle tests (require Docker daemon) ─────────────────
 
     // These tests are expensive (pull image, start container, health check).
-    // They're gated behind TEE_INTEGRATION=1 and require a Docker daemon.
+    // Keep them opt-in until we have a dedicated real-Docker TEE lane.
 
     // Note: The tests below are commented out by default because they require
     // a running Docker daemon and sidecar image. Uncomment to run locally.
@@ -197,10 +171,6 @@ mod tee_integration {
 
     #[test]
     fn idempotent_provision_preserves_attestation_field() {
-        if !should_run() {
-            return;
-        }
-
         // Verify that a SandboxRecord with tee_attestation_json populated
         // would have its attestation preserved in the idempotent path.
         // This is a structural test — the actual provision flow is tested
@@ -258,10 +228,6 @@ mod tee_integration {
 
     #[tokio::test]
     async fn mock_backend_returns_empty_extra_ports() {
-        if !should_run() {
-            return;
-        }
-
         use sandbox_runtime::tee::mock::MockTeeBackend;
 
         let mock = MockTeeBackend::new(TeeType::Tdx);
