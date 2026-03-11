@@ -11,9 +11,16 @@
 //!   - `/agents/run` → `{ success, response, traceId, durationMs, usage, sessionId }`
 
 use ai_agent_instance_blueprint_lib::*;
+use ai_agent_instance_blueprint_lib::workflows::{
+    WorkflowEntry, apply_workflow_execution, resolve_next_run, run_workflow, workflow_key,
+    workflow_tick, workflows,
+};
+use ai_agent_instance_blueprint_lib::auto_provision::decode_provision_config;
+use blueprint_sdk::alloy::sol_types::SolValue;
 use serde_json::{Value, json};
 use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1519,5 +1526,940 @@ mod provision_guard_tests {
         let err = require_instance_sandbox();
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("not provisioned"));
+    }
+
+    #[test]
+    fn seal_unseal_roundtrip_preserves_all_fields() {
+        init();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear before test");
+
+        let record = SandboxRecord {
+            id: "seal-roundtrip".to_string(),
+            container_id: "ctr-seal".to_string(),
+            sidecar_url: "http://127.0.0.1:5555".to_string(),
+            sidecar_port: 5555,
+            ssh_port: Some(2223),
+            token: "my-secret-token".to_string(),
+            created_at: 1000,
+            cpu_cores: 8,
+            memory_mb: 16384,
+            state: Default::default(),
+            idle_timeout_seconds: 600,
+            max_lifetime_seconds: 7200,
+            last_activity_at: 1001,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: "test:v1".to_string(),
+            base_env_json: "{}".to_string(),
+            user_env_json: "{}".to_string(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            tee_attestation_json: Some(r#"{"quote":"xyz"}"#.to_string()),
+            name: "my-instance".to_string(),
+            agent_identifier: "agent-x".to_string(),
+            metadata_json: r#"{"foo":"bar"}"#.to_string(),
+            disk_gb: 50,
+            stack: "python".to_string(),
+            owner: "0xdeadbeef".to_string(),
+            tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
+        };
+
+        set_instance_sandbox(record).unwrap();
+        let got = get_instance_sandbox().unwrap().unwrap();
+
+        assert_eq!(got.id, "seal-roundtrip");
+        assert_eq!(got.sidecar_url, "http://127.0.0.1:5555");
+        assert_eq!(got.token, "my-secret-token");
+        assert_eq!(got.ssh_port, Some(2223));
+        assert_eq!(
+            got.tee_attestation_json.as_deref(),
+            Some(r#"{"quote":"xyz"}"#)
+        );
+        assert_eq!(got.owner, "0xdeadbeef");
+
+        clear_instance_sandbox().unwrap();
+    }
+
+    #[test]
+    fn clear_instance_sandbox_is_idempotent() {
+        init();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("first clear");
+        // Second clear when already empty should succeed.
+        clear_instance_sandbox().expect("second clear should be Ok");
+        assert!(get_instance_sandbox().unwrap().is_none());
+    }
+
+    #[test]
+    fn double_set_overwrites_previous() {
+        init();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear before test");
+
+        let record_a = SandboxRecord {
+            id: "record-a".to_string(),
+            container_id: "ctr-a".to_string(),
+            sidecar_url: "http://a".to_string(),
+            sidecar_port: 1111,
+            ssh_port: None,
+            token: "tok-a".to_string(),
+            created_at: 1,
+            cpu_cores: 1,
+            memory_mb: 512,
+            state: Default::default(),
+            idle_timeout_seconds: 0,
+            max_lifetime_seconds: 0,
+            last_activity_at: 1,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: String::new(),
+            base_env_json: String::new(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            tee_attestation_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
+        };
+
+        let record_b = SandboxRecord {
+            id: "record-b".to_string(),
+            container_id: "ctr-b".to_string(),
+            sidecar_url: "http://b".to_string(),
+            sidecar_port: 2222,
+            ssh_port: Some(3333),
+            token: "tok-b".to_string(),
+            created_at: 2,
+            cpu_cores: 2,
+            memory_mb: 1024,
+            state: Default::default(),
+            idle_timeout_seconds: 0,
+            max_lifetime_seconds: 0,
+            last_activity_at: 2,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: String::new(),
+            base_env_json: String::new(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            tee_attestation_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
+        };
+
+        set_instance_sandbox(record_a).unwrap();
+        assert_eq!(get_instance_sandbox().unwrap().unwrap().id, "record-a");
+
+        set_instance_sandbox(record_b).unwrap();
+        let got = get_instance_sandbox().unwrap().unwrap();
+        assert_eq!(got.id, "record-b");
+        assert_eq!(got.sidecar_url, "http://b");
+        assert_eq!(got.token, "tok-b");
+
+        clear_instance_sandbox().unwrap();
+    }
+
+    #[test]
+    fn deprovision_clears_both_stores() {
+        init();
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_instance_sandbox().expect("clear before test");
+
+        let sandbox_id = insert_sandbox("http://both-stores", "tok");
+
+        let record = SandboxRecord {
+            id: sandbox_id.clone(),
+            container_id: format!("ctr-{sandbox_id}"),
+            sidecar_url: "http://both-stores".to_string(),
+            sidecar_port: 0,
+            ssh_port: None,
+            token: "tok".to_string(),
+            created_at: 1,
+            cpu_cores: 1,
+            memory_mb: 512,
+            state: Default::default(),
+            idle_timeout_seconds: 0,
+            max_lifetime_seconds: 0,
+            last_activity_at: 1,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: String::new(),
+            base_env_json: String::new(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            tee_attestation_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
+        };
+        set_instance_sandbox(record).unwrap();
+
+        // Both stores have data.
+        assert!(get_instance_sandbox().unwrap().is_some());
+        assert!(
+            runtime::sandboxes()
+                .unwrap()
+                .get(&sandbox_id)
+                .unwrap()
+                .is_some()
+        );
+
+        // Clear both.
+        clear_instance_sandbox().unwrap();
+        rm(&sandbox_id);
+
+        assert!(get_instance_sandbox().unwrap().is_none());
+        assert!(
+            runtime::sandboxes()
+                .unwrap()
+                .get(&sandbox_id)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WORKFLOW TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Helper: create a SandboxRecord in the instance store pointing at wiremock.
+/// Must be called inside INSTANCE_LOCK scope.
+fn set_instance_for_test(url: &str, token: &str) -> String {
+    init();
+    let id = uid();
+    // Also insert into runtime store (run_workflow → run_instance_task touches it).
+    runtime::sandboxes()
+        .unwrap()
+        .insert(
+            id.clone(),
+            SandboxRecord {
+                id: id.clone(),
+                container_id: format!("ctr-{id}"),
+                sidecar_url: url.to_string(),
+                sidecar_port: 0,
+                ssh_port: None,
+                token: token.to_string(),
+                created_at: util::now_ts(),
+                cpu_cores: 1,
+                memory_mb: 512,
+                state: Default::default(),
+                idle_timeout_seconds: 0,
+                max_lifetime_seconds: 0,
+                last_activity_at: util::now_ts(),
+                stopped_at: None,
+                snapshot_image_id: None,
+                snapshot_s3_url: None,
+                container_removed_at: None,
+                image_removed_at: None,
+                original_image: String::new(),
+                base_env_json: String::new(),
+                user_env_json: String::new(),
+                snapshot_destination: None,
+                tee_deployment_id: None,
+                tee_metadata_json: None,
+                tee_attestation_json: None,
+                name: String::new(),
+                agent_identifier: String::new(),
+                metadata_json: String::new(),
+                disk_gb: 0,
+                stack: String::new(),
+                owner: String::new(),
+                tee_config: None,
+                extra_ports: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+
+    let record = SandboxRecord {
+        id: id.clone(),
+        container_id: format!("ctr-{id}"),
+        sidecar_url: url.to_string(),
+        sidecar_port: 0,
+        ssh_port: None,
+        token: token.to_string(),
+        created_at: util::now_ts(),
+        cpu_cores: 1,
+        memory_mb: 512,
+        state: Default::default(),
+        idle_timeout_seconds: 0,
+        max_lifetime_seconds: 0,
+        last_activity_at: util::now_ts(),
+        stopped_at: None,
+        snapshot_image_id: None,
+        snapshot_s3_url: None,
+        container_removed_at: None,
+        image_removed_at: None,
+        original_image: String::new(),
+        base_env_json: String::new(),
+        user_env_json: String::new(),
+        snapshot_destination: None,
+        tee_deployment_id: None,
+        tee_metadata_json: None,
+        tee_attestation_json: None,
+        name: String::new(),
+        agent_identifier: String::new(),
+        metadata_json: String::new(),
+        disk_gb: 0,
+        stack: String::new(),
+        owner: String::new(),
+        tee_config: None,
+        extra_ports: std::collections::HashMap::new(),
+    };
+    set_instance_sandbox(record).unwrap();
+    id
+}
+
+fn clear_instance_for_test(sandbox_id: &str) {
+    let _ = clear_instance_sandbox();
+    rm(sandbox_id);
+}
+
+/// Create a default active cron workflow entry for testing.
+fn wf(id: u64) -> WorkflowEntry {
+    WorkflowEntry {
+        id,
+        name: format!("wf-{id}"),
+        workflow_json: r#"{"prompt":"do work"}"#.to_string(),
+        trigger_type: "cron".to_string(),
+        trigger_config: "0 * * * * *".to_string(),
+        sandbox_config_json: "{}".to_string(),
+        active: true,
+        next_run_at: Some(1), // past = due immediately
+        last_run_at: None,
+        owner: String::new(),
+    }
+}
+
+/// Create a workflow entry with a specific owner.
+fn wf_with_owner(id: u64, owner: &str) -> WorkflowEntry {
+    let mut entry = wf(id);
+    entry.owner = owner.to_string();
+    entry
+}
+
+/// Replicate the `caller_hex` logic from jobs/mod.rs for tests.
+fn caller_hex(caller: &[u8; 20]) -> String {
+    let addr = blueprint_sdk::alloy::primitives::Address::from_slice(caller);
+    format!("{addr:#x}")
+}
+
+#[allow(clippy::await_holding_lock)]
+mod workflow_tests {
+    use super::*;
+
+    // ── Store CRUD (no wiremock needed) ──────────────────────────────────────
+
+    #[test]
+    fn create_read_update_delete() {
+        init();
+        let key = workflow_key(80001);
+        workflows()
+            .unwrap()
+            .insert(key.clone(), wf(80001))
+            .unwrap();
+
+        let r = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert_eq!(r.name, "wf-80001");
+        assert!(r.active);
+        assert_eq!(key, "80001");
+
+        workflows()
+            .unwrap()
+            .update(&key, |e| {
+                e.active = false;
+                e.next_run_at = None;
+            })
+            .unwrap();
+        let r = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert!(!r.active);
+        assert!(r.next_run_at.is_none());
+
+        workflows().unwrap().remove(&key).unwrap();
+        assert!(workflows().unwrap().get(&key).unwrap().is_none());
+    }
+
+    #[test]
+    fn inactive_workflow_flag_persists() {
+        init();
+        let key = workflow_key(80002);
+        let mut entry = wf(80002);
+        entry.active = false;
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+
+        let stored = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert!(!stored.active);
+
+        workflows().unwrap().remove(&key).unwrap();
+    }
+
+    #[test]
+    fn cancel_sets_inactive_and_clears_next_run() {
+        init();
+        let key = workflow_key(80003);
+        workflows()
+            .unwrap()
+            .insert(key.clone(), wf(80003))
+            .unwrap();
+
+        let before = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert!(before.active);
+        assert!(before.next_run_at.is_some());
+
+        workflows()
+            .unwrap()
+            .update(&key, |e| {
+                e.active = false;
+                e.next_run_at = None;
+            })
+            .unwrap();
+
+        let after = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert!(!after.active);
+        assert!(after.next_run_at.is_none());
+
+        workflows().unwrap().remove(&key).unwrap();
+    }
+
+    #[test]
+    fn cancel_nonexistent_workflow_returns_none() {
+        init();
+        let key = workflow_key(89999);
+        let result = workflows().unwrap().get(&key).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_workflow_execution_updates_entry() {
+        let mut entry = wf(80004);
+        assert!(entry.last_run_at.is_none());
+
+        apply_workflow_execution(&mut entry, 12345, Some(67890));
+
+        assert_eq!(entry.last_run_at, Some(12345));
+        assert_eq!(entry.next_run_at, Some(67890));
+    }
+
+    // ── Owner Authorization (sync, no wiremock) ────────────────────────────
+
+    #[test]
+    fn owner_check_rejects_wrong_caller() {
+        let entry = wf_with_owner(80005, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let bad_caller: [u8; 20] = [0xbb; 20];
+        let bad_hex = caller_hex(&bad_caller);
+
+        // Simulate the ownership check from workflow_trigger / workflow_cancel.
+        let allowed =
+            entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&bad_hex);
+        assert!(!allowed, "wrong caller should be rejected");
+    }
+
+    #[test]
+    fn owner_check_allows_matching_caller() {
+        let caller: [u8; 20] = [0xaa; 20];
+        let hex = caller_hex(&caller);
+        let entry = wf_with_owner(80006, &hex);
+
+        let allowed =
+            entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&hex);
+        assert!(allowed, "matching caller should be allowed");
+    }
+
+    #[test]
+    fn owner_check_case_insensitive() {
+        let caller: [u8; 20] = [0xab; 20];
+        let hex = caller_hex(&caller);
+        let entry = wf_with_owner(80016, &hex.to_uppercase());
+
+        let allowed =
+            entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&hex);
+        assert!(allowed, "case-insensitive match should be allowed");
+    }
+
+    #[test]
+    fn empty_owner_allows_any_caller() {
+        let entry = wf(80007); // owner is empty by default
+        let any_caller: [u8; 20] = [0xcc; 20];
+        let any_hex = caller_hex(&any_caller);
+
+        let allowed =
+            entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&any_hex);
+        assert!(allowed, "empty owner should allow any caller");
+    }
+
+    // ── Async Workflow Execution (wiremock + INSTANCE_LOCK) ─────────────────
+
+    #[tokio::test]
+    async fn run_workflow_delegates_to_instance_task() {
+        let srv = MockServer::start().await;
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test(&srv.uri(), "wf-tok");
+
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(mock_agent_ok("wf-ran"))
+            .mount(&srv)
+            .await;
+
+        let entry = wf(80008);
+        let exec = run_workflow(&entry).await.unwrap();
+        assert!(exec.response["task"]["success"].as_bool().unwrap());
+        assert!(exec.last_run_at > 0);
+        assert!(exec.next_run_at.is_some());
+
+        clear_instance_for_test(&sid);
+    }
+
+    #[tokio::test]
+    async fn run_workflow_uses_instance_record_token() {
+        let srv = MockServer::start().await;
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test(&srv.uri(), "real-tok");
+
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .and(header("Authorization", "Bearer real-tok"))
+            .respond_with(mock_agent_ok("ok"))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        // workflow_json contains a different token that should NOT be used.
+        let entry = WorkflowEntry {
+            id: 80009,
+            name: "wf-tok-test".to_string(),
+            workflow_json: r#"{"prompt":"run","sidecar_token":"wrong-tok"}"#.to_string(),
+            trigger_type: "manual".to_string(),
+            trigger_config: String::new(),
+            sandbox_config_json: "{}".to_string(),
+            active: true,
+            next_run_at: None,
+            last_run_at: None,
+            owner: String::new(),
+        };
+
+        let exec = run_workflow(&entry).await.unwrap();
+        assert!(exec.response["task"]["success"].as_bool().unwrap());
+
+        clear_instance_for_test(&sid);
+    }
+
+    #[tokio::test]
+    async fn run_workflow_empty_json_rejected() {
+        let entry = WorkflowEntry {
+            id: 80010,
+            name: "empty-json".to_string(),
+            workflow_json: "   ".to_string(),
+            trigger_type: "cron".to_string(),
+            trigger_config: "0 * * * * *".to_string(),
+            sandbox_config_json: "{}".to_string(),
+            active: true,
+            next_run_at: Some(1),
+            last_run_at: None,
+            owner: String::new(),
+        };
+
+        let result = run_workflow(&entry).await;
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.contains("workflow_json is required"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn run_workflow_fails_when_not_provisioned() {
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init();
+        clear_instance_sandbox().expect("clear before test");
+
+        let entry = wf(80011);
+        let result = run_workflow(&entry).await;
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.contains("not provisioned"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn tick_runs_due_workflows() {
+        let srv = MockServer::start().await;
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test(&srv.uri(), "tick-tok");
+
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(mock_agent_ok("ticked"))
+            .mount(&srv)
+            .await;
+
+        let key = workflow_key(80012);
+        workflows().unwrap().insert(key.clone(), wf(80012)).unwrap();
+
+        let result = workflow_tick().await.unwrap();
+        assert!(!result["executed"].as_array().unwrap().is_empty());
+
+        let updated = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert!(updated.last_run_at.is_some());
+
+        workflows().unwrap().remove(&key).unwrap();
+        clear_instance_for_test(&sid);
+    }
+
+    #[tokio::test]
+    async fn tick_skips_inactive_workflows() {
+        let srv = MockServer::start().await;
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test(&srv.uri(), "skip-tok");
+
+        let key = workflow_key(80013);
+        let mut entry = wf(80013);
+        entry.active = false;
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+
+        let result = workflow_tick().await.unwrap();
+        assert_eq!(result["count"], 0, "inactive workflow should not be executed");
+
+        workflows().unwrap().remove(&key).unwrap();
+        clear_instance_for_test(&sid);
+    }
+
+    #[tokio::test]
+    async fn tick_skips_non_cron_workflows() {
+        let srv = MockServer::start().await;
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test(&srv.uri(), "manual-tok");
+
+        let key = workflow_key(80014);
+        let mut entry = wf(80014);
+        entry.trigger_type = "manual".to_string();
+        entry.trigger_config = String::new();
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+
+        let result = workflow_tick().await.unwrap();
+        assert_eq!(result["count"], 0, "manual workflow should not be executed by tick");
+
+        workflows().unwrap().remove(&key).unwrap();
+        clear_instance_for_test(&sid);
+    }
+
+    #[tokio::test]
+    async fn concurrent_tick_skips_already_running() {
+        let srv = MockServer::start().await;
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test(&srv.uri(), "conc-tok");
+
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(mock_agent_ok("slow").set_delay(Duration::from_secs(1)))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        let key = workflow_key(80015);
+        workflows().unwrap().insert(key.clone(), wf(80015)).unwrap();
+
+        // Spawn first tick (will be slow due to 1s delay mock).
+        let handle = tokio::spawn(async { workflow_tick().await });
+        // Let it start processing and advance next_run_at.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Second tick: workflow is no longer due (next_run_at was advanced).
+        let result2 = workflow_tick().await.unwrap();
+
+        let result1 = handle.await.unwrap().unwrap();
+
+        // First tick executed the workflow.
+        assert_eq!(result1["count"], 1);
+        // Second tick should have 0 executions.
+        assert_eq!(result2["count"], 0);
+
+        workflows().unwrap().remove(&key).unwrap();
+        clear_instance_for_test(&sid);
+    }
+
+    #[tokio::test]
+    async fn session_per_tick_produces_unique_ids() {
+        let srv = MockServer::start().await;
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test(&srv.uri(), "sess-tok");
+
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(mock_agent_ok("ok"))
+            .mount(&srv)
+            .await;
+
+        let entry = WorkflowEntry {
+            id: 80017,
+            name: "wf-sess".to_string(),
+            workflow_json: r#"{"prompt":"run","session_id":"base-sess"}"#.to_string(),
+            trigger_type: "manual".to_string(),
+            trigger_config: String::new(),
+            sandbox_config_json: "{}".to_string(),
+            active: true,
+            next_run_at: None,
+            last_run_at: None,
+            owner: String::new(),
+        };
+
+        let _ = run_workflow(&entry).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let _ = run_workflow(&entry).await.unwrap();
+
+        let requests = srv.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+
+        let body1: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let body2: Value = serde_json::from_slice(&requests[1].body).unwrap();
+        let sid1 = body1["sessionId"].as_str().unwrap();
+        let sid2 = body2["sessionId"].as_str().unwrap();
+
+        assert_ne!(sid1, sid2, "Each tick should produce a unique session ID");
+        assert!(sid1.starts_with("base-sess-"));
+        assert!(sid2.starts_with("base-sess-"));
+
+        clear_instance_for_test(&sid);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CRON EDGE CASE TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod cron_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_next_run_cron_returns_future() {
+        let result = resolve_next_run("cron", "0 * * * * *", None).unwrap();
+        assert!(result.is_some());
+        let ts = result.unwrap();
+        let now = util::now_ts();
+        assert!(ts > now, "next run {ts} should be in the future (now={now})");
+    }
+
+    #[test]
+    fn resolve_next_run_non_cron_returns_none() {
+        let result = resolve_next_run("manual", "", None).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_next_run_invalid_cron_errors() {
+        let result = resolve_next_run("cron", "not-a-cron", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid cron"));
+    }
+
+    #[test]
+    fn resolve_next_run_advances_from_last_run() {
+        let known_ts = 1700000000u64; // some past timestamp
+        let result = resolve_next_run("cron", "0 * * * * *", Some(known_ts)).unwrap();
+        assert!(result.is_some());
+        let ts = result.unwrap();
+        assert!(
+            ts > known_ts,
+            "next run {ts} should be after last_run {known_ts}"
+        );
+    }
+
+    #[test]
+    fn resolve_next_run_complex_cron() {
+        // Weekly on Monday at noon
+        let result = resolve_next_run("cron", "0 0 12 * * Mon", None).unwrap();
+        assert!(result.is_some());
+        let ts = result.unwrap();
+        let now = util::now_ts();
+        assert!(ts > now, "weekly cron {ts} should be in the future (now={now})");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PENDING REPORT & ABI TOLERANCE TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod reporting_tests {
+    use super::*;
+
+    #[test]
+    fn pending_report_overwrite_on_remark() {
+        init();
+        let output = ProvisionOutput {
+            sandbox_id: "sb-overwrite".to_string(),
+            sidecar_url: "http://first".to_string(),
+            ssh_port: 22,
+            tee_attestation_json: "{}".to_string(),
+            tee_public_key_json: String::new(),
+        };
+
+        mark_pending_provision_report(99, &output, "first error").expect("first mark");
+        let first = get_pending_provision_report(99).unwrap().unwrap();
+        assert_eq!(first.sidecar_url, "http://first");
+
+        let output2 = ProvisionOutput {
+            sandbox_id: "sb-overwrite".to_string(),
+            sidecar_url: "http://second".to_string(),
+            ssh_port: 23,
+            tee_attestation_json: "{}".to_string(),
+            tee_public_key_json: String::new(),
+        };
+
+        mark_pending_provision_report(99, &output2, "second error").expect("second mark");
+        let second = get_pending_provision_report(99).unwrap().unwrap();
+        assert_eq!(second.sidecar_url, "http://second");
+        assert_eq!(second.ssh_port, 23);
+
+        clear_pending_provision_report(99).expect("cleanup");
+    }
+
+    #[test]
+    fn workflow_create_request_abi_roundtrip() {
+        let request = WorkflowCreateRequest {
+            name: "test-workflow".to_string(),
+            workflow_json: r#"{"prompt":"hello"}"#.to_string(),
+            trigger_type: "cron".to_string(),
+            trigger_config: "0 * * * * *".to_string(),
+            sandbox_config_json: r#"{"image":"ubuntu"}"#.to_string(),
+        };
+
+        let encoded = request.abi_encode();
+        let decoded = WorkflowCreateRequest::abi_decode(&encoded).unwrap();
+        assert_eq!(decoded.name, "test-workflow");
+        assert_eq!(decoded.workflow_json, r#"{"prompt":"hello"}"#);
+        assert_eq!(decoded.trigger_type, "cron");
+        assert_eq!(decoded.trigger_config, "0 * * * * *");
+        assert_eq!(decoded.sandbox_config_json, r#"{"image":"ubuntu"}"#);
+    }
+
+    #[test]
+    fn workflow_control_request_abi_roundtrip() {
+        let request = WorkflowControlRequest { workflow_id: 42 };
+
+        let encoded = request.abi_encode();
+        let decoded = WorkflowControlRequest::abi_decode(&encoded).unwrap();
+        assert_eq!(decoded.workflow_id, 42);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AGENT FIELD EDGE CASES & ROUTER TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod agent_edge_tests {
+    use super::*;
+
+    #[test]
+    fn extract_agent_fields_nested_error_object() {
+        let v = json!({
+            "success": false,
+            "response": "",
+            "error": {"message": "inner"},
+            "traceId": "t1"
+        });
+        let (_success, _response, error, _trace_id) = extract_agent_fields(&v);
+        assert_eq!(error, "inner");
+    }
+
+    #[test]
+    fn extract_agent_fields_error_without_message() {
+        let v = json!({
+            "success": false,
+            "response": "",
+            "error": {"code": 500},
+            "traceId": "t1"
+        });
+        let (_success, _response, error, _trace_id) = extract_agent_fields(&v);
+        assert!(error.is_empty(), "error without message key should be empty");
+    }
+
+    #[test]
+    fn router_construction_succeeds() {
+        init();
+        let r = router();
+        // Router construction should not panic. If it completes, job mapping is valid.
+        drop(r);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTO-PROVISION DECODE TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod auto_provision_tests {
+    use super::*;
+
+    #[test]
+    fn decode_provision_config_tuple_encoding() {
+        let request = ProvisionRequest {
+            name: "tuple-test".to_string(),
+            image: "agent-img".to_string(),
+            stack: "default".to_string(),
+            agent_identifier: "ag-1".to_string(),
+            env_json: "{}".to_string(),
+            metadata_json: "{}".to_string(),
+            ssh_enabled: true,
+            ssh_public_key: "ssh-ed25519 AAAA key".to_string(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 3600,
+            idle_timeout_seconds: 900,
+            cpu_cores: 2,
+            memory_mb: 4096,
+            disk_gb: 20,
+            sidecar_token: String::new(),
+            tee_required: false,
+            tee_type: 0,
+        };
+
+        // abi_encode() produces tuple encoding (with outer offset prefix).
+        let encoded = request.abi_encode();
+        let decoded = decode_provision_config(&encoded).unwrap();
+        assert_eq!(decoded.name, "tuple-test");
+        assert_eq!(decoded.image, "agent-img");
+        assert_eq!(decoded.cpu_cores, 2);
+        assert_eq!(decoded.memory_mb, 4096);
+        assert!(decoded.ssh_enabled);
+    }
+
+    #[test]
+    fn decode_provision_config_malformed_bytes_rejected() {
+        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+        let result = decode_provision_config(&garbage);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.contains("Failed to decode"), "got: {err}");
     }
 }
