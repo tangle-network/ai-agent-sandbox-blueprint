@@ -285,4 +285,47 @@ mod tests {
         clear(&id);
         assert!(check_health(&id).is_ok());
     }
+
+    // ── Phase 2D: Circuit Breaker + Resume Tests ────────────────────────
+
+    #[test]
+    fn test_unhealthy_then_mark_healthy_clears() {
+        let id = unique_id("resume-clears");
+        // Mark unhealthy (simulating sidecar failure)
+        mark_unhealthy(&id);
+        assert!(
+            check_health(&id).is_err(),
+            "should be blocked after mark_unhealthy"
+        );
+        // Simulate successful resume → mark_healthy
+        mark_healthy(&id);
+        assert!(
+            check_health(&id).is_ok(),
+            "should be healthy after resume clears breaker"
+        );
+        // Verify it stays healthy on subsequent checks
+        assert!(
+            check_health(&id).is_ok(),
+            "should remain healthy on repeated checks"
+        );
+    }
+
+    #[test]
+    fn test_breaker_sandbox_scoped_not_global() {
+        let id_a = unique_id("scope-a");
+        let id_b = unique_id("scope-b");
+        // Mark sandbox A unhealthy
+        mark_unhealthy(&id_a);
+        // Sandbox B should still be healthy
+        assert!(
+            check_health(&id_b).is_ok(),
+            "sandbox B should be healthy when only A is unhealthy"
+        );
+        assert!(
+            check_health(&id_a).is_err(),
+            "sandbox A should still be unhealthy"
+        );
+        // Clean up
+        clear(&id_a);
+    }
 }

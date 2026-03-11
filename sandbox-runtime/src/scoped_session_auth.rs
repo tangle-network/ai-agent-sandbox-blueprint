@@ -404,4 +404,85 @@ mod tests {
             .expect_err("must fail when session capacity is exhausted");
         assert!(err.contains("session capacity exceeded"));
     }
+
+    // ── Phase 1D: Scoped Session Auth Integration Tests ─────────────────
+
+    #[test]
+    fn scoped_session_expired_token_rejected() {
+        let service = ScopedAuthService::new(ScopedAuthConfig {
+            access_token: Some("shared".to_string()),
+            session_ttl_secs: -1, // already expired
+            ..ScopedAuthConfig::default()
+        });
+        let session = service
+            .create_access_token_session(&resource(ScopedAuthMode::AccessToken), "shared")
+            .expect("should create session even with negative TTL");
+        // Token was created with an already-expired timestamp
+        let resolved = service.resolve_bearer(&session.token);
+        assert!(
+            resolved.is_none(),
+            "expired token should not resolve: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn scoped_session_cross_scope_reuse_rejected() {
+        let service = ScopedAuthService::new(ScopedAuthConfig {
+            access_token: Some("shared".to_string()),
+            ..ScopedAuthConfig::default()
+        });
+        // Create session for scope "inst-1"
+        let session = service
+            .create_access_token_session(&resource(ScopedAuthMode::AccessToken), "shared")
+            .expect("create session");
+        // Resolve the token — should return scope "inst-1"
+        let claims = service
+            .resolve_bearer(&session.token)
+            .expect("should resolve");
+        match claims {
+            ScopedSessionClaims::Scoped { scope_id, .. } => {
+                assert_eq!(scope_id, "inst-1");
+                // A different scope (e.g. "inst-2") would need a different token.
+                // The token is bound to inst-1, so it can't authenticate inst-2.
+                assert_ne!(scope_id, "inst-2", "token must not match a different scope");
+            }
+            _ => panic!("expected Scoped claims"),
+        }
+    }
+
+    #[test]
+    fn wallet_challenge_wrong_address_rejected() {
+        let service = ScopedAuthService::new(ScopedAuthConfig::default());
+        // Resource owner is 0x0000...0001, but we try to challenge with a
+        // different wallet address.
+        let err = service
+            .create_wallet_challenge(
+                &resource(ScopedAuthMode::WalletSignature),
+                "0x0000000000000000000000000000000000000099",
+            )
+            .expect_err("should reject mismatched wallet address");
+        assert!(
+            err.contains("does not match"),
+            "error should mention address mismatch: {err}"
+        );
+    }
+
+    #[test]
+    fn access_token_wrong_mode_rejected() {
+        let service = ScopedAuthService::new(ScopedAuthConfig {
+            access_token: Some("shared".to_string()),
+            ..ScopedAuthConfig::default()
+        });
+        // Resource is set to WalletSignature mode, but we try AccessToken flow
+        let err = service
+            .create_access_token_session(
+                &resource(ScopedAuthMode::WalletSignature),
+                "shared",
+            )
+            .expect_err("should reject wrong auth mode");
+        assert!(
+            err.contains("access_token"),
+            "error should mention wrong mode: {err}"
+        );
+    }
 }

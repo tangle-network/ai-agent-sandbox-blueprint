@@ -102,4 +102,120 @@ mod tests {
         let result = merge_env_json(r#"{"FOO": "bar"}"#, "{}");
         assert_eq!(result, r#"{"FOO": "bar"}"#);
     }
+
+    // ── Phase 1E: Secret Provisioning Identity Immutability Tests ────────
+
+    #[test]
+    fn merge_env_preserves_base_keys() {
+        // After merge then clear (empty user env), base keys must survive
+        let base = r#"{"BASE_KEY": "base_value", "SHARED": "original"}"#;
+        let user = r#"{"SECRET": "s3cr3t", "SHARED": "override"}"#;
+
+        // Step 1: merge user on top of base
+        let merged = merge_env_json(base, user);
+        let parsed: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&merged).unwrap();
+        assert_eq!(parsed["BASE_KEY"], "base_value");
+        assert_eq!(parsed["SECRET"], "s3cr3t");
+        assert_eq!(parsed["SHARED"], "override");
+
+        // Step 2: clear user secrets (merge with empty)
+        let cleared = merge_env_json(base, "");
+        let parsed_cleared: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&cleared).unwrap();
+        assert_eq!(
+            parsed_cleared["BASE_KEY"], "base_value",
+            "base key must survive inject/wipe cycle"
+        );
+        assert_eq!(
+            parsed_cleared["SHARED"], "original",
+            "base value must revert after wipe"
+        );
+        assert!(
+            !parsed_cleared.contains_key("SECRET"),
+            "user secret must be gone after wipe"
+        );
+    }
+
+    #[test]
+    fn validate_secret_access_same_id_after_wipe() {
+        // Verifies that sandbox_id is stable across inject/wipe by testing
+        // the validate_secret_access function's ID-based lookup. Since we
+        // can't run full sidecar recreation in unit tests, we verify the
+        // ID-based access function works correctly.
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+
+        // Ensure store is initialized
+        let dir =
+            std::env::temp_dir().join(format!("secret-prov-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        unsafe { std::env::set_var("BLUEPRINT_STATE_DIR", &dir) };
+
+        let sandbox_id = "secret-id-stable-1";
+        let owner = "0xSECRETOWNER00000000000000000000000001";
+        let mut record = SandboxRecord {
+            id: sandbox_id.to_string(),
+            container_id: "ctr-secret-1".to_string(),
+            sidecar_url: "http://localhost:9999".to_string(),
+            sidecar_port: 9999,
+            ssh_port: None,
+            token: "test".into(),
+            created_at: 1_700_000_000,
+            cpu_cores: 1,
+            memory_mb: 1024,
+            state: SandboxState::Running,
+            idle_timeout_seconds: 1800,
+            max_lifetime_seconds: 86400,
+            last_activity_at: 1_700_000_000,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: "test:latest".into(),
+            base_env_json: r#"{"BASE":"val"}"#.into(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            tee_attestation_json: None,
+            name: "test".into(),
+            agent_identifier: String::new(),
+            metadata_json: "{}".into(),
+            disk_gb: 10,
+            stack: String::new(),
+            owner: owner.to_string(),
+            tee_config: None,
+            extra_ports: std::collections::HashMap::new(),
+        };
+        seal_record(&mut record).unwrap();
+        sandboxes()
+            .unwrap()
+            .insert(sandbox_id.to_string(), record)
+            .unwrap();
+
+        // Validate access returns the same sandbox_id
+        let accessed = crate::secret_provisioning::validate_secret_access(sandbox_id, owner)
+            .expect("should validate");
+        assert_eq!(
+            accessed.id, sandbox_id,
+            "sandbox_id must be stable across access validation"
+        );
+
+        // Simulate wipe: update user_env_json to empty
+        sandboxes()
+            .unwrap()
+            .update(sandbox_id, |r| {
+                r.user_env_json = String::new();
+            })
+            .unwrap();
+
+        // Re-validate: same sandbox_id
+        let accessed_after = crate::secret_provisioning::validate_secret_access(sandbox_id, owner)
+            .expect("should still validate after wipe");
+        assert_eq!(
+            accessed_after.id, sandbox_id,
+            "sandbox_id must be immutable across secrets inject/wipe"
+        );
+    }
 }
