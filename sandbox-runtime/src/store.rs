@@ -382,4 +382,97 @@ mod tests {
             "expected counter=400 after 4 threads * 100 increments, got {final_val}"
         );
     }
+
+    // ── Phase 3E: Concurrent Store CRUD Tests ───────────────────────────
+
+    #[test]
+    fn concurrent_update_and_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("concurrent_update_remove.json");
+        let store: Arc<PersistentStore<String>> = Arc::new(PersistentStore::open(path).unwrap());
+
+        // Seed entries
+        for i in 0..100u32 {
+            store.insert(format!("k{i}"), format!("v{i}")).unwrap();
+        }
+
+        let mut handles = Vec::new();
+
+        // 2 threads updating even keys
+        for t in 0..2u32 {
+            let s = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                for i in (0..100u32).step_by(2) {
+                    let _ = s.update(&format!("k{i}"), |v| {
+                        v.push_str(&format!("-t{t}"));
+                    });
+                }
+            }));
+        }
+
+        // 2 threads removing odd keys
+        for _ in 0..2u32 {
+            let s = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                for i in (1..100u32).step_by(2) {
+                    let _ = s.remove(&format!("k{i}"));
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join()
+                .expect("thread should not panic during concurrent update+remove");
+        }
+
+        // Even keys should still exist (possibly modified)
+        for i in (0..100u32).step_by(2) {
+            assert!(
+                store.get(&format!("k{i}")).unwrap().is_some(),
+                "even key k{i} should survive"
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_find_while_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("concurrent_find_write.json");
+        let store: Arc<PersistentStore<String>> = Arc::new(PersistentStore::open(path).unwrap());
+
+        // Seed a known entry
+        store.insert("target".into(), "findme".into()).unwrap();
+
+        let mut handles = Vec::new();
+
+        // 4 writer threads inserting new keys
+        for t in 0..4u32 {
+            let s = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..50u32 {
+                    s.insert(format!("w{t}_{i}"), "data".to_string()).unwrap();
+                }
+            }));
+        }
+
+        // 4 finder threads searching for "findme"
+        for _ in 0..4u32 {
+            let s = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..100 {
+                    let found = s.find(|v| v == "findme").unwrap();
+                    assert_eq!(
+                        found,
+                        Some("findme".to_string()),
+                        "find should consistently locate the target value"
+                    );
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join()
+                .expect("thread should not panic during concurrent find+insert");
+        }
+    }
 }

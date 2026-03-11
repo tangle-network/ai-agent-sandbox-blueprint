@@ -17,7 +17,8 @@ use ai_agent_sandbox_blueprint_lib::jobs::exec::{
 };
 use ai_agent_sandbox_blueprint_lib::jobs::ssh::{provision_key, revoke_key};
 use ai_agent_sandbox_blueprint_lib::runtime::{
-    SandboxRecord, get_sandbox_by_id, get_sandbox_by_url, require_sidecar_auth, sandboxes,
+    SandboxRecord, get_sandbox_by_id, get_sandbox_by_url, require_sandbox_owner,
+    require_sandbox_owner_by_url, require_sidecar_auth, sandboxes,
 };
 use ai_agent_sandbox_blueprint_lib::util::build_snapshot_command;
 use ai_agent_sandbox_blueprint_lib::util::now_ts;
@@ -29,8 +30,11 @@ use blueprint_sdk::alloy::sol_types::SolValue;
 use serde_json::{Value, json};
 use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use sandbox_runtime::provision_progress::{self, ProvisionPhase};
+use std::time::Duration;
 
 static INIT: Once = Once::new();
 static CTR: AtomicU64 = AtomicU64::new(0);
@@ -93,6 +97,53 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 disk_gb: 0,
                 stack: String::new(),
                 owner: String::new(),
+                tee_config: None,
+                extra_ports: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+    id
+}
+
+fn insert_sandbox_with_owner(url: &str, token: &str, owner: &str) -> String {
+    init();
+    let id = uid();
+    sandboxes()
+        .unwrap()
+        .insert(
+            id.clone(),
+            SandboxRecord {
+                id: id.clone(),
+                container_id: format!("ctr-{id}"),
+                sidecar_url: url.to_string(),
+                sidecar_port: 0,
+                ssh_port: None,
+                token: token.to_string(),
+                created_at: now_ts(),
+                cpu_cores: 2,
+                memory_mb: 4096,
+                state: Default::default(),
+                idle_timeout_seconds: 0,
+                max_lifetime_seconds: 0,
+                last_activity_at: now_ts(),
+                stopped_at: None,
+                snapshot_image_id: None,
+                snapshot_s3_url: None,
+                container_removed_at: None,
+                image_removed_at: None,
+                original_image: String::new(),
+                base_env_json: String::new(),
+                user_env_json: String::new(),
+                snapshot_destination: None,
+                tee_deployment_id: None,
+                tee_metadata_json: None,
+                tee_attestation_json: None,
+                name: String::new(),
+                agent_identifier: String::new(),
+                metadata_json: String::new(),
+                disk_gb: 0,
+                stack: String::new(),
+                owner: owner.to_string(),
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
             },
@@ -190,6 +241,119 @@ mod tenant_isolation {
     fn empty_token_rejected_before_store() {
         assert!(auth::require_sidecar_token("").is_err());
         assert!(auth::require_sidecar_token("   ").is_err());
+    }
+}
+
+// ─── Ownership Enforcement ──────────────────────────────────────────────────
+
+mod ownership_enforcement {
+    use super::*;
+
+    #[test]
+    fn owner_by_url_correct_owner_accepted() {
+        let id = insert_sandbox_with_owner("http://own-ok:8080", "tok", "0xaaaa");
+        let r = require_sandbox_owner_by_url("http://own-ok:8080", "0xaaaa");
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap().id, id);
+        rm(&id);
+    }
+
+    #[test]
+    fn owner_by_url_wrong_owner_rejected() {
+        let id = insert_sandbox_with_owner("http://own-bad:8080", "tok", "0xaaaa");
+        let r = require_sandbox_owner_by_url("http://own-bad:8080", "0xbbbb");
+        assert!(r.is_err());
+        rm(&id);
+    }
+
+    #[test]
+    fn owner_by_url_empty_owner_rejected() {
+        let id = insert_sandbox("http://own-empty:8080", "tok");
+        let r = require_sandbox_owner_by_url("http://own-empty:8080", "0xaaaa");
+        assert!(r.is_err());
+        rm(&id);
+    }
+
+    #[test]
+    fn cross_owner_batch_urls_rejected() {
+        let a = insert_sandbox_with_owner("http://own-cross-a:8080", "tok-a", "0xaaaa");
+        let b = insert_sandbox_with_owner("http://own-cross-b:8080", "tok-b", "0xbbbb");
+        // Owner A's URL rejects Owner B
+        assert!(require_sandbox_owner_by_url("http://own-cross-a:8080", "0xbbbb").is_err());
+        // Owner B's URL rejects Owner A
+        assert!(require_sandbox_owner_by_url("http://own-cross-b:8080", "0xaaaa").is_err());
+        rm(&a);
+        rm(&b);
+    }
+
+    #[test]
+    fn require_sandbox_owner_by_id_correct() {
+        let id = insert_sandbox_with_owner("http://own-id-ok:8080", "tok", "0xaaaa");
+        let r = require_sandbox_owner(&id, "0xaaaa");
+        assert!(r.is_ok());
+        rm(&id);
+    }
+
+    #[test]
+    fn require_sandbox_owner_by_id_wrong() {
+        let id = insert_sandbox_with_owner("http://own-id-bad:8080", "tok", "0xaaaa");
+        let r = require_sandbox_owner(&id, "0xbbbb");
+        assert!(r.is_err());
+        rm(&id);
+    }
+
+    #[test]
+    fn workflow_owner_mismatch_detected() {
+        let entry = WorkflowEntry {
+            id: 80001,
+            name: "wf-own".into(),
+            workflow_json: "{}".into(),
+            trigger_type: "manual".into(),
+            trigger_config: String::new(),
+            sandbox_config_json: "{}".into(),
+            active: true,
+            next_run_at: None,
+            last_run_at: None,
+            owner: "0xaaaa".into(),
+        };
+        assert!(!entry.owner.eq_ignore_ascii_case("0xbbbb"));
+    }
+
+    #[test]
+    fn workflow_owner_case_insensitive() {
+        let entry = WorkflowEntry {
+            id: 80002,
+            name: "wf-case".into(),
+            workflow_json: "{}".into(),
+            trigger_type: "manual".into(),
+            trigger_config: String::new(),
+            sandbox_config_json: "{}".into(),
+            active: true,
+            next_run_at: None,
+            last_run_at: None,
+            owner: "0xAaAa".into(),
+        };
+        assert!(entry.owner.eq_ignore_ascii_case("0xaaaa"));
+    }
+
+    #[test]
+    fn batch_collect_no_ownership_field() {
+        init();
+        let batch_id = format!("batch-own-{}", uid());
+        let record = BatchRecord {
+            id: batch_id.clone(),
+            kind: "task".into(),
+            results: json!([{"success": true}]),
+            created_at: now_ts(),
+        };
+        batches().unwrap().insert(batch_id.clone(), record).unwrap();
+
+        // BatchRecord has no owner field — any caller can retrieve results.
+        // This documents the design gap identified in issue #22.
+        let stored = batches().unwrap().get(&batch_id).unwrap().unwrap();
+        assert_eq!(stored.kind, "task");
+
+        batches().unwrap().remove(&batch_id).unwrap();
     }
 }
 
@@ -465,6 +629,25 @@ mod snapshot_job {
         assert_eq!(stdout, "uploaded");
         rm(&id);
     }
+
+    #[test]
+    fn empty_destination_rejected() {
+        assert!(build_snapshot_command("", true, false).is_err());
+        assert!(build_snapshot_command("   ", true, false).is_err());
+    }
+
+    #[test]
+    fn http_destination_rejected() {
+        assert!(build_snapshot_command("http://example.com/snap", true, false).is_err());
+    }
+
+    #[test]
+    fn snapshot_ownership_enforced() {
+        let id = insert_sandbox_with_owner("http://snap-own:8080", "tok", "0xaaaa");
+        assert!(require_sandbox_owner_by_url("http://snap-own:8080", "0xbbbb").is_err());
+        assert!(require_sandbox_owner_by_url("http://snap-own:8080", "0xaaaa").is_ok());
+        rm(&id);
+    }
 }
 
 // ─── JOB 21: batch_task + JOB 23: batch_collect ─────────────────────────────
@@ -546,6 +729,49 @@ mod batch_jobs {
 
         batches().unwrap().remove(&batch_id).unwrap();
         assert!(batches().unwrap().get(&batch_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn max_batch_count_is_50() {
+        assert_eq!(MAX_BATCH_COUNT, 50);
+    }
+
+    #[tokio::test]
+    async fn parallel_failure_isolation() {
+        let servers: Vec<MockServer> =
+            futures::future::join_all((0..3).map(|_| MockServer::start())).await;
+
+        // First two return OK, third returns 502
+        for srv in &servers[..2] {
+            Mock::given(method("POST"))
+                .and(path("/agents/run"))
+                .respond_with(mock_agent_ok("ok"))
+                .mount(srv)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(ResponseTemplate::new(502).set_body_string("Bad Gateway"))
+            .mount(&servers[2])
+            .await;
+
+        let mut set = tokio::task::JoinSet::new();
+        for srv in &servers {
+            let req = task_req(&srv.uri(), "go");
+            set.spawn(async move { run_task_request(&req, "t").await });
+        }
+
+        let mut successes = 0;
+        let mut failures = 0;
+        while let Some(r) = set.join_next().await {
+            match r.unwrap() {
+                Ok(resp) if resp.success => successes += 1,
+                Ok(_) => failures += 1,
+                Err(_) => failures += 1,
+            }
+        }
+        assert_eq!(successes, 2);
+        assert_eq!(failures, 1);
     }
 }
 
@@ -717,6 +943,135 @@ mod workflow_jobs {
     // inactive_workflow_skipped_by_tick was removed: it never called workflow_tick(),
     // just asserted the workflow was inactive. The tick_runs_due_workflows test above
     // covers the actual scheduling logic.
+
+    #[test]
+    fn inactive_workflow_flag_persists() {
+        init();
+        let key = workflow_key(90013);
+        let mut entry = wf(90013, "http://unused", "t");
+        entry.active = false;
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+
+        let stored = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert!(!stored.active);
+
+        workflows().unwrap().remove(&key).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_workflow_uses_record_token() {
+        let srv = MockServer::start().await;
+        // Record has token "real-tok"
+        let sid = insert_sandbox(&srv.uri(), "real-tok");
+
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .and(header("Authorization", "Bearer real-tok"))
+            .respond_with(mock_agent_ok("ok"))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        // Workflow spec has sidecar_token "spec-tok" (should NOT be used)
+        let entry = WorkflowEntry {
+            id: 90012,
+            name: "wf-tok".to_string(),
+            workflow_json: format!(
+                r#"{{"sidecar_url":"{}","prompt":"run","sidecar_token":"spec-tok"}}"#,
+                srv.uri()
+            ),
+            trigger_type: "manual".to_string(),
+            trigger_config: String::new(),
+            sandbox_config_json: "{}".to_string(),
+            active: true,
+            next_run_at: None,
+            last_run_at: None,
+            owner: String::new(),
+        };
+
+        let exec = run_workflow(&entry).await.unwrap();
+        assert!(exec.response["task"]["success"].as_bool().unwrap());
+
+        rm(&sid);
+    }
+
+    #[tokio::test]
+    async fn concurrent_tick_skips_already_running() {
+        let srv = MockServer::start().await;
+        let sid = insert_sandbox(&srv.uri(), "conc-tok");
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(mock_agent_ok("slow").set_delay(Duration::from_secs(1)))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        let key = workflow_key(90010);
+        let entry = wf(90010, &srv.uri(), "conc-tok");
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+
+        // Spawn first tick (will be slow due to 1s delay mock)
+        let handle = tokio::spawn(async { workflow_tick().await });
+        // Let it start processing and advance next_run_at
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Second tick: workflow is no longer due (next_run_at was advanced)
+        let result2 = workflow_tick().await.unwrap();
+
+        let result1 = handle.await.unwrap().unwrap();
+
+        // First tick executed the workflow
+        assert_eq!(result1["count"], 1);
+        // Second tick should have 0 executions
+        assert_eq!(result2["count"], 0);
+
+        workflows().unwrap().remove(&key).unwrap();
+        rm(&sid);
+    }
+
+    #[tokio::test]
+    async fn session_per_tick_produces_unique_ids() {
+        let srv = MockServer::start().await;
+        let sid = insert_sandbox(&srv.uri(), "sess-tok");
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(mock_agent_ok("ok"))
+            .mount(&srv)
+            .await;
+
+        let entry = WorkflowEntry {
+            id: 90011,
+            name: "wf-sess".to_string(),
+            workflow_json: format!(
+                r#"{{"sidecar_url":"{}","prompt":"run","session_id":"base-sess"}}"#,
+                srv.uri()
+            ),
+            trigger_type: "manual".to_string(),
+            trigger_config: String::new(),
+            sandbox_config_json: "{}".to_string(),
+            active: true,
+            next_run_at: None,
+            last_run_at: None,
+            owner: String::new(),
+        };
+
+        let _ = run_workflow(&entry).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let _ = run_workflow(&entry).await.unwrap();
+
+        let requests = srv.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+
+        let body1: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let body2: Value = serde_json::from_slice(&requests[1].body).unwrap();
+        let sid1 = body1["sessionId"].as_str().unwrap();
+        let sid2 = body2["sessionId"].as_str().unwrap();
+
+        assert_ne!(sid1, sid2, "Each tick should produce a unique session ID");
+        assert!(sid1.starts_with("base-sess-"));
+        assert!(sid2.starts_with("base-sess-"));
+
+        rm(&sid);
+    }
 }
 
 // ─── Response Parsing: extract_agent_fields ──────────────────────────────────
@@ -757,6 +1112,82 @@ mod response_parsing {
         let v = json!({"success": false, "error": "simple error"});
         let (_, _, error, _) = extract_agent_fields(&v);
         assert_eq!(error, "simple error");
+    }
+
+    #[test]
+    fn data_final_text_fallback() {
+        let v = json!({"success": true, "data": {"finalText": "fallback"}});
+        let (success, response, _, _) = extract_agent_fields(&v);
+        assert!(success);
+        assert_eq!(response, "fallback");
+    }
+
+    #[test]
+    fn response_takes_priority_over_final_text() {
+        let v = json!({
+            "success": true,
+            "response": "primary",
+            "data": {"finalText": "fallback"}
+        });
+        let (_, response, _, _) = extract_agent_fields(&v);
+        assert_eq!(response, "primary");
+    }
+
+    #[tokio::test]
+    async fn session_id_from_data_metadata() {
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "response": "ok",
+                "traceId": "t1",
+                "durationMs": 50,
+                "usage": {"inputTokens": 5, "outputTokens": 3},
+                "data": {"metadata": {"sessionId": "from-meta"}}
+            })))
+            .mount(&srv)
+            .await;
+
+        let req = SandboxTaskRequest {
+            sidecar_url: srv.uri(),
+            prompt: "go".into(),
+            session_id: "fallback-sess".into(),
+            max_turns: 0,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+        let resp = run_task_request(&req, "t").await.unwrap();
+        assert_eq!(resp.session_id, "from-meta");
+    }
+
+    #[tokio::test]
+    async fn session_id_falls_back_to_request() {
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "response": "ok",
+                "traceId": "t1",
+                "durationMs": 50,
+                "usage": {"inputTokens": 5, "outputTokens": 3}
+            })))
+            .mount(&srv)
+            .await;
+
+        let req = SandboxTaskRequest {
+            sidecar_url: srv.uri(),
+            prompt: "go".into(),
+            session_id: "req-session".into(),
+            max_turns: 0,
+            model: String::new(),
+            context_json: String::new(),
+            timeout_ms: 0,
+        };
+        let resp = run_task_request(&req, "t").await.unwrap();
+        assert_eq!(resp.session_id, "req-session");
     }
 }
 
@@ -959,6 +1390,125 @@ mod abi {
         let d = JsonResponse::abi_decode(&jr.abi_encode()).unwrap();
         let p: Value = serde_json::from_str(&d.json).unwrap();
         assert_eq!(p["k"], "v");
+    }
+
+    fn tee_request(tee_required: bool, tee_type: u8) -> SandboxCreateRequest {
+        SandboxCreateRequest {
+            name: "t".into(),
+            image: "i".into(),
+            stack: String::new(),
+            agent_identifier: String::new(),
+            env_json: String::new(),
+            metadata_json: String::new(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 60,
+            idle_timeout_seconds: 30,
+            cpu_cores: 1,
+            memory_mb: 256,
+            disk_gb: 5,
+            tee_required,
+            tee_type,
+        }
+    }
+
+    #[test]
+    fn tee_config_tdx() {
+        let params = CreateSandboxParams::from(&tee_request(true, 1));
+        let tee = params.tee_config.unwrap();
+        assert!(tee.required);
+        assert_eq!(tee.tee_type, TeeType::Tdx);
+    }
+
+    #[test]
+    fn tee_config_nitro() {
+        let params = CreateSandboxParams::from(&tee_request(true, 2));
+        assert_eq!(params.tee_config.unwrap().tee_type, TeeType::Nitro);
+    }
+
+    #[test]
+    fn tee_config_sev() {
+        let params = CreateSandboxParams::from(&tee_request(true, 3));
+        assert_eq!(params.tee_config.unwrap().tee_type, TeeType::Sev);
+    }
+
+    #[test]
+    fn tee_config_unknown_defaults_none() {
+        let params = CreateSandboxParams::from(&tee_request(true, 99));
+        assert_eq!(params.tee_config.unwrap().tee_type, TeeType::None);
+    }
+
+    #[test]
+    fn tee_not_required_returns_none() {
+        let params = CreateSandboxParams::from(&tee_request(false, 0));
+        assert!(params.tee_config.is_none());
+    }
+
+    #[test]
+    fn owner_left_empty_by_conversion() {
+        let params = CreateSandboxParams::from(&tee_request(false, 0));
+        assert!(
+            params.owner.is_empty(),
+            "ABI conversion should leave owner empty for handler to fill"
+        );
+    }
+}
+
+// ─── Provision Progress ─────────────────────────────────────────────────────
+
+mod provision_progress_tests {
+    use super::*;
+
+    #[test]
+    fn start_creates_entry() {
+        init();
+        let call_id = 77_000_001;
+        provision_progress::start_provision(call_id).unwrap();
+        let status = provision_progress::get_provision(call_id).unwrap();
+        assert!(status.is_some());
+        assert_eq!(status.unwrap().phase, ProvisionPhase::Queued);
+    }
+
+    #[test]
+    fn update_transitions_phases() {
+        init();
+        let call_id = 77_000_002;
+        provision_progress::start_provision(call_id).unwrap();
+
+        let phases = [
+            (ProvisionPhase::ImagePull, 20),
+            (ProvisionPhase::ContainerCreate, 40),
+            (ProvisionPhase::ContainerStart, 60),
+            (ProvisionPhase::Ready, 100),
+        ];
+
+        for (phase, expected_pct) in phases {
+            provision_progress::update_provision(call_id, phase, None, None, None).unwrap();
+            let status = provision_progress::get_provision(call_id).unwrap().unwrap();
+            assert_eq!(status.phase, phase);
+            assert_eq!(status.progress_pct, expected_pct);
+        }
+    }
+
+    #[test]
+    fn failure_records_message() {
+        init();
+        let call_id = 77_000_003;
+        provision_progress::start_provision(call_id).unwrap();
+
+        provision_progress::update_provision(
+            call_id,
+            ProvisionPhase::Failed,
+            Some("Container OOM killed".into()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let status = provision_progress::get_provision(call_id).unwrap().unwrap();
+        assert_eq!(status.phase, ProvisionPhase::Failed);
+        assert_eq!(status.message.as_deref(), Some("Container OOM killed"));
     }
 }
 

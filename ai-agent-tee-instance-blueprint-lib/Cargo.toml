@@ -18,3 +18,5 @@ serde_json = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+sandbox-runtime = { path = "../sandbox-runtime", features = ["tee-all", "test-utils"] }
+serde_json = "1"

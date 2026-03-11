@@ -463,3 +463,77 @@ async fn trigger_deprovision(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static BILLING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn test_config() -> EscrowWatchdogConfig {
+        EscrowWatchdogConfig {
+            tangle_contract: Address::ZERO,
+            http_rpc_endpoint: "http://127.0.0.1:8545".to_string(),
+            service_id: 1,
+            blueprint_id: 1,
+            check_interval_secs: 60,
+            max_consecutive_failures: 3,
+            low_balance_multiplier: 3,
+            deprovision_grace_period_secs: 30,
+        }
+    }
+
+    #[test]
+    fn write_billing_status_sufficient_creates_file() {
+        let _guard = BILLING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("BLUEPRINT_STATE_DIR", dir.path());
+        }
+
+        let config = test_config();
+        let result = WatchdogTickResult::Sufficient {
+            previous_failures: 0,
+        };
+        write_billing_status(&result, &config);
+
+        // Read from wherever state_dir() resolved (same env var write_billing_status used).
+        let path = sandbox_runtime::store::state_dir().join("billing_status.json");
+        assert!(path.exists(), "billing_status.json should be created");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["status"], "sufficient");
+        assert_eq!(parsed["service_id"], 1);
+        assert_eq!(parsed["consecutive_failures"], 0);
+
+        unsafe {
+            std::env::remove_var("BLUEPRINT_STATE_DIR");
+        }
+    }
+
+    #[test]
+    fn write_billing_status_deprovision_shape() {
+        let _guard = BILLING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("BLUEPRINT_STATE_DIR", dir.path());
+        }
+
+        let config = test_config();
+        let result = WatchdogTickResult::DeprovisionRequired { consecutive: 3 };
+        write_billing_status(&result, &config);
+
+        let path = sandbox_runtime::store::state_dir().join("billing_status.json");
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["status"], "deprovision_required");
+        assert_eq!(parsed["consecutive_failures"], 3);
+        assert_eq!(parsed["max_consecutive_failures"], 3);
+        assert!(parsed["updated_at"].as_u64().unwrap() > 0);
+
+        unsafe {
+            std::env::remove_var("BLUEPRINT_STATE_DIR");
+        }
+    }
+}

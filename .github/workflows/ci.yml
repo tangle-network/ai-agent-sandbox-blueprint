@@ -119,7 +119,7 @@ jobs:
         run: cargo nextest run
 
       - name: TEE unit tests
-        run: cargo nextest run -p sandbox-runtime --features tee-all
+        run: cargo nextest run -p sandbox-runtime --features tee-all,test-utils
 
       - name: TEE instance lib tests
         run: cargo nextest run -p ai-agent-tee-instance-blueprint-lib
@@ -200,7 +200,8 @@ jobs:
         # RUSTSEC-2025-0055: tracing-subscriber — transitive dep via blueprint-sdk
         # RUSTSEC-2025-0111: tokio-tar — transitive dep, no fix available
         # Yanked crates (e.g. keccak 0.1.5) are warnings by default, not errors
-        run: cargo audit --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2025-0055 --ignore RUSTSEC-2025-0111
+        # RUSTSEC-2026-0037: quinn-proto — transitive dep via libp2p, no fix available
+        run: cargo audit --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2025-0055 --ignore RUSTSEC-2025-0111 --ignore RUSTSEC-2026-0037
 
   e2e:
     name: E2E tests
@@ -359,6 +360,7 @@ jobs:
       - name: Run coverage
         run: >
           cargo tarpaulin --workspace --features tee-all --out xml --skip-clean --timeout 300 --fail-under 50
+          --jobs 2
           --exclude ai-agent-sandbox-blueprint-bin
           --exclude ai-agent-instance-blueprint-bin
           --exclude ai-agent-tee-instance-blueprint-bin

@@ -3,12 +3,7 @@
 //! These tests verify TEE-specific provision/deprovision behavior using the
 //! `MockTeeBackend` against a real persistent store (no Docker required).
 //!
-//! Gated behind `TEE_INTEGRATION=1` env var.
-//!
-//! Run with:
-//! ```bash
-//! TEE_INTEGRATION=1 cargo test -p ai-agent-tee-instance-blueprint-lib -- tee_integration
-//! ```
+//! These tests are deterministic and are part of the default Phase 1 TEE Rust suite.
 
 use std::sync::Once;
 
@@ -30,19 +25,12 @@ fn init() {
     });
 }
 
-fn should_run() -> bool {
-    std::env::var("TEE_INTEGRATION").ok().as_deref() == Some("1")
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // IDEMPOTENT PROVISION — attestation preservation (bug #5 regression)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn tee_provision_idempotent_returns_stored_attestation() {
-    if !should_run() {
-        return;
-    }
     init();
     let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -134,9 +122,6 @@ fn tee_provision_idempotent_returns_stored_attestation() {
 
 #[test]
 fn tee_deprovision_clears_instance_sandbox() {
-    if !should_run() {
-        return;
-    }
     init();
     let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -199,10 +184,6 @@ fn tee_deprovision_clears_instance_sandbox() {
 
 #[test]
 fn tee_deploy_params_includes_extra_ports() {
-    if !should_run() {
-        return;
-    }
-
     use ai_agent_tee_instance_blueprint_lib::*;
     use sandbox_runtime::tee::TeeDeployParams;
 

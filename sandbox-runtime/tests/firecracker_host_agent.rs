@@ -1,5 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+/// All tests in this file share process-level env vars and a `OnceLock`-based
+/// store, so they must run sequentially. This mutex serializes them when using
+/// `cargo test` (cargo nextest isolates each test in its own process already).
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -178,7 +183,9 @@ async fn sidecar_health() -> (StatusCode, Json<serde_json::Value>) {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // Intentional: sync mutex serializes tests sharing env vars
 async fn firecracker_backend_lifecycle_flows_through_host_agent() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let sidecar_app = Router::new().route("/health", get(sidecar_health));
     let sidecar_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -222,7 +229,7 @@ async fn firecracker_backend_lifecycle_flows_through_host_agent() {
     let state_dir = tempfile::tempdir().expect("temp state dir");
     let host_url = format!("http://{}:{}", host_addr.ip(), host_addr.port());
     unsafe {
-        std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path());
+        std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path().to_str().unwrap());
         std::env::set_var(
             "SESSION_AUTH_SECRET",
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -232,6 +239,8 @@ async fn firecracker_backend_lifecycle_flows_through_host_agent() {
         std::env::set_var("FIRECRACKER_SIDECAR_AUTH_DISABLED", "true");
         std::env::remove_var("FIRECRACKER_SIDECAR_AUTH_TOKEN");
     }
+    // Leak tempdir to prevent cleanup racing with the static OnceLock store.
+    std::mem::forget(state_dir);
 
     let params = CreateSandboxParams {
         name: "firecracker-test".to_string(),
@@ -283,4 +292,318 @@ async fn firecracker_backend_lifecycle_flows_through_host_agent() {
     );
 
     drop(guard_state);
+}
+
+// ── Phase 2A: Additional Firecracker Lifecycle Tests ────────────────────
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_firecracker_create_rejects_port_mappings() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let sidecar_app = Router::new().route("/health", get(sidecar_health));
+    let sidecar_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind sidecar listener");
+    let sidecar_addr = sidecar_listener
+        .local_addr()
+        .expect("sidecar listener local addr");
+    tokio::spawn(async move {
+        axum::serve(sidecar_listener, sidecar_app)
+            .await
+            .expect("sidecar server should run");
+    });
+
+    let sidecar_endpoint = format!("http://{}:{}", sidecar_addr.ip(), sidecar_addr.port());
+    let state = Arc::new(AsyncMutex::new(MockHostState {
+        sidecar_endpoint,
+        containers: HashMap::new(),
+    }));
+    let app = Router::new()
+        .route("/v1/containers", post(create_container))
+        .route(
+            "/v1/containers/{id}",
+            get(get_container).delete(delete_container),
+        )
+        .route("/v1/containers/{id}/start", post(start_container))
+        .route("/v1/containers/{id}/stop", post(stop_container))
+        .with_state(state);
+
+    let host_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind host-agent listener");
+    let host_addr = host_listener
+        .local_addr()
+        .expect("host-agent listener local addr");
+    tokio::spawn(async move {
+        axum::serve(host_listener, app)
+            .await
+            .expect("host-agent server should run");
+    });
+
+    let state_dir = tempfile::tempdir().expect("temp state dir");
+    let host_url = format!("http://{}:{}", host_addr.ip(), host_addr.port());
+    unsafe {
+        std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path().to_str().unwrap());
+        std::env::set_var(
+            "SESSION_AUTH_SECRET",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        std::env::set_var("FIRECRACKER_HOST_AGENT_URL", host_url);
+        std::env::set_var("FIRECRACKER_HOST_AGENT_API_KEY", API_KEY);
+        std::env::set_var("FIRECRACKER_SIDECAR_AUTH_DISABLED", "true");
+        std::env::remove_var("FIRECRACKER_SIDECAR_AUTH_TOKEN");
+    }
+    std::mem::forget(state_dir);
+
+    // Create with port_mappings should fail
+    let params = CreateSandboxParams {
+        name: "firecracker-port-test".to_string(),
+        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        metadata_json: r#"{"runtime_backend":"firecracker","ports":[3000]}"#.to_string(),
+        owner: "0xabc456".to_string(),
+        cpu_cores: 1,
+        memory_mb: 512,
+        disk_gb: 10,
+        port_mappings: vec![3000],
+        ..Default::default()
+    };
+
+    let result = create_sidecar(&params, None).await;
+    assert!(result.is_err(), "firecracker should reject port mappings");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("port") || err.contains("Port"),
+        "error should mention ports: {err}"
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_firecracker_metadata_persists_runtime_backend() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let sidecar_app = Router::new().route("/health", get(sidecar_health));
+    let sidecar_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind sidecar listener");
+    let sidecar_addr = sidecar_listener
+        .local_addr()
+        .expect("sidecar listener local addr");
+    tokio::spawn(async move {
+        axum::serve(sidecar_listener, sidecar_app)
+            .await
+            .expect("sidecar server should run");
+    });
+
+    let sidecar_endpoint = format!("http://{}:{}", sidecar_addr.ip(), sidecar_addr.port());
+    let state = Arc::new(AsyncMutex::new(MockHostState {
+        sidecar_endpoint,
+        containers: HashMap::new(),
+    }));
+    let app = Router::new()
+        .route("/v1/containers", post(create_container))
+        .route(
+            "/v1/containers/{id}",
+            get(get_container).delete(delete_container),
+        )
+        .route("/v1/containers/{id}/start", post(start_container))
+        .route("/v1/containers/{id}/stop", post(stop_container))
+        .with_state(state);
+
+    let host_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind host-agent listener");
+    let host_addr = host_listener
+        .local_addr()
+        .expect("host-agent listener local addr");
+    tokio::spawn(async move {
+        axum::serve(host_listener, app)
+            .await
+            .expect("host-agent server should run");
+    });
+
+    let state_dir = tempfile::tempdir().expect("temp state dir");
+    let host_url = format!("http://{}:{}", host_addr.ip(), host_addr.port());
+    unsafe {
+        std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path().to_str().unwrap());
+        std::env::set_var(
+            "SESSION_AUTH_SECRET",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        std::env::set_var("FIRECRACKER_HOST_AGENT_URL", host_url);
+        std::env::set_var("FIRECRACKER_HOST_AGENT_API_KEY", API_KEY);
+        std::env::set_var("FIRECRACKER_SIDECAR_AUTH_DISABLED", "true");
+        std::env::remove_var("FIRECRACKER_SIDECAR_AUTH_TOKEN");
+    }
+    std::mem::forget(state_dir);
+
+    let params = CreateSandboxParams {
+        name: "firecracker-metadata-test".to_string(),
+        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
+        owner: "0xmeta123".to_string(),
+        cpu_cores: 1,
+        memory_mb: 512,
+        disk_gb: 10,
+        ..Default::default()
+    };
+
+    let (record, _) = create_sidecar(&params, None)
+        .await
+        .expect("create firecracker sandbox");
+
+    // Verify metadata persists the runtime_backend marker
+    assert!(
+        record
+            .metadata_json
+            .contains("\"runtime_backend\":\"firecracker\""),
+        "metadata_json should persist runtime_backend=firecracker: {}",
+        record.metadata_json
+    );
+
+    // Clean up
+    let _ = delete_sidecar(&record, None).await;
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_firecracker_stop_idempotent() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let sidecar_app = Router::new().route("/health", get(sidecar_health));
+    let sidecar_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind sidecar listener");
+    let sidecar_addr = sidecar_listener
+        .local_addr()
+        .expect("sidecar listener local addr");
+    tokio::spawn(async move {
+        axum::serve(sidecar_listener, sidecar_app)
+            .await
+            .expect("sidecar server should run");
+    });
+
+    let sidecar_endpoint = format!("http://{}:{}", sidecar_addr.ip(), sidecar_addr.port());
+    let state = Arc::new(AsyncMutex::new(MockHostState {
+        sidecar_endpoint,
+        containers: HashMap::new(),
+    }));
+    let app = Router::new()
+        .route("/v1/containers", post(create_container))
+        .route(
+            "/v1/containers/{id}",
+            get(get_container).delete(delete_container),
+        )
+        .route("/v1/containers/{id}/start", post(start_container))
+        .route("/v1/containers/{id}/stop", post(stop_container))
+        .with_state(state);
+
+    let host_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind host-agent listener");
+    let host_addr = host_listener
+        .local_addr()
+        .expect("host-agent listener local addr");
+    tokio::spawn(async move {
+        axum::serve(host_listener, app)
+            .await
+            .expect("host-agent server should run");
+    });
+
+    let state_dir = tempfile::tempdir().expect("temp state dir");
+    let host_url = format!("http://{}:{}", host_addr.ip(), host_addr.port());
+    unsafe {
+        std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path().to_str().unwrap());
+        std::env::set_var(
+            "SESSION_AUTH_SECRET",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        std::env::set_var("FIRECRACKER_HOST_AGENT_URL", host_url);
+        std::env::set_var("FIRECRACKER_HOST_AGENT_API_KEY", API_KEY);
+        std::env::set_var("FIRECRACKER_SIDECAR_AUTH_DISABLED", "true");
+        std::env::remove_var("FIRECRACKER_SIDECAR_AUTH_TOKEN");
+    }
+    std::mem::forget(state_dir);
+
+    let params = CreateSandboxParams {
+        name: "firecracker-idempotent-stop".to_string(),
+        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
+        owner: "0xstop123".to_string(),
+        cpu_cores: 1,
+        memory_mb: 512,
+        disk_gb: 10,
+        ..Default::default()
+    };
+
+    let (record, _) = create_sidecar(&params, None)
+        .await
+        .expect("create firecracker sandbox");
+
+    // First stop
+    stop_sidecar(&record)
+        .await
+        .expect("first stop should succeed");
+    let stopped = get_sandbox_by_id(&record.id).expect("load stopped sandbox");
+    assert_eq!(stopped.state, SandboxState::Stopped);
+
+    // Second stop — the runtime returns a Validation error, but the HTTP
+    // handler (handle_lifecycle_outcome) treats "already stopped" as idempotent Ok.
+    let second_stop = stop_sidecar(&stopped).await;
+    match &second_stop {
+        Ok(()) => {} // Also acceptable if the runtime itself is idempotent
+        Err(e) => {
+            let msg = e.to_string().to_ascii_lowercase();
+            assert!(
+                msg.contains("already stopped"),
+                "second stop should return 'already stopped' validation error, got: {e}"
+            );
+        }
+    }
+
+    // Clean up
+    let _ = delete_sidecar(&stopped, None).await;
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_firecracker_create_without_host_agent_url_fails() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let state_dir = tempfile::tempdir().expect("temp state dir");
+    unsafe {
+        // Use the same state_dir path but leak it to avoid cleanup racing with
+        // other tests that share the static OnceLock store.
+        std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path().to_str().unwrap());
+        std::env::set_var(
+            "SESSION_AUTH_SECRET",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        // Remove the host agent URL — this should cause validation failure
+        std::env::remove_var("FIRECRACKER_HOST_AGENT_URL");
+        std::env::remove_var("HOST_AGENT_URL");
+        std::env::set_var("FIRECRACKER_SIDECAR_AUTH_DISABLED", "true");
+    }
+    std::mem::forget(state_dir);
+
+    let params = CreateSandboxParams {
+        name: "firecracker-no-url".to_string(),
+        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
+        owner: "0xnourl123".to_string(),
+        cpu_cores: 1,
+        memory_mb: 512,
+        disk_gb: 10,
+        ..Default::default()
+    };
+
+    let result = create_sidecar(&params, None).await;
+    assert!(
+        result.is_err(),
+        "creating firecracker sandbox without FIRECRACKER_HOST_AGENT_URL should fail"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.to_ascii_lowercase().contains("host")
+            || err.to_ascii_lowercase().contains("url")
+            || err.to_ascii_lowercase().contains("firecracker"),
+        "error should mention missing host agent URL: {err}"
+    );
 }

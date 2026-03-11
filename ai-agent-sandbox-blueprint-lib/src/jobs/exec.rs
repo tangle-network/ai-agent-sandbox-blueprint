@@ -496,4 +496,41 @@ mod tests {
         assert_eq!(obj["systemPrompt"], "You are helpful.");
         assert_eq!(obj.len(), 1);
     }
+
+    #[test]
+    fn test_build_agent_payload_array_context_json_errors() {
+        let result = build_agent_payload("hi", "", "", "[1,2]", 0, None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_agent_payload_valid_context_merged() {
+        let payload = build_agent_payload("hi", "", "", r#"{"k":"v"}"#, 0, None, None).unwrap();
+        let meta = payload.get("metadata").unwrap().as_object().unwrap();
+        assert_eq!(meta["k"], "v");
+    }
+
+    #[test]
+    fn test_build_agent_payload_whitespace_context_ignored() {
+        let payload = build_agent_payload("hi", "", "", "   ", 0, None, None).unwrap();
+        assert!(payload.get("metadata").is_none());
+    }
+
+    #[test]
+    fn test_build_exec_payload_invalid_env_silently_dropped() {
+        let payload = build_exec_payload("ls", "", "[1]", 0);
+        assert!(payload.get("env").is_none());
+    }
+
+    #[test]
+    fn test_build_exec_payload_valid_env() {
+        let payload = build_exec_payload("ls", "", r#"{"FOO":"bar"}"#, 0);
+        assert_eq!(payload["env"]["FOO"], "bar");
+    }
+
+    #[test]
+    fn test_build_exec_payload_whitespace_env_ignored() {
+        let payload = build_exec_payload("ls", "", "   ", 0);
+        assert!(payload.get("env").is_none());
+    }
 }

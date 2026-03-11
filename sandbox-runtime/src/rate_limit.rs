@@ -113,6 +113,16 @@ impl RateLimiter {
     pub fn tracked_ips(&self) -> usize {
         self.buckets.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
+
+    /// Clear all tracked buckets (test-only). Allows tests to reset rate limiter
+    /// state so that test ordering doesn't cause spurious 429 failures.
+    #[cfg(test)]
+    pub fn reset(&self) {
+        self.buckets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +346,68 @@ mod tests {
         assert!(
             !limiter.check(UNKNOWN_IP),
             "third request to unknown IP bucket should be rate limited"
+        );
+    }
+
+    // ── Phase 3B: Rate Limit XFF Trust Tests ────────────────────────────
+
+    #[test]
+    fn xff_trusted_from_loopback() {
+        let mut req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "203.0.113.50")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        // Add ConnectInfo with loopback address
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            "127.0.0.1".parse().unwrap(),
+            12345,
+        )));
+        let ip = extract_client_ip(&req);
+        assert_eq!(
+            ip,
+            Some("203.0.113.50".parse().unwrap()),
+            "XFF should be trusted from loopback"
+        );
+    }
+
+    #[test]
+    fn xff_ignored_from_public_ip() {
+        let mut req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "203.0.113.50")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        // Add ConnectInfo with a public IP
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            "198.51.100.1".parse().unwrap(),
+            12345,
+        )));
+        let ip = extract_client_ip(&req);
+        assert_eq!(
+            ip,
+            Some("198.51.100.1".parse().unwrap()),
+            "XFF should be ignored from public IP — use socket IP instead"
+        );
+    }
+
+    #[test]
+    fn xff_trusted_from_private_ip() {
+        let mut req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "203.0.113.99")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        // Add ConnectInfo with a private IP (10.0.0.1)
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            "10.0.0.1".parse().unwrap(),
+            12345,
+        )));
+        let ip = extract_client_ip(&req);
+        assert_eq!(
+            ip,
+            Some("203.0.113.99".parse().unwrap()),
+            "XFF should be trusted from private IP"
         );
     }
 }

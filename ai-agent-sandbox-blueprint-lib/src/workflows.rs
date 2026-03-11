@@ -422,3 +422,62 @@ fn dyn_u64(value: &blueprint_sdk::alloy::dyn_abi::DynSolValue) -> Result<u64, St
 }
 
 const WORKFLOW_REGISTRY_ABI: &str = r#"[{"type":"function","name":"getWorkflowIds","inputs":[{"name":"activeOnly","type":"bool"}],"outputs":[{"name":"","type":"uint64[]"}],"stateMutability":"view"},{"type":"function","name":"getWorkflow","inputs":[{"name":"workflowId","type":"uint64"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"name","type":"string"},{"name":"workflowJson","type":"string"},{"name":"triggerType","type":"string"},{"name":"triggerConfig","type":"string"},{"name":"sandboxConfigJson","type":"string"},{"name":"active","type":"bool"},{"name":"createdAt","type":"uint64"},{"name":"updatedAt","type":"uint64"},{"name":"lastTriggeredAt","type":"uint64"}]}],"stateMutability":"view"}]"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blueprint_sdk::alloy::dyn_abi::DynSolValue;
+    use blueprint_sdk::alloy::primitives::U256;
+
+    #[test]
+    fn dyn_string_extracts() {
+        let val = DynSolValue::String("hello".into());
+        assert_eq!(dyn_string(&val).unwrap(), "hello");
+    }
+
+    #[test]
+    fn dyn_string_rejects_non_string() {
+        let val = DynSolValue::Bool(true);
+        assert!(dyn_string(&val).is_err());
+    }
+
+    #[test]
+    fn dyn_bool_extracts() {
+        assert!(dyn_bool(&DynSolValue::Bool(true)).unwrap());
+        assert!(!dyn_bool(&DynSolValue::Bool(false)).unwrap());
+    }
+
+    #[test]
+    fn dyn_bool_rejects_non_bool() {
+        let val = DynSolValue::String("yes".into());
+        assert!(dyn_bool(&val).is_err());
+    }
+
+    #[test]
+    fn dyn_u64_extracts() {
+        let val = DynSolValue::Uint(U256::from(42u64), 64);
+        assert_eq!(dyn_u64(&val).unwrap(), 42);
+    }
+
+    #[test]
+    fn dyn_u64_overflow() {
+        let val = DynSolValue::Uint(U256::MAX, 256);
+        assert!(dyn_u64(&val).is_err());
+    }
+
+    #[test]
+    fn parse_workflow_ids_empty() {
+        let input = vec![DynSolValue::Array(vec![])];
+        assert_eq!(parse_workflow_ids(input).unwrap(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn parse_workflow_ids_multiple() {
+        let input = vec![DynSolValue::Array(vec![
+            DynSolValue::Uint(U256::from(1u64), 64),
+            DynSolValue::Uint(U256::from(2u64), 64),
+            DynSolValue::Uint(U256::from(3u64), 64),
+        ])];
+        assert_eq!(parse_workflow_ids(input).unwrap(), vec![1, 2, 3]);
+    }
+}

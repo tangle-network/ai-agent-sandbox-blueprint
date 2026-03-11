@@ -348,4 +348,48 @@ mod tests {
         assert_eq!(decoded.memory_mb, 4096);
         assert!(decoded.ssh_enabled);
     }
+
+    #[test]
+    fn decode_provision_config_tuple_encoding() {
+        use blueprint_sdk::alloy::sol_types::SolValue;
+
+        let request = ProvisionRequest {
+            name: "tuple-sandbox".to_string(),
+            image: "agent-dev".to_string(),
+            stack: "default".to_string(),
+            agent_identifier: "test-agent".to_string(),
+            env_json: r#"{"KEY":"VALUE"}"#.to_string(),
+            metadata_json: "{}".to_string(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: true,
+            max_lifetime_seconds: 7200,
+            idle_timeout_seconds: 1800,
+            cpu_cores: 4,
+            memory_mb: 8192,
+            disk_gb: 40,
+            sidecar_token: "tok".to_string(),
+            tee_required: true,
+            tee_type: 1,
+        };
+
+        // abi_encode() produces tuple encoding (with outer offset prefix).
+        let encoded = request.abi_encode();
+        let decoded = decode_provision_config(&encoded).unwrap();
+
+        assert_eq!(decoded.name, "tuple-sandbox");
+        assert_eq!(decoded.cpu_cores, 4);
+        assert_eq!(decoded.memory_mb, 8192);
+        assert!(decoded.tee_required);
+        assert_eq!(decoded.tee_type, 1);
+    }
+
+    #[test]
+    fn decode_provision_config_malformed_bytes_rejected() {
+        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+        let result = decode_provision_config(&garbage);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.contains("Failed to decode"), "got: {err}");
+    }
 }
