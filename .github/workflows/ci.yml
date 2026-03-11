@@ -360,6 +360,7 @@ jobs:
       - name: Run coverage
         run: >
           cargo tarpaulin --workspace --features tee-all --out xml --skip-clean --timeout 300 --fail-under 50
+          --jobs 2
           --exclude ai-agent-sandbox-blueprint-bin
           --exclude ai-agent-instance-blueprint-bin
           --exclude ai-agent-tee-instance-blueprint-bin
