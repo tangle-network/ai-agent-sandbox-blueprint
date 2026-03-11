@@ -10,12 +10,12 @@
 //!   - `/terminals/commands` → `{ success, result: { exitCode, stdout, stderr, duration } }`
 //!   - `/agents/run` → `{ success, response, traceId, durationMs, usage, sessionId }`
 
-use ai_agent_instance_blueprint_lib::*;
+use ai_agent_instance_blueprint_lib::auto_provision::decode_provision_config;
 use ai_agent_instance_blueprint_lib::workflows::{
     WorkflowEntry, apply_workflow_execution, resolve_next_run, run_workflow, workflow_key,
     workflow_tick, workflows,
 };
-use ai_agent_instance_blueprint_lib::auto_provision::decode_provision_config;
+use ai_agent_instance_blueprint_lib::*;
 use blueprint_sdk::alloy::sol_types::SolValue;
 use serde_json::{Value, json};
 use std::sync::Once;
@@ -1891,10 +1891,7 @@ mod workflow_tests {
     fn create_read_update_delete() {
         init();
         let key = workflow_key(80001);
-        workflows()
-            .unwrap()
-            .insert(key.clone(), wf(80001))
-            .unwrap();
+        workflows().unwrap().insert(key.clone(), wf(80001)).unwrap();
 
         let r = workflows().unwrap().get(&key).unwrap().unwrap();
         assert_eq!(r.name, "wf-80001");
@@ -1934,10 +1931,7 @@ mod workflow_tests {
     fn cancel_sets_inactive_and_clears_next_run() {
         init();
         let key = workflow_key(80003);
-        workflows()
-            .unwrap()
-            .insert(key.clone(), wf(80003))
-            .unwrap();
+        workflows().unwrap().insert(key.clone(), wf(80003)).unwrap();
 
         let before = workflows().unwrap().get(&key).unwrap().unwrap();
         assert!(before.active);
@@ -1986,8 +1980,7 @@ mod workflow_tests {
         let bad_hex = caller_hex(&bad_caller);
 
         // Simulate the ownership check from workflow_trigger / workflow_cancel.
-        let allowed =
-            entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&bad_hex);
+        let allowed = entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&bad_hex);
         assert!(!allowed, "wrong caller should be rejected");
     }
 
@@ -1997,8 +1990,7 @@ mod workflow_tests {
         let hex = caller_hex(&caller);
         let entry = wf_with_owner(80006, &hex);
 
-        let allowed =
-            entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&hex);
+        let allowed = entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&hex);
         assert!(allowed, "matching caller should be allowed");
     }
 
@@ -2008,8 +2000,7 @@ mod workflow_tests {
         let hex = caller_hex(&caller);
         let entry = wf_with_owner(80016, &hex.to_uppercase());
 
-        let allowed =
-            entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&hex);
+        let allowed = entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&hex);
         assert!(allowed, "case-insensitive match should be allowed");
     }
 
@@ -2019,8 +2010,7 @@ mod workflow_tests {
         let any_caller: [u8; 20] = [0xcc; 20];
         let any_hex = caller_hex(&any_caller);
 
-        let allowed =
-            entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&any_hex);
+        let allowed = entry.owner.is_empty() || entry.owner.eq_ignore_ascii_case(&any_hex);
         assert!(allowed, "empty owner should allow any caller");
     }
 
@@ -2152,7 +2142,10 @@ mod workflow_tests {
         workflows().unwrap().insert(key.clone(), entry).unwrap();
 
         let result = workflow_tick().await.unwrap();
-        assert_eq!(result["count"], 0, "inactive workflow should not be executed");
+        assert_eq!(
+            result["count"], 0,
+            "inactive workflow should not be executed"
+        );
 
         workflows().unwrap().remove(&key).unwrap();
         clear_instance_for_test(&sid);
@@ -2171,7 +2164,10 @@ mod workflow_tests {
         workflows().unwrap().insert(key.clone(), entry).unwrap();
 
         let result = workflow_tick().await.unwrap();
-        assert_eq!(result["count"], 0, "manual workflow should not be executed by tick");
+        assert_eq!(
+            result["count"], 0,
+            "manual workflow should not be executed by tick"
+        );
 
         workflows().unwrap().remove(&key).unwrap();
         clear_instance_for_test(&sid);
@@ -2269,7 +2265,10 @@ mod cron_tests {
         assert!(result.is_some());
         let ts = result.unwrap();
         let now = util::now_ts();
-        assert!(ts > now, "next run {ts} should be in the future (now={now})");
+        assert!(
+            ts > now,
+            "next run {ts} should be in the future (now={now})"
+        );
     }
 
     #[test]
@@ -2304,7 +2303,10 @@ mod cron_tests {
         assert!(result.is_some());
         let ts = result.unwrap();
         let now = util::now_ts();
-        assert!(ts > now, "weekly cron {ts} should be in the future (now={now})");
+        assert!(
+            ts > now,
+            "weekly cron {ts} should be in the future (now={now})"
+        );
     }
 }
 
@@ -2403,7 +2405,10 @@ mod agent_edge_tests {
             "traceId": "t1"
         });
         let (_success, _response, error, _trace_id) = extract_agent_fields(&v);
-        assert!(error.is_empty(), "error without message key should be empty");
+        assert!(
+            error.is_empty(),
+            "error without message key should be empty"
+        );
     }
 
     #[test]

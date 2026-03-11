@@ -369,10 +369,7 @@ async fn test_firecracker_create_rejects_port_mappings() {
     };
 
     let result = create_sidecar(&params, None).await;
-    assert!(
-        result.is_err(),
-        "firecracker should reject port mappings"
-    );
+    assert!(result.is_err(), "firecracker should reject port mappings");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("port") || err.contains("Port"),

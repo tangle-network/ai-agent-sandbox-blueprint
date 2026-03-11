@@ -12,16 +12,15 @@ use std::sync::Once;
 use std::sync::atomic::Ordering;
 
 use ai_agent_tee_instance_blueprint_lib::*;
-use sandbox_runtime::tee::mock::MockTeeBackend;
 use sandbox_runtime::tee::AttestationReport;
+use sandbox_runtime::tee::mock::MockTeeBackend;
 
 static INIT: Once = Once::new();
 static INSTANCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn init() {
     INIT.call_once(|| {
-        let dir =
-            std::env::temp_dir().join(format!("tee-provision-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tee-provision-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         // SAFETY: tests run single-threaded during init; no concurrent env reads.
         unsafe {
@@ -137,8 +136,14 @@ async fn provision_core_tee_no_backend_rejects() {
 
     let result = provision_core(&req, None, owner).await;
 
-    assert!(result.is_err(), "provision should fail with tee=None when tee_required=true");
-    let err = match result { Err(e) => e, Ok(_) => panic!("expected error") };
+    assert!(
+        result.is_err(),
+        "provision should fail with tee=None when tee_required=true"
+    );
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("expected error"),
+    };
     assert!(
         err.contains("no TEE backend configured"),
         "error should mention missing backend: {err}"
@@ -162,8 +167,8 @@ async fn provision_core_tee_attestation_is_real_not_pending() {
         .expect("provision should succeed");
 
     // Deserialize and verify it's a real AttestationReport, not the pending placeholder.
-    let attestation: AttestationReport =
-        serde_json::from_str(&output.tee_attestation_json).expect("should deserialize as AttestationReport");
+    let attestation: AttestationReport = serde_json::from_str(&output.tee_attestation_json)
+        .expect("should deserialize as AttestationReport");
 
     assert_eq!(attestation.evidence, vec![0xDE, 0xAD]);
     assert_eq!(attestation.measurement, vec![0xBE, 0xEF]);
@@ -228,7 +233,10 @@ async fn provision_core_tee_deploy_failure_propagates() {
     let result = provision_core(&req, Some(&mock), owner).await;
 
     assert!(result.is_err(), "provision should fail when deploy fails");
-    let err = match result { Err(e) => e, Ok(_) => panic!("expected error") };
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("expected error"),
+    };
     assert!(
         err.contains("Mock deploy failure"),
         "error should propagate mock failure message: {err}"
@@ -239,7 +247,10 @@ async fn provision_core_tee_deploy_failure_propagates() {
 
     // Instance should NOT be stored.
     let stored = get_instance_sandbox().unwrap();
-    assert!(stored.is_none(), "no record should be stored on deploy failure");
+    assert!(
+        stored.is_none(),
+        "no record should be stored on deploy failure"
+    );
 
     cleanup(None);
 }
@@ -263,7 +274,10 @@ async fn provision_core_tee_already_provisioned_rejects() {
     // Second provision should fail.
     let result = provision_core(&req, Some(&mock), owner).await;
     assert!(result.is_err());
-    let err = match result { Err(e) => e, Ok(_) => panic!("expected error") };
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("expected error"),
+    };
     assert!(
         err.contains("already provisioned"),
         "should reject duplicate provision: {err}"
@@ -308,7 +322,10 @@ async fn deprovision_core_calls_tee_destroy() {
 
     // Instance store should be cleared.
     let stored = get_instance_sandbox().unwrap();
-    assert!(stored.is_none(), "instance should be cleared after deprovision");
+    assert!(
+        stored.is_none(),
+        "instance should be cleared after deprovision"
+    );
 
     cleanup(None);
 }
@@ -333,8 +350,14 @@ async fn deprovision_core_tee_destroy_failure_propagates() {
     let failing_mock = MockTeeBackend::failing(TeeType::Tdx);
 
     let result = deprovision_core(Some(&failing_mock)).await;
-    assert!(result.is_err(), "deprovision should fail when destroy fails");
-    let err = match result { Err(e) => e, Ok(_) => panic!("expected error") };
+    assert!(
+        result.is_err(),
+        "deprovision should fail when destroy fails"
+    );
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("expected error"),
+    };
     assert!(
         err.contains("Mock destroy failure") || err.contains("Mock"),
         "error should propagate: {err}"

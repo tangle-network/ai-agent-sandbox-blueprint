@@ -146,8 +146,7 @@ mod tests {
         use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
 
         // Ensure store is initialized
-        let dir =
-            std::env::temp_dir().join(format!("secret-prov-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("secret-prov-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         unsafe { std::env::set_var("BLUEPRINT_STATE_DIR", &dir) };
 

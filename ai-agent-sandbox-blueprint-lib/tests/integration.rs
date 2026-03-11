@@ -950,10 +950,7 @@ mod workflow_jobs {
         let key = workflow_key(90013);
         let mut entry = wf(90013, "http://unused", "t");
         entry.active = false;
-        workflows()
-            .unwrap()
-            .insert(key.clone(), entry)
-            .unwrap();
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
 
         let stored = workflows().unwrap().get(&key).unwrap().unwrap();
         assert!(!stored.active);
@@ -1011,10 +1008,7 @@ mod workflow_jobs {
 
         let key = workflow_key(90010);
         let entry = wf(90010, &srv.uri(), "conc-tok");
-        workflows()
-            .unwrap()
-            .insert(key.clone(), entry)
-            .unwrap();
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
 
         // Spawn first tick (will be slow due to 1s delay mock)
         let handle = tokio::spawn(async { workflow_tick().await });
@@ -1491,9 +1485,7 @@ mod provision_progress_tests {
 
         for (phase, expected_pct) in phases {
             provision_progress::update_provision(call_id, phase, None, None, None).unwrap();
-            let status = provision_progress::get_provision(call_id)
-                .unwrap()
-                .unwrap();
+            let status = provision_progress::get_provision(call_id).unwrap().unwrap();
             assert_eq!(status.phase, phase);
             assert_eq!(status.progress_pct, expected_pct);
         }
@@ -1514,9 +1506,7 @@ mod provision_progress_tests {
         )
         .unwrap();
 
-        let status = provision_progress::get_provision(call_id)
-            .unwrap()
-            .unwrap();
+        let status = provision_progress::get_provision(call_id).unwrap().unwrap();
         assert_eq!(status.phase, ProvisionPhase::Failed);
         assert_eq!(status.message.as_deref(), Some("Container OOM killed"));
     }

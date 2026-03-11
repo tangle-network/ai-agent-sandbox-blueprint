@@ -393,9 +393,7 @@ mod tests {
 
         // Seed entries
         for i in 0..100u32 {
-            store
-                .insert(format!("k{i}"), format!("v{i}"))
-                .unwrap();
+            store.insert(format!("k{i}"), format!("v{i}")).unwrap();
         }
 
         let mut handles = Vec::new();
@@ -423,7 +421,8 @@ mod tests {
         }
 
         for h in handles {
-            h.join().expect("thread should not panic during concurrent update+remove");
+            h.join()
+                .expect("thread should not panic during concurrent update+remove");
         }
 
         // Even keys should still exist (possibly modified)
@@ -472,7 +471,8 @@ mod tests {
         }
 
         for h in handles {
-            h.join().expect("thread should not panic during concurrent find+insert");
+            h.join()
+                .expect("thread should not panic during concurrent find+insert");
         }
     }
 }

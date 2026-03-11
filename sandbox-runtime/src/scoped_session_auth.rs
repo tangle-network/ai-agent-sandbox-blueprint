@@ -475,10 +475,7 @@ mod tests {
         });
         // Resource is set to WalletSignature mode, but we try AccessToken flow
         let err = service
-            .create_access_token_session(
-                &resource(ScopedAuthMode::WalletSignature),
-                "shared",
-            )
+            .create_access_token_session(&resource(ScopedAuthMode::WalletSignature), "shared")
             .expect_err("should reject wrong auth mode");
         assert!(
             err.contains("access_token"),

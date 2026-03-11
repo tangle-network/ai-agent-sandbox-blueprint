@@ -730,8 +730,7 @@ mod tests {
 
         // Prefix without trailing slash
         let mut config_no_slash = test_config();
-        config_no_slash.snapshot_destination_prefix =
-            Some("s3://my-bucket/snapshots".to_string());
+        config_no_slash.snapshot_destination_prefix = Some("s3://my-bucket/snapshots".to_string());
         let result_no_slash = resolve_snapshot_destination(&record, &config_no_slash);
         assert_eq!(
             result_no_slash,

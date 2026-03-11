@@ -505,8 +505,7 @@ mod tests {
 
     #[test]
     fn test_build_agent_payload_valid_context_merged() {
-        let payload =
-            build_agent_payload("hi", "", "", r#"{"k":"v"}"#, 0, None, None).unwrap();
+        let payload = build_agent_payload("hi", "", "", r#"{"k":"v"}"#, 0, None, None).unwrap();
         let meta = payload.get("metadata").unwrap().as_object().unwrap();
         assert_eq!(meta["k"], "v");
     }

@@ -3620,7 +3620,11 @@ mod tests {
 
     // ── Helper: insert sandbox with extra_ports ─────────────────────────
 
-    fn insert_sandbox_with_ports(id: &str, owner: &str, ports: std::collections::HashMap<u16, u16>) {
+    fn insert_sandbox_with_ports(
+        id: &str,
+        owner: &str,
+        ports: std::collections::HashMap<u16, u16>,
+    ) {
         init();
         use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
         let mut record = SandboxRecord {
@@ -3803,10 +3807,8 @@ mod tests {
             .expect("bind mock backend");
         let backend_addr = backend_listener.local_addr().expect("backend addr");
         let backend_port = backend_addr.port();
-        let backend_app = Router::new().route(
-            "/hello",
-            get(|| async { (StatusCode::OK, "proxy-ok") }),
-        );
+        let backend_app =
+            Router::new().route("/hello", get(|| async { (StatusCode::OK, "proxy-ok") }));
         tokio::spawn(async move {
             axum::serve(backend_listener, backend_app)
                 .await
@@ -4187,7 +4189,9 @@ mod tests {
     #[test]
     fn test_handle_lifecycle_outcome_real_error_propagates() {
         let result = handle_lifecycle_outcome(
-            Err(crate::SandboxError::Docker("Docker daemon unreachable".into())),
+            Err(crate::SandboxError::Docker(
+                "Docker daemon unreachable".into(),
+            )),
             "already stopped",
         );
         assert!(result.is_err(), "real Docker error should propagate");
@@ -4388,15 +4392,11 @@ mod tests {
     fn test_rate_limit_response_includes_retry_after() {
         // Verify the rate limit middleware returns Retry-After header by checking
         // the limiter behavior with a dedicated limiter (not the shared static one).
-        let limiter = crate::rate_limit::RateLimiter::new(
-            crate::rate_limit::RateLimitConfig::new(1, 60),
-        );
+        let limiter =
+            crate::rate_limit::RateLimiter::new(crate::rate_limit::RateLimitConfig::new(1, 60));
         let ip: std::net::IpAddr = "198.51.100.200".parse().unwrap();
         assert!(limiter.check(ip), "first request should pass");
-        assert!(
-            !limiter.check(ip),
-            "second request should be rate-limited"
-        );
+        assert!(!limiter.check(ip), "second request should be rate-limited");
         // The middleware code in rate_limit.rs includes `[("retry-after", "60")]`
         // in the 429 response. We verify the limiter correctly blocks, and the
         // header inclusion is verified by code inspection.
@@ -4462,12 +4462,7 @@ mod tests {
         for path in &["/health", "/readyz"] {
             let response = app()
                 .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri(*path)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(Request::builder().uri(*path).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_ne!(

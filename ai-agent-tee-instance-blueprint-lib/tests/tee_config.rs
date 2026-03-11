@@ -36,8 +36,7 @@ fn make_provision_request(name: &str, tee_required: bool, tee_type: u8) -> Provi
 
 fn init() {
     INIT.call_once(|| {
-        let dir =
-            std::env::temp_dir().join(format!("tee-config-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tee-config-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         // SAFETY: tests run single-threaded during init; no concurrent env reads.
         unsafe {
@@ -56,8 +55,8 @@ fn init() {
 
 #[test]
 fn decode_provision_config_tee_required_tdx() {
-    use blueprint_sdk::alloy::sol_types::SolValue;
     use ai_agent_tee_instance_blueprint_lib::auto_provision::decode_provision_config;
+    use blueprint_sdk::alloy::sol_types::SolValue;
 
     let req = ProvisionRequest {
         name: "tee-tdx".into(),
@@ -95,8 +94,8 @@ fn decode_provision_config_tee_required_tdx() {
 
 #[test]
 fn decode_provision_config_tee_types_nitro_sev() {
-    use blueprint_sdk::alloy::sol_types::SolValue;
     use ai_agent_tee_instance_blueprint_lib::auto_provision::decode_provision_config;
+    use blueprint_sdk::alloy::sol_types::SolValue;
 
     // Test Nitro (tee_type=2)
     let req_nitro = make_provision_request("tee-nitro", true, 2);
@@ -108,8 +107,7 @@ fn decode_provision_config_tee_types_nitro_sev() {
 
     // Test Sev (tee_type=3)
     let req_sev = make_provision_request("tee-sev", true, 3);
-    let decoded_sev =
-        decode_provision_config(&req_sev.abi_encode_params()).expect("sev decode");
+    let decoded_sev = decode_provision_config(&req_sev.abi_encode_params()).expect("sev decode");
     let params_sev = CreateSandboxParams::from(&decoded_sev);
     let cfg_sev = params_sev.tee_config.expect("sev tee_config");
     assert_eq!(cfg_sev.tee_type, TeeType::Sev);
@@ -117,27 +115,30 @@ fn decode_provision_config_tee_types_nitro_sev() {
 
 #[test]
 fn decode_provision_config_unknown_tee_type_maps_to_none() {
-    use blueprint_sdk::alloy::sol_types::SolValue;
     use ai_agent_tee_instance_blueprint_lib::auto_provision::decode_provision_config;
+    use blueprint_sdk::alloy::sol_types::SolValue;
 
     let req = make_provision_request("tee-unknown", true, 99);
 
     let decoded = decode_provision_config(&req.abi_encode_params()).expect("decode");
     let params = CreateSandboxParams::from(&decoded);
-    let cfg = params.tee_config.expect("tee_config should be Some when tee_required=true");
+    let cfg = params
+        .tee_config
+        .expect("tee_config should be Some when tee_required=true");
     assert_eq!(cfg.tee_type, TeeType::None);
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn tee_config_conversion_all_variants() {
     // Table-driven: (tee_required, tee_type) → expected tee_config
     let cases: Vec<(bool, u8, Option<(bool, TeeType)>)> = vec![
-        (false, 0, None),                        // not required, type none
+        (false, 0, None),                         // not required, type none
         (true, 0, Some((true, TeeType::None))),   // required, type 0 → None
         (true, 1, Some((true, TeeType::Tdx))),    // required, Tdx
-        (true, 2, Some((true, TeeType::Nitro))),   // required, Nitro
-        (true, 3, Some((true, TeeType::Sev))),     // required, Sev
-        (true, 255, Some((true, TeeType::None))),  // required, unknown → None
+        (true, 2, Some((true, TeeType::Nitro))),  // required, Nitro
+        (true, 3, Some((true, TeeType::Sev))),    // required, Sev
+        (true, 255, Some((true, TeeType::None))), // required, unknown → None
     ];
 
     for (tee_required, tee_type, expected) in cases {
@@ -284,16 +285,9 @@ fn tee_fields_persistence_roundtrip() {
         .expect("record should exist after set");
 
     // TEE-specific fields survived the seal/unseal roundtrip.
-    assert_eq!(
-        loaded.tee_deployment_id.as_deref(),
-        Some("deploy-rt-001")
-    );
+    assert_eq!(loaded.tee_deployment_id.as_deref(), Some("deploy-rt-001"));
     assert!(
-        loaded
-            .tee_metadata_json
-            .as_ref()
-            .unwrap()
-            .contains("mock"),
+        loaded.tee_metadata_json.as_ref().unwrap().contains("mock"),
         "tee_metadata_json should survive roundtrip"
     );
     assert!(
@@ -313,7 +307,9 @@ fn tee_fields_persistence_roundtrip() {
         "attestation evidence bytes should survive roundtrip"
     );
 
-    let cfg = loaded.tee_config.expect("tee_config should survive roundtrip");
+    let cfg = loaded
+        .tee_config
+        .expect("tee_config should survive roundtrip");
     assert!(cfg.required);
     assert_eq!(cfg.tee_type, TeeType::Tdx);
 

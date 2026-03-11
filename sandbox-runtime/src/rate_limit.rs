@@ -359,11 +359,10 @@ mod tests {
             .body(axum::body::Body::empty())
             .unwrap();
         // Add ConnectInfo with loopback address
-        req.extensions_mut()
-            .insert(ConnectInfo(SocketAddr::new(
-                "127.0.0.1".parse().unwrap(),
-                12345,
-            )));
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            "127.0.0.1".parse().unwrap(),
+            12345,
+        )));
         let ip = extract_client_ip(&req);
         assert_eq!(
             ip,
@@ -380,11 +379,10 @@ mod tests {
             .body(axum::body::Body::empty())
             .unwrap();
         // Add ConnectInfo with a public IP
-        req.extensions_mut()
-            .insert(ConnectInfo(SocketAddr::new(
-                "198.51.100.1".parse().unwrap(),
-                12345,
-            )));
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            "198.51.100.1".parse().unwrap(),
+            12345,
+        )));
         let ip = extract_client_ip(&req);
         assert_eq!(
             ip,
@@ -401,11 +399,10 @@ mod tests {
             .body(axum::body::Body::empty())
             .unwrap();
         // Add ConnectInfo with a private IP (10.0.0.1)
-        req.extensions_mut()
-            .insert(ConnectInfo(SocketAddr::new(
-                "10.0.0.1".parse().unwrap(),
-                12345,
-            )));
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            "10.0.0.1".parse().unwrap(),
+            12345,
+        )));
         let ip = extract_client_ip(&req);
         assert_eq!(
             ip,
