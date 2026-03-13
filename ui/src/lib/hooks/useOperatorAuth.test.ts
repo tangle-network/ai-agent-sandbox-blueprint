@@ -16,7 +16,7 @@ vi.mock('~/lib/config', () => ({
   OPERATOR_API_URL: 'http://test-operator:9090',
 }));
 
-import { useOperatorAuth } from './useOperatorAuth';
+import { resetOperatorAuthStoreForTests, useOperatorAuth } from './useOperatorAuth';
 
 // ── Helpers ──
 
@@ -42,6 +42,7 @@ describe('useOperatorAuth', () => {
     currentAddress = mockAddress;
     mockSignMessageAsync.mockReset();
     vi.restoreAllMocks();
+    resetOperatorAuthStoreForTests();
   });
 
   afterEach(() => {
@@ -306,7 +307,7 @@ describe('useOperatorAuth', () => {
 
   it('clears session when wallet address changes', async () => {
     const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
-    mockFetchResponses(
+    const fetchMock = mockFetchResponses(
       { message: 'Sign this', nonce: 'abc' },
       { token: 'v4.public.first-addr', expires_at: futureExpiry },
     );
@@ -326,12 +327,26 @@ describe('useOperatorAuth', () => {
     currentAddress = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
     rerender();
 
-    // The useEffect clears sessionRef AFTER the render phase, so we need
-    // a second rerender for isAuthenticated to reflect the cleared ref.
-    rerender();
-
-    // Session should be cleared by the useEffect
     expect(result.current.isAuthenticated).toBe(false);
+
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes('/api/auth/challenge')) {
+        return { ok: true, json: async () => ({ message: 'Sign for new wallet', nonce: 'def' }) };
+      }
+      if (url.includes('/api/auth/session')) {
+        return { ok: true, json: async () => ({ token: 'v4.public.second-addr', expires_at: futureExpiry }) };
+      }
+      return { ok: false, text: async () => 'Unknown endpoint' };
+    });
+
+    let token: string | null = null;
+    await act(async () => {
+      token = await result.current.getToken();
+    });
+
+    expect(token).toBe('v4.public.second-addr');
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   // ── Uses custom apiUrl ──
@@ -374,6 +389,95 @@ describe('useOperatorAuth', () => {
       'http://test-operator:9090/api/auth/challenge',
       expect.any(Object),
     );
+  });
+
+  it('reuses a valid shared token after hook remount', async () => {
+    const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
+    const fetchMock = mockFetchResponses(
+      { message: 'Sign this', nonce: 'abc' },
+      { token: 'v4.public.shared', expires_at: futureExpiry },
+    );
+    mockSignMessageAsync.mockResolvedValue('0xsig');
+
+    const first = renderHook(() => useOperatorAuth('http://test:9090'));
+    await act(async () => {
+      await first.result.current.getToken();
+    });
+    first.unmount();
+
+    fetchMock.mockClear();
+
+    const second = renderHook(() => useOperatorAuth('http://test:9090'));
+    let token: string | null = null;
+    await act(async () => {
+      token = await second.result.current.getToken();
+    });
+
+    expect(token).toBe('v4.public.shared');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockSignMessageAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('deduplicates concurrent auth across hook instances for the same key', async () => {
+    const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
+    const fetchMock = mockFetchResponses(
+      { message: 'Sign this', nonce: 'abc' },
+      { token: 'v4.public.concurrent', expires_at: futureExpiry },
+    );
+    mockSignMessageAsync.mockResolvedValue('0xsig');
+
+    const first = renderHook(() => useOperatorAuth('http://test:9090'));
+    const second = renderHook(() => useOperatorAuth('http://test:9090'));
+
+    let tokens: Array<string | null> = [];
+    await act(async () => {
+      tokens = await Promise.all([
+        first.result.current.getToken(),
+        second.result.current.getToken(),
+      ]);
+    });
+
+    expect(tokens).toEqual(['v4.public.concurrent', 'v4.public.concurrent']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mockSignMessageAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not share cached tokens across operator URLs', async () => {
+    const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
+    const fetchMock = vi.fn();
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === 'http://first:9090/api/auth/challenge') {
+        return { ok: true, json: async () => ({ message: 'Sign first', nonce: 'first' }) };
+      }
+      if (url === 'http://first:9090/api/auth/session') {
+        return { ok: true, json: async () => ({ token: 'v4.public.first', expires_at: futureExpiry }) };
+      }
+      if (url === 'http://second:9090/api/auth/challenge') {
+        return { ok: true, json: async () => ({ message: 'Sign second', nonce: 'second' }) };
+      }
+      if (url === 'http://second:9090/api/auth/session') {
+        return { ok: true, json: async () => ({ token: 'v4.public.second', expires_at: futureExpiry }) };
+      }
+      return { ok: false, text: async () => 'Unknown endpoint' };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    mockSignMessageAsync.mockResolvedValue('0xsig');
+
+    const first = renderHook(() => useOperatorAuth('http://first:9090'));
+    const second = renderHook(() => useOperatorAuth('http://second:9090'));
+
+    await act(async () => {
+      await first.result.current.getToken();
+    });
+
+    fetchMock.mockClear();
+
+    await act(async () => {
+      await second.result.current.getToken();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('http://second:9090/api/auth/challenge', expect.any(Object));
+    expect(mockSignMessageAsync).toHaveBeenCalledTimes(2);
   });
 
   // ── Auth flow sends correct payloads ──
