@@ -3396,6 +3396,7 @@ mod tests {
             .collect();
         assert!(ids.iter().any(|id| *id == session_id));
 
+        insert_instance_sandbox("live-inst-1", OP_TEST_OWNER);
         let detail = app()
             .oneshot(
                 Request::builder()
@@ -3412,6 +3413,7 @@ mod tests {
         assert_eq!(detail_json["title"], "Ops Chat");
         assert!(detail_json["messages"].is_array());
 
+        insert_instance_sandbox("live-inst-1", OP_TEST_OWNER);
         let stream = app()
             .oneshot(
                 Request::builder()
@@ -3432,6 +3434,7 @@ mod tests {
             .unwrap_or("");
         assert!(ct.contains("text/event-stream"));
 
+        insert_instance_sandbox("live-inst-1", OP_TEST_OWNER);
         let deleted = app()
             .oneshot(
                 Request::builder()
