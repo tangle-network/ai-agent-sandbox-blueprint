@@ -3376,6 +3376,7 @@ mod tests {
         let session_id = created["session_id"].as_str().unwrap().to_string();
         assert_eq!(created["title"], "Ops Chat");
 
+        insert_instance_sandbox("live-inst-1", OP_TEST_OWNER);
         let list = app()
             .oneshot(
                 Request::builder()
@@ -3551,6 +3552,7 @@ mod tests {
             .expect("chat session_id")
             .to_string();
 
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
         let stream = app()
             .oneshot(
                 Request::builder()
@@ -3569,6 +3571,7 @@ mod tests {
             "message": "hello from live stream",
             "session_id": session_id,
         });
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
         let prompt = app()
             .oneshot(
                 Request::builder()
@@ -3593,6 +3596,7 @@ mod tests {
             "expected chat stream event, got: {frame}"
         );
 
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
         let detail = app()
             .oneshot(
                 Request::builder()
