@@ -4,7 +4,12 @@ import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle-network/blu
 import { Card, CardContent, CardHeader, CardTitle } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { StatusBadge } from '~/components/shared/StatusBadge';
-import { sandboxListStore, runningSandboxes, stoppedSandboxes } from '~/lib/stores/sandboxes';
+import {
+  sandboxListStore,
+  runningSandboxes,
+  stoppedSandboxes,
+  getSandboxRouteKey,
+} from '~/lib/stores/sandboxes';
 import { instanceListStore, runningInstances } from '~/lib/stores/instances';
 import { useServiceStats, useAvailableCapacity, useWorkflowIds } from '~/lib/hooks/useSandboxReads';
 import { cn } from '@tangle-network/blueprint-ui';
@@ -104,8 +109,8 @@ export default function Dashboard() {
               <div className="space-y-2">
                 {recentSandboxes.map((sb) => (
                   <Link
-                    key={sb.id}
-                    to={`/sandboxes/${encodeURIComponent(sb.id)}`}
+                    key={sb.localId}
+                    to={`/sandboxes/${encodeURIComponent(getSandboxRouteKey(sb))}`}
                     className="flex items-center justify-between p-3 rounded-lg hover:bg-cloud-elements-item-backgroundHover transition-colors"
                   >
                     <div className="flex items-center gap-3 min-w-0">

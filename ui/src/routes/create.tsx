@@ -382,10 +382,12 @@ export default function CreatePage() {
           onViewList={() => navigate(isSandbox ? '/sandboxes' : '/instances')}
           onOpenInfra={() => setShowInfra(true)}
           onProvisionReady={(sandboxId, sidecarUrl) => {
-            const name = String(values.name || '');
             if (isSandbox) {
-              updateSandboxStatus(name, 'running', { id: sandboxId, sidecarUrl });
+              if (deploy.sandboxDraftKey) {
+                updateSandboxStatus(deploy.sandboxDraftKey, 'running', { sandboxId, sidecarUrl });
+              }
             } else {
+              const name = String(values.name || '');
               updateInstanceStatus(name, 'running', { id: sandboxId, sidecarUrl });
             }
           }}
@@ -538,7 +540,20 @@ function DeployStep({
   const memoryMb = Number(values.memoryMb) || 2048;
   const diskGb = Number(values.diskGb) || 10;
   const costDisplay = hasProvisionRfq ? provisionPriceFormatted : `~${formatCost(provisionEstimate)}`;
-  const { status, txHash, error, isNewService, isInstanceMode, hasValidService, operators, operatorsLoading, provision, callId, contractsDeployed } = deploy;
+  const {
+    status,
+    txHash,
+    error,
+    isNewService,
+    isInstanceMode,
+    hasValidService,
+    operators,
+    operatorsLoading,
+    provision,
+    callId,
+    contractsDeployed,
+    sandboxDraftKey,
+  } = deploy;
   const isSandbox = !isInstanceMode;
   const isActive = status !== 'idle';
   const isComplete = status === 'confirmed' || status === 'ready';
@@ -692,7 +707,7 @@ function DeployStep({
           onReady={onProvisionReady}
           onFailed={(message) => {
             setProvisionError(message);
-            if (name) updateSandboxStatus(name, 'error');
+            if (sandboxDraftKey) updateSandboxStatus(sandboxDraftKey, 'error');
           }}
         />
       )}

@@ -1,4 +1,4 @@
-import { useParams, Link } from 'react-router';
+import { useParams, Link, useNavigate } from 'react-router';
 import { lazy, Suspense, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
@@ -14,7 +14,12 @@ import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
 import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
 import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
 import { ResourceTabs } from '~/components/shared/ResourceTabs';
-import { sandboxListStore, updateSandboxStatus } from '~/lib/stores/sandboxes';
+import {
+  sandboxListStore,
+  findSandboxByKey,
+  getSandboxRouteKey,
+  updateSandboxStatus,
+} from '~/lib/stores/sandboxes';
 import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
 import { useSubmitJob } from '@tangle-network/blueprint-ui';
@@ -45,12 +50,15 @@ interface SshKey {
 
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
-  const decodedId = id ? decodeURIComponent(id) : '';
+  const navigate = useNavigate();
+  const decodedKey = id ? decodeURIComponent(id) : '';
   const sandboxes = useStore(sandboxListStore);
-  const sb = sandboxes.find((s) => s.id === decodedId);
+  const sb = findSandboxByKey(sandboxes, decodedKey);
+  const canonicalSandboxId = sb?.sandboxId;
+  const routeKey = sb ? getSandboxRouteKey(sb) : decodedKey;
 
-  const { data: isActive } = useSandboxActive(decodedId);
-  const { data: operator } = useSandboxOperator(decodedId);
+  const { data: isActive } = useSandboxActive(canonicalSandboxId);
+  const { data: operator } = useSandboxOperator(canonicalSandboxId);
   const { submitJob, status: txStatus, txHash } = useSubmitJob();
 
   const [tab, setTab] = useState<ActionTab>('overview');
@@ -103,7 +111,12 @@ export default function SandboxDetail() {
 
   // Sidecar auth for PTY terminal and chat (direct connection)
   const sidecarUrl = sb?.sidecarUrl ?? '';
-  const { token: sidecarToken, isAuthenticated: isSidecarAuthed, authenticate: sidecarAuth, isAuthenticating } = useWagmiSidecarAuth(decodedId, sidecarUrl);
+  const {
+    token: sidecarToken,
+    isAuthenticated: isSidecarAuthed,
+    authenticate: sidecarAuth,
+    isAuthenticating,
+  } = useWagmiSidecarAuth(canonicalSandboxId ?? '', sidecarUrl);
 
   // Operator API auth for lifecycle operations (stop/resume/snapshot/ssh/secrets)
   const { getToken: getOperatorToken } = useOperatorAuth(operatorUrl);
@@ -111,19 +124,26 @@ export default function SandboxDetail() {
     (action: string) =>
       isInstance
         ? `/api/sandbox/${action}`
-        : `/api/sandboxes/${encodeURIComponent(decodedId)}/${action}`,
-    [isInstance, decodedId],
+        : `/api/sandboxes/${encodeURIComponent(canonicalSandboxId ?? '__draft__')}/${action}`,
+    [canonicalSandboxId, isInstance],
   );
   const operatorApiCall = useOperatorApiCall(operatorUrl, getOperatorToken, buildPath);
-  const ports = useExposedPorts(sb?.status, operatorApiCall);
+  const ports = useExposedPorts(canonicalSandboxId ? sb?.status : undefined, operatorApiCall);
 
   // Chat client: direct sidecar mode when authed, otherwise proxied operator mode.
   const client: SandboxClient | null = useMemo(() => {
     if (sb?.sidecarUrl && sidecarToken) {
       return createDirectClient(sb.sidecarUrl, sidecarToken);
     }
-    return createProxiedClient(decodedId, getOperatorToken, operatorUrl);
-  }, [sb?.sidecarUrl, sidecarToken, decodedId, getOperatorToken, operatorUrl]);
+    if (!canonicalSandboxId) return null;
+    return createProxiedClient(canonicalSandboxId, getOperatorToken, operatorUrl);
+  }, [sb?.sidecarUrl, sidecarToken, canonicalSandboxId, getOperatorToken, operatorUrl]);
+
+  useEffect(() => {
+    if (!sb?.sandboxId) return;
+    if (decodedKey === sb.sandboxId) return;
+    navigate(`/sandboxes/${encodeURIComponent(sb.sandboxId)}`, { replace: true });
+  }, [sb?.sandboxId, decodedKey, navigate]);
 
   const bpId = 'ai-agent-sandbox-blueprint';
 
@@ -141,24 +161,26 @@ export default function SandboxDetail() {
   );
 
   const handleStop = useCallback(async () => {
+    if (!canonicalSandboxId) return;
     try {
       await operatorApiCall('stop');
-      updateSandboxStatus(decodedId, 'stopped');
+      updateSandboxStatus(routeKey, 'stopped');
     } catch (e) {
       console.error('Stop failed:', e);
       toast.error('Failed to stop sandbox');
     }
-  }, [decodedId, operatorApiCall]);
+  }, [canonicalSandboxId, operatorApiCall, routeKey]);
 
   const handleResume = useCallback(async () => {
+    if (!canonicalSandboxId) return;
     try {
       await operatorApiCall('resume');
-      updateSandboxStatus(decodedId, 'running');
+      updateSandboxStatus(routeKey, 'running');
     } catch (e) {
       console.error('Resume failed:', e);
       toast.error('Failed to resume sandbox');
     }
-  }, [decodedId, operatorApiCall]);
+  }, [canonicalSandboxId, operatorApiCall, routeKey]);
 
   const handleDelete = useCallback(() => {
     setConfirmAction({
@@ -166,19 +188,21 @@ export default function SandboxDetail() {
       description: 'This action is irreversible and will submit an on-chain transaction. All sandbox data will be permanently deleted.',
       confirmLabel: 'Delete',
       onConfirm: async () => {
+        if (!canonicalSandboxId) return;
         const hash = await submitJob({
           serviceId,
           jobId: JOB_IDS.SANDBOX_DELETE,
-          args: encodeCtxJob(JOB_IDS.SANDBOX_DELETE, { sandbox_id: decodedId }),
-          label: `Delete: ${decodedId}`,
+          args: encodeCtxJob(JOB_IDS.SANDBOX_DELETE, { sandbox_id: canonicalSandboxId }),
+          label: `Delete: ${canonicalSandboxId}`,
           value: jobValue(JOB_IDS.SANDBOX_DELETE),
         });
-        if (hash) updateSandboxStatus(decodedId, 'gone');
+        if (hash) updateSandboxStatus(routeKey, 'gone');
       },
     });
-  }, [decodedId, serviceId, submitJob, encodeCtxJob]);
+  }, [canonicalSandboxId, routeKey, serviceId, submitJob, encodeCtxJob]);
 
   const handleSnapshot = useCallback(async () => {
+    if (!canonicalSandboxId) return;
     try {
       await operatorApiCall('snapshot', {
         destination: '',
@@ -190,7 +214,7 @@ export default function SandboxDetail() {
       console.error('Snapshot failed:', e);
       toast.error('Failed to snapshot sandbox');
     }
-  }, [operatorApiCall]);
+  }, [canonicalSandboxId, operatorApiCall]);
 
   // SSH handlers
   const handleSshProvision = useCallback(async () => {
@@ -299,7 +323,8 @@ export default function SandboxDetail() {
   }
 
   const isCreating = sb.status === 'creating';
-  const isRunning = sb.status === 'running' || isCreating;
+  const hasProvisionedSandbox = !!canonicalSandboxId;
+  const isRunning = sb.status === 'running';
   const isStopped = sb.status === 'stopped' || sb.status === 'warm';
   const isGone = sb.status === 'gone';
 
@@ -307,11 +332,11 @@ export default function SandboxDetail() {
 
   const tabs: { key: ActionTab; label: string; icon: string; disabled?: boolean; hidden?: boolean }[] = [
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
-    { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal', disabled: !isRunning },
-    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !isRunning, hidden: !hasAgent },
-    { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !isRunning },
-    { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', disabled: !isRunning },
-    { key: 'attestation', label: 'Attestation', icon: 'i-ph:shield-check', disabled: !sb.teeEnabled },
+    { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal', disabled: !hasProvisionedSandbox || !isRunning },
+    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !hasProvisionedSandbox || !isRunning, hidden: !hasAgent },
+    { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !hasProvisionedSandbox || !isRunning },
+    { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', disabled: !hasProvisionedSandbox || !isRunning },
+    { key: 'attestation', label: 'Attestation', icon: 'i-ph:shield-check', disabled: !hasProvisionedSandbox || !sb.teeEnabled },
   ];
 
   return (
@@ -347,19 +372,19 @@ export default function SandboxDetail() {
 
         {/* Actions */}
         <div className="flex items-center gap-2">
-          {isRunning && !isCreating && (
+          {hasProvisionedSandbox && isRunning && !isCreating && (
             <Button variant="secondary" size="sm" onClick={handleStop}>
               <div className="i-ph:stop text-sm" />
               Stop
             </Button>
           )}
-          {isStopped && (
+          {hasProvisionedSandbox && isStopped && (
             <Button variant="success" size="sm" onClick={handleResume}>
               <div className="i-ph:play text-sm" />
               Resume
             </Button>
           )}
-          {!isGone && (
+          {hasProvisionedSandbox && !isGone && (
             <>
               <Button variant="secondary" size="sm" onClick={handleSnapshot}>
                 <div className="i-ph:camera text-sm" />
@@ -383,8 +408,9 @@ export default function SandboxDetail() {
           callId={sb.callId}
           className="mb-4"
           onReady={(sandboxId, sidecarUrl) => {
-            updateSandboxStatus(decodedId, 'running', { id: sandboxId, sidecarUrl });
+            updateSandboxStatus(routeKey, 'running', { sandboxId, sidecarUrl });
           }}
+          onFailed={() => updateSandboxStatus(routeKey, 'error')}
         />
       )}
 
@@ -396,7 +422,16 @@ export default function SandboxDetail() {
               <CardTitle className="text-sm">Configuration</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2.5">
-              <LabeledValueRow label="Sandbox ID" value={sb.id} mono copyable alignRight />
+              <LabeledValueRow
+                label="Sandbox ID"
+                value={sb.sandboxId || 'Pending operator provision'}
+                mono={!!sb.sandboxId}
+                copyable={!!sb.sandboxId}
+                alignRight
+              />
+              {sb.sandboxId == null && (
+                <LabeledValueRow label="Draft Key" value={sb.localId} mono alignRight />
+              )}
               <LabeledValueRow label="Image" value={sb.image} mono copyable alignRight />
               <LabeledValueRow label="CPU" value={`${sb.cpuCores} cores`} alignRight />
               <LabeledValueRow label="Memory" value={`${sb.memoryMb} MB`} alignRight />
@@ -493,7 +528,7 @@ export default function SandboxDetail() {
           <CardContent className="p-0">
             <div className="h-[min(600px,65vh)]">
               <SessionSidebar
-                sandboxId={decodedId}
+                sandboxId={canonicalSandboxId ?? sb.localId}
                 client={client}
                 systemPrompt={systemPrompt}
                 onSystemPromptChange={setSystemPrompt}

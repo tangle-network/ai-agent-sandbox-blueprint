@@ -10,6 +10,7 @@ import '~/lib/blueprints'; // side-effect: register all blueprints
 import { Outlet, useRouteError, isRouteErrorResponse } from 'react-router';
 import { AppDocument, AppFooter, AppToaster } from '@tangle-network/blueprint-ui/components';
 import { Web3Provider } from '~/providers/Web3Provider';
+import { SandboxSyncProvider } from '~/providers/SandboxSyncProvider';
 import { Header } from '~/components/layout/Header';
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -56,13 +57,15 @@ export default function App() {
     <>
       <AppToaster tone="cloud" />
       <Web3Provider>
-        <div className="flex flex-col min-h-screen bg-cloud-elements-background-depth-1 text-cloud-elements-textPrimary bg-mesh bg-noise">
-          <Header />
-          <main className="flex-1 pt-[var(--header-height)] relative z-1">
-            <Outlet />
-          </main>
-          <AppFooter tone="cloud" brandText="Sandbox Cloud · Tangle Network" />
-        </div>
+        <SandboxSyncProvider>
+          <div className="flex flex-col min-h-screen bg-cloud-elements-background-depth-1 text-cloud-elements-textPrimary bg-mesh bg-noise">
+            <Header />
+            <main className="flex-1 pt-[var(--header-height)] relative z-1">
+              <Outlet />
+            </main>
+            <AppFooter tone="cloud" brandText="Sandbox Cloud · Tangle Network" />
+          </div>
+        </SandboxSyncProvider>
       </Web3Provider>
     </>
   );

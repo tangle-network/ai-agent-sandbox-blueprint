@@ -11,7 +11,7 @@
  * for the chain is unreachable (common in remote/Tailscale dev setups).
  */
 
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useChainId } from 'wagmi';
 import { decodeEventLog } from 'viem';
 import { encodeJobArgs } from '@tangle-network/blueprint-ui';
@@ -29,7 +29,7 @@ import {
   type JobSubmitStatus,
 } from './createDeployLogic';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
-import { addSandbox, updateSandboxStatus } from '~/lib/stores/sandboxes';
+import { addSandbox, createSandboxDraftId, updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { addInstance, updateInstanceStatus } from '~/lib/stores/instances';
 import type { BlueprintDefinition, JobDefinition } from '@tangle-network/blueprint-ui';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
@@ -46,11 +46,13 @@ export interface ProvisionInfo {
 }
 
 export interface CreateDeployState {
+  mode: DeployMode;
   status: DeployStatus;
   txHash?: `0x${string}`;
   error?: string;
   callId?: number;
   provision?: ProvisionInfo;
+  sandboxDraftKey?: string;
   /** Discovered operators (only relevant for instance mode without existing service) */
   operators: DiscoveredOperator[];
   operatorsLoading: boolean;
@@ -68,6 +70,7 @@ interface UseCreateDeployOpts {
 
 /** ~30 days at 3s blocks */
 const TTL_BLOCKS_30_DAYS = 864000n;
+const useSafeLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 // ── Hook ──
 
@@ -93,6 +96,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
   const isTeeInstanceRef = useRef(isTeeInstance);
   isTeeInstanceRef.current = isTeeInstance;
+  const sandboxDraftKeyRef = useRef<string | null>(null);
 
   // ── Path A: submitJob (sandbox, or instance with existing service) ──
   // Uses writeContractAsync directly with pre-estimated gas to bypass
@@ -208,17 +212,24 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   // ── Store updates ──
 
   // Update store when submitJob callId is parsed from receipt
-  useEffect(() => {
+  useSafeLayoutEffect(() => {
     if (callId != null) {
-      const name = String(valuesRef.current.name || '');
-      if (!name) return;
       if (modeRef.current === 'sandbox') {
-        updateSandboxStatus(name, 'creating', { callId });
+        if (!sandboxDraftKeyRef.current) return;
+        updateSandboxStatus(sandboxDraftKeyRef.current, 'creating', { callId });
       } else {
+        const name = String(valuesRef.current.name || '');
+        if (!name) return;
         updateInstanceStatus(name, 'creating', { callId });
       }
     }
   }, [callId]);
+
+  useEffect(() => {
+    if (!sandboxDraftKeyRef.current || modeRef.current !== 'sandbox') return;
+    if (!jobError && !jobTxFailed) return;
+    updateSandboxStatus(sandboxDraftKeyRef.current, 'error');
+  }, [jobError, jobTxFailed]);
 
   // Add instance to store when requestService confirms
   useEffect(() => {
@@ -321,8 +332,9 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
       // Send to wallet with pre-estimated gas — MetaMask skips its own
       // gas estimation and goes straight to the confirmation popup.
+      let submittedJobTxHash: `0x${string}`;
       try {
-        await jobWriteAsync({
+        submittedJobTxHash = await jobWriteAsync({
           address: addrs.jobs,
           abi: tangleJobsAbi,
           functionName: 'submitJob',
@@ -338,23 +350,39 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
       // Add to local store (txHash is set by jobWriteAsync via the useWriteContract hook)
       const agentIdentifier = String(values.agentIdentifier || '');
-      const common = {
-        id: name,
-        name,
-        image: String(values.image || ''),
-        cpuCores: Number(values.cpuCores) || 2,
-        memoryMb: Number(values.memoryMb) || 2048,
-        diskGb: Number(values.diskGb) || 10,
-        createdAt: Date.now(),
-        blueprintId: infra.blueprintId,
-        serviceId: infra.serviceId,
-        status: 'creating' as const,
-        agentIdentifier: agentIdentifier || undefined,
-      };
       if (mode === 'sandbox') {
-        addSandbox({ ...common, teeEnabled: isTeeInstance || undefined });
+        const draftKey = createSandboxDraftId(name);
+        sandboxDraftKeyRef.current = draftKey;
+        addSandbox({
+          localId: draftKey,
+          name,
+          image: String(values.image || ''),
+          cpuCores: Number(values.cpuCores) || 2,
+          memoryMb: Number(values.memoryMb) || 2048,
+          diskGb: Number(values.diskGb) || 10,
+          createdAt: Date.now(),
+          blueprintId: infra.blueprintId,
+          serviceId: infra.serviceId,
+          status: 'creating',
+          txHash: submittedJobTxHash,
+          agentIdentifier: agentIdentifier || undefined,
+          teeEnabled: isTeeInstance || undefined,
+        });
       } else {
-        addInstance({ ...common, teeEnabled: isTeeInstance });
+        addInstance({
+          id: name,
+          name,
+          image: String(values.image || ''),
+          cpuCores: Number(values.cpuCores) || 2,
+          memoryMb: Number(values.memoryMb) || 2048,
+          diskGb: Number(values.diskGb) || 10,
+          createdAt: Date.now(),
+          blueprintId: infra.blueprintId,
+          serviceId: infra.serviceId,
+          status: 'creating',
+          agentIdentifier: agentIdentifier || undefined,
+          teeEnabled: isTeeInstance,
+        });
       }
       return;
     }
@@ -420,6 +448,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   // ── Reset ──
 
   const reset = useCallback(() => {
+    sandboxDraftKeyRef.current = null;
     resetJobTx();
     resetServiceTx();
     setJobError(null);
@@ -460,6 +489,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
     error,
     callId: callId ?? undefined,
     provision: instanceProvision ?? undefined,
+    sandboxDraftKey: sandboxDraftKeyRef.current ?? undefined,
     operators,
     operatorsLoading,
     isNewService,
