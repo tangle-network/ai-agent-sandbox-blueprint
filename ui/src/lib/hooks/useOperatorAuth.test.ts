@@ -43,6 +43,7 @@ describe('useOperatorAuth', () => {
     mockSignMessageAsync.mockReset();
     vi.restoreAllMocks();
     resetOperatorAuthStoreForTests();
+    window.sessionStorage.clear();
   });
 
   afterEach(() => {
@@ -416,6 +417,45 @@ describe('useOperatorAuth', () => {
     expect(token).toBe('v4.public.shared');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mockSignMessageAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists the session to sessionStorage for reuse after a refresh', async () => {
+    const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
+    mockFetchResponses(
+      { message: 'Sign this', nonce: 'abc' },
+      { token: 'v4.public.persisted', expires_at: futureExpiry },
+    );
+    mockSignMessageAsync.mockResolvedValue('0xsig');
+
+    const first = renderHook(() => useOperatorAuth('http://test:9090'));
+    await act(async () => {
+      await first.result.current.getToken();
+    });
+    first.unmount();
+
+    const storageKey = `tangle.operator_auth.${mockAddress.toLowerCase()}::http://test:9090`;
+    const persisted = window.sessionStorage.getItem(storageKey);
+    resetOperatorAuthStoreForTests();
+    if (persisted) {
+      window.sessionStorage.setItem(storageKey, persisted);
+    }
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const second = renderHook(() => useOperatorAuth('http://test:9090'));
+    expect(second.result.current.getCachedToken()).toBe('v4.public.persisted');
+    second.rerender();
+
+    expect(second.result.current.isAuthenticated).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockSignMessageAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('getCachedToken returns null and does not sign when no cached session exists', () => {
+    const { result } = renderHook(() => useOperatorAuth('http://test:9090'));
+
+    expect(result.current.getCachedToken()).toBeNull();
+    expect(mockSignMessageAsync).not.toHaveBeenCalled();
   });
 
   it('deduplicates concurrent auth across hook instances for the same key', async () => {

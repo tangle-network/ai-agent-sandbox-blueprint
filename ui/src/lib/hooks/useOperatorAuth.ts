@@ -23,6 +23,7 @@ const EMPTY_STATE: OperatorAuthState = {
 
 const authRegistry = new Map<string, OperatorAuthState>();
 const authListeners = new Map<string, Set<() => void>>();
+const SESSION_STORAGE_PREFIX = 'tangle.operator_auth.';
 
 function normalizeAddress(address: string): string {
   return address.toLowerCase();
@@ -32,12 +33,54 @@ function makeCacheKey(address: string, baseUrl: string): string {
   return `${normalizeAddress(address)}::${baseUrl}`;
 }
 
+function getPersistedSessionKey(key: string): string {
+  return `${SESSION_STORAGE_PREFIX}${key}`;
+}
+
+function readPersistedSession(key: string): OperatorSession | null {
+  if (typeof window === 'undefined' || !window.sessionStorage) return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(getPersistedSessionKey(key));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<OperatorSession>;
+    if (typeof parsed?.token !== 'string' || typeof parsed?.expiresAt !== 'number') {
+      window.sessionStorage.removeItem(getPersistedSessionKey(key));
+      return null;
+    }
+    const session: OperatorSession = { token: parsed.token, expiresAt: parsed.expiresAt };
+    if (!isSessionValid(session)) {
+      window.sessionStorage.removeItem(getPersistedSessionKey(key));
+      return null;
+    }
+    return session;
+  } catch {
+    window.sessionStorage.removeItem(getPersistedSessionKey(key));
+    return null;
+  }
+}
+
+function persistSession(key: string, session: OperatorSession | null) {
+  if (typeof window === 'undefined' || !window.sessionStorage) return;
+
+  try {
+    if (session && isSessionValid(session)) {
+      window.sessionStorage.setItem(getPersistedSessionKey(key), JSON.stringify(session));
+    } else {
+      window.sessionStorage.removeItem(getPersistedSessionKey(key));
+    }
+  } catch {
+    // Best-effort persistence only.
+  }
+}
+
 function getState(key: string): OperatorAuthState {
   return authRegistry.get(key) ?? EMPTY_STATE;
 }
 
 function setState(key: string, next: OperatorAuthState) {
   authRegistry.set(key, next);
+  persistSession(key, next.session);
   authListeners.get(key)?.forEach((listener) => listener());
 }
 
@@ -67,6 +110,14 @@ function isSessionValid(session: OperatorSession | null): session is OperatorSes
 export function resetOperatorAuthStoreForTests() {
   authRegistry.clear();
   authListeners.clear();
+  if (typeof window !== 'undefined' && window.sessionStorage) {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < window.sessionStorage.length; i += 1) {
+      const key = window.sessionStorage.key(i);
+      if (key?.startsWith(SESSION_STORAGE_PREFIX)) keysToRemove.push(key);
+    }
+    keysToRemove.forEach((key) => window.sessionStorage.removeItem(key));
+  }
 }
 
 /**
@@ -90,15 +141,56 @@ export function useOperatorAuth(apiUrl?: string) {
   }, [cacheKey]);
   const getSnapshot = useCallback(() => {
     if (!cacheKey) return EMPTY_STATE;
-    return getState(cacheKey);
+    const current = getState(cacheKey);
+    if (isSessionValid(current.session)) return current;
+    const persisted = readPersistedSession(cacheKey);
+    if (!persisted) return current;
+    const restored = {
+      ...current,
+      session: persisted,
+      error: null,
+    };
+    authRegistry.set(cacheKey, restored);
+    return restored;
   }, [cacheKey]);
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+
+  const getCachedToken = useCallback((): string | null => {
+    if (!cacheKey) return null;
+    const current = getState(cacheKey);
+    if (isSessionValid(current.session)) return current.session.token;
+
+    const persisted = readPersistedSession(cacheKey);
+    if (!persisted) return null;
+
+    setState(cacheKey, {
+      ...current,
+      session: persisted,
+      inflight: null,
+      isAuthenticating: false,
+      error: null,
+    });
+    return persisted.token;
+  }, [cacheKey]);
 
   const getToken = useCallback(async (forceRefresh = false): Promise<string | null> => {
     if (!address || !cacheKey) return null;
 
     const current = getState(cacheKey);
     if (!forceRefresh && isSessionValid(current.session)) return current.session.token;
+    if (!forceRefresh) {
+      const persisted = readPersistedSession(cacheKey);
+      if (persisted) {
+        setState(cacheKey, {
+          ...current,
+          session: persisted,
+          inflight: null,
+          isAuthenticating: false,
+          error: null,
+        });
+        return persisted.token;
+      }
+    }
     if (current.inflight) return current.inflight;
     if (forceRefresh) {
       setState(cacheKey, { ...current, session: null, error: null });
@@ -162,6 +254,8 @@ export function useOperatorAuth(apiUrl?: string) {
   }, [address, baseUrl, cacheKey, signMessageAsync]);
 
   return {
+    /** Get a valid cached PASETO token without triggering wallet signing. */
+    getCachedToken,
     /** Get a valid PASETO token, authenticating if needed. */
     getToken,
     /** Whether we have a valid cached token. */

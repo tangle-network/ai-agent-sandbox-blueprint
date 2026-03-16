@@ -1,12 +1,33 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useOperatorAuth } from './useOperatorAuth';
 import { sandboxListStore } from '~/lib/stores/sandboxes';
 import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
-import { fetchSandboxes, mergeApiResults, type ApiSandbox } from './sandboxHydrationLogic';
+import {
+  fetchSandboxes,
+  reconcileSandboxes,
+  type ApiProvision,
+  type ApiSandbox,
+} from './sandboxHydrationLogic';
 
 // Re-export for external consumers
-export { fetchSandboxes, mergeApiResults, type ApiSandbox } from './sandboxHydrationLogic';
+export {
+  fetchSandboxes,
+  reconcileSandboxes,
+  type ApiProvision,
+  type ApiSandbox,
+} from './sandboxHydrationLogic';
+
+interface RefreshOpts {
+  interactive?: boolean;
+}
+
+export interface SandboxHydrationState {
+  refresh: (opts?: RefreshOpts) => Promise<void>;
+  isHydrating: boolean;
+  authRequired: boolean;
+  lastError: string | null;
+}
 
 /**
  * Hydrate the local sandbox list from operator APIs on mount.
@@ -16,56 +37,59 @@ export { fetchSandboxes, mergeApiResults, type ApiSandbox } from './sandboxHydra
  * API is unreachable.
  */
 export function useSandboxHydration() {
-  const { getToken: getSandboxToken } = useOperatorAuth(OPERATOR_API_URL);
-  const { getToken: getInstanceToken } = useOperatorAuth(INSTANCE_OPERATOR_API_URL || undefined);
-  const hydrated = useRef(false);
+  const { getToken: getSandboxToken, getCachedToken: getCachedSandboxToken } = useOperatorAuth(OPERATOR_API_URL);
+  const { getToken: getInstanceToken, getCachedToken: getCachedInstanceToken } = useOperatorAuth(INSTANCE_OPERATOR_API_URL || undefined);
+  const controllerRef = useRef<AbortController | null>(null);
+  const [isHydrating, setIsHydrating] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [lastError, setLastError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (hydrated.current) return;
-    hydrated.current = true;
-
+  const refresh = useCallback(async ({ interactive = false }: RefreshOpts = {}) => {
+    controllerRef.current?.abort();
     const controller = new AbortController();
+    controllerRef.current = controller;
     const { signal } = controller;
 
-    (async () => {
-      const reconcileProvisionFailures = async () => {
-        const existing = sandboxListStore.get();
-        const pending = existing.filter((sandbox) => sandbox.status === 'creating' && sandbox.callId != null);
-        if (pending.length === 0) return;
+    setIsHydrating(true);
+    setLastError(null);
+    setAuthRequired(false);
 
-        const failures = new Map<string, string>();
+    try {
+      const fetchProvisionStatuses = async () => {
+        const existing = sandboxListStore.get();
+        const drafts = existing.filter((sandbox) => !sandbox.sandboxId && sandbox.callId != null);
+        const provisions = new Map<number, ApiProvision | null>();
+        if (drafts.length === 0) return provisions;
+
         await Promise.all(
-          pending.map(async (sandbox) => {
+          drafts.map(async (sandbox) => {
             try {
               const res = await fetch(`${OPERATOR_API_URL}/api/provisions/${sandbox.callId}`, { signal });
+              if (res.status === 404) {
+                provisions.set(sandbox.callId!, null);
+                return;
+              }
               if (!res.ok) return;
               const body = await res.json();
-              if (body?.phase === 'failed') {
-                failures.set(sandbox.id, String(body.message || 'Provisioning failed'));
-              }
+              provisions.set(sandbox.callId!, body);
             } catch {
               // Keep the optimistic local state if we cannot verify the provision record.
             }
           }),
         );
 
-        if (failures.size === 0) return;
-
-        sandboxListStore.set(
-          existing.map((sandbox) =>
-            failures.has(sandbox.id)
-              ? { ...sandbox, status: 'error' }
-              : sandbox,
-          ),
-        );
+        return provisions;
       };
 
       const results: ApiSandbox[] = [];
       let hadError = false;
+      let sandboxFetchSucceeded = false;
+      let sandboxAuthRequired = false;
+      const provisionResults = await fetchProvisionStatuses();
 
       // Fetch from sandbox operator
       try {
-        const sandboxToken = await getSandboxToken();
+        const sandboxToken = interactive ? await getSandboxToken() : getCachedSandboxToken();
         if (signal.aborted) return;
         if (sandboxToken) {
           const sandboxes = await fetchSandboxes(
@@ -73,21 +97,41 @@ export function useSandboxHydration() {
             sandboxToken,
             import.meta.env.VITE_SANDBOX_BLUEPRINT_ID ?? '',
             import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '',
-            getSandboxToken,
+            interactive ? getSandboxToken : undefined,
             signal,
+            { throwOnError: interactive },
           );
           results.push(...sandboxes);
+          sandboxFetchSucceeded = true;
+        } else {
+          sandboxAuthRequired = true;
+          if (interactive) {
+            const message = 'Operator authentication was cancelled or failed';
+            setLastError(message);
+            toast.error(message, {
+              description: 'Sign the wallet challenge to refresh sandbox state from the operator.',
+              duration: 6000,
+            });
+          }
         }
       } catch (e) {
         if (signal.aborted) return;
         hadError = true;
         console.warn('Sandbox operator hydration failed:', e);
+        if (interactive) {
+          const message = e instanceof Error ? e.message : 'Unable to refresh sandboxes';
+          setLastError(message);
+          toast.error('Unable to refresh sandboxes', {
+            description: message,
+            duration: 6000,
+          });
+        }
       }
 
       // Fetch from instance operator (if configured)
       if (INSTANCE_OPERATOR_API_URL) {
         try {
-          const instanceToken = await getInstanceToken();
+          const instanceToken = interactive ? await getInstanceToken() : getCachedInstanceToken();
           if (signal.aborted) return;
           if (instanceToken) {
             const instances = await fetchSandboxes(
@@ -95,7 +139,7 @@ export function useSandboxHydration() {
               instanceToken,
               import.meta.env.VITE_INSTANCE_BLUEPRINT_ID ?? '',
               import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '',
-              getInstanceToken,
+              interactive ? getInstanceToken : undefined,
               signal,
             );
             results.push(...instances);
@@ -108,31 +152,63 @@ export function useSandboxHydration() {
 
       if (signal.aborted) return;
 
+      setAuthRequired(sandboxAuthRequired);
+
       // Surface error to user if sandbox operator is unreachable
       if (hadError && results.length === 0) {
-        toast.error('Unable to reach operator API', {
-          description: 'Sandbox status may be stale. Check that the operator is running.',
-          duration: 6000,
-        });
-      }
-
-      if (results.length === 0) {
-        await reconcileProvisionFailures();
+        if (!interactive) {
+          setLastError('Unable to reach operator API');
+          toast.error('Unable to reach operator API', {
+            description: 'Sandbox status may be stale. Check that the operator is running.',
+            duration: 6000,
+          });
+        }
         return;
       }
 
       const existing = sandboxListStore.get();
-      const merged = mergeApiResults(results, existing);
+      const merged = reconcileSandboxes(existing, results, provisionResults, {
+        pruneUnverifiedDrafts: sandboxFetchSucceeded,
+        pruneMissingCanonical: sandboxFetchSucceeded,
+      });
 
       if (merged.length !== existing.length || merged.some((m, i) => m !== existing[i])) {
         sandboxListStore.set(merged);
       }
-    })();
+    } finally {
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+      }
+      if (!signal.aborted) {
+        setIsHydrating(false);
+      }
+    }
+  }, [
+    getCachedInstanceToken,
+    getCachedSandboxToken,
+    getInstanceToken,
+    getSandboxToken,
+  ]);
+
+  useEffect(() => {
+    void refresh({ interactive: false });
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      void refresh({ interactive: false });
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      controller.abort();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      controllerRef.current?.abort();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- This is an on-mount effect.
-    // The hydrated ref guarantees it runs at most once, so getToken deps are irrelevant.
-  }, []);
+  }, [refresh]);
+
+  return {
+    refresh,
+    isHydrating,
+    authRequired,
+    lastError,
+  };
 }
