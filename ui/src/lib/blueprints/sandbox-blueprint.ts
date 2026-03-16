@@ -49,17 +49,14 @@ const SANDBOX_JOBS: JobDefinition[] = [
     requiresSandbox: false,
     fields: [
       { name: 'name', label: 'Sandbox Name', type: 'text', placeholder: 'my-agent-sandbox', required: true, abiType: 'string' },
-      { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'ubuntu:22.04', required: true, defaultValue: 'ubuntu:22.04', abiType: 'string',
+      { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'agent-dev:latest', required: true, defaultValue: 'agent-dev:latest', abiType: 'string',
         options: [
-          { label: 'Ubuntu 22.04', value: 'ubuntu:22.04' },
-          { label: 'Ubuntu 24.04', value: 'ubuntu:24.04' },
-          { label: 'Debian Bookworm', value: 'debian:bookworm' },
-          { label: 'Python 3.12', value: 'python:3.12' },
-          { label: 'Node 22', value: 'node:22' },
-          { label: 'Rust (latest)', value: 'rust:latest' },
-          { label: 'Alpine 3.20', value: 'alpine:3.20' },
+          { label: 'Local: agent-dev:latest', value: 'agent-dev:latest' },
+          { label: 'Local: agent-dev', value: 'agent-dev' },
+          { label: 'Local: tangle-sidecar:local', value: 'tangle-sidecar:local' },
+          { label: 'Registry: ghcr.io/tangle-network/sidecar:latest', value: 'ghcr.io/tangle-network/sidecar:latest' },
         ],
-        helperText: 'Select a preset or enter any Docker Hub image' },
+        helperText: 'Use a sidecar-compatible image that already runs the sandbox server on port 8080. Plain base images like ubuntu:22.04 will not work here.' },
       { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: RUNTIME_BACKEND_OPTIONS,
         helperText: 'Merged into metadata_json.runtime_backend for operator-side routing' },
       { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', abiType: 'string', options: [

@@ -35,6 +35,7 @@ import type { BlueprintDefinition, JobDefinition } from '@tangle-network/bluepri
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
 import type { InfraConfig } from '@tangle-network/blueprint-ui';
 import type { Address } from 'viem';
+import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
 
 // Re-export types from logic module for external consumers
 export type { DeployMode, DeployStatus, JobSubmitStatus } from './createDeployLogic';
@@ -266,6 +267,16 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
     setJobError(null);
     if (!isConnected || !address) {
       setPreflightError('Wallet not connected. Please connect your wallet and try again.');
+      return;
+    }
+
+    const selectedChainId = selectedChainIdStore.get();
+    const rpcMatches = await walletRpcMatchesAppRpc(selectedChainId);
+    if (rpcMatches === false) {
+      setPreflightError(
+        `Wallet is connected to a different local RPC than the app. ` +
+        `Update your wallet's Local network RPC URL to ${expectedLocalRpcUrl()} and try again.`,
+      );
       return;
     }
 

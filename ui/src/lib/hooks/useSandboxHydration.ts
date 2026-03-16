@@ -28,6 +28,38 @@ export function useSandboxHydration() {
     const { signal } = controller;
 
     (async () => {
+      const reconcileProvisionFailures = async () => {
+        const existing = sandboxListStore.get();
+        const pending = existing.filter((sandbox) => sandbox.status === 'creating' && sandbox.callId != null);
+        if (pending.length === 0) return;
+
+        const failures = new Map<string, string>();
+        await Promise.all(
+          pending.map(async (sandbox) => {
+            try {
+              const res = await fetch(`${OPERATOR_API_URL}/api/provisions/${sandbox.callId}`, { signal });
+              if (!res.ok) return;
+              const body = await res.json();
+              if (body?.phase === 'failed') {
+                failures.set(sandbox.id, String(body.message || 'Provisioning failed'));
+              }
+            } catch {
+              // Keep the optimistic local state if we cannot verify the provision record.
+            }
+          }),
+        );
+
+        if (failures.size === 0) return;
+
+        sandboxListStore.set(
+          existing.map((sandbox) =>
+            failures.has(sandbox.id)
+              ? { ...sandbox, status: 'error' }
+              : sandbox,
+          ),
+        );
+      };
+
       const results: ApiSandbox[] = [];
       let hadError = false;
 
@@ -84,7 +116,10 @@ export function useSandboxHydration() {
         });
       }
 
-      if (results.length === 0) return;
+      if (results.length === 0) {
+        await reconcileProvisionFailures();
+        return;
+      }
 
       const existing = sandboxListStore.get();
       const merged = mergeApiResults(results, existing);

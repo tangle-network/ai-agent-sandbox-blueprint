@@ -46,9 +46,10 @@ interface ProvisionProgressProps {
   apiUrl?: string;
   className?: string;
   onReady?: (sandboxId: string, sidecarUrl: string) => void;
+  onFailed?: (message: string) => void;
 }
 
-export function ProvisionProgress({ callId, apiUrl, className, onReady }: ProvisionProgressProps) {
+export function ProvisionProgress({ callId, apiUrl, className, onReady, onFailed }: ProvisionProgressProps) {
   const { status, phase, progressPct, message, isReady, isFailed, sandboxId, sidecarUrl } =
     useProvisionProgress({ callId, apiUrl });
 
@@ -112,6 +113,13 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
       onReady(sandboxId, sidecarUrl);
     }
   }, [isReady, sandboxId, sidecarUrl, onReady]);
+
+  useEffect(() => {
+    if (isFailed && onFailed && !firedRef.current) {
+      firedRef.current = true;
+      onFailed(message || 'Provisioning failed');
+    }
+  }, [isFailed, message, onFailed]);
 
   if (!callId) return null;
 

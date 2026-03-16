@@ -15,6 +15,7 @@ import {
   useWalletEthBalance,
 } from '@tangle-network/agent-ui/primitives';
 import { toast } from 'sonner';
+import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
 
 /**
  * Build RPC URLs suitable for wallet_addEthereumChain.
@@ -107,9 +108,12 @@ export function WalletButton() {
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: hexId }],
       });
-      // Verify connectivity — if MetaMask has a stale RPC URL, this will fail
+      // Verify that the wallet is using the same local RPC as the app. A simple
+      // eth_blockNumber check is not enough when two local Anvil chains share
+      // chainId 31337 but run on different ports.
       try {
-        await provider.request({ method: 'eth_blockNumber', params: [] });
+        const rpcMatches = await walletRpcMatchesAppRpc(targetChain.id);
+        if (rpcMatches === false) throw new Error('wallet-local-rpc-mismatch');
       } catch {
         // Chain exists but has stale RPC. Try wallet_addEthereumChain to update it
         // (MetaMask updates the RPC URL if the chain ID already exists in some versions).
@@ -118,18 +122,22 @@ export function WalletButton() {
             method: 'wallet_addEthereumChain',
             params: [chainParams],
           });
+          const rpcMatches = await walletRpcMatchesAppRpc(targetChain.id);
+          if (rpcMatches === false) {
+            throw new Error('wallet-local-rpc-mismatch');
+          }
         } catch {
           // wallet_addEthereumChain also failed — manual intervention needed.
           // Construct direct Anvil URL for manual setup (Anvil binds 0.0.0.0).
           const directUrl = (() => {
             try {
-              const u = new URL(import.meta.env.VITE_RPC_URL || 'http://localhost:8645');
+              const u = new URL(expectedLocalRpcUrl());
               u.hostname = window.location.hostname;
               return u.toString().replace(/\/$/, '');
             } catch { return rpcUrls[0]; }
           })();
           toast.error(
-            `Switched to chain ${targetChain.id} but RPC is unreachable. ` +
+            `Switched to chain ${targetChain.id} but the wallet is still using a different local RPC. ` +
             `Open MetaMask → Settings → Networks → "${targetChain.name}" and set RPC URL to ${directUrl}`,
             { duration: 15000 },
           );

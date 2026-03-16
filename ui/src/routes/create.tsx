@@ -476,7 +476,7 @@ function BlueprintSelector({ onSelect }: { onSelect: (bp: BlueprintDefinition) =
                 </span>
                 <span className="flex items-center gap-1">
                   <div className="i-ph:tag text-sm" />
-                  {bp.jobs[0]?.pricingMultiplier}x&ndash;{Math.max(...bp.jobs.map((j) => j.pricingMultiplier))}x
+                  {Math.min(...bp.jobs.map((j) => j.pricingMultiplier))}x&ndash;{Math.max(...bp.jobs.map((j) => j.pricingMultiplier))}x
                 </span>
               </div>
             </div>
@@ -523,6 +523,7 @@ function DeployStep({
   const { address, isConnected, status: walletStatus } = useAccount();
   const isReconnecting = walletStatus === 'reconnecting';
   const [showAllJobs, setShowAllJobs] = useState(false);
+  const [provisionError, setProvisionError] = useState<string | null>(null);
 
   const name = String(values.name || '');
   const image = String(values.image || '');
@@ -541,6 +542,10 @@ function DeployStep({
   const isSandbox = !isInstanceMode;
   const isActive = status !== 'idle';
   const isComplete = status === 'confirmed' || status === 'ready';
+
+  useEffect(() => {
+    setProvisionError(null);
+  }, [callId, status]);
 
   // Separate config fields into key vs advanced
   const visibleFields = job.fields.filter((f) => !f.internal);
@@ -670,11 +675,26 @@ function DeployStep({
       )}
 
       {/* ── TX Status ── */}
-      {isActive && <TxStatusCard status={status} txHash={txHash} error={error ?? undefined} entityLabel={entityLabel} isNewService={isNewService} />}
+      {isActive && (
+        <TxStatusCard
+          status={provisionError ? 'failed' : status}
+          txHash={txHash}
+          error={provisionError ?? error ?? undefined}
+          entityLabel={entityLabel}
+          isNewService={isNewService}
+        />
+      )}
 
       {/* ── Provision Progress ── */}
       {status === 'confirmed' && isSandbox && callId && (
-        <ProvisionProgress callId={callId} onReady={onProvisionReady} />
+        <ProvisionProgress
+          callId={callId}
+          onReady={onProvisionReady}
+          onFailed={(message) => {
+            setProvisionError(message);
+            if (name) updateSandboxStatus(name, 'error');
+          }}
+        />
       )}
       {status === 'confirmed' && isInstanceMode && (
         <InstanceProvisionCard provision={provision} />

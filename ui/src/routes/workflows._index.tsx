@@ -148,7 +148,7 @@ export default function Workflows() {
               <textarea
                 value={sandboxConfigJson}
                 onChange={(e) => setSandboxConfigJson(e.target.value)}
-                placeholder='{"image":"ubuntu:22.04"}'
+                placeholder='{"image":"agent-dev:latest"}'
                 rows={3}
                 className="flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
               />

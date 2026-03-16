@@ -75,7 +75,7 @@ describe('useJobForm with real blueprint jobs', () => {
     const { result } = renderHook(() => useJobForm(job));
     const v = result.current.values;
     expect(v.name).toBe('');
-    expect(v.image).toBe('ubuntu:22.04');
+    expect(v.image).toBe('agent-dev:latest');
     expect(v.runtimeBackend).toBe('docker');
     expect(v.stack).toBe('default');
     expect(v.cpuCores).toBe(2);

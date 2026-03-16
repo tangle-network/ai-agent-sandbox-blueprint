@@ -64,7 +64,7 @@ describe('Sandbox Blueprint ABI Integration', () => {
     const decoded = encodeAndDecode(BP, JOB_IDS.SANDBOX_CREATE, SANDBOX_CREATE_VALUES, undefined, SANDBOX_CREATE_ABI);
     const d = decoded as readonly unknown[];
     expect(d[0]).toBe('test-sandbox');       // name
-    expect(d[1]).toBe('ubuntu:22.04');       // image
+    expect(d[1]).toBe('agent-dev:latest');   // image
     expect(d[2]).toBe('default');            // stack
     expect(d[3]).toBe('agent-1');            // agent_identifier
     expect(d[4]).toBe('{"KEY":"val"}');      // env_json
@@ -93,7 +93,7 @@ describe('Sandbox Blueprint ABI Integration', () => {
     expect(d[1]).toBe('{"steps":[]}');
     expect(d[2]).toBe('cron');
     expect(d[3]).toBe('0 */6 * * *');
-    expect(d[4]).toBe('{"image":"ubuntu:22.04"}');
+    expect(d[4]).toBe('{"image":"agent-dev:latest"}');
   });
 
   it('workflow_trigger encodes WorkflowControlRequest', () => {
