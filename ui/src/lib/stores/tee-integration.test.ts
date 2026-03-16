@@ -22,9 +22,10 @@ import {
   type LocalInstance,
 } from './instances';
 
-function makeSandbox(overrides: Partial<LocalSandbox> = {}): LocalSandbox {
+function makeSandbox(overrides: Partial<LocalSandbox> & { id?: string } = {}): LocalSandbox {
+  const { id, ...rest } = overrides;
   return {
-    id: `sb-${Math.random().toString(36).slice(2, 8)}`,
+    localId: id ?? `sb-${Math.random().toString(36).slice(2, 8)}`,
     name: 'test-sandbox',
     image: 'ubuntu:22.04',
     cpuCores: 2,
@@ -34,7 +35,7 @@ function makeSandbox(overrides: Partial<LocalSandbox> = {}): LocalSandbox {
     blueprintId: 'ai-agent-sandbox-blueprint',
     serviceId: '1',
     status: 'running',
-    ...overrides,
+    ...rest,
   };
 }
 

@@ -11,9 +11,10 @@ import {
   type LocalSandbox,
 } from './sandboxes';
 
-function makeSandbox(overrides: Partial<LocalSandbox> = {}): LocalSandbox {
+function makeSandbox(overrides: Partial<LocalSandbox> & { id?: string } = {}): LocalSandbox {
+  const { id, ...rest } = overrides;
   return {
-    id: 'sb-1',
+    localId: id ?? 'sb-1',
     name: 'test',
     image: 'ubuntu:22.04',
     cpuCores: 2,
@@ -23,7 +24,7 @@ function makeSandbox(overrides: Partial<LocalSandbox> = {}): LocalSandbox {
     blueprintId: 'ai-agent-sandbox-blueprint',
     serviceId: '1',
     status: 'running',
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -37,14 +38,14 @@ describe('addSandbox', () => {
   it('adds a new sandbox to the list', () => {
     addSandbox(makeSandbox({ id: 'sb-1' }));
     expect(sandboxListStore.get()).toHaveLength(1);
-    expect(sandboxListStore.get()[0].id).toBe('sb-1');
+    expect(sandboxListStore.get()[0].localId).toBe('sb-1');
   });
 
   it('prepends new sandbox (most recent first)', () => {
     addSandbox(makeSandbox({ id: 'sb-1' }));
     addSandbox(makeSandbox({ id: 'sb-2' }));
-    expect(sandboxListStore.get()[0].id).toBe('sb-2');
-    expect(sandboxListStore.get()[1].id).toBe('sb-1');
+    expect(sandboxListStore.get()[0].localId).toBe('sb-2');
+    expect(sandboxListStore.get()[1].localId).toBe('sb-1');
   });
 
   it('deduplicates by id — second add is no-op', () => {
@@ -133,7 +134,7 @@ describe('runningSandboxes', () => {
     addSandbox(makeSandbox({ id: 'sb-2', status: 'stopped' }));
     addSandbox(makeSandbox({ id: 'sb-3', status: 'running' }));
     expect(runningSandboxes.get()).toHaveLength(2);
-    expect(runningSandboxes.get().map((s) => s.id).sort()).toEqual(['sb-1', 'sb-3']);
+    expect(runningSandboxes.get().map((s) => s.localId).sort()).toEqual(['sb-1', 'sb-3']);
   });
 
   it('returns empty when none running', () => {
