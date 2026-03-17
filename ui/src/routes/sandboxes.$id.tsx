@@ -35,6 +35,7 @@ import { createDirectClient, createProxiedClient, type SandboxClient } from '~/l
 import { cn } from '@tangle-network/blueprint-ui';
 import { truncateAddress } from '@tangle-network/agent-ui/primitives';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
+import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
 
 const TerminalView = lazy(() =>
   import('@tangle-network/agent-ui/terminal').then((m) => ({ default: m.TerminalView }))
@@ -81,6 +82,9 @@ export default function SandboxDetail() {
 
   // Confirm dialog state
   const [confirmAction, setConfirmAction] = useState<{ title: string; description: string; confirmLabel: string; onConfirm: () => void } | null>(null);
+
+  // Snapshot dialog state
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
 
   // Track setTimeout IDs so they can be cleared on unmount
   const timeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
@@ -202,20 +206,14 @@ export default function SandboxDetail() {
     });
   }, [canonicalSandboxId, routeKey, serviceId, submitJob, encodeCtxJob]);
 
-  const handleSnapshot = useCallback(async () => {
-    if (!canonicalSandboxId) return;
-    try {
-      await operatorApiCall('snapshot', {
-        destination: '',
-        include_workspace: true,
-        include_state: true,
-      });
+  const handleSnapshot = useCallback(
+    async (params: { destination: string; include_workspace: boolean; include_state: boolean }) => {
+      if (!canonicalSandboxId) return;
+      await operatorApiCall('snapshot', params);
       toast.success('Snapshot created');
-    } catch (e) {
-      console.error('Snapshot failed:', e);
-      toast.error('Failed to snapshot sandbox');
-    }
-  }, [canonicalSandboxId, operatorApiCall]);
+    },
+    [canonicalSandboxId, operatorApiCall],
+  );
 
   // SSH handlers
   const handleSshProvision = useCallback(async () => {
@@ -387,7 +385,7 @@ export default function SandboxDetail() {
           )}
           {hasProvisionedSandbox && !isGone && (
             <>
-              <Button variant="secondary" size="sm" onClick={handleSnapshot}>
+              <Button variant="secondary" size="sm" onClick={() => setSnapshotOpen(true)}>
                 <div className="i-ph:camera text-sm" />
                 Snapshot
               </Button>
@@ -681,6 +679,11 @@ export default function SandboxDetail() {
           />
         </div>
       )}
+      <SnapshotDialog
+        open={snapshotOpen}
+        onOpenChange={setSnapshotOpen}
+        onConfirm={handleSnapshot}
+      />
       <ConfirmDialog
         open={!!confirmAction}
         onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
