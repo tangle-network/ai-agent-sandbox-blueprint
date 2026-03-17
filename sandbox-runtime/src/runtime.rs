@@ -333,7 +333,6 @@ use crate::store::PersistentStore;
 
 static SANDBOXES: OnceCell<PersistentStore<SandboxRecord>> = OnceCell::new();
 static INSTANCE_STORE: OnceCell<PersistentStore<SandboxRecord>> = OnceCell::new();
-static DOCKER_BUILDER: AsyncOnceCell<DockerBuilder> = AsyncOnceCell::const_new();
 static IMAGE_PULLED: AsyncOnceCell<()> = AsyncOnceCell::const_new();
 
 /// Access the fleet-mode sandbox store (`sandboxes.json`), initializing it on first call.
@@ -371,26 +370,21 @@ pub fn get_instance_sandbox() -> Result<Option<SandboxRecord>> {
     }
 }
 
-/// Return the cached Docker client, connecting on first call.
-pub async fn docker_builder() -> Result<&'static DockerBuilder> {
-    // Return cached builder if already initialized.
-    if let Some(builder) = DOCKER_BUILDER.get() {
-        return Ok(builder);
-    }
-    // Build a new connection. If this fails, the error is returned but NOT
-    // cached, so subsequent calls will retry instead of being permanently
-    // broken by a transient Docker outage.
+/// Build a fresh Docker client for each call.
+///
+/// We intentionally do not cache the builder for the life of the process so
+/// Docker Desktop socket or port-mapping state cannot go stale across long-lived
+/// operator sessions.
+pub async fn docker_builder() -> Result<DockerBuilder> {
     let config = SidecarRuntimeConfig::load();
-    let builder = match config.docker_host.as_deref() {
+    match config.docker_host.as_deref() {
         Some(host) => DockerBuilder::with_address(host).await.map_err(|err| {
             SandboxError::Docker(format!("Failed to connect to Docker at {host}: {err}"))
-        })?,
+        }),
         None => DockerBuilder::new()
             .await
-            .map_err(|err| SandboxError::Docker(format!("Failed to connect to Docker: {err}")))?,
-    };
-    // If another task raced us, use theirs; otherwise cache ours.
-    Ok(DOCKER_BUILDER.get_or_init(|| async { builder }).await)
+            .map_err(|err| SandboxError::Docker(format!("Failed to connect to Docker: {err}"))),
+    }
 }
 
 /// Default timeout for Docker operations (seconds).
@@ -1006,6 +1000,10 @@ pub(crate) fn record_uses_firecracker(record: &SandboxRecord) -> bool {
     runtime_backend_for_record(record) == RuntimeBackend::Firecracker
 }
 
+pub fn supports_docker_endpoint_refresh(record: &SandboxRecord) -> bool {
+    record.tee_deployment_id.is_none() && !record_uses_firecracker(record)
+}
+
 fn parse_url_port(url: &str) -> Option<u16> {
     reqwest::Url::parse(url)
         .ok()
@@ -1338,7 +1336,7 @@ async fn create_sidecar_docker(
         request.image.clone()
     };
 
-    ensure_image_pulled(builder, &effective_image).await?;
+    ensure_image_pulled(&builder, &effective_image).await?;
     let original_image = effective_image.clone();
 
     let sandbox_id = sandbox_id_override
@@ -1467,7 +1465,7 @@ async fn create_sidecar_docker(
     .await;
 
     if finish.is_err() {
-        cleanup_orphaned_container(builder, &container_id).await;
+        cleanup_orphaned_container(&builder, &container_id).await;
     }
     finish
 }
@@ -1567,10 +1565,8 @@ async fn refresh_port_mapping_with_retry(
             Err(err) => {
                 last_err = Some(err);
                 if attempt + 1 < RESUME_PORT_MAPPING_RETRY_ATTEMPTS {
-                    tokio::time::sleep(Duration::from_millis(
-                        RESUME_PORT_MAPPING_RETRY_DELAY_MS,
-                    ))
-                    .await;
+                    tokio::time::sleep(Duration::from_millis(RESUME_PORT_MAPPING_RETRY_DELAY_MS))
+                        .await;
                 }
             }
         }
@@ -1583,15 +1579,53 @@ async fn refresh_port_mapping_with_retry(
     }))
 }
 
+/// Re-inspect a running Docker-backed sandbox and persist its current host port mappings.
+///
+/// This is the authoritative recovery path for stale localhost port bindings
+/// after Docker restart/start operations.
+pub async fn refresh_docker_sandbox_endpoint(record: &SandboxRecord) -> Result<SandboxRecord> {
+    if !supports_docker_endpoint_refresh(record) {
+        return Err(SandboxError::Validation(format!(
+            "Sandbox {} does not use Docker-backed dynamic port refresh",
+            record.id
+        )));
+    }
+
+    let builder = docker_builder().await?;
+    let config = SidecarRuntimeConfig::load();
+    let (sidecar_url, sidecar_port, ssh_port, extra_ports) = refresh_port_mapping_with_retry(
+        builder.client(),
+        &record.container_id,
+        config.container_port,
+        record.ssh_port.is_some(),
+        &config.public_host,
+        &record.extra_ports,
+    )
+    .await?;
+
+    let updated = sandboxes()?.update(&record.id, |r| {
+        r.sidecar_url = sidecar_url.clone();
+        r.sidecar_port = sidecar_port;
+        r.ssh_port = ssh_port;
+        r.extra_ports = extra_ports.clone();
+    })?;
+
+    if !updated {
+        return Err(SandboxError::NotFound(format!(
+            "Sandbox '{}' not found while refreshing endpoint",
+            record.id
+        )));
+    }
+
+    get_sandbox_by_id(&record.id)
+}
+
 async fn stop_started_container(
     client: std::sync::Arc<docktopus::bollard::Docker>,
     container_id: &str,
 ) -> Result<()> {
-    let mut container = docker_timeout(
-        "load_container",
-        Container::from_id(client, container_id),
-    )
-    .await?;
+    let mut container =
+        docker_timeout("load_container", Container::from_id(client, container_id)).await?;
     docker_timeout("stop_container", container.stop()).await?;
     Ok(())
 }
@@ -1654,38 +1688,27 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         };
         match try_start.await {
             Ok(()) => {
-                // Re-read port mappings — Docker may assign new host ports after restart.
-                let config = SidecarRuntimeConfig::load();
-                let (sidecar_url, sidecar_port, ssh_port, extra_ports) =
-                    match refresh_port_mapping_with_retry(
-                        builder.client(),
-                        effective_container_id,
-                        config.container_port,
-                        record.ssh_port.is_some(),
-                        &config.public_host,
-                        &record.extra_ports,
-                    )
-                    .await
-                    {
-                        Ok(mapping) => mapping,
-                        Err(err) => {
-                            blueprint_sdk::info!(
-                                "resume: could not refresh port mapping for sandbox {}: {err}",
-                                record.id
-                            );
-                            let _ = stop_started_container(builder.client(), effective_container_id).await;
-                            return Err(SandboxError::Unavailable(format!(
-                                "Resume failed: could not refresh sidecar URL for sandbox {}",
-                                record.id
-                            )));
-                        }
-                    };
+                let refreshed = match refresh_docker_sandbox_endpoint(record).await {
+                    Ok(updated) => updated,
+                    Err(err) => {
+                        blueprint_sdk::info!(
+                            "resume: could not refresh port mapping for sandbox {}: {err}",
+                            record.id
+                        );
+                        let _ =
+                            stop_started_container(builder.client(), effective_container_id).await;
+                        return Err(SandboxError::Unavailable(format!(
+                            "Resume failed: could not refresh sidecar URL for sandbox {}",
+                            record.id
+                        )));
+                    }
+                };
 
-                if !wait_for_sidecar_health(&sidecar_url, 30).await {
+                if !wait_for_sidecar_health(&refreshed.sidecar_url, 30).await {
                     let _ = stop_started_container(builder.client(), effective_container_id).await;
                     return Err(SandboxError::Unavailable(format!(
                         "Resume failed: sidecar for sandbox {} did not become healthy at {}",
-                        record.id, sidecar_url
+                        record.id, refreshed.sidecar_url
                     )));
                 }
 
@@ -1694,10 +1717,6 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
                     r.state = SandboxState::Running;
                     r.stopped_at = None;
                     r.last_activity_at = now;
-                    r.sidecar_url = sidecar_url;
-                    r.sidecar_port = sidecar_port;
-                    r.ssh_port = ssh_port;
-                    r.extra_ports = extra_ports;
                 });
                 return Ok(());
             }
@@ -1972,7 +1991,7 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
     .await;
 
     if finish.is_err() {
-        cleanup_orphaned_container(builder, &container_id).await;
+        cleanup_orphaned_container(&builder, &container_id).await;
     }
     finish
 }
@@ -1993,7 +2012,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         &record.original_image
     };
 
-    ensure_image_pulled(builder, image).await?;
+    ensure_image_pulled(&builder, image).await?;
 
     let ssh_enabled = record.ssh_port.is_some();
     let effective_env = record.effective_env_json();
@@ -2084,7 +2103,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     .await;
 
     if finish.is_err() {
-        cleanup_orphaned_container(builder, &container_id).await;
+        cleanup_orphaned_container(&builder, &container_id).await;
     }
     finish
 }

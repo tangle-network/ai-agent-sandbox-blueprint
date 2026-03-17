@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use crate::api_types::*;
 use crate::circuit_breaker;
+use crate::error::SandboxError;
 use crate::http::sidecar_post_json;
 use crate::live_operator_sessions::{
     LiveChatSession, LiveJsonEvent, LiveSessionStore, LiveTerminalSession, sse_from_json_events,
@@ -1206,6 +1207,55 @@ fn parse_agent_response(parsed: &Value) -> AgentResponse {
     }
 }
 
+enum SidecarAttemptFailure {
+    Timeout,
+    Error(SandboxError),
+}
+
+fn is_retryable_transport_error(err: &SandboxError) -> bool {
+    matches!(err, SandboxError::Http(msg) if msg.contains("error sending request for url"))
+}
+
+async fn try_refresh_stale_endpoint(
+    record: &SandboxRecord,
+    op_name: &str,
+) -> Option<SandboxRecord> {
+    if !runtime::supports_docker_endpoint_refresh(record) {
+        return None;
+    }
+
+    match runtime::refresh_docker_sandbox_endpoint(record).await {
+        Ok(updated) => Some(updated),
+        Err(err) => {
+            tracing::warn!(
+                sandbox_id = %record.id,
+                operation = op_name,
+                error = %err,
+                "failed to refresh stale sandbox endpoint"
+            );
+            None
+        }
+    }
+}
+
+async fn run_sidecar_json_attempt(
+    record: &SandboxRecord,
+    path: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> std::result::Result<Value, SidecarAttemptFailure> {
+    match tokio::time::timeout(
+        timeout,
+        sidecar_post_json(&record.sidecar_url, path, &record.token, payload.clone()),
+    )
+    .await
+    {
+        Err(_) => Err(SidecarAttemptFailure::Timeout),
+        Ok(Err(err)) => Err(SidecarAttemptFailure::Error(err)),
+        Ok(Ok(parsed)) => Ok(parsed),
+    }
+}
+
 /// Call a sidecar endpoint with circuit-breaker integration and timeout.
 ///
 /// This is the single entry point for all sidecar HTTP calls. It:
@@ -1224,25 +1274,42 @@ async fn sidecar_call(
     circuit_breaker::check_health(&record.id)
         .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
 
-    let result = tokio::time::timeout(
-        timeout,
-        sidecar_post_json(&record.sidecar_url, path, &record.token, payload),
-    )
-    .await;
-
-    match result {
-        Err(_) => {
+    match run_sidecar_json_attempt(record, path, &payload, timeout).await {
+        Err(SidecarAttemptFailure::Timeout) => {
             circuit_breaker::mark_unhealthy(&record.id);
             Err(api_error(
                 StatusCode::GATEWAY_TIMEOUT,
                 format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
             ))
         }
-        Ok(Err(e)) => {
+        Err(SidecarAttemptFailure::Error(err)) => {
+            if is_retryable_transport_error(&err) {
+                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
+                    match run_sidecar_json_attempt(&refreshed, path, &payload, timeout).await {
+                        Ok(parsed) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+                            return Ok(parsed);
+                        }
+                        Err(SidecarAttemptFailure::Timeout) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
+                        }
+                        Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
+                        }
+                    }
+                }
+            }
+
             circuit_breaker::mark_unhealthy(&record.id);
-            Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()))
+            Err(api_error(StatusCode::BAD_GATEWAY, err.to_string()))
         }
-        Ok(Ok(parsed)) => {
+        Ok(parsed) => {
             circuit_breaker::mark_healthy(&record.id);
             runtime::touch_sandbox(&record.id);
             Ok(parsed)
@@ -1561,10 +1628,9 @@ fn handle_lifecycle_outcome(
             // Idempotent lifecycle call: already in target state.
             Ok(())
         }
-        Err(crate::SandboxError::Unavailable(msg)) => Err(api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            msg,
-        )),
+        Err(crate::SandboxError::Unavailable(msg)) => {
+            Err(api_error(StatusCode::SERVICE_UNAVAILABLE, msg))
+        }
         Err(e) => Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -1926,13 +1992,6 @@ async fn run_port_proxy(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
-    let host_port = record.extra_ports.get(&port).copied().ok_or_else(|| {
-        api_error(
-            StatusCode::NOT_FOUND,
-            format!("Port {port} is not exposed on this sandbox"),
-        )
-    })?;
-
     // Defense-in-depth: reject clearly malicious path patterns even though the
     // target is always localhost and reqwest::Url::parse validates the result.
     if path.contains('\0') || path.starts_with("//") {
@@ -1945,14 +2004,6 @@ async fn run_port_proxy(
     circuit_breaker::check_health(&record.id)
         .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
 
-    let mut target = format!("http://127.0.0.1:{host_port}/{path}");
-    if let Some(qs) = query {
-        target.push('?');
-        target.push_str(qs);
-    }
-    let target_url = reqwest::Url::parse(&target)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("Invalid path: {e}")))?;
-
     tracing::debug!(
         sandbox_id = %record.id,
         container_port = port,
@@ -1961,14 +2012,49 @@ async fn run_port_proxy(
         "port proxy request"
     );
 
-    let result = tokio::time::timeout(
-        PORT_PROXY_TIMEOUT,
-        crate::http::proxy_http(target_url, method, &headers, body.to_vec()),
-    )
-    .await;
+    let build_target =
+        |current: &SandboxRecord| -> Result<reqwest::Url, (StatusCode, Json<ApiError>)> {
+            let host_port = current.extra_ports.get(&port).copied().ok_or_else(|| {
+                api_error(
+                    StatusCode::NOT_FOUND,
+                    format!("Port {port} is not exposed on this sandbox"),
+                )
+            })?;
 
-    match result {
-        Err(_) => {
+            let mut target = format!("http://127.0.0.1:{host_port}/{path}");
+            if let Some(qs) = query {
+                target.push('?');
+                target.push_str(qs);
+            }
+            reqwest::Url::parse(&target)
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("Invalid path: {e}")))
+        };
+
+    let proxy_once = |target_url: reqwest::Url,
+                      method: axum::http::Method,
+                      headers: HeaderMap,
+                      body: axum::body::Bytes| async move {
+        match tokio::time::timeout(
+            PORT_PROXY_TIMEOUT,
+            crate::http::proxy_http(target_url, method, &headers, body.to_vec()),
+        )
+        .await
+        {
+            Err(_) => Err(SidecarAttemptFailure::Timeout),
+            Ok(Err(err)) => Err(SidecarAttemptFailure::Error(err)),
+            Ok(Ok(resp)) => Ok(resp),
+        }
+    };
+
+    match proxy_once(
+        build_target(&record)?,
+        method.clone(),
+        headers.clone(),
+        body.clone(),
+    )
+    .await
+    {
+        Err(SidecarAttemptFailure::Timeout) => {
             circuit_breaker::mark_unhealthy(&record.id);
             Err(api_error(
                 StatusCode::GATEWAY_TIMEOUT,
@@ -1978,11 +2064,48 @@ async fn run_port_proxy(
                 ),
             ))
         }
-        Ok(Err(e)) => {
+        Err(SidecarAttemptFailure::Error(err)) => {
+            if is_retryable_transport_error(&err) {
+                if let Some(refreshed) = try_refresh_stale_endpoint(&record, "port_proxy").await {
+                    match proxy_once(build_target(&refreshed)?, method, headers, body).await {
+                        Ok((status, resp_headers, resp_body)) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+
+                            let mut response =
+                                axum::response::Response::builder().status(status.as_u16());
+                            for (name, value) in resp_headers.iter() {
+                                response = response.header(name.as_str(), value.as_bytes());
+                            }
+
+                            return response
+                                .body(axum::body::Body::from(resp_body))
+                                .map_err(|e| {
+                                    api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                                });
+                        }
+                        Err(SidecarAttemptFailure::Timeout) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!(
+                                    "Port proxy timed out after {}s",
+                                    PORT_PROXY_TIMEOUT.as_secs()
+                                ),
+                            ));
+                        }
+                        Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
+                        }
+                    }
+                }
+            }
+
             circuit_breaker::mark_unhealthy(&record.id);
-            Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()))
+            Err(api_error(StatusCode::BAD_GATEWAY, err.to_string()))
         }
-        Ok(Ok((status, resp_headers, resp_body))) => {
+        Ok((status, resp_headers, resp_body)) => {
             circuit_breaker::mark_healthy(&record.id);
             runtime::touch_sandbox(&record.id);
 
@@ -2381,6 +2504,7 @@ mod tests {
     use std::time::Duration;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+
     static INIT: Once = Once::new();
     fn init() {
         INIT.call_once(|| {
@@ -2389,6 +2513,16 @@ mod tests {
             std::fs::create_dir_all(&dir).ok();
             unsafe { std::env::set_var("BLUEPRINT_STATE_DIR", dir) };
         });
+    }
+
+    fn docker_ok() -> bool {
+        std::process::Command::new("docker")
+            .arg("info")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     fn app() -> Router {
@@ -3563,6 +3697,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_exec_recovers_from_stale_docker_sidecar_url() {
+        init();
+        if !docker_ok() {
+            eprintln!("SKIP: Docker not available");
+            return;
+        }
+
+        unsafe {
+            std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
+            std::env::set_var("REQUEST_TIMEOUT_SECS", "30");
+        }
+
+        let request = crate::CreateSandboxParams {
+            name: "stale-port-recovery".into(),
+            image: String::new(),
+            stack: String::new(),
+            agent_identifier: String::new(),
+            env_json: "{}".into(),
+            metadata_json: "{}".into(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 60,
+            idle_timeout_seconds: 30,
+            cpu_cores: 1,
+            memory_mb: 256,
+            disk_gb: 1,
+            owner: String::new(),
+            tee_config: None,
+            user_env_json: String::new(),
+            port_mappings: Vec::new(),
+        };
+
+        let created = match crate::runtime::create_sidecar(&request, None).await {
+            Ok((record, _)) => record,
+            Err(err) => {
+                eprintln!("SKIP: create_sidecar failed: {err}");
+                return;
+            }
+        };
+
+        sandboxes()
+            .unwrap()
+            .update(&created.id, |record| {
+                record.owner = OP_TEST_OWNER.to_string();
+            })
+            .unwrap();
+
+        let original_url = created.sidecar_url.clone();
+        let stale_url = "http://127.0.0.1:9".to_string();
+        sandboxes()
+            .unwrap()
+            .update(&created.id, |record| {
+                record.sidecar_url = stale_url.clone();
+                record.sidecar_port = 9;
+            })
+            .unwrap();
+        circuit_breaker::clear(&created.id);
+
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = json!({ "command": "echo stale-recovery-ok" });
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sandboxes/{}/exec", created.id))
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response.into_body()).await;
+        assert!(
+            json["stdout"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("stale-recovery-ok"),
+            "exec should succeed after endpoint refresh: {json}"
+        );
+
+        let refreshed = sandboxes()
+            .unwrap()
+            .get(&created.id)
+            .unwrap()
+            .expect("sandbox should still exist");
+        assert_eq!(
+            refreshed.sidecar_url, original_url,
+            "successful retry should persist the live sidecar URL back into the store"
+        );
+        assert!(
+            circuit_breaker::check_health(&created.id).is_ok(),
+            "successful stale-endpoint recovery should not leave the breaker open"
+        );
+
+        crate::runtime::delete_sidecar(&refreshed, None)
+            .await
+            .unwrap();
+        let _ = sandboxes().unwrap().remove(&created.id);
+        circuit_breaker::clear(&created.id);
+    }
+
+    #[tokio::test]
     async fn test_exec_rejects_stopped_sandbox() {
         insert_stopped_sandbox_with_url("stopped-exec-1", OP_TEST_OWNER, "http://localhost:9999");
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
@@ -3583,7 +3823,10 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let json = body_json(response.into_body()).await;
-        assert_eq!(json["error"], "Sandbox stopped-exec-1 is stopped; resume it first");
+        assert_eq!(
+            json["error"],
+            "Sandbox stopped-exec-1 is stopped; resume it first"
+        );
     }
 
     #[tokio::test]

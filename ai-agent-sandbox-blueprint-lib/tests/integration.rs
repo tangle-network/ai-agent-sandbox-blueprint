@@ -1636,6 +1636,8 @@ mod docker {
     use ai_agent_sandbox_blueprint_lib::runtime::{
         create_sidecar, delete_sidecar, resume_sidecar, stop_sidecar,
     };
+    use docktopus::bollard::container::InspectContainerOptions;
+    use sandbox_runtime::runtime::docker_builder;
 
     fn docker_ok() -> bool {
         std::process::Command::new("docker")
@@ -1645,6 +1647,25 @@ mod docker {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+
+    async fn live_sidecar_host_port(container_id: &str) -> Option<u16> {
+        let builder = docker_builder().await.ok()?;
+        let inspect = builder
+            .client()
+            .inspect_container(container_id, None::<InspectContainerOptions>)
+            .await
+            .ok()?;
+
+        inspect
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.ports.as_ref())
+            .and_then(|ports| ports.get("8080/tcp"))
+            .and_then(|bindings| bindings.as_ref())
+            .and_then(|bindings| bindings.first())
+            .and_then(|binding| binding.host_port.as_ref())
+            .and_then(|port| port.parse::<u16>().ok())
     }
 
     #[tokio::test]
@@ -1701,6 +1722,21 @@ mod docker {
         resume_sidecar(&record).await.unwrap();
         // Re-fetch after resume for accurate state in delete
         let record = get_sandbox_by_id(&record.id).unwrap();
+        let live_port = live_sidecar_host_port(&record.container_id)
+            .await
+            .expect("live sidecar port after resume");
+        let stored_port = reqwest::Url::parse(&record.sidecar_url)
+            .ok()
+            .and_then(|url| url.port())
+            .expect("stored sidecar_url port after resume");
+        assert_eq!(
+            record.sidecar_port, live_port,
+            "resume should persist Docker's live sidecar port"
+        );
+        assert_eq!(
+            stored_port, live_port,
+            "resume should persist a sidecar_url that matches Docker's live port"
+        );
         delete_sidecar(&record, None).await.unwrap();
         rm(&record.id);
     }
