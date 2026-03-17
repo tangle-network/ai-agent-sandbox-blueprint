@@ -581,6 +581,7 @@ async fn sandbox_terminal_session_create_handler(
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_running(&record)?;
     let summary = create_terminal_session(live_scope_sandbox(&record.id), &address)?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
@@ -617,6 +618,7 @@ async fn sandbox_chat_session_create_handler(
     Json(req): Json<CreateLiveChatSessionRequest>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_running(&record)?;
     let summary = create_chat_session(live_scope_sandbox(&record.id), &address, req.title)?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
@@ -660,6 +662,7 @@ async fn instance_terminal_session_create_handler(
     SessionAuth(address): SessionAuth,
 ) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
+    require_running(&record)?;
     let summary = create_terminal_session(live_scope_instance(&record), &address)?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
@@ -694,6 +697,7 @@ async fn instance_chat_session_create_handler(
     Json(req): Json<CreateLiveChatSessionRequest>,
 ) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
+    require_running(&record)?;
     let summary = create_chat_session(live_scope_instance(&record), &address, req.title)?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
@@ -990,6 +994,17 @@ fn resolve_instance(caller: &str) -> Result<SandboxRecord, (StatusCode, Json<Api
     Ok(record)
 }
 
+fn require_running(record: &SandboxRecord) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if record.state == SandboxState::Running {
+        return Ok(());
+    }
+
+    Err(api_error(
+        StatusCode::CONFLICT,
+        format!("Sandbox {} is stopped; resume it first", record.id),
+    ))
+}
+
 /// Build `/terminals/commands` payload for exec operations.
 fn build_exec_payload(command: &str, cwd: &str, env_json: &str, timeout_ms: u64) -> Value {
     let mut payload = Map::new();
@@ -1205,6 +1220,7 @@ async fn sidecar_call(
     timeout: Duration,
     op_name: &str,
 ) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    require_running(record)?;
     circuit_breaker::check_health(&record.id)
         .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
 
@@ -1545,6 +1561,10 @@ fn handle_lifecycle_outcome(
             // Idempotent lifecycle call: already in target state.
             Ok(())
         }
+        Err(crate::SandboxError::Unavailable(msg)) => Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            msg,
+        )),
         Err(e) => Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -2827,9 +2847,15 @@ mod tests {
     }
 
     /// Insert a non-TEE sandbox into the store.
-    fn insert_plain_sandbox_with_url(id: &str, owner: &str, sidecar_url: &str) {
+    fn insert_plain_sandbox_with_state_and_url(
+        id: &str,
+        owner: &str,
+        sidecar_url: &str,
+        state: crate::runtime::SandboxState,
+    ) {
         init();
         use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        let stopped_at = (state != SandboxState::Running).then_some(1_700_000_001);
         let mut record = SandboxRecord {
             id: id.to_string(),
             container_id: format!("ctr-{id}"),
@@ -2840,11 +2866,11 @@ mod tests {
             created_at: 1_700_000_000,
             cpu_cores: 1,
             memory_mb: 1024,
-            state: SandboxState::Running,
+            state,
             idle_timeout_seconds: 1800,
             max_lifetime_seconds: 86400,
             last_activity_at: 1_700_000_000,
-            stopped_at: None,
+            stopped_at,
             snapshot_image_id: None,
             snapshot_s3_url: None,
             container_removed_at: None,
@@ -2867,6 +2893,14 @@ mod tests {
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
+    }
+
+    fn insert_plain_sandbox_with_url(id: &str, owner: &str, sidecar_url: &str) {
+        insert_plain_sandbox_with_state_and_url(id, owner, sidecar_url, SandboxState::Running);
+    }
+
+    fn insert_stopped_sandbox_with_url(id: &str, owner: &str, sidecar_url: &str) {
+        insert_plain_sandbox_with_state_and_url(id, owner, sidecar_url, SandboxState::Stopped);
     }
 
     fn insert_plain_sandbox(id: &str, owner: &str) {
@@ -3526,6 +3560,59 @@ mod tests {
             .expect("exec payload");
         assert_eq!(exec_payload["command"], "echo hello");
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_exec_rejects_stopped_sandbox() {
+        insert_stopped_sandbox_with_url("stopped-exec-1", OP_TEST_OWNER, "http://localhost:9999");
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = json!({ "command": "echo should-fail" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/stopped-exec-1/exec")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let json = body_json(response.into_body()).await;
+        assert_eq!(json["error"], "Sandbox stopped-exec-1 is stopped; resume it first");
+    }
+
+    #[tokio::test]
+    async fn test_live_terminal_session_create_rejects_stopped_sandbox() {
+        insert_stopped_sandbox_with_url(
+            "stopped-live-term-1",
+            OP_TEST_OWNER,
+            "http://localhost:9999",
+        );
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/stopped-live-term-1/live/terminal/sessions")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let json = body_json(response.into_body()).await;
+        assert_eq!(
+            json["error"],
+            "Sandbox stopped-live-term-1 is stopped; resume it first"
+        );
     }
 
     #[tokio::test]

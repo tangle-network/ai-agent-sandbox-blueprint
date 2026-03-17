@@ -23,7 +23,7 @@ interface RefreshOpts {
 }
 
 export interface SandboxHydrationState {
-  refresh: (opts?: RefreshOpts) => Promise<void>;
+  refresh: (opts?: RefreshOpts) => Promise<boolean>;
   isHydrating: boolean;
   authRequired: boolean;
   lastError: string | null;
@@ -84,13 +84,14 @@ export function useSandboxHydration() {
       const results: ApiSandbox[] = [];
       let hadError = false;
       let sandboxFetchSucceeded = false;
+      let instanceFetchSucceeded = false;
       let sandboxAuthRequired = false;
       const provisionResults = await fetchProvisionStatuses();
 
       // Fetch from sandbox operator
       try {
         const sandboxToken = interactive ? await getSandboxToken() : getCachedSandboxToken();
-        if (signal.aborted) return;
+        if (signal.aborted) return false;
         if (sandboxToken) {
           const sandboxes = await fetchSandboxes(
             OPERATOR_API_URL,
@@ -115,7 +116,7 @@ export function useSandboxHydration() {
           }
         }
       } catch (e) {
-        if (signal.aborted) return;
+        if (signal.aborted) return false;
         hadError = true;
         console.warn('Sandbox operator hydration failed:', e);
         if (interactive) {
@@ -143,14 +144,15 @@ export function useSandboxHydration() {
               signal,
             );
             results.push(...instances);
+            instanceFetchSucceeded = true;
           }
         } catch (e) {
-          if (signal.aborted) return;
+          if (signal.aborted) return false;
           console.warn('Instance operator hydration failed:', e);
         }
       }
 
-      if (signal.aborted) return;
+      if (signal.aborted) return false;
 
       setAuthRequired(sandboxAuthRequired);
 
@@ -163,7 +165,7 @@ export function useSandboxHydration() {
             duration: 6000,
           });
         }
-        return;
+        return false;
       }
 
       const existing = sandboxListStore.get();
@@ -175,6 +177,8 @@ export function useSandboxHydration() {
       if (merged.length !== existing.length || merged.some((m, i) => m !== existing[i])) {
         sandboxListStore.set(merged);
       }
+
+      return sandboxFetchSucceeded || instanceFetchSucceeded;
     } finally {
       if (controllerRef.current === controller) {
         controllerRef.current = null;

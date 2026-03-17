@@ -465,17 +465,17 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             .context("sandbox should still be in list")?;
         assert_eq!(sb["state"], "stopped");
 
-        // Exec on stopped sandbox → should fail (sidecar unreachable)
+        // Exec on stopped sandbox → should fail before reaching the sidecar
         assert_api_status(
             &api_url,
             "POST",
             &format!("/api/sandboxes/{sandbox_id}/exec"),
             &auth,
             json!({"command": "echo should-fail"}),
-            502,
+            409,
         )
         .await;
-        eprintln!("  Confirmed stopped, exec returns 502");
+        eprintln!("  Confirmed stopped, exec returns 409");
 
         // ─── Step 23: Stop idempotency ───────────────────────────────────
         e2e_step!(23, "Testing stop idempotency...");

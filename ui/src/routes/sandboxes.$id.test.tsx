@@ -8,6 +8,7 @@ const {
   mockNavigate,
   mockOperatorApiCall,
   mockGetOperatorToken,
+  mockRefreshSandboxState,
   mockUpdateSandboxStatus,
   mockToastSuccess,
   mockToastError,
@@ -18,6 +19,7 @@ const {
   mockNavigate: vi.fn(),
   mockOperatorApiCall: vi.fn(),
   mockGetOperatorToken: vi.fn(),
+  mockRefreshSandboxState: vi.fn(),
   mockUpdateSandboxStatus: vi.fn(),
   mockToastSuccess: vi.fn(),
   mockToastError: vi.fn(),
@@ -102,6 +104,15 @@ vi.mock('~/lib/hooks/useOperatorAuth', () => ({
 
 vi.mock('~/lib/hooks/useOperatorApiCall', () => ({
   useOperatorApiCall: () => mockOperatorApiCall,
+}));
+
+vi.mock('~/lib/hooks/useSandboxHydration', () => ({
+  useSandboxHydration: () => ({
+    refresh: mockRefreshSandboxState,
+    isHydrating: false,
+    authRequired: false,
+    lastError: null,
+  }),
 }));
 
 vi.mock('wagmi', () => ({
@@ -214,6 +225,7 @@ describe('SandboxDetail snapshot flow', () => {
     mockNavigate.mockReset();
     mockOperatorApiCall.mockReset();
     mockGetOperatorToken.mockReset();
+    mockRefreshSandboxState.mockReset();
     mockUpdateSandboxStatus.mockReset();
     mockToastSuccess.mockReset();
     mockToastError.mockReset();
@@ -223,6 +235,7 @@ describe('SandboxDetail snapshot flow', () => {
     operatorAuthState.error = null;
     operatorAuthState.cachedToken = null;
     mockGetOperatorToken.mockResolvedValue('operator-token');
+    mockRefreshSandboxState.mockResolvedValue(true);
     mockOperatorApiCall.mockResolvedValue(new Response('{}', { status: 200 }));
   });
 
@@ -264,6 +277,19 @@ describe('SandboxDetail snapshot flow', () => {
         include_state: true,
       });
     });
+  });
+
+  it('rehydrates operator state after resume instead of forcing local running status', async () => {
+    sandboxesRef.current = [makeSandbox({ status: 'stopped' })];
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+
+    await waitFor(() => {
+      expect(mockOperatorApiCall).toHaveBeenCalledWith('resume');
+      expect(mockRefreshSandboxState).toHaveBeenCalledWith({ interactive: true });
+    });
+    expect(mockUpdateSandboxStatus).not.toHaveBeenCalledWith('sandbox-1', 'running');
   });
 
   it('respects checkbox state changes in the snapshot payload', async () => {

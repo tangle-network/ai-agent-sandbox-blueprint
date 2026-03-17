@@ -30,6 +30,7 @@ import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
 import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
 import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
+import { useSandboxHydration } from '~/lib/hooks/useSandboxHydration';
 import { createProxiedClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '@tangle-network/blueprint-ui';
 import { truncateAddress } from '@tangle-network/agent-ui/primitives';
@@ -129,6 +130,7 @@ export default function SandboxDetail() {
   );
   const operatorApiCall = useOperatorApiCall(operatorUrl, getOperatorToken, buildPath);
   const ports = useExposedPorts(canonicalSandboxId ? sb?.status : undefined, operatorApiCall);
+  const { refresh: refreshSandboxState } = useSandboxHydration();
   const operatorResourcePath = useMemo(
     () =>
       isInstance
@@ -185,12 +187,15 @@ export default function SandboxDetail() {
     if (!canonicalSandboxId) return;
     try {
       await operatorApiCall('resume');
-      updateSandboxStatus(routeKey, 'running');
+      const refreshed = await refreshSandboxState({ interactive: true });
+      if (!refreshed) {
+        toast.error('Sandbox resumed, but the latest state could not be refreshed');
+      }
     } catch (e) {
       console.error('Resume failed:', e);
       toast.error('Failed to resume sandbox');
     }
-  }, [canonicalSandboxId, operatorApiCall, routeKey]);
+  }, [canonicalSandboxId, operatorApiCall, refreshSandboxState]);
 
   const handleDelete = useCallback(() => {
     setConfirmAction({

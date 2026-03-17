@@ -16,6 +16,9 @@ use crate::error::{Result, SandboxError};
 use crate::util::{merge_metadata, parse_json_object};
 use crate::{DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SSH_PORT};
 
+const RESUME_PORT_MAPPING_RETRY_ATTEMPTS: usize = 20;
+const RESUME_PORT_MAPPING_RETRY_DELAY_MS: u64 = 500;
+
 /// ABI-independent parameters for sandbox creation.
 ///
 /// Blueprint-specific job handlers convert their ABI types into this struct
@@ -1539,6 +1542,60 @@ async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
     ready.is_ok()
 }
 
+async fn refresh_port_mapping_with_retry(
+    client: std::sync::Arc<docktopus::bollard::Docker>,
+    container_id: &str,
+    container_port: u16,
+    ssh_enabled: bool,
+    public_host: &str,
+    prev_extra_ports: &HashMap<u16, u16>,
+) -> Result<(String, u16, Option<u16>, HashMap<u16, u16>)> {
+    let mut last_err = None;
+
+    for attempt in 0..RESUME_PORT_MAPPING_RETRY_ATTEMPTS {
+        match refresh_port_mapping(
+            client.clone(),
+            container_id,
+            container_port,
+            ssh_enabled,
+            public_host,
+            prev_extra_ports,
+        )
+        .await
+        {
+            Ok(mapping) => return Ok(mapping),
+            Err(err) => {
+                last_err = Some(err);
+                if attempt + 1 < RESUME_PORT_MAPPING_RETRY_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_millis(
+                        RESUME_PORT_MAPPING_RETRY_DELAY_MS,
+                    ))
+                    .await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        SandboxError::Unavailable(format!(
+            "Unable to refresh port mapping for container {container_id}"
+        ))
+    }))
+}
+
+async fn stop_started_container(
+    client: std::sync::Arc<docktopus::bollard::Docker>,
+    container_id: &str,
+) -> Result<()> {
+    let mut container = docker_timeout(
+        "load_container",
+        Container::from_id(client, container_id),
+    )
+    .await?;
+    docker_timeout("stop_container", container.stop()).await?;
+    Ok(())
+}
+
 /// Resume a stopped sandbox, restoring from container, snapshot image, or S3 as available.
 pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
     if record.state == SandboxState::Running {
@@ -1556,6 +1613,13 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         })?;
         let sidecar_port =
             parse_url_port(&sidecar_url).unwrap_or(SidecarRuntimeConfig::load().container_port);
+        if !wait_for_sidecar_health(&sidecar_url, 30).await {
+            let _ = crate::firecracker::stop(&record.container_id).await;
+            return Err(SandboxError::Unavailable(format!(
+                "Resume failed: firecracker sidecar for sandbox {} did not become healthy",
+                record.id
+            )));
+        }
         let now = crate::util::now_ts();
         let _ = sandboxes()?.update(&record.id, |r| {
             r.state = SandboxState::Running;
@@ -1564,13 +1628,6 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
             r.sidecar_url = sidecar_url.clone();
             r.sidecar_port = sidecar_port;
         });
-
-        if !wait_for_sidecar_health(&sidecar_url, 30).await {
-            blueprint_sdk::info!(
-                "resume: firecracker sidecar slow to respond for sandbox {}",
-                record.id
-            );
-        }
         return Ok(());
     }
 
@@ -1599,51 +1656,49 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
             Ok(()) => {
                 // Re-read port mappings — Docker may assign new host ports after restart.
                 let config = SidecarRuntimeConfig::load();
-                let sidecar_url = match refresh_port_mapping(
-                    builder.client(),
-                    effective_container_id,
-                    config.container_port,
-                    record.ssh_port.is_some(),
-                    &config.public_host,
-                    &record.extra_ports,
-                )
-                .await
-                {
-                    Ok((url, sidecar_port, ssh_port, extra_ports)) => {
-                        let now = crate::util::now_ts();
-                        let _ = sandboxes()?.update(&record.id, |r| {
-                            r.state = SandboxState::Running;
-                            r.stopped_at = None;
-                            r.last_activity_at = now;
-                            r.sidecar_url = url.clone();
-                            r.sidecar_port = sidecar_port;
-                            r.ssh_port = ssh_port;
-                            r.extra_ports = extra_ports;
-                        });
-                        url
-                    }
-                    Err(err) => {
-                        blueprint_sdk::info!(
-                            "resume: could not refresh port mapping for sandbox {}: {err}",
-                            record.id
-                        );
-                        // Fall back to stored URL
-                        let now = crate::util::now_ts();
-                        let _ = sandboxes()?.update(&record.id, |r| {
-                            r.state = SandboxState::Running;
-                            r.stopped_at = None;
-                            r.last_activity_at = now;
-                        });
-                        record.sidecar_url.clone()
-                    }
-                };
+                let (sidecar_url, sidecar_port, ssh_port, extra_ports) =
+                    match refresh_port_mapping_with_retry(
+                        builder.client(),
+                        effective_container_id,
+                        config.container_port,
+                        record.ssh_port.is_some(),
+                        &config.public_host,
+                        &record.extra_ports,
+                    )
+                    .await
+                    {
+                        Ok(mapping) => mapping,
+                        Err(err) => {
+                            blueprint_sdk::info!(
+                                "resume: could not refresh port mapping for sandbox {}: {err}",
+                                record.id
+                            );
+                            let _ = stop_started_container(builder.client(), effective_container_id).await;
+                            return Err(SandboxError::Unavailable(format!(
+                                "Resume failed: could not refresh sidecar URL for sandbox {}",
+                                record.id
+                            )));
+                        }
+                    };
 
                 if !wait_for_sidecar_health(&sidecar_url, 30).await {
-                    blueprint_sdk::info!(
-                        "resume: hot start sidecar slow to respond for sandbox {}",
-                        record.id
-                    );
+                    let _ = stop_started_container(builder.client(), effective_container_id).await;
+                    return Err(SandboxError::Unavailable(format!(
+                        "Resume failed: sidecar for sandbox {} did not become healthy at {}",
+                        record.id, sidecar_url
+                    )));
                 }
+
+                let now = crate::util::now_ts();
+                let _ = sandboxes()?.update(&record.id, |r| {
+                    r.state = SandboxState::Running;
+                    r.stopped_at = None;
+                    r.last_activity_at = now;
+                    r.sidecar_url = sidecar_url;
+                    r.sidecar_port = sidecar_port;
+                    r.ssh_port = ssh_port;
+                    r.extra_ports = extra_ports;
+                });
                 return Ok(());
             }
             Err(err) => {
@@ -1657,20 +1712,13 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
 
     // Tier 2 (Warm): container gone, snapshot image exists -> create from image
     if record.snapshot_image_id.is_some() {
-        let updated = create_from_snapshot_image(record).await?;
-        if !wait_for_sidecar_health(&updated.sidecar_url, 30).await {
-            blueprint_sdk::info!(
-                "resume: warm start sidecar slow to respond for sandbox {}",
-                record.id
-            );
-        }
+        create_from_snapshot_image(record).await?;
         return Ok(());
     }
 
     // Tier 3 (Cold): no image, S3 snapshot exists -> create from base + restore
     if record.snapshot_s3_url.is_some() {
-        let updated = create_and_restore_from_s3(record).await?;
-        let _ = updated;
+        create_and_restore_from_s3(record).await?;
         return Ok(());
     }
 
@@ -1897,6 +1945,13 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         };
         let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
+        if !wait_for_sidecar_health(&sidecar_url, 30).await {
+            return Err(SandboxError::Unavailable(format!(
+                "Resume failed: warm sidecar for sandbox {} did not become healthy at {}",
+                record.id, sidecar_url
+            )));
+        }
+
         let now = crate::util::now_ts();
         let mut updated = record.clone();
         updated.container_id = container_id.clone();
@@ -1986,9 +2041,10 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         let token = &record.token;
 
         if !wait_for_sidecar_health(&sidecar_url, 30).await {
-            blueprint_sdk::info!(
-                "S3 restore: sidecar slow to start, proceeding with restore anyway"
-            );
+            return Err(SandboxError::Unavailable(format!(
+                "Resume failed: cold sidecar for sandbox {} did not become healthy at {}",
+                record.id, sidecar_url
+            )));
         }
 
         // Restore workspace from S3 snapshot
@@ -2099,9 +2155,15 @@ fn extract_host_port(
         .first()
         .and_then(|binding| binding.host_port.as_ref())
         .ok_or_else(|| SandboxError::Docker(format!("Missing host port for {key}")))?;
-    host_port
+    let parsed = host_port
         .parse::<u16>()
-        .map_err(|_| SandboxError::Docker(format!("Invalid host port for {key}")))
+        .map_err(|_| SandboxError::Docker(format!("Invalid host port for {key}")))?;
+    if parsed == 0 {
+        return Err(SandboxError::Docker(format!(
+            "Host port for {key} is not assigned yet"
+        )));
+    }
+    Ok(parsed)
 }
 
 /// Parse extra port mappings from metadata_json and explicit port_mappings field.
@@ -2828,6 +2890,13 @@ mod core_logic_tests {
     #[test]
     fn extract_host_port_invalid_number() {
         let ports = make_port_map(3000, "not-a-number");
+        let result = extract_host_port(&ports, 3000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_host_port_zero_is_not_ready() {
+        let ports = make_port_map(3000, "0");
         let result = extract_host_port(&ports, 3000);
         assert!(result.is_err());
     }
