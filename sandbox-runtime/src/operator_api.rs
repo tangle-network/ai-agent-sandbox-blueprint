@@ -2052,8 +2052,10 @@ pub fn build_cors_layer() -> CorsLayer {
              Set explicitly for production deployments."
         );
         let localhost_origins: Vec<_> = [
+            "http://localhost:1338",
             "http://localhost:3000",
             "http://localhost:5173",
+            "http://127.0.0.1:1338",
             "http://127.0.0.1:3000",
             "http://127.0.0.1:5173",
         ]
@@ -2753,7 +2755,7 @@ mod tests {
                 Request::builder()
                     .method("OPTIONS")
                     .uri("/api/sandboxes")
-                    .header("origin", "http://localhost:5173")
+                    .header("origin", "http://127.0.0.1:1338")
                     .header("access-control-request-method", "GET")
                     .body(Body::empty())
                     .unwrap(),

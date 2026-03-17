@@ -1,5 +1,5 @@
 import { useParams, Link, useNavigate } from 'react-router';
-import { lazy, Suspense, useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
@@ -26,20 +26,17 @@ import { useSubmitJob } from '@tangle-network/blueprint-ui';
 import { encodeJobArgs } from '@tangle-network/blueprint-ui';
 import { getJobById } from '@tangle-network/blueprint-ui';
 import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
-import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
 import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
 import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
-import { createDirectClient, createProxiedClient, type SandboxClient } from '~/lib/api/sandboxClient';
+import { createProxiedClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '@tangle-network/blueprint-ui';
 import { truncateAddress } from '@tangle-network/agent-ui/primitives';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
-
-const TerminalView = lazy(() =>
-  import('@tangle-network/agent-ui/terminal').then((m) => ({ default: m.TerminalView }))
-);
+import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
+import { useAccount } from 'wagmi';
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation';
 
@@ -61,7 +58,8 @@ export default function SandboxDetail() {
 
   const { data: isActive } = useSandboxActive(canonicalSandboxId);
   const { data: operator } = useSandboxOperator(canonicalSandboxId);
-  const { submitJob, status: txStatus, txHash } = useSubmitJob();
+  const { submitJob } = useSubmitJob();
+  const { address } = useAccount();
 
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -114,17 +112,14 @@ export default function SandboxDetail() {
   const isInstance = sb ? (sb.blueprintId === instanceBpId || sb.blueprintId === teeBpId) : false;
   const operatorUrl = isInstance ? (INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL) : OPERATOR_API_URL;
 
-  // Sidecar auth for PTY terminal and chat (direct connection)
-  const sidecarUrl = sb?.sidecarUrl ?? '';
+  // Operator API auth for lifecycle operations and browser access to live features.
   const {
-    token: sidecarToken,
-    isAuthenticated: isSidecarAuthed,
-    authenticate: sidecarAuth,
-    isAuthenticating,
-  } = useWagmiSidecarAuth(canonicalSandboxId ?? '', sidecarUrl);
-
-  // Operator API auth for lifecycle operations (stop/resume/snapshot/ssh/secrets)
-  const { getToken: getOperatorToken } = useOperatorAuth(operatorUrl);
+    getToken: getOperatorToken,
+    getCachedToken: getCachedOperatorToken,
+    isAuthenticated: isOperatorAuthed,
+    isAuthenticating: isOperatorAuthenticating,
+    error: operatorAuthError,
+  } = useOperatorAuth(operatorUrl);
   const buildPath = useCallback(
     (action: string) =>
       isInstance
@@ -134,15 +129,25 @@ export default function SandboxDetail() {
   );
   const operatorApiCall = useOperatorApiCall(operatorUrl, getOperatorToken, buildPath);
   const ports = useExposedPorts(canonicalSandboxId ? sb?.status : undefined, operatorApiCall);
+  const operatorResourcePath = useMemo(
+    () =>
+      isInstance
+        ? '/api/sandbox'
+        : `/api/sandboxes/${encodeURIComponent(canonicalSandboxId ?? '__draft__')}`,
+    [canonicalSandboxId, isInstance],
+  );
+  const operatorToken = getCachedOperatorToken();
+  const hasWallet = !!address;
 
-  // Chat client: direct sidecar mode when authed, otherwise proxied operator mode.
+  // Chat client: always proxied through the operator API.
   const client: SandboxClient | null = useMemo(() => {
-    if (sb?.sidecarUrl && sidecarToken) {
-      return createDirectClient(sb.sidecarUrl, sidecarToken);
-    }
     if (!canonicalSandboxId) return null;
     return createProxiedClient(canonicalSandboxId, getOperatorToken, operatorUrl);
-  }, [sb?.sidecarUrl, sidecarToken, canonicalSandboxId, getOperatorToken, operatorUrl]);
+  }, [canonicalSandboxId, getOperatorToken, operatorUrl]);
+
+  const handleOperatorAuthenticate = useCallback(() => {
+    void getOperatorToken();
+  }, [getOperatorToken]);
 
   useEffect(() => {
     if (!sb?.sandboxId) return;
@@ -457,16 +462,18 @@ export default function SandboxDetail() {
                 alignRight
               />
               {sb.txHash && <LabeledValueRow label="TX Hash" value={truncateAddress(sb.txHash)} mono copyable copyValue={sb.txHash} alignRight />}
-              {sb.sidecarUrl ? (
-                <LabeledValueRow label="Sidecar" value={sb.sidecarUrl} mono copyable alignRight />
-              ) : sb.status === 'creating' ? (
+              <LabeledValueRow label="Access" value="Operator API" alignRight />
+              <LabeledValueRow label="Authenticated" value={isOperatorAuthed ? 'Yes' : 'No'} alignRight />
+              {!isOperatorAuthed && sb.status === 'creating' ? (
                 <div className="flex justify-between items-center text-sm">
-                  <span className="text-cloud-elements-textSecondary">Sidecar</span>
+                  <span className="text-cloud-elements-textSecondary">Access</span>
                   <span className="flex items-center gap-2 text-xs font-data text-violet-400">
                     <div className="i-ph:circle-fill text-[8px] animate-pulse" />
                     Provisioning...
                   </span>
                 </div>
+              ) : operatorAuthError ? (
+                <p className="text-xs text-crimson-500">{operatorAuthError}</p>
               ) : null}
             </CardContent>
           </Card>
@@ -482,42 +489,44 @@ export default function SandboxDetail() {
         </div>
       )}
 
-      {/* Terminal Tab — real PTY via sidecar */}
+      {/* Terminal Tab — operator-backed terminal */}
       {tab === 'terminal' && (
         <Card className="overflow-hidden">
-          {!isSidecarAuthed ? (
+          {!isOperatorAuthed || !operatorToken ? (
             <CardContent className="py-16 text-center">
               <div className="i-ph:terminal-window text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
               <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                Authenticate to access the sandbox terminal
+                Authenticate with the operator to access the sandbox terminal
               </p>
               <p className="text-xs text-cloud-elements-textTertiary mb-4">
-                You'll be asked to sign a message with your wallet to verify ownership
+                The browser talks only to the operator API, which verifies sandbox ownership before relaying commands.
               </p>
+              {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => sidecarAuth()}
-                disabled={isAuthenticating || !sidecarUrl}
+                onClick={handleOperatorAuthenticate}
+                disabled={isOperatorAuthenticating || !hasWallet || !hasProvisionedSandbox}
               >
-                {isAuthenticating ? 'Signing...' : !sidecarUrl ? 'Waiting for sidecar...' : 'Connect Terminal'}
+                {isOperatorAuthenticating
+                  ? 'Signing...'
+                  : !hasWallet
+                    ? 'Connect Wallet First'
+                    : !hasProvisionedSandbox
+                      ? 'Waiting for Sandbox...'
+                      : 'Connect Terminal'}
               </Button>
             </CardContent>
           ) : (
             <CardContent className="p-0">
               <div className="h-[min(500px,60vh)]">
-                <Suspense fallback={
-                  <div className="flex items-center justify-center h-full bg-neutral-950">
-                    <span className="text-sm text-neutral-500">Loading terminal...</span>
-                  </div>
-                }>
-                  <TerminalView
-                    apiUrl={sidecarUrl}
-                    token={sidecarToken!}
-                    title="Sandbox Terminal"
-                    subtitle="Connected to sidecar PTY session"
-                  />
-                </Suspense>
+                <OperatorTerminalView
+                  apiUrl={operatorUrl}
+                  resourcePath={operatorResourcePath}
+                  token={operatorToken}
+                  title="Sandbox Terminal"
+                  subtitle="Connected through the operator API"
+                />
               </div>
             </CardContent>
           )}
@@ -527,16 +536,43 @@ export default function SandboxDetail() {
       {/* Chat Tab — multi-session agent chat */}
       {tab === 'chat' && (
         <Card className="overflow-hidden">
-          <CardContent className="p-0">
-            <div className="h-[min(600px,65vh)]">
-              <SessionSidebar
-                sandboxId={canonicalSandboxId ?? sb.localId}
-                client={client}
-                systemPrompt={systemPrompt}
-                onSystemPromptChange={setSystemPrompt}
-              />
-            </div>
-          </CardContent>
+          {!isOperatorAuthed ? (
+            <CardContent className="py-16 text-center">
+              <div className="i-ph:chat-circle text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
+              <p className="text-sm text-cloud-elements-textSecondary mb-2">
+                Authenticate with the operator to chat with the sandbox agent
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mb-4">
+                Chat requests are proxied through the operator API and no longer connect directly to sandbox containers.
+              </p>
+              {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleOperatorAuthenticate}
+                disabled={isOperatorAuthenticating || !hasWallet || !hasProvisionedSandbox}
+              >
+                {isOperatorAuthenticating
+                  ? 'Signing...'
+                  : !hasWallet
+                    ? 'Connect Wallet First'
+                    : !hasProvisionedSandbox
+                      ? 'Waiting for Sandbox...'
+                      : 'Authenticate to Chat'}
+              </Button>
+            </CardContent>
+          ) : (
+            <CardContent className="p-0">
+              <div className="h-[min(600px,65vh)]">
+                <SessionSidebar
+                  sandboxId={canonicalSandboxId ?? sb.localId}
+                  client={client}
+                  systemPrompt={systemPrompt}
+                  onSystemPromptChange={setSystemPrompt}
+                />
+              </div>
+            </CardContent>
+          )}
         </Card>
       )}
 

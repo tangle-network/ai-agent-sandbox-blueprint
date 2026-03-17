@@ -4,6 +4,9 @@
  * Supports two modes:
  * - `direct`: Talk directly to the sidecar URL with sidecar auth token
  * - `proxied`: Talk to the operator API with session auth (PASETO) token
+ *
+ * Browser-facing code should prefer proxied mode. Direct sidecar access is
+ * retained for compatibility with non-browser callers and older integrations.
  */
 
 export type ClientMode = 'direct' | 'proxied';
@@ -224,7 +227,12 @@ export class SandboxClient {
   }
 }
 
-/** Create a direct-mode client from sidecar URL + token. */
+/**
+ * Create a direct-mode client from sidecar URL + token.
+ *
+ * @deprecated Browser features should use operator-proxied access instead of
+ * direct sidecar access. This helper is retained for compatibility only.
+ */
 export function createDirectClient(sidecarUrl: string, sidecarToken: string): SandboxClient {
   return new SandboxClient({
     mode: 'direct',

@@ -1,5 +1,5 @@
 import { useParams, Link } from 'react-router';
-import { lazy, Suspense, useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
 import { Card, CardContent, CardHeader, CardTitle } from '@tangle-network/blueprint-ui/components';
@@ -12,19 +12,16 @@ import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
 import { ResourceTabs } from '~/components/shared/ResourceTabs';
 import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
 import { getBlueprint } from '@tangle-network/blueprint-ui';
-import { useWagmiSidecarAuth } from '~/lib/hooks/useWagmiSidecarAuth';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
 import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
 import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
-import { createDirectClient, createProxiedInstanceClient, type SandboxClient } from '~/lib/api/sandboxClient';
+import { createProxiedInstanceClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { cn } from '@tangle-network/blueprint-ui';
-
-const TerminalView = lazy(() =>
-  import('@tangle-network/agent-ui/terminal').then((m) => ({ default: m.TerminalView })),
-);
+import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
+import { useAccount } from 'wagmi';
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'attestation';
 
@@ -33,6 +30,7 @@ export default function InstanceDetail() {
   const decodedId = id ? decodeURIComponent(id) : '';
   const instances = useStore(instanceListStore);
   const inst = instances.find((s) => s.id === decodedId);
+  const { address } = useAccount();
 
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -57,22 +55,25 @@ export default function InstanceDetail() {
     }
   }, [instanceProvision, decodedId]);
 
-  // Sidecar auth
-  const sidecarUrl = inst?.sidecarUrl ?? '';
-  const { token: sidecarToken, isAuthenticated: isSidecarAuthed, authenticate: sidecarAuth, isAuthenticating } =
-    useWagmiSidecarAuth(decodedId, sidecarUrl);
-
-  // Operator API auth for attestation
+  // Operator API auth for browser access to interactive features and attestation.
   const operatorUrl = INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL;
-  const { getToken: getOperatorToken } = useOperatorAuth(operatorUrl);
+  const {
+    getToken: getOperatorToken,
+    getCachedToken: getCachedOperatorToken,
+    isAuthenticated: isOperatorAuthed,
+    isAuthenticating: isOperatorAuthenticating,
+    error: operatorAuthError,
+  } = useOperatorAuth(operatorUrl);
   const buildPath = useCallback((action: string) => `/api/sandbox/${action}`, []);
   const operatorApiCall = useOperatorApiCall(operatorUrl, getOperatorToken, buildPath);
   const client: SandboxClient | null = useMemo(() => {
-    if (sidecarUrl && sidecarToken) {
-      return createDirectClient(sidecarUrl, sidecarToken);
-    }
     return createProxiedInstanceClient(getOperatorToken, operatorUrl);
-  }, [sidecarUrl, sidecarToken, getOperatorToken, operatorUrl]);
+  }, [getOperatorToken, operatorUrl]);
+  const operatorToken = getCachedOperatorToken();
+  const hasWallet = !!address;
+  const handleOperatorAuthenticate = useCallback(() => {
+    void getOperatorToken();
+  }, [getOperatorToken]);
 
   const ports = useExposedPorts(inst?.status, operatorApiCall);
 
@@ -166,21 +167,14 @@ export default function InstanceDetail() {
               <CardTitle>Connection</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {inst.sidecarUrl ? (
-                <LabeledValueRow label="Sidecar URL" value={inst.sidecarUrl} mono copyable />
-              ) : (
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-cloud-elements-textSecondary">Sidecar URL</span>
-                  <span className="flex items-center gap-2 text-xs font-data text-violet-400">
-                    <div className="i-ph:circle-fill text-[8px] animate-pulse" />
-                    Provisioning...
-                  </span>
-                </div>
+              <LabeledValueRow label="Access" value="Operator API" />
+              <LabeledValueRow label="Authenticated" value={isOperatorAuthed ? 'Yes' : 'No'} />
+              {operatorAuthError && (
+                <p className="text-xs text-crimson-500">{operatorAuthError}</p>
               )}
-              <LabeledValueRow label="Authenticated" value={isSidecarAuthed ? 'Yes' : 'No'} />
-              {!isSidecarAuthed && inst.sidecarUrl && (
-                <Button size="sm" onClick={sidecarAuth} disabled={isAuthenticating}>
-                  {isAuthenticating ? 'Authenticating...' : 'Authenticate'}
+              {!isOperatorAuthed && (
+                <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
+                  {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
                 </Button>
               )}
             </CardContent>
@@ -201,24 +195,27 @@ export default function InstanceDetail() {
       {tab === 'terminal' && (
         <Card className="overflow-hidden">
           <CardContent className="p-0">
-            {isSidecarAuthed && sidecarUrl ? (
-              <Suspense fallback={<div className="p-6 text-sm text-cloud-elements-textTertiary">Loading terminal...</div>}>
-                <div className="h-[min(500px,60vh)]">
-                  <TerminalView
-                    apiUrl={sidecarUrl}
-                    token={sidecarToken!}
-                    title="Instance Terminal"
-                    subtitle="Connected to sidecar PTY session"
-                  />
-                </div>
-              </Suspense>
+            {isOperatorAuthed && operatorToken ? (
+              <div className="h-[min(500px,60vh)]">
+                <OperatorTerminalView
+                  apiUrl={operatorUrl}
+                  resourcePath="/api/sandbox"
+                  token={operatorToken}
+                  title="Instance Terminal"
+                  subtitle="Connected through the operator API"
+                />
+              </div>
             ) : (
               <div className="p-6 text-center">
                 <p className="text-sm text-cloud-elements-textSecondary mb-3">
-                  Authenticate to access the terminal
+                  Authenticate with the operator to access the terminal
                 </p>
-                <Button size="sm" onClick={sidecarAuth} disabled={isAuthenticating || !sidecarUrl}>
-                  {isAuthenticating ? 'Authenticating...' : 'Authenticate'}
+                <p className="text-xs text-cloud-elements-textTertiary mb-4">
+                  Commands are relayed through the operator API and no longer connect directly to the sandbox container.
+                </p>
+                {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
+                <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
+                  {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
                 </Button>
               </div>
             )}
@@ -230,14 +227,29 @@ export default function InstanceDetail() {
       {tab === 'chat' && (
         <Card className="overflow-hidden">
           <CardContent className="p-0">
-            <div className="h-[min(600px,65vh)]">
-              <SessionSidebar
-                sandboxId={decodedId}
-                client={client}
-                systemPrompt={systemPrompt}
-                onSystemPromptChange={setSystemPrompt}
-              />
-            </div>
+            {isOperatorAuthed ? (
+              <div className="h-[min(600px,65vh)]">
+                <SessionSidebar
+                  sandboxId={decodedId}
+                  client={client}
+                  systemPrompt={systemPrompt}
+                  onSystemPromptChange={setSystemPrompt}
+                />
+              </div>
+            ) : (
+              <div className="p-6 text-center">
+                <p className="text-sm text-cloud-elements-textSecondary mb-3">
+                  Authenticate with the operator to chat with the instance agent
+                </p>
+                <p className="text-xs text-cloud-elements-textTertiary mb-4">
+                  Chat requests are proxied through the operator API and do not expose the sandbox container to the browser.
+                </p>
+                {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
+                <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
+                  {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

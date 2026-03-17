@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
 // @tangle-network/agent-ui/terminal — xterm.js terminal component (lazy-loadable)
+// Deprecated for browser-side direct sandbox access. Prefer operator-proxied
+// terminal integrations for new work.
 //
 // Separated from the main entry to avoid bundling xterm.js (~334KB) for
 // consumers who only need chat components.

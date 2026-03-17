@@ -36,6 +36,9 @@ export interface UsePtySessionReturn {
  * - GET  /terminals/{id}/stream  → SSE output (raw PTY with ANSI codes)
  * - POST /terminals/{id}/execute → send command   { command: "..." }
  * - DELETE /terminals/{id}       → close session
+ *
+ * @deprecated Browser applications should prefer operator-proxied terminal
+ * access instead of direct PTY sessions against sidecar endpoints.
  */
 export function usePtySession({ apiUrl, token, onData }: UsePtySessionOptions): UsePtySessionReturn {
   const [isConnected, setIsConnected] = useState(false);

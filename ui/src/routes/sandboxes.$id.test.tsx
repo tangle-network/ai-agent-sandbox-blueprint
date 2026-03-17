@@ -7,18 +7,27 @@ const {
   sandboxesRef,
   mockNavigate,
   mockOperatorApiCall,
+  mockGetOperatorToken,
   mockUpdateSandboxStatus,
   mockToastSuccess,
   mockToastError,
   mockSubmitJob,
+  operatorAuthState,
 } = vi.hoisted(() => ({
   sandboxesRef: { current: [] as Array<Record<string, unknown>> },
   mockNavigate: vi.fn(),
   mockOperatorApiCall: vi.fn(),
+  mockGetOperatorToken: vi.fn(),
   mockUpdateSandboxStatus: vi.fn(),
   mockToastSuccess: vi.fn(),
   mockToastError: vi.fn(),
   mockSubmitJob: vi.fn(),
+  operatorAuthState: {
+    isAuthenticated: false,
+    isAuthenticating: false,
+    error: null as string | null,
+    cachedToken: null as string | null,
+  },
 }));
 
 vi.mock('react-router', () => ({
@@ -82,20 +91,21 @@ vi.mock('~/lib/hooks/useSandboxReads', () => ({
 }));
 
 vi.mock('~/lib/hooks/useOperatorAuth', () => ({
-  useOperatorAuth: () => ({ getToken: vi.fn().mockResolvedValue('operator-token') }),
+  useOperatorAuth: () => ({
+    getToken: mockGetOperatorToken,
+    getCachedToken: () => operatorAuthState.cachedToken,
+    isAuthenticated: operatorAuthState.isAuthenticated,
+    isAuthenticating: operatorAuthState.isAuthenticating,
+    error: operatorAuthState.error,
+  }),
 }));
 
 vi.mock('~/lib/hooks/useOperatorApiCall', () => ({
   useOperatorApiCall: () => mockOperatorApiCall,
 }));
 
-vi.mock('~/lib/hooks/useWagmiSidecarAuth', () => ({
-  useWagmiSidecarAuth: () => ({
-    token: null,
-    isAuthenticated: false,
-    authenticate: vi.fn(),
-    isAuthenticating: false,
-  }),
+vi.mock('wagmi', () => ({
+  useAccount: () => ({ address: '0x123400000000000000000000000000000000abcd' }),
 }));
 
 vi.mock('~/lib/hooks/useExposedPorts', () => ({
@@ -136,7 +146,29 @@ vi.mock('~/components/shared/TeeAttestationCard', () => ({
 }));
 
 vi.mock('~/components/shared/ResourceTabs', () => ({
-  ResourceTabs: () => <div>Tabs</div>,
+  ResourceTabs: ({
+    tabs,
+    value,
+    onValueChange,
+  }: {
+    tabs: Array<{ key: string; label: string; disabled?: boolean; hidden?: boolean }>;
+    value: string;
+    onValueChange: (value: string) => void;
+  }) => (
+    <div>
+      {tabs.filter((tab) => !tab.hidden).map((tab) => (
+        <button
+          key={tab.key}
+          type="button"
+          disabled={tab.disabled}
+          aria-pressed={tab.key === value}
+          onClick={() => onValueChange(tab.key)}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 vi.mock('~/components/shared/ProvisionProgress', () => ({
@@ -145,6 +177,10 @@ vi.mock('~/components/shared/ProvisionProgress', () => ({
 
 vi.mock('~/components/shared/JobPriceBadge', () => ({
   JobPriceBadge: () => <span>Price</span>,
+}));
+
+vi.mock('~/components/shared/OperatorTerminalView', () => ({
+  OperatorTerminalView: () => <div>Operator Terminal</div>,
 }));
 
 function makeSandbox(overrides: Partial<Record<string, unknown>> = {}) {
@@ -177,10 +213,16 @@ describe('SandboxDetail snapshot flow', () => {
     sandboxesRef.current = [makeSandbox()];
     mockNavigate.mockReset();
     mockOperatorApiCall.mockReset();
+    mockGetOperatorToken.mockReset();
     mockUpdateSandboxStatus.mockReset();
     mockToastSuccess.mockReset();
     mockToastError.mockReset();
     mockSubmitJob.mockReset();
+    operatorAuthState.isAuthenticated = false;
+    operatorAuthState.isAuthenticating = false;
+    operatorAuthState.error = null;
+    operatorAuthState.cachedToken = null;
+    mockGetOperatorToken.mockResolvedValue('operator-token');
     mockOperatorApiCall.mockResolvedValue(new Response('{}', { status: 200 }));
   });
 
@@ -241,6 +283,33 @@ describe('SandboxDetail snapshot flow', () => {
         include_state: true,
       });
     });
+  });
+
+  it('hides raw sidecar access details from the overview', () => {
+    renderSubject();
+
+    expect(screen.queryByText('Sidecar: http://127.0.0.1:8080')).not.toBeInTheDocument();
+    expect(screen.getByText('Access: Operator API')).toBeInTheDocument();
+  });
+
+  it('prompts for operator auth on the terminal tab', async () => {
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+
+    expect(await screen.findByText(/Authenticate with the operator to access the sandbox terminal/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Terminal' })).toBeInTheDocument();
+  });
+
+  it('renders operator-backed terminal after authentication', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+
+    expect(await screen.findByText('Operator Terminal')).toBeInTheDocument();
   });
 
   it('surfaces backend failure and keeps the modal open', async () => {

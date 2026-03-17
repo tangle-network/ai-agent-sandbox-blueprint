@@ -25,6 +25,9 @@ Entrypoints:
 
 Treat exported symbols as stable contract; prefer additive changes over breaking renames/removals.
 
+Direct sidecar browser helpers are deprecated for new work. Prefer
+operator-proxied terminal/chat access when building browser-facing sandbox UIs.
+
 ## Installation
 
 ```bash

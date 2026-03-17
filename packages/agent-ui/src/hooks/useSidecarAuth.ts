@@ -77,6 +77,10 @@ function clearSession(resourceId: string, apiUrl: string) {
  * 3. POST /api/auth/session     → { token, address, expires_at }
  *
  * Tokens are cached in localStorage and auto-refreshed 5 minutes before expiry.
+ *
+ * @deprecated Browser applications should prefer operator-proxied access
+ * instead of direct sidecar authentication. This hook remains for backwards
+ * compatibility with existing direct integrations.
  */
 export function useSidecarAuth({ resourceId, apiUrl, signMessage }: UseSidecarAuthOptions): SidecarAuth {
   const cached = loadSession(resourceId, apiUrl);
