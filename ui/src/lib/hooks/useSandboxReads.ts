@@ -1,17 +1,73 @@
-import { useReadContract, useReadContracts } from 'wagmi';
+import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import { useStore } from '@nanostores/react';
+import {
+  getAddresses,
+  publicClient,
+  selectedChainIdStore,
+} from '@tangle-network/blueprint-ui';
 import { agentSandboxBlueprintAbi } from '~/lib/contracts/abi';
-import { getAddresses } from '@tangle-network/blueprint-ui';
+
+function useSandboxReadDeps() {
+  const chainId = useStore(selectedChainIdStore);
+  const addrs = getAddresses();
+
+  return {
+    address: addrs.sandboxBlueprint,
+    chainId,
+  };
+}
+
+interface WorkflowConfig {
+  name: string;
+  workflow_json: string;
+  trigger_type: string;
+  trigger_config: string;
+  sandbox_config_json: string;
+  active: boolean;
+  created_at: bigint;
+  updated_at: bigint;
+  last_triggered_at: bigint;
+}
+
+type WorkflowBatchResult = {
+  status: 'success';
+  result: WorkflowConfig;
+};
+
+function useSandboxContractRead<TData>({
+  functionName,
+  args,
+  enabled = true,
+  refetchInterval,
+}: {
+  functionName: string;
+  args?: readonly unknown[];
+  enabled?: boolean;
+  refetchInterval?: number;
+}): UseQueryResult<TData, Error> {
+  const { address, chainId } = useSandboxReadDeps();
+
+  return useQuery<TData, Error>({
+    queryKey: ['sandbox-contract-read', chainId, address, functionName, args],
+    queryFn: async () =>
+      publicClient.readContract({
+        address,
+        abi: agentSandboxBlueprintAbi,
+        functionName: functionName as any,
+        args: args as any,
+      }) as Promise<TData>,
+    enabled: enabled && !!address,
+    refetchInterval,
+  });
+}
 
 /**
  * Read service-level stats from the blueprint contract.
  */
 export function useServiceStats() {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<readonly [number, number]>({
     functionName: 'getServiceStats',
-    query: { refetchInterval: 15_000 },
+    refetchInterval: 15_000,
   });
 }
 
@@ -19,12 +75,9 @@ export function useServiceStats() {
  * Read available capacity across all operators.
  */
 export function useAvailableCapacity() {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<number>({
     functionName: 'getAvailableCapacity',
-    query: { refetchInterval: 15_000 },
+    refetchInterval: 15_000,
   });
 }
 
@@ -32,12 +85,9 @@ export function useAvailableCapacity() {
  * Read total active sandboxes count.
  */
 export function useTotalActiveSandboxes() {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<number>({
     functionName: 'totalActiveSandboxes',
-    query: { refetchInterval: 10_000 },
+    refetchInterval: 10_000,
   });
 }
 
@@ -45,16 +95,11 @@ export function useTotalActiveSandboxes() {
  * Check if a specific sandbox is active.
  */
 export function useSandboxActive(sandboxId: string | undefined) {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<boolean>({
     functionName: 'isSandboxActive',
     args: sandboxId ? [sandboxId] : undefined,
-    query: {
-      enabled: !!sandboxId,
-      refetchInterval: 10_000,
-    },
+    enabled: !!sandboxId,
+    refetchInterval: 10_000,
   });
 }
 
@@ -62,13 +107,10 @@ export function useSandboxActive(sandboxId: string | undefined) {
  * Get the operator assigned to a sandbox.
  */
 export function useSandboxOperator(sandboxId: string | undefined) {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<`0x${string}`>({
     functionName: 'getSandboxOperator',
     args: sandboxId ? [sandboxId] : undefined,
-    query: { enabled: !!sandboxId },
+    enabled: !!sandboxId,
   });
 }
 
@@ -76,13 +118,10 @@ export function useSandboxOperator(sandboxId: string | undefined) {
  * Read an operator's load (active / max capacity).
  */
 export function useOperatorLoad(operator: `0x${string}` | undefined) {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<readonly [number, number]>({
     functionName: 'getOperatorLoad',
     args: operator ? [operator] : undefined,
-    query: { enabled: !!operator },
+    enabled: !!operator,
   });
 }
 
@@ -90,10 +129,7 @@ export function useOperatorLoad(operator: `0x${string}` | undefined) {
  * Get the default max capacity.
  */
 export function useDefaultMaxCapacity() {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<number>({
     functionName: 'defaultMaxCapacity',
   });
 }
@@ -102,13 +138,10 @@ export function useDefaultMaxCapacity() {
  * Get all workflow IDs.
  */
 export function useWorkflowIds(activeOnly: boolean = false) {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<readonly bigint[]>({
     functionName: 'getWorkflowIds',
     args: [activeOnly],
-    query: { refetchInterval: 15_000 },
+    refetchInterval: 15_000,
   });
 }
 
@@ -116,13 +149,10 @@ export function useWorkflowIds(activeOnly: boolean = false) {
  * Get a specific workflow config.
  */
 export function useWorkflow(workflowId: bigint | undefined) {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<WorkflowConfig>({
     functionName: 'getWorkflow',
     args: workflowId !== undefined ? [workflowId] : undefined,
-    query: { enabled: workflowId !== undefined },
+    enabled: workflowId !== undefined,
   });
 }
 
@@ -130,10 +160,7 @@ export function useWorkflow(workflowId: bigint | undefined) {
  * Get pricing info: multiplier for a specific job.
  */
 export function useJobPriceMultiplier(jobId: number) {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<bigint>({
     functionName: 'getJobPriceMultiplier',
     args: [jobId],
   });
@@ -143,10 +170,7 @@ export function useJobPriceMultiplier(jobId: number) {
  * Get all default job rates for a given base rate.
  */
 export function useDefaultJobRates(baseRate: bigint) {
-  const addrs = getAddresses();
-  return useReadContract({
-    address: addrs.sandboxBlueprint,
-    abi: agentSandboxBlueprintAbi,
+  return useSandboxContractRead<readonly [readonly number[], readonly bigint[]]>({
     functionName: 'getDefaultJobRates',
     args: [baseRate],
   });
@@ -156,17 +180,24 @@ export function useDefaultJobRates(baseRate: bigint) {
  * Batch-read multiple workflows by ID.
  */
 export function useWorkflowBatch(workflowIds: bigint[]) {
-  const addrs = getAddresses();
-  return useReadContracts({
-    contracts: workflowIds.map((id) => ({
-      address: addrs.sandboxBlueprint,
-      abi: agentSandboxBlueprintAbi,
-      functionName: 'getWorkflow' as const,
-      args: [id] as const,
-    })),
-    query: {
-      enabled: workflowIds.length > 0,
-      refetchInterval: 15_000,
-    },
+  const { address, chainId } = useSandboxReadDeps();
+
+  return useQuery<WorkflowBatchResult[], Error>({
+    queryKey: ['sandbox-workflow-batch', chainId, address, workflowIds],
+    queryFn: async () =>
+      Promise.all(
+        workflowIds.map(async (id) => {
+          const result = await publicClient.readContract({
+            address,
+            abi: agentSandboxBlueprintAbi,
+            functionName: 'getWorkflow' as any,
+            args: [id] as any,
+          });
+
+          return { status: 'success' as const, result: result as unknown as WorkflowConfig };
+        }),
+      ),
+    enabled: workflowIds.length > 0 && !!address,
+    refetchInterval: 15_000,
   });
 }

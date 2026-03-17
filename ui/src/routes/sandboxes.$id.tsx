@@ -452,6 +452,7 @@ export default function SandboxDetail() {
                 label="Operator"
                 value={operator && operator !== '0x0000000000000000000000000000000000000000' ? operator : 'Unassigned'}
                 mono
+                copyable={!!operator && operator !== '0x0000000000000000000000000000000000000000'}
                 alignRight
               />
               {sb.txHash && <LabeledValueRow label="TX Hash" value={sb.txHash} mono copyable alignRight />}
