@@ -28,6 +28,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SANDBOX_STATE_DIR="$ROOT_DIR/blueprint-state/sandbox-cloud"
+INSTANCE_STATE_DIR="$ROOT_DIR/blueprint-state/instance"
+SANDBOX_DATA_DIR="$SCRIPTS_DIR/data/operator1/data"
+INSTANCE_DATA_DIR="$SCRIPTS_DIR/data/operator2/data"
+SANDBOX_KEYSTORE_DIR="$SCRIPTS_DIR/data/operator1/keystore"
+INSTANCE_KEYSTORE_DIR="$SCRIPTS_DIR/data/operator2/keystore"
 
 # Ports are offset from the trading blueprint (8545/9200/9201) to allow
 # both stacks to run simultaneously.
@@ -37,6 +44,7 @@ SIDECAR_IMAGE="${SIDECAR_IMAGE:-tangle-sidecar:local}"
 OPERATOR_API_PORT="${OPERATOR_API_PORT:-9100}"
 INSTANCE_OPERATOR_API_PORT="${INSTANCE_OPERATOR_API_PORT:-9200}"
 BASE_RATE="${BASE_RATE:-1000000000000000}" # 1e15 = 0.001 TNT
+DEPLOYMENT_FINGERPRINT="${DEPLOYMENT_FINGERPRINT:-local-$ANVIL_PORT-$(date +%s)-$$}"
 
 # Default to loopback for local deterministic testing.
 # Opt-in to Tailscale auto-detection with AUTO_DETECT_PUBLIC_HOST=1.
@@ -80,11 +88,27 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+reset_local_runtime_state() {
+    echo "[preflight] Resetting local sandbox runtime state..."
+    rm -rf "$ROOT_DIR/blueprint-state"
+    rm -rf "$SANDBOX_DATA_DIR" "$INSTANCE_DATA_DIR"
+
+    if command -v docker >/dev/null 2>&1; then
+        while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            docker rm -f "$name" >/dev/null 2>&1 || true
+        done < <(docker ps -a --format '{{.Names}}' | grep '^sidecar-sandbox-' || true)
+    fi
+}
+
 echo "=== AI Agent Sandbox Blueprint — Full Local Deployment ==="
 echo "RPC: $RPC_URL"
 echo "Tangle: $TANGLE"
 echo "Public host: $PUBLIC_HOST"
+echo "Deployment fingerprint: $DEPLOYMENT_FINGERPRINT"
 echo ""
+
+reset_local_runtime_state
 
 # Helper to parse forge script output
 parse_deploy() {
@@ -338,8 +362,7 @@ echo "  Operator 2 capacity: $OP2_CAP"
 # ── [7/11] Setup keystores ──────────────────────────────────────────
 echo "[7/11] Setting up operator keystores..."
 
-SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mkdir -p "$SCRIPTS_DIR/data/operator1/keystore" "$SCRIPTS_DIR/data/operator2/keystore"
+mkdir -p "$SANDBOX_KEYSTORE_DIR" "$INSTANCE_KEYSTORE_DIR"
 
 CARGO_TANGLE="${CARGO_TANGLE_BIN:-$(command -v cargo-tangle 2>/dev/null || echo "")}"
 if [[ -z "$CARGO_TANGLE" && -x "$ROOT_DIR/../blueprint/target/release/cargo-tangle" ]]; then
@@ -349,10 +372,10 @@ fi
 if [[ -n "$CARGO_TANGLE" && -x "$CARGO_TANGLE" ]]; then
     "$CARGO_TANGLE" tangle key import --key-type ecdsa \
         --secret "${OPERATOR1_KEY#0x}" \
-        --keystore-path "$SCRIPTS_DIR/data/operator1/keystore" 2>/dev/null || true
+        --keystore-path "$SANDBOX_KEYSTORE_DIR" 2>/dev/null || true
     "$CARGO_TANGLE" tangle key import --key-type ecdsa \
         --secret "${OPERATOR2_KEY#0x}" \
-        --keystore-path "$SCRIPTS_DIR/data/operator2/keystore" 2>/dev/null || true
+        --keystore-path "$INSTANCE_KEYSTORE_DIR" 2>/dev/null || true
     echo "  Keys imported via cargo-tangle"
 else
     echo "  WARNING: cargo-tangle not found, skipping keystore import"
@@ -387,11 +410,12 @@ export SESSION_AUTH_SECRET="dev-secret-key-do-not-use-in-production"
 export ALLOW_STANDALONE=true
 export CORS_ALLOWED_ORIGINS="*"
 export RUST_LOG="${RUST_LOG:-info}"
-export DATA_DIR="$SCRIPTS_DIR/data/operator1/data"
-export KEYSTORE_URI="$SCRIPTS_DIR/data/operator1/keystore"
+export DATA_DIR="$SANDBOX_DATA_DIR"
+export KEYSTORE_URI="$SANDBOX_KEYSTORE_DIR"
+export BLUEPRINT_STATE_DIR="$SANDBOX_STATE_DIR"
 export PROTOCOL=tangle
 
-mkdir -p "$SCRIPTS_DIR/data/operator1/data"
+mkdir -p "$DATA_DIR" "$BLUEPRINT_STATE_DIR"
 
 # --test-mode skips BPM bridge requirement (no blueprint-manager in local dev)
 "$ROOT_DIR/target/release/ai-agent-sandbox-blueprint" run --test-mode &
@@ -411,15 +435,16 @@ echo "  Sandbox operator running (PID: $OPERATOR_PID)"
 # ── [10/11] Start instance operator ─────────────────────────────────
 echo "[10/11] Starting instance operator..."
 
-mkdir -p "$SCRIPTS_DIR/data/operator2/data"
+mkdir -p "$INSTANCE_DATA_DIR" "$INSTANCE_STATE_DIR"
 
 # Override env vars for instance operator without polluting the sandbox env
 OPERATOR_API_PORT="$INSTANCE_OPERATOR_API_PORT" \
 BLUEPRINT_ID="$INSTANCE_BLUEPRINT_ID" \
 SERVICE_ID="$INSTANCE_SERVICE_ID" \
 BSM_ADDRESS="$INSTANCE_BSM" \
-DATA_DIR="$SCRIPTS_DIR/data/operator2/data" \
-KEYSTORE_URI="$SCRIPTS_DIR/data/operator2/keystore" \
+DATA_DIR="$INSTANCE_DATA_DIR" \
+KEYSTORE_URI="$INSTANCE_KEYSTORE_DIR" \
+BLUEPRINT_STATE_DIR="$INSTANCE_STATE_DIR" \
 "$ROOT_DIR/target/release/ai-agent-instance-blueprint" run --test-mode &
 INSTANCE_OPERATOR_PID=$!
 
@@ -475,6 +500,7 @@ TANGLE_E2E_IMAGE=$SIDECAR_IMAGE
 # Operator
 OPERATOR_API_PORT=$OPERATOR_API_PORT
 INSTANCE_OPERATOR_API_PORT=$INSTANCE_OPERATOR_API_PORT
+DEPLOYMENT_FINGERPRINT=$DEPLOYMENT_FINGERPRINT
 SESSION_AUTH_SECRET=dev-secret-key-do-not-use-in-production
 ALLOW_STANDALONE=true
 CORS_ALLOWED_ORIGINS=*
@@ -507,6 +533,7 @@ VITE_SANDBOX_SERVICE_ID=$SANDBOX_SERVICE_ID
 VITE_INSTANCE_SERVICE_ID=$INSTANCE_SERVICE_ID
 VITE_OPERATOR_API_URL=http://127.0.0.1:$OPERATOR_API_PORT
 VITE_INSTANCE_OPERATOR_API_URL=http://127.0.0.1:$INSTANCE_OPERATOR_API_PORT
+VITE_DEPLOYMENT_FINGERPRINT=$DEPLOYMENT_FINGERPRINT
 EOF
     echo "  Wrote ui/.env.local"
 fi

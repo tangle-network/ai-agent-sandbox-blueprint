@@ -8,6 +8,9 @@ import {
   runningSandboxes,
   stoppedSandboxes,
   activeSandboxes,
+  buildSandboxDeploymentFingerprint,
+  getSandboxStoreKey,
+  pruneSandboxCacheKeys,
   type LocalSandbox,
 } from './sandboxes';
 
@@ -29,7 +32,39 @@ function makeSandbox(overrides: Partial<LocalSandbox> & { id?: string } = {}): L
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   sandboxListStore.set([]);
+});
+
+describe('sandbox cache versioning', () => {
+  it('prefers the explicit deployment fingerprint when provided', () => {
+    expect(buildSandboxDeploymentFingerprint({
+      VITE_DEPLOYMENT_FINGERPRINT: 'local-abc-123',
+      VITE_CHAIN_ID: '31337',
+    })).toBe('local-abc-123');
+  });
+
+  it('falls back to environment details when no explicit fingerprint is set', () => {
+    expect(buildSandboxDeploymentFingerprint({
+      VITE_CHAIN_ID: '31337',
+      VITE_TANGLE_CONTRACT: '0xabc',
+      VITE_SANDBOX_BSM: '0xdef',
+      VITE_OPERATOR_API_URL: 'http://127.0.0.1:9102',
+    })).toBe('31337::0xabc::0xdef::http://127.0.0.1:9102');
+  });
+
+  it('prunes legacy and stale cache keys while keeping the active deployment key', () => {
+    const currentKey = getSandboxStoreKey('deploy-new');
+    window.localStorage.setItem('sandbox_cloud_sandboxes', JSON.stringify([{ localId: 'legacy' }]));
+    window.localStorage.setItem(getSandboxStoreKey('deploy-old'), JSON.stringify([{ localId: 'old' }]));
+    window.localStorage.setItem(currentKey, JSON.stringify([{ localId: 'current' }]));
+
+    pruneSandboxCacheKeys(window.localStorage, currentKey);
+
+    expect(window.localStorage.getItem('sandbox_cloud_sandboxes')).toBeNull();
+    expect(window.localStorage.getItem(getSandboxStoreKey('deploy-old'))).toBeNull();
+    expect(window.localStorage.getItem(currentKey)).toBe(JSON.stringify([{ localId: 'current' }]));
+  });
 });
 
 // ── addSandbox ──

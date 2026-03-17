@@ -36,6 +36,58 @@ interface LegacySandboxRecord extends Partial<LocalSandbox> {
 const DRAFT_PREFIX = 'draft:';
 const LEGACY_PREFIX = 'legacy:';
 const CANONICAL_PREFIX = 'canonical:';
+const SANDBOX_STORE_KEY_PREFIX = 'sandbox_cloud_sandboxes';
+
+type SandboxFingerprintEnv = Record<string, string | undefined>;
+
+function normalizeFingerprintPart(value: string | undefined): string {
+  return (value || '').trim().toLowerCase();
+}
+
+export function buildSandboxDeploymentFingerprint(env: SandboxFingerprintEnv = import.meta.env): string {
+  const explicit = normalizeFingerprintPart(env.VITE_DEPLOYMENT_FINGERPRINT);
+  if (explicit) return explicit;
+
+  const fallback = [
+    env.VITE_CHAIN_ID,
+    env.VITE_TANGLE_CONTRACT,
+    env.VITE_SANDBOX_BSM,
+    env.VITE_INSTANCE_BSM,
+    env.VITE_OPERATOR_API_URL,
+    env.VITE_INSTANCE_OPERATOR_API_URL,
+  ]
+    .map(normalizeFingerprintPart)
+    .filter(Boolean)
+    .join('::');
+
+  return fallback || 'default';
+}
+
+export function getSandboxStoreKey(fingerprint = buildSandboxDeploymentFingerprint()): string {
+  return `${SANDBOX_STORE_KEY_PREFIX}::${fingerprint}`;
+}
+
+export function pruneSandboxCacheKeys(storage: Pick<Storage, 'length' | 'key' | 'removeItem'>, currentKey: string) {
+  const keys: string[] = [];
+  for (let i = 0; i < storage.length; i += 1) {
+    const key = storage.key(i);
+    if (!key) continue;
+    if (key === SANDBOX_STORE_KEY_PREFIX || key.startsWith(`${SANDBOX_STORE_KEY_PREFIX}::`)) {
+      keys.push(key);
+    }
+  }
+
+  keys
+    .filter((key) => key !== currentKey)
+    .forEach((key) => storage.removeItem(key));
+}
+
+const sandboxDeploymentFingerprint = buildSandboxDeploymentFingerprint();
+const sandboxStoreKey = getSandboxStoreKey(sandboxDeploymentFingerprint);
+
+if (typeof window !== 'undefined' && window.localStorage) {
+  pruneSandboxCacheKeys(window.localStorage, sandboxStoreKey);
+}
 
 export function isCanonicalSandboxId(id: string | undefined): id is string {
   return !!id && !id.startsWith(DRAFT_PREFIX) && !id.startsWith(LEGACY_PREFIX);
@@ -119,7 +171,7 @@ function setSandboxes(records: LocalSandbox[]) {
 }
 
 export const sandboxListStore = persistedAtom<LocalSandbox[]>({
-  key: 'sandbox_cloud_sandboxes',
+  key: sandboxStoreKey,
   initial: [],
 });
 
