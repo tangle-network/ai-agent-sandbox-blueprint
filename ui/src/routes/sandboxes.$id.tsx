@@ -33,6 +33,7 @@ import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
 import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
 import { createDirectClient, createProxiedClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '@tangle-network/blueprint-ui';
+import { truncateAddress } from '@tangle-network/agent-ui/primitives';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 
 const TerminalView = lazy(() =>
@@ -424,9 +425,10 @@ export default function SandboxDetail() {
             <CardContent className="space-y-2.5">
               <LabeledValueRow
                 label="Sandbox ID"
-                value={sb.sandboxId || 'Pending operator provision'}
+                value={sb.sandboxId && sb.sandboxId.length > 24 ? `${sb.sandboxId.slice(0, 20)}...${sb.sandboxId.slice(-4)}` : (sb.sandboxId || 'Pending operator provision')}
                 mono={!!sb.sandboxId}
                 copyable={!!sb.sandboxId}
+                copyValue={sb.sandboxId ?? undefined}
                 alignRight
               />
               {sb.sandboxId == null && (
@@ -450,12 +452,13 @@ export default function SandboxDetail() {
               <LabeledValueRow label="Active" value={isActive !== undefined ? (isActive ? 'Yes' : 'No') : 'Loading...'} alignRight />
               <LabeledValueRow
                 label="Operator"
-                value={operator && operator !== '0x0000000000000000000000000000000000000000' ? operator : 'Unassigned'}
+                value={operator && operator !== '0x0000000000000000000000000000000000000000' ? truncateAddress(operator) : 'Unassigned'}
                 mono
                 copyable={!!operator && operator !== '0x0000000000000000000000000000000000000000'}
+                copyValue={operator ?? undefined}
                 alignRight
               />
-              {sb.txHash && <LabeledValueRow label="TX Hash" value={sb.txHash} mono copyable alignRight />}
+              {sb.txHash && <LabeledValueRow label="TX Hash" value={truncateAddress(sb.txHash)} mono copyable copyValue={sb.txHash} alignRight />}
               {sb.sidecarUrl ? (
                 <LabeledValueRow label="Sidecar" value={sb.sidecarUrl} mono copyable alignRight />
               ) : sb.status === 'creating' ? (

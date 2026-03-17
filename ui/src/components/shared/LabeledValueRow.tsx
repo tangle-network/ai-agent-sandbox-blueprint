@@ -6,6 +6,8 @@ interface LabeledValueRowProps {
   value: string;
   mono?: boolean;
   copyable?: boolean;
+  /** Full value to copy when different from the displayed value (e.g. truncated addresses). */
+  copyValue?: string;
   alignRight?: boolean;
 }
 
@@ -14,6 +16,7 @@ export function LabeledValueRow({
   value,
   mono,
   copyable,
+  copyValue,
   alignRight = false,
 }: LabeledValueRowProps) {
   return (
@@ -28,7 +31,7 @@ export function LabeledValueRow({
         >
           {value}
         </span>
-        {copyable && <CopyButton value={value} />}
+        {copyable && <CopyButton value={copyValue ?? value} />}
       </div>
     </div>
   );
