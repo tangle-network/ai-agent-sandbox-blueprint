@@ -21,8 +21,11 @@ export interface LocalSandbox {
   operator?: string;
   sidecarUrl?: string;
   teeEnabled?: boolean;
+  sshPort?: number;
   /** Agent identifier — when non-empty, the sandbox has an AI agent and chat is available. */
   agentIdentifier?: string;
+  /** Whether the web terminal feature was enabled at creation time. */
+  webTerminalEnabled?: boolean;
   /** Local status (hydrated from contract + events) */
   status: 'creating' | 'running' | 'stopped' | 'warm' | 'cold' | 'gone' | 'error';
   txHash?: string;
@@ -140,6 +143,7 @@ export function normalizeSandbox(record: LegacySandboxRecord): LocalSandbox {
     operator: record.operator,
     sidecarUrl: record.sidecarUrl,
     teeEnabled: record.teeEnabled,
+    sshPort: record.sshPort,
     agentIdentifier: record.agentIdentifier,
     status: record.status ?? 'creating',
     txHash: record.txHash,

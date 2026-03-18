@@ -1057,7 +1057,7 @@ fn strip_terminal_control_sequences(output: &str) -> String {
         if ch == '\u{1b}' {
             if matches!(chars.peek(), Some('[')) {
                 chars.next();
-                while let Some(next) = chars.next() {
+                for next in chars.by_ref() {
                     if ('@'..='~').contains(&next) {
                         break;
                     }
@@ -1847,6 +1847,16 @@ async fn instance_snapshot_handler(
 
 // ── SSH ──────────────────────────────────────────────────────────────────
 
+fn require_ssh(record: &SandboxRecord) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if record.ssh_port.is_none() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "SSH is not enabled for this sandbox",
+        ));
+    }
+    Ok(())
+}
+
 fn build_ssh_provision_command(username: &str, public_key: &str) -> String {
     let user_arg = crate::util::shell_escape(username);
     let key_arg = crate::util::shell_escape(public_key);
@@ -1987,6 +1997,7 @@ async fn sandbox_ssh_user_handler(
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_ssh(&record)?;
     let username = detect_ssh_username(&record).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
@@ -2005,6 +2016,7 @@ async fn sandbox_ssh_provision_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_ssh(&record)?;
     let resp = run_ssh_provision(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
@@ -2017,12 +2029,14 @@ async fn sandbox_ssh_revoke_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_ssh(&record)?;
     let resp = run_ssh_revoke(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
 async fn instance_ssh_user_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
+    require_ssh(&record)?;
     let username = detect_ssh_username(&record).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
@@ -2040,6 +2054,7 @@ async fn instance_ssh_provision_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
+    require_ssh(&record)?;
     let resp = run_ssh_provision(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
@@ -2051,6 +2066,7 @@ async fn instance_ssh_revoke_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
+    require_ssh(&record)?;
     let resp = run_ssh_revoke(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
@@ -3229,6 +3245,22 @@ mod tests {
 
     fn insert_instance_sandbox(id: &str, owner: &str) {
         insert_instance_sandbox_with_url(id, owner, "http://localhost:9999");
+    }
+
+    /// Enable SSH on an already-inserted sandbox by setting `ssh_port`.
+    fn enable_ssh_port(id: &str, port: u16) {
+        use crate::runtime::{sandboxes, seal_record};
+        let mut record = sandboxes()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .expect("sandbox must exist to enable ssh");
+        record.ssh_port = Some(port);
+        seal_record(&mut record).unwrap();
+        sandboxes()
+            .unwrap()
+            .insert(id.to_string(), record)
+            .unwrap();
     }
 
     // Use a distinct owner for TEE tests so sandbox inserts don't pollute
@@ -4836,6 +4868,7 @@ mod tests {
             }
         });
         insert_plain_sandbox_with_url("ssh-user-1", OP_TEST_OWNER, &sidecar_url);
+        enable_ssh_port("ssh-user-1", 2222);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
 
         let response = app()
@@ -4891,6 +4924,7 @@ mod tests {
             }
         });
         insert_plain_sandbox_with_url("ssh-fail-1", OP_TEST_OWNER, &sidecar_url);
+        enable_ssh_port("ssh-fail-1", 2222);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
         let body = serde_json::json!({
             "username": "agent",
@@ -4920,6 +4954,71 @@ mod tests {
             "body: {json}"
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_ssh_endpoints_reject_non_ssh_sandbox() {
+        init();
+        // Sandbox with ssh_port: None (default from insert_plain_sandbox)
+        insert_plain_sandbox("ssh-nossh-1", OP_TEST_OWNER);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        // GET /ssh/user should be rejected
+        let resp = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/ssh-nossh-1/ssh/user")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp.into_body()).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("SSH is not enabled"),
+            "body: {body}"
+        );
+
+        // POST /ssh (provision) should be rejected
+        let provision_body = json!({
+            "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test"
+        });
+        let resp = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/ssh-nossh-1/ssh")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&provision_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // DELETE /ssh (revoke) should be rejected
+        let revoke_body = json!({
+            "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test"
+        });
+        let resp = app()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/sandboxes/ssh-nossh-1/ssh")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&revoke_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // =====================================================================

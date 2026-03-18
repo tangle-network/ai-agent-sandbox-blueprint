@@ -450,9 +450,9 @@ export default function SandboxDetail() {
 
   const tabs: { key: ActionTab; label: string; icon: string; disabled?: boolean; hidden?: boolean }[] = [
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
-    { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal', disabled: !hasProvisionedSandbox || !isRunning },
+    { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal', disabled: !hasProvisionedSandbox || !isRunning, hidden: sb.webTerminalEnabled === false },
     { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !hasProvisionedSandbox || !isRunning, hidden: !hasAgent },
-    { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !hasProvisionedSandbox || !isRunning },
+    { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !hasProvisionedSandbox || !isRunning, hidden: !sb.sshPort },
     { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', disabled: !hasProvisionedSandbox || !isRunning },
     { key: 'attestation', label: 'Attestation', icon: 'i-ph:shield-check', hidden: !hasProvisionedSandbox || !sb.teeEnabled },
   ];

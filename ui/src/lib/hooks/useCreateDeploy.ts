@@ -369,6 +369,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
           txHash: submittedJobTxHash,
           agentIdentifier: agentIdentifier || undefined,
           teeEnabled: isTeeInstance || undefined,
+          webTerminalEnabled: values.webTerminalEnabled !== false,
         });
       } else {
         addInstance({

@@ -102,6 +102,7 @@ function sandboxFromApi(api: ApiSandbox): LocalSandbox {
     sidecarUrl: api.sidecar_url,
     agentIdentifier: api.agent_identifier || undefined,
     teeEnabled: !!api.tee_deployment_id,
+    sshPort: api.ssh_port || undefined,
     status: statusFromApi(api.state),
   });
 }
@@ -187,6 +188,7 @@ export function reconcileSandboxes(
         image: api.image || next.image,
         agentIdentifier: api.agent_identifier || next.agentIdentifier,
         teeEnabled: next.teeEnabled || !!api.tee_deployment_id,
+        sshPort: api.ssh_port || next.sshPort,
         status: statusFromApi(api.state),
         errorMessage: undefined,
       }));
@@ -208,6 +210,7 @@ export function reconcileSandboxes(
           image: inferredApi.image || next.image,
           agentIdentifier: inferredApi.agent_identifier || next.agentIdentifier,
           teeEnabled: next.teeEnabled || !!inferredApi.tee_deployment_id,
+          sshPort: inferredApi.ssh_port || next.sshPort,
           status: statusFromApi(inferredApi.state),
           errorMessage: undefined,
         }));

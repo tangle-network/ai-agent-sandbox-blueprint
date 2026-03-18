@@ -391,6 +391,7 @@ describe('SandboxDetail snapshot flow', () => {
       return jsonResponse({});
     });
 
+    sandboxesRef.current = [makeSandbox({ sshPort: 2222 })];
     renderSubject();
 
     fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
@@ -416,6 +417,7 @@ describe('SandboxDetail snapshot flow', () => {
       return jsonResponse({});
     });
 
+    sandboxesRef.current = [makeSandbox({ sshPort: 2222 })];
     renderSubject();
 
     fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
@@ -442,6 +444,7 @@ describe('SandboxDetail snapshot flow', () => {
       return jsonResponse({});
     });
 
+    sandboxesRef.current = [makeSandbox({ sshPort: 2222 })];
     renderSubject();
 
     fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
@@ -453,6 +456,18 @@ describe('SandboxDetail snapshot flow', () => {
     expect(await screen.findByText("SSH provision failed for user 'agent' (exit 2): User agent does not exist")).toBeInTheDocument();
     expect(screen.queryByText('Active Keys')).not.toBeInTheDocument();
     expect(screen.queryByText('SSH key provisioned')).not.toBeInTheDocument();
+  });
+
+  it('hides SSH tab when sshPort is absent', () => {
+    sandboxesRef.current = [makeSandbox()];
+    renderSubject();
+    expect(screen.queryByRole('button', { name: 'SSH' })).not.toBeInTheDocument();
+  });
+
+  it('shows SSH tab when sshPort is present', () => {
+    sandboxesRef.current = [makeSandbox({ sshPort: 2222 })];
+    renderSubject();
+    expect(screen.getByRole('button', { name: 'SSH' })).toBeInTheDocument();
   });
 
   it('stores the backend-returned SSH username after a successful add', async () => {
@@ -472,6 +487,7 @@ describe('SandboxDetail snapshot flow', () => {
       return jsonResponse({});
     });
 
+    sandboxesRef.current = [makeSandbox({ sshPort: 2222 })];
     renderSubject();
 
     fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
