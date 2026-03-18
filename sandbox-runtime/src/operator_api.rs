@@ -56,6 +56,11 @@ const SIDECAR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const LIVE_TERMINAL_OUTPUT_BUFFER: usize = 512;
 /// Live chat event ring-buffer size.
 const LIVE_CHAT_EVENTS_BUFFER: usize = 256;
+const AGENT_WARMUP_ERROR_CODE: &str = "AGENT_WARMING_UP";
+#[cfg(not(test))]
+const AGENT_WARMUP_RETRY_DELAYS_MS: &[u64] = &[250, 500, 1_000, 2_000, 4_000, 4_000, 4_000];
+#[cfg(test)]
+const AGENT_WARMUP_RETRY_DELAYS_MS: &[u64] = &[5, 5, 5];
 
 /// Shared in-memory live chat/terminal sessions.
 static LIVE_SESSIONS: Lazy<LiveSessionStore<Value>> = Lazy::new(LiveSessionStore::default);
@@ -138,13 +143,33 @@ async fn security_headers_middleware(
 #[derive(Debug, Serialize)]
 pub struct ApiError {
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after_ms: Option<u64>,
 }
 
 pub(crate) fn api_error(
     status: StatusCode,
     msg: impl Into<String>,
 ) -> (StatusCode, Json<ApiError>) {
-    (status, Json(ApiError { error: msg.into() }))
+    api_error_with_details(status, msg, None, None)
+}
+
+pub(crate) fn api_error_with_details(
+    status: StatusCode,
+    msg: impl Into<String>,
+    code: Option<&str>,
+    retry_after_ms: Option<u64>,
+) -> (StatusCode, Json<ApiError>) {
+    (
+        status,
+        Json(ApiError {
+            error: msg.into(),
+            code: code.map(str::to_string),
+            retry_after_ms,
+        }),
+    )
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1045,10 +1070,12 @@ fn parse_exec_response(parsed: &Value) -> ExecApiResponse {
     }
 }
 
+#[cfg(test)]
 fn first_nonempty_output_line(output: &str) -> Option<&str> {
     output.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
+#[cfg(test)]
 fn strip_terminal_control_sequences(output: &str) -> String {
     let mut cleaned = String::with_capacity(output.len());
     let mut chars = output.chars().peekable();
@@ -1076,6 +1103,7 @@ fn strip_terminal_control_sequences(output: &str) -> String {
     cleaned
 }
 
+#[cfg(test)]
 fn summarize_exec_failure(exec: &ExecApiResponse) -> String {
     let stderr = strip_terminal_control_sequences(&exec.stderr);
     let stdout = strip_terminal_control_sequences(&exec.stdout);
@@ -1085,6 +1113,7 @@ fn summarize_exec_failure(exec: &ExecApiResponse) -> String {
         .to_string()
 }
 
+#[cfg(test)]
 fn parse_detected_ssh_username(
     exec: &ExecApiResponse,
 ) -> Result<String, (StatusCode, Json<ApiError>)> {
@@ -1260,6 +1289,16 @@ fn translate_missing_agent_factory_error(
     }
 
     None
+}
+
+fn agent_warmup_retryable(err: &(StatusCode, Json<ApiError>)) -> bool {
+    let message = err.1.0.error.as_str();
+    message.contains("OpenCode server is not responding")
+        || message.contains("Failed to create OpenCode session")
+}
+
+fn request_id_for_logs() -> Option<String> {
+    CURRENT_REQUEST_ID.try_with(Clone::clone).ok()
 }
 
 fn agents_endpoint_unsupported(err: &(StatusCode, Json<ApiError>)) -> bool {
@@ -1673,24 +1712,74 @@ async fn agent_on_sidecar(
         max_turns,
         &record.agent_identifier,
     );
-    let parsed = match sidecar_call(
-        record,
-        "/agents/run",
-        payload,
-        SIDECAR_AGENT_TIMEOUT,
-        "agent",
-    )
-    .await
-    {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            return Err(
-                translate_missing_agent_factory_error(&record.agent_identifier, &err)
-                    .unwrap_or(err),
-            );
-        }
-    };
-    Ok(parse_agent_response(&parsed))
+    let mut current_record = record.clone();
+    let mut last_retry_after_ms = None;
+
+    for attempt in 0..=AGENT_WARMUP_RETRY_DELAYS_MS.len() {
+        let parsed = match sidecar_call(
+            &current_record,
+            "/agents/run",
+            payload.clone(),
+            SIDECAR_AGENT_TIMEOUT,
+            "agent",
+        )
+        .await
+        {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                if let Some(translated) =
+                    translate_missing_agent_factory_error(&record.agent_identifier, &err)
+                {
+                    return Err(translated);
+                }
+                if !agent_warmup_retryable(&err) {
+                    return Err(err);
+                }
+
+                circuit_breaker::clear(&record.id);
+
+                if let Some(delay_ms) = AGENT_WARMUP_RETRY_DELAYS_MS.get(attempt).copied() {
+                    tracing::warn!(
+                        request_id = ?request_id_for_logs(),
+                        sandbox_id = %record.id,
+                        sidecar_url = %current_record.sidecar_url,
+                        attempt = attempt + 1,
+                        retry_delay_ms = delay_ms,
+                        error = %err.1.0.error,
+                        "agent warmup detected; retrying prompt/task"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    current_record = runtime::get_sandbox_by_id(&record.id)
+                        .unwrap_or_else(|_| current_record.clone());
+                    last_retry_after_ms = Some(delay_ms);
+                    continue;
+                }
+
+                tracing::warn!(
+                    request_id = ?request_id_for_logs(),
+                    sandbox_id = %record.id,
+                    sidecar_url = %current_record.sidecar_url,
+                    attempts = AGENT_WARMUP_RETRY_DELAYS_MS.len() + 1,
+                    error = %err.1.0.error,
+                    "agent warmup retries exhausted"
+                );
+                return Err(api_error_with_details(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Sandbox agent is still starting up. Please retry shortly.",
+                    Some(AGENT_WARMUP_ERROR_CODE),
+                    last_retry_after_ms,
+                ));
+            }
+        };
+        return Ok(parse_agent_response(&parsed));
+    }
+
+    Err(api_error_with_details(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Sandbox agent is still starting up. Please retry shortly.",
+        Some(AGENT_WARMUP_ERROR_CODE),
+        last_retry_after_ms,
+    ))
 }
 
 // ── Exec ─────────────────────────────────────────────────────────────────
@@ -2117,111 +2206,22 @@ fn require_ssh(record: &SandboxRecord) -> Result<(), (StatusCode, Json<ApiError>
     Ok(())
 }
 
-fn build_ssh_provision_command(username: &str, public_key: &str) -> String {
-    let user_arg = crate::util::shell_escape(username);
-    let key_arg = crate::util::shell_escape(public_key);
-    format!(
-        "set -euo pipefail; user={user_arg}; \
-home=$(getent passwd \"${{user}}\" | cut -d: -f6); \
-if [ -z \"$home\" ]; then echo \"User ${{user}} does not exist\" >&2; exit 1; fi; \
-mkdir -p \"$home/.ssh\"; chmod 700 \"$home/.ssh\"; \
-if ! grep -qxF {key_arg} \"$home/.ssh/authorized_keys\" 2>/dev/null; then \
-    echo {key_arg} >> \"$home/.ssh/authorized_keys\"; \
-fi; chmod 600 \"$home/.ssh/authorized_keys\""
-    )
-}
-
-fn build_ssh_revoke_cmd(username: &str, public_key: &str) -> String {
-    let user_arg = crate::util::shell_escape(username);
-    let key_arg = crate::util::shell_escape(public_key);
-    format!(
-        "set -euo pipefail; user={user_arg}; \
-home=$(getent passwd \"${{user}}\" | cut -d: -f6); \
-if [ -z \"$home\" ]; then echo \"User ${{user}} does not exist\" >&2; exit 1; fi; \
-if [ -f \"$home/.ssh/authorized_keys\" ]; then \
-    tmp=$(mktemp /tmp/authorized_keys.XXXXXX); \
-    grep -vxF {key_arg} \"$home/.ssh/authorized_keys\" > \"$tmp\" || true; \
-    mv \"$tmp\" \"$home/.ssh/authorized_keys\"; chmod 600 \"$home/.ssh/authorized_keys\"; \
-fi"
-    )
-}
-
 async fn detect_ssh_username(
     record: &SandboxRecord,
 ) -> Result<String, (StatusCode, Json<ApiError>)> {
-    let payload = build_exec_payload("id -un || whoami", "", "", 0);
-    let parsed = sidecar_call(
-        record,
-        "/terminals/commands",
-        payload,
-        SIDECAR_EXEC_TIMEOUT,
-        "ssh-user",
-    )
-    .await?;
-    let exec = parse_exec_response(&parsed);
-    parse_detected_ssh_username(&exec)
-}
-
-fn resolve_requested_ssh_username(
-    requested: Option<&str>,
-) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
-    let Some(username) = requested.map(str::trim) else {
-        return Ok(None);
-    };
-    if username.is_empty() {
-        return Ok(None);
-    }
-    crate::ssh_validation::validate_ssh_username(username)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
-    Ok(Some(username.to_string()))
-}
-
-async fn resolve_effective_ssh_username(
-    record: &SandboxRecord,
-    requested: Option<&str>,
-) -> Result<String, (StatusCode, Json<ApiError>)> {
-    match resolve_requested_ssh_username(requested)? {
-        Some(username) => Ok(username),
-        None => detect_ssh_username(record).await,
-    }
-}
-
-fn ensure_ssh_command_succeeded(
-    action: &str,
-    username: &str,
-    parsed: &Value,
-) -> Result<(), (StatusCode, Json<ApiError>)> {
-    let exec = parse_exec_response(parsed);
-    if exec.exit_code == 0 {
-        return Ok(());
-    }
-
-    Err(api_error(
-        StatusCode::UNPROCESSABLE_ENTITY,
-        format!(
-            "SSH {action} failed for user '{username}' (exit {}): {}",
-            exec.exit_code,
-            summarize_exec_failure(&exec)
-        ),
-    ))
+    runtime::detect_ssh_username(record)
+        .await
+        .map_err(|e| api_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))
 }
 
 async fn run_ssh_provision(
     record: &SandboxRecord,
     req: &SshProvisionApiRequest,
 ) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
-    let username = resolve_effective_ssh_username(record, req.username.as_deref()).await?;
-    let command = build_ssh_provision_command(&username, &req.public_key);
-    let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let parsed = sidecar_call(
-        record,
-        "/terminals/commands",
-        payload,
-        SIDECAR_DEFAULT_TIMEOUT,
-        "ssh-provision",
-    )
-    .await?;
-    ensure_ssh_command_succeeded("provision", &username, &parsed)?;
+    let (username, parsed) =
+        runtime::provision_ssh_key(record, req.username.as_deref(), &req.public_key)
+            .await
+            .map_err(|e| api_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     Ok(SshApiResponse {
         success: true,
         username,
@@ -2233,18 +2233,10 @@ async fn run_ssh_revoke(
     record: &SandboxRecord,
     req: &SshRevokeApiRequest,
 ) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
-    let username = resolve_effective_ssh_username(record, req.username.as_deref()).await?;
-    let command = build_ssh_revoke_cmd(&username, &req.public_key);
-    let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let parsed = sidecar_call(
-        record,
-        "/terminals/commands",
-        payload,
-        SIDECAR_DEFAULT_TIMEOUT,
-        "ssh-revoke",
-    )
-    .await?;
-    ensure_ssh_command_succeeded("revoke", &username, &parsed)?;
+    let (username, parsed) =
+        runtime::revoke_ssh_key(record, req.username.as_deref(), &req.public_key)
+            .await
+            .map_err(|e| api_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     Ok(SshApiResponse {
         success: true,
         username,
@@ -2997,6 +2989,8 @@ mod tests {
         last_agent_payload: Arc<Mutex<Option<Value>>>,
         exec_response: Arc<Mutex<Value>>,
         agents_response: Arc<Mutex<Value>>,
+        remaining_agent_warmup_failures: Arc<AtomicU64>,
+        agent_invocations: Arc<AtomicU64>,
     }
 
     async fn mock_sidecar_exec(
@@ -3015,22 +3009,46 @@ mod tests {
     async fn mock_sidecar_agent(
         State(state): State<MockSidecarState>,
         Json(payload): Json<Value>,
-    ) -> Json<Value> {
+    ) -> impl IntoResponse {
         *state.last_agent_payload.lock().expect("agent lock") = Some(payload.clone());
+        state.agent_invocations.fetch_add(1, Ordering::Relaxed);
+        let remaining = state
+            .remaining_agent_warmup_failures
+            .load(Ordering::Relaxed);
+        if remaining > 0 {
+            state
+                .remaining_agent_warmup_failures
+                .fetch_sub(1, Ordering::Relaxed);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "AGENT_EXECUTION_FAILED",
+                        "message": "OpenCode server is not responding (may have crashed). Cannot create session."
+                    }
+                })),
+            )
+                .into_response();
+        }
         let session_id = payload
             .get("sessionId")
             .and_then(Value::as_str)
             .unwrap_or("mock-agent-session");
-        Json(json!({
-            "success": true,
-            "response": "mock-agent-response",
-            "traceId": "trace-mock-1",
-            "sessionId": session_id,
-            "usage": {
-                "input_tokens": 2,
-                "output_tokens": 3
-            }
-        }))
+        (
+            StatusCode::OK,
+            Json(json!({
+                "success": true,
+                "response": "mock-agent-response",
+                "traceId": "trace-mock-1",
+                "sessionId": session_id,
+                "usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 3
+                }
+            })),
+        )
+            .into_response()
     }
 
     async fn mock_sidecar_agents(State(state): State<MockSidecarState>) -> Json<Value> {
@@ -3089,6 +3107,16 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
+        (sidecar_url, state, server)
+    }
+
+    async fn spawn_mock_sidecar_with_agent_warmup_failures(
+        failures: u64,
+    ) -> (String, MockSidecarState, JoinHandle<()>) {
+        let (sidecar_url, state, server) = spawn_mock_sidecar().await;
+        state
+            .remaining_agent_warmup_failures
+            .store(failures, Ordering::Relaxed);
         (sidecar_url, state, server)
     }
 
@@ -3508,6 +3536,8 @@ mod tests {
                 tee_type: crate::tee::TeeType::Tdx,
             }),
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
@@ -3557,6 +3587,8 @@ mod tests {
             owner: owner.to_string(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
@@ -4571,6 +4603,8 @@ mod tests {
             owner: owner.to_string(),
             tee_config: None,
             extra_ports: ports,
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
@@ -5218,6 +5252,77 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_retries_transient_agent_warmup_failures() {
+        let (sidecar_url, sidecar_state, server) =
+            spawn_mock_sidecar_with_agent_warmup_failures(2).await;
+        insert_plain_sandbox_with_url("agent-warmup-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "warm up and reply" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/agent-warmup-1/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = body_json(response.into_body()).await;
+        assert_eq!(payload["response"], "mock-agent-response");
+        assert_eq!(
+            sidecar_state.agent_invocations.load(Ordering::Relaxed),
+            3,
+            "should retry warmup failures before succeeding"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_returns_structured_service_unavailable_when_agent_stays_warming() {
+        let (sidecar_url, sidecar_state, server) =
+            spawn_mock_sidecar_with_agent_warmup_failures(10).await;
+        insert_plain_sandbox_with_url("agent-warmup-2", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "still warming" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/agent-warmup-2/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = body_json(response.into_body()).await;
+        assert_eq!(payload["code"], AGENT_WARMUP_ERROR_CODE);
+        assert_eq!(
+            payload["error"],
+            "Sandbox agent is still starting up. Please retry shortly."
+        );
+        assert!(
+            payload["retry_after_ms"].as_u64().unwrap_or(0) > 0,
+            "retry_after_ms should be included"
+        );
+        assert_eq!(
+            sidecar_state.agent_invocations.load(Ordering::Relaxed),
+            (AGENT_WARMUP_RETRY_DELAYS_MS.len() + 1) as u64
+        );
         server.abort();
     }
 
