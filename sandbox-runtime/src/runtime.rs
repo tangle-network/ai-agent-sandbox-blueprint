@@ -491,6 +491,51 @@ async fn start_container_with_retry(container: &mut Container) -> Result<()> {
     }
 }
 
+fn existing_store_entry_for_override(sandbox_id: &str) -> Result<Option<SandboxRecord>> {
+    sandboxes()?.get(sandbox_id)
+}
+
+fn adjusted_sandbox_count_for_limit(current: usize, reusing_existing_slot: bool) -> usize {
+    if reusing_existing_slot {
+        current.saturating_sub(1)
+    } else {
+        current
+    }
+}
+
+fn enforce_sandbox_count_limit(
+    config: &SidecarRuntimeConfig,
+    reusing_existing_slot: bool,
+) -> Result<()> {
+    if config.sandbox_max_count == 0 {
+        return Ok(());
+    }
+
+    let current = sandboxes()?.values()?.len();
+    let effective_current = adjusted_sandbox_count_for_limit(current, reusing_existing_slot);
+    if effective_current >= config.sandbox_max_count {
+        return Err(SandboxError::Validation(format!(
+            "Sandbox limit reached ({current}/{max}). Delete unused sandboxes before creating new ones.",
+            max = config.sandbox_max_count,
+        )));
+    }
+
+    Ok(())
+}
+
+fn restore_previous_store_entry(
+    sandbox_id: &str,
+    previous_record: Option<SandboxRecord>,
+) -> Result<()> {
+    match previous_record {
+        Some(record) => sandboxes()?.insert(sandbox_id.to_string(), record),
+        None => {
+            let _ = sandboxes()?.remove(sandbox_id)?;
+            Ok(())
+        }
+    }
+}
+
 fn is_retryable_port_mapping_error(err: &SandboxError) -> bool {
     let SandboxError::Docker(msg) = err else {
         return false;
@@ -1675,16 +1720,12 @@ async fn create_sidecar_firecracker(
     sandbox_id_override: Option<&str>,
 ) -> Result<SandboxRecord> {
     let config = SidecarRuntimeConfig::load();
+    let sandbox_id = sandbox_id_override
+        .map(ToString::to_string)
+        .unwrap_or_else(next_sandbox_id);
+    let previous_store_entry = existing_store_entry_for_override(&sandbox_id)?;
 
-    if config.sandbox_max_count > 0 {
-        let current = sandboxes()?.values()?.len();
-        if current >= config.sandbox_max_count {
-            return Err(SandboxError::Validation(format!(
-                "Sandbox limit reached ({current}/{max}). Delete unused sandboxes before creating new ones.",
-                max = config.sandbox_max_count,
-            )));
-        }
-    }
+    enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
 
     let extra_ports = parse_extra_ports(&request.metadata_json, &request.port_mappings);
     if !extra_ports.is_empty() {
@@ -1699,10 +1740,6 @@ async fn create_sidecar_firecracker(
     } else {
         request.image.clone()
     };
-
-    let sandbox_id = sandbox_id_override
-        .map(ToString::to_string)
-        .unwrap_or_else(next_sandbox_id);
 
     let metadata_raw = parse_json_object(&request.metadata_json, "metadata_json")?;
     let snapshot_destination = metadata_raw
@@ -1981,17 +2018,13 @@ async fn create_sidecar_docker(
     sandbox_id_override: Option<&str>,
 ) -> Result<SandboxRecord> {
     let config = SidecarRuntimeConfig::load();
+    let sandbox_id = sandbox_id_override
+        .map(ToString::to_string)
+        .unwrap_or_else(next_sandbox_id);
+    let previous_store_entry = existing_store_entry_for_override(&sandbox_id)?;
 
-    // Enforce per-operator sandbox count limit to prevent resource exhaustion.
-    if config.sandbox_max_count > 0 {
-        let current = sandboxes()?.values()?.len();
-        if current >= config.sandbox_max_count {
-            return Err(SandboxError::Validation(format!(
-                "Sandbox limit reached ({current}/{max}). Delete unused sandboxes before creating new ones.",
-                max = config.sandbox_max_count,
-            )));
-        }
-    }
+    // Recreating an existing sandbox reuses its existing store slot.
+    enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
 
     let builder = docker_builder().await?;
 
@@ -2006,9 +2039,6 @@ async fn create_sidecar_docker(
     ensure_image_pulled(&builder, &effective_image).await?;
     let original_image = effective_image.clone();
 
-    let sandbox_id = sandbox_id_override
-        .map(ToString::to_string)
-        .unwrap_or_else(next_sandbox_id);
     let token = match token_override {
         Some(t) if !t.trim().is_empty() => t.to_string(),
         _ => crate::auth::generate_token(),
@@ -2143,7 +2173,7 @@ async fn create_sidecar_docker(
     .await;
 
     if finish.is_err() {
-        let _ = sandboxes().and_then(|store| store.remove(&sandbox_id));
+        let _ = restore_previous_store_entry(&sandbox_id, previous_store_entry);
         cleanup_orphaned_container(&builder, &container_id).await;
     }
     finish
@@ -2486,7 +2516,6 @@ pub async fn recreate_sidecar_with_env(
         let _ = stop_sidecar(&old).await;
     }
     delete_sidecar(&old, tee).await?;
-    sandboxes()?.remove(sandbox_id)?;
 
     // Rebuild creation params faithfully from the stored record
     let image = if old.original_image.is_empty() {
@@ -3515,6 +3544,14 @@ mod core_logic_tests {
             snapshot_destination_prefix: None,
             sandbox_max_count: 100,
         }
+    }
+
+    #[test]
+    fn adjusted_sandbox_count_reuses_existing_slot() {
+        assert_eq!(adjusted_sandbox_count_for_limit(0, false), 0);
+        assert_eq!(adjusted_sandbox_count_for_limit(1, false), 1);
+        assert_eq!(adjusted_sandbox_count_for_limit(1, true), 0);
+        assert_eq!(adjusted_sandbox_count_for_limit(5, true), 4);
     }
 
     #[test]
