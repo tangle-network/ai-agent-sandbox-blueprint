@@ -42,13 +42,7 @@ pub async fn provision_core(
 
     // Provision SSH key if requested.
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
-        crate::jobs::ssh::provision_key(
-            &record.sidecar_url,
-            "root",
-            &request.ssh_public_key,
-            &record.token,
-        )
-        .await?;
+        sandbox_runtime::runtime::provision_ssh_key(&record, None, &request.ssh_public_key).await?;
     }
 
     let ssh_port = record.ssh_port.unwrap_or(0) as u32;

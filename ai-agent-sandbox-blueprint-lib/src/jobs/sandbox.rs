@@ -63,23 +63,19 @@ pub async fn sandbox_create(
     );
 
     if request.ssh_enabled && !request.ssh_public_key.trim().is_empty() {
-        crate::jobs::ssh::provision_key(
-            &record.sidecar_url,
-            "root",
-            &request.ssh_public_key,
-            &record.token,
-        )
-        .await
-        .map_err(|e| {
-            let _ = provision_progress::update_provision(
-                call_id,
-                ProvisionPhase::Failed,
-                Some(format!("SSH key provisioning failed: {e}")),
-                Some(record.id.clone()),
-                None,
-            );
-            e
-        })?;
+        sandbox_runtime::runtime::provision_ssh_key(&record, None, &request.ssh_public_key)
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                let _ = provision_progress::update_provision(
+                    call_id,
+                    ProvisionPhase::Failed,
+                    Some(format!("SSH key provisioning failed: {e}")),
+                    Some(record.id.clone()),
+                    None,
+                );
+                e
+            })?;
     }
 
     let _ = provision_progress::update_provision(
