@@ -1,6 +1,6 @@
 use docktopus::DockerBuilder;
 use docktopus::bollard::container::{
-    Config as BollardConfig, InspectContainerOptions, RemoveContainerOptions,
+    Config as BollardConfig, RemoveContainerOptions,
 };
 use docktopus::bollard::models::{HostConfig, PortBinding, PortMap};
 use docktopus::container::Container;
@@ -16,8 +16,8 @@ use crate::error::{Result, SandboxError};
 use crate::util::{merge_metadata, parse_json_object};
 use crate::{DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SSH_PORT};
 
-const RESUME_PORT_MAPPING_RETRY_ATTEMPTS: usize = 20;
-const RESUME_PORT_MAPPING_RETRY_DELAY_MS: u64 = 500;
+const PORT_MAPPING_RETRY_ATTEMPTS: usize = 20;
+const PORT_MAPPING_RETRY_DELAY_MS: u64 = 500;
 
 /// ABI-independent parameters for sandbox creation.
 ///
@@ -475,6 +475,64 @@ async fn start_container_with_retry(container: &mut Container) -> Result<()> {
             docker_timeout("start_container_retry", container.start(false)).await
         }
     }
+}
+
+fn is_retryable_port_mapping_error(err: &SandboxError) -> bool {
+    let SandboxError::Docker(msg) = err else {
+        return false;
+    };
+
+    msg.starts_with("Missing container port mappings")
+        || msg.starts_with("Missing port bindings for ")
+        || msg.starts_with("Missing host port for ")
+        || (msg.starts_with("Host port for ") && msg.ends_with(" is not assigned yet"))
+}
+
+async fn retry_port_mapping_lookup_inner<T, F, Fut>(
+    operation: &str,
+    container_id: &str,
+    max_attempts: usize,
+    delay_ms: u64,
+    mut f: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut last_err = None;
+    tracing::info!(operation, container_id, "Resolving published sidecar endpoint");
+
+    for attempt in 0..max_attempts {
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if !is_retryable_port_mapping_error(&err) {
+                    return Err(err);
+                }
+                last_err = Some(err);
+                if attempt + 1 < max_attempts {
+                    tracing::warn!(
+                        operation,
+                        container_id,
+                        attempt = attempt + 1,
+                        max_attempts,
+                        error = %last_err.as_ref().expect("last_err just set"),
+                        "Published sidecar endpoint not ready yet, retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                }
+            }
+        }
+    }
+
+    let last_err = last_err.unwrap_or_else(|| {
+        SandboxError::Unavailable(format!(
+            "Unable to resolve published sidecar endpoint for container {container_id}"
+        ))
+    });
+    Err(SandboxError::Unavailable(format!(
+        "{operation} failed: Docker did not publish sidecar port for container {container_id} after {max_attempts} attempts: {last_err}"
+    )))
 }
 
 /// Best-effort removal of an orphaned container after a partial creation failure.
@@ -1393,26 +1451,29 @@ async fn create_sidecar_docker(
         .to_string();
 
     let finish = async {
-        let inspect = docker_timeout(
-            "inspect_container",
-            builder
-                .client()
-                .inspect_container(&container_id, None::<InspectContainerOptions>),
-        )
-        .await?;
-
-        let use_host_network =
-            std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
-        let (sidecar_port, ssh_port, extra_port_map) = if use_host_network {
-            // Host network mode: container ports bind directly on the host.
-            // No Docker port mappings — use the container's internal ports.
-            (config.container_port, None, HashMap::new())
-        } else {
-            let (sp, ssh) = extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
-            let epm = extract_extra_ports(&inspect, &extra_ports);
-            (sp, ssh, epm)
-        };
-        let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
+        let extra_port_seed = extra_ports
+            .iter()
+            .copied()
+            .map(|port| (port, 0u16))
+            .collect::<HashMap<_, _>>();
+        let (sidecar_url, sidecar_port, ssh_port, extra_port_map) =
+            retry_port_mapping_lookup_inner(
+                "create endpoint resolution",
+                &container_id,
+                PORT_MAPPING_RETRY_ATTEMPTS,
+                PORT_MAPPING_RETRY_DELAY_MS,
+                || {
+                    refresh_port_mapping(
+                        builder.client(),
+                        &container_id,
+                        config.container_port,
+                        request.ssh_enabled,
+                        &config.public_host,
+                        &extra_port_seed,
+                    )
+                },
+            )
+            .await?;
 
         let now = crate::util::now_ts();
         let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
@@ -1541,6 +1602,7 @@ async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
 }
 
 async fn refresh_port_mapping_with_retry(
+    operation: &str,
     client: std::sync::Arc<docktopus::bollard::Docker>,
     container_id: &str,
     container_port: u16,
@@ -1548,35 +1610,23 @@ async fn refresh_port_mapping_with_retry(
     public_host: &str,
     prev_extra_ports: &HashMap<u16, u16>,
 ) -> Result<(String, u16, Option<u16>, HashMap<u16, u16>)> {
-    let mut last_err = None;
-
-    for attempt in 0..RESUME_PORT_MAPPING_RETRY_ATTEMPTS {
-        match refresh_port_mapping(
-            client.clone(),
-            container_id,
-            container_port,
-            ssh_enabled,
-            public_host,
-            prev_extra_ports,
-        )
-        .await
-        {
-            Ok(mapping) => return Ok(mapping),
-            Err(err) => {
-                last_err = Some(err);
-                if attempt + 1 < RESUME_PORT_MAPPING_RETRY_ATTEMPTS {
-                    tokio::time::sleep(Duration::from_millis(RESUME_PORT_MAPPING_RETRY_DELAY_MS))
-                        .await;
-                }
-            }
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| {
-        SandboxError::Unavailable(format!(
-            "Unable to refresh port mapping for container {container_id}"
-        ))
-    }))
+    retry_port_mapping_lookup_inner(
+        operation,
+        container_id,
+        PORT_MAPPING_RETRY_ATTEMPTS,
+        PORT_MAPPING_RETRY_DELAY_MS,
+        || {
+            refresh_port_mapping(
+                client.clone(),
+                container_id,
+                container_port,
+                ssh_enabled,
+                public_host,
+                prev_extra_ports,
+            )
+        },
+    )
+    .await
 }
 
 /// Re-inspect a running Docker-backed sandbox and persist its current host port mappings.
@@ -1594,6 +1644,7 @@ pub async fn refresh_docker_sandbox_endpoint(record: &SandboxRecord) -> Result<S
     let builder = docker_builder().await?;
     let config = SidecarRuntimeConfig::load();
     let (sidecar_url, sidecar_port, ssh_port, extra_ports) = refresh_port_mapping_with_retry(
+        "refresh endpoint resolution",
         builder.client(),
         &record.container_id,
         config.container_port,
@@ -1947,22 +1998,16 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .to_string();
 
     let finish = async {
-        let inspect = docker_timeout(
-            "inspect_container",
-            builder
-                .client()
-                .inspect_container(&container_id, None::<InspectContainerOptions>),
+        let (sidecar_url, sidecar_port, ssh_port, extra_ports) = refresh_port_mapping_with_retry(
+            "warm restore endpoint resolution",
+            builder.client(),
+            &container_id,
+            config.container_port,
+            ssh_enabled,
+            &config.public_host,
+            &record.extra_ports,
         )
         .await?;
-
-        let use_host_network =
-            std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
-        let (sidecar_port, ssh_port) = if use_host_network {
-            (config.container_port, None)
-        } else {
-            extract_ports(&inspect, config.container_port, ssh_enabled)?
-        };
-        let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
 
         if !wait_for_sidecar_health(&sidecar_url, 30).await {
             return Err(SandboxError::Unavailable(format!(
@@ -1982,6 +2027,7 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         updated.last_activity_at = now;
         updated.container_removed_at = None;
         updated.snapshot_image_id = None;
+        updated.extra_ports = extra_ports;
 
         let mut sealed = updated.clone();
         seal_record(&mut sealed)?;
@@ -2041,22 +2087,16 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         .to_string();
 
     let finish = async {
-        let inspect = docker_timeout(
-            "inspect_container",
-            builder
-                .client()
-                .inspect_container(&container_id, None::<InspectContainerOptions>),
+        let (sidecar_url, sidecar_port, ssh_port, extra_ports) = refresh_port_mapping_with_retry(
+            "cold restore endpoint resolution",
+            builder.client(),
+            &container_id,
+            config.container_port,
+            ssh_enabled,
+            &config.public_host,
+            &record.extra_ports,
         )
         .await?;
-
-        let use_host_network =
-            std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
-        let (sidecar_port, ssh_port) = if use_host_network {
-            (config.container_port, None)
-        } else {
-            extract_ports(&inspect, config.container_port, ssh_enabled)?
-        };
-        let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
         let token = &record.token;
 
         if !wait_for_sidecar_health(&sidecar_url, 30).await {
@@ -2093,6 +2133,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         updated.last_activity_at = now;
         updated.container_removed_at = None;
         updated.image_removed_at = None;
+        updated.extra_ports = extra_ports;
         updated.snapshot_s3_url = None;
 
         let mut sealed = updated.clone();
@@ -2975,6 +3016,91 @@ mod core_logic_tests {
         };
         let result = extract_ports(&inspect, 3000, false);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn retry_port_mapping_lookup_inner_retries_until_success() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = retry_port_mapping_lookup_inner("test resolution", "ctr-1", 3, 0, {
+            let attempts = attempts.clone();
+            move || {
+                let attempts = attempts.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if attempt < 2 {
+                        Err(SandboxError::Docker(
+                            "Host port for 3000/tcp is not assigned yet".into(),
+                        ))
+                    } else {
+                        Ok(49000u16)
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result, 49000);
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_port_mapping_lookup_inner_stops_on_non_retryable_error() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = retry_port_mapping_lookup_inner::<u16, _, _>(
+            "test resolution",
+            "ctr-2",
+            3,
+            0,
+            {
+                let attempts = attempts.clone();
+                move || {
+                    let attempts = attempts.clone();
+                    async move {
+                        attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Err(SandboxError::Docker(
+                            "Failed to connect to Docker: daemon unavailable".into(),
+                        ))
+                    }
+                }
+            },
+        )
+        .await;
+
+        let err = result.expect_err("expected non-retryable error to bubble up");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            err.to_string().contains("daemon unavailable"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_port_mapping_lookup_inner_wraps_exhausted_transient_error() {
+        let result = retry_port_mapping_lookup_inner::<u16, _, _>(
+            "test resolution",
+            "ctr-3",
+            2,
+            0,
+            || async {
+            Err(SandboxError::Docker(
+                "Missing host port for 3000/tcp".into(),
+            ))
+            },
+        )
+        .await;
+
+        let err = result.expect_err("expected retries to exhaust");
+        assert!(
+            err.to_string().contains(
+                "test resolution failed: Docker did not publish sidecar port for container ctr-3 after 2 attempts"
+            ),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("Missing host port for 3000/tcp"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── SandboxState ────────────────────────────────────────────────────
