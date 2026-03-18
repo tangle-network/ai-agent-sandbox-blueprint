@@ -70,6 +70,7 @@ sol! {
         string metadata_json;
         bool ssh_enabled;
         string ssh_public_key;
+        /// Deprecated: retained only for ABI compatibility and ignored by the product/runtime.
         bool web_terminal_enabled;
         uint64 max_lifetime_seconds;
         uint64 idle_timeout_seconds;

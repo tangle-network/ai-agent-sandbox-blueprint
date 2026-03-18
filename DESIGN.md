@@ -351,7 +351,7 @@ struct SandboxCreateRequest {
     string metadata_json;
     bool ssh_enabled;
     string ssh_public_key;
-    bool web_terminal_enabled;
+    bool web_terminal_enabled;      // deprecated, ignored, retained for ABI compatibility
     uint64 max_lifetime_seconds;
     uint64 idle_timeout_seconds;
     uint64 cpu_cores;

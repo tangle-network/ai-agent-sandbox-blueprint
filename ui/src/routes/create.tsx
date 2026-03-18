@@ -51,7 +51,7 @@ const PROVISION_SECTIONS: FormSection[] = [
   { label: 'Image & Stack', fields: ['image', 'runtimeBackend', 'stack'] },
   { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
   { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
-  { label: 'Features', fields: ['sshEnabled', 'sshPublicKey', 'webTerminalEnabled'] },
+  { label: 'Features', fields: ['sshEnabled', 'sshPublicKey'] },
   { label: 'Advanced Options', fields: ['metadataJson', 'teeRequired', 'teeType'], collapsed: true },
 ];
 
@@ -187,6 +187,8 @@ export default function CreatePage() {
     const nextValues: Record<string, unknown> = {
       ...values,
       metadataJson: JSON.stringify(metadata),
+      // Keep the deprecated ABI field pinned for backward-compatible encoding.
+      webTerminalEnabled: true,
     };
     if (runtimeBackend === 'tee') {
       nextValues.teeRequired = true;

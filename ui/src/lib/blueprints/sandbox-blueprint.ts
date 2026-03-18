@@ -70,7 +70,8 @@ const SANDBOX_JOBS: JobDefinition[] = [
       { name: 'metadataJson', label: 'Metadata (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'metadata_json' },
       { name: 'sshEnabled', label: 'Enable SSH', type: 'boolean', defaultValue: false, abiType: 'bool', abiParam: 'ssh_enabled' },
       { name: 'sshPublicKey', label: 'SSH Public Key', type: 'textarea', placeholder: 'ssh-ed25519 AAAA...', helperText: 'Required if SSH is enabled', abiType: 'string', abiParam: 'ssh_public_key' },
-      { name: 'webTerminalEnabled', label: 'Web Terminal', type: 'boolean', defaultValue: true, abiType: 'bool', abiParam: 'web_terminal_enabled' },
+      // Deprecated compatibility slot: keep encoding the ABI field, but do not expose it in the product UI.
+      { name: 'webTerminalEnabled', label: 'Web Terminal', type: 'boolean', defaultValue: true, abiType: 'bool', abiParam: 'web_terminal_enabled', internal: true },
       { name: 'maxLifetimeSeconds', label: 'Max Lifetime (hours)', type: 'number', defaultValue: 86400, min: 0, step: 3600, helperText: 'Value in seconds — 3600 = 1h, 86400 = 24h, 0 = unlimited', abiType: 'uint64', abiParam: 'max_lifetime_seconds' },
       { name: 'idleTimeoutSeconds', label: 'Idle Timeout (minutes)', type: 'number', defaultValue: 3600, min: 0, step: 300, helperText: 'Value in seconds — 300 = 5min, 3600 = 1h, 0 = disabled', abiType: 'uint64', abiParam: 'idle_timeout_seconds' },
       { name: 'cpuCores', label: 'CPU Cores', type: 'number', defaultValue: 2, min: 1, max: 16, helperText: '1\u20134 for dev, 8\u201316 for production', abiType: 'uint64', abiParam: 'cpu_cores' },

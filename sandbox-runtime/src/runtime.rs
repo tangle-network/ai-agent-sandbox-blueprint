@@ -38,6 +38,7 @@ pub struct CreateSandboxParams {
     pub metadata_json: String,
     pub ssh_enabled: bool,
     pub ssh_public_key: String,
+    /// Deprecated compatibility field: accepted from ABI/config inputs but ignored.
     pub web_terminal_enabled: bool,
     pub max_lifetime_seconds: u64,
     pub idle_timeout_seconds: u64,

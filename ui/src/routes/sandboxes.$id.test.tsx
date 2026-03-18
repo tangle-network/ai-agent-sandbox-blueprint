@@ -331,6 +331,14 @@ describe('SandboxDetail snapshot flow', () => {
     expect(screen.getByRole('button', { name: 'Connect Terminal' })).toBeInTheDocument();
   });
 
+  it('ignores legacy webTerminalEnabled state when rendering terminal access', () => {
+    sandboxesRef.current = [makeSandbox({ webTerminalEnabled: false })];
+
+    renderSubject();
+
+    expect(screen.getByRole('button', { name: 'Terminal' })).toBeInTheDocument();
+  });
+
   it('renders operator-backed terminal after authentication', async () => {
     operatorAuthState.isAuthenticated = true;
     operatorAuthState.cachedToken = 'operator-token';
