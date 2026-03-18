@@ -14,7 +14,7 @@ export interface LocalInstance {
   operator?: string;
   sidecarUrl?: string;
   teeEnabled?: boolean;
-  /** Agent identifier — when non-empty, the instance has an AI agent and chat is available. */
+  /** Agent identifier configured for the sidecar image. Must match a registered agent inside that image. */
   agentIdentifier?: string;
   status: 'creating' | 'running' | 'stopped' | 'gone' | 'error';
   txHash?: string;

@@ -75,6 +75,21 @@ pub async fn sidecar_post_json(
         .map_err(|err| SandboxError::Http(format!("Invalid sidecar response JSON: {err}")))
 }
 
+pub async fn sidecar_get_json(sidecar_url: &str, path: &str, token: &str) -> Result<Value> {
+    let url = build_url(sidecar_url, path)?;
+    let mut headers = auth_headers(token)?;
+
+    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
+        if let Ok(val) = HeaderValue::from_str(&rid) {
+            headers.insert("x-request-id", val);
+        }
+    }
+
+    let (_, body) = send_json(Method::GET, url, None, headers).await?;
+    serde_json::from_str(&body)
+        .map_err(|err| SandboxError::Http(format!("Invalid sidecar response JSON: {err}")))
+}
+
 /// Headers that MUST NOT be forwarded from the client to the proxied backend.
 /// These are either hop-by-hop, security-sensitive (the operator's own auth),
 /// or set by the proxy itself.

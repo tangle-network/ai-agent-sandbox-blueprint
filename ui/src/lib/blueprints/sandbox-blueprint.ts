@@ -1,6 +1,7 @@
 import { JOB_IDS } from '~/lib/types/sandbox';
 import { type BlueprintDefinition, type JobDefinition, registerBlueprint } from '@tangle-network/blueprint-ui';
 import type { Address } from 'viem';
+import { BUNDLED_SANDBOX_IMAGE_VALUES } from '~/lib/agents';
 
 /**
  * AI Agent Sandbox Blueprint — the default Tangle sandbox provisioning blueprint.
@@ -31,6 +32,13 @@ export const RUNTIME_BACKEND_OPTIONS = [
   { label: 'TEE (confidential)', value: 'tee' },
 ];
 
+export const SIDECAR_IMAGE_OPTIONS = [
+  { label: 'Local: agent-dev:latest', value: BUNDLED_SANDBOX_IMAGE_VALUES[0] },
+  { label: 'Local: agent-dev', value: BUNDLED_SANDBOX_IMAGE_VALUES[1] },
+  { label: 'Local: tangle-sidecar:local', value: BUNDLED_SANDBOX_IMAGE_VALUES[2] },
+  { label: 'Registry: ghcr.io/tangle-network/sidecar:latest', value: BUNDLED_SANDBOX_IMAGE_VALUES[3] },
+];
+
 // ── Jobs ──
 
 const SANDBOX_JOBS: JobDefinition[] = [
@@ -50,12 +58,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
     fields: [
       { name: 'name', label: 'Sandbox Name', type: 'text', placeholder: 'my-agent-sandbox', required: true, abiType: 'string' },
       { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'agent-dev:latest', required: true, defaultValue: 'agent-dev:latest', abiType: 'string',
-        options: [
-          { label: 'Local: agent-dev:latest', value: 'agent-dev:latest' },
-          { label: 'Local: agent-dev', value: 'agent-dev' },
-          { label: 'Local: tangle-sidecar:local', value: 'tangle-sidecar:local' },
-          { label: 'Registry: ghcr.io/tangle-network/sidecar:latest', value: 'ghcr.io/tangle-network/sidecar:latest' },
-        ],
+        options: SIDECAR_IMAGE_OPTIONS,
         helperText: 'Use a sidecar-compatible image that already runs the sandbox server on port 8080. Plain base images like ubuntu:22.04 will not work here.' },
       { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: RUNTIME_BACKEND_OPTIONS,
         helperText: 'Merged into metadata_json.runtime_backend for operator-side routing' },
@@ -65,7 +68,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
         { label: 'Node.js', value: 'nodejs' },
         { label: 'Rust', value: 'rust' },
       ] },
-      { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', placeholder: 'agent-1', helperText: 'Set to enable AI chat. Leave empty for plain compute sandboxes.', abiType: 'string', abiParam: 'agent_identifier' },
+      { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', placeholder: 'default', helperText: 'Internal ABI field. The product UI renders its own validated agent selector.', abiType: 'string', abiParam: 'agent_identifier', internal: true },
       { name: 'envJson', label: 'Environment Variables (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'env_json' },
       { name: 'metadataJson', label: 'Metadata (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'metadata_json' },
       { name: 'sshEnabled', label: 'Enable SSH', type: 'boolean', defaultValue: false, abiType: 'bool', abiParam: 'ssh_enabled' },

@@ -38,6 +38,7 @@ import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { useAccount } from 'wagmi';
+import { normalizeAgentIdentifier } from '~/lib/agents';
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation';
 
@@ -46,6 +47,12 @@ import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
 interface SshKey {
   username: string;
   publicKey: string;
+}
+
+interface AgentDescriptor {
+  identifier: string;
+  displayName?: string;
+  description?: string;
 }
 
 /** Extract human-readable error from operator API Error messages. */
@@ -101,6 +108,9 @@ export default function SandboxDetail() {
 
   // Snapshot dialog state
   const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [availableAgents, setAvailableAgents] = useState<AgentDescriptor[] | null>(null);
+  const [agentDiscoveryLoading, setAgentDiscoveryLoading] = useState(false);
+  const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null);
 
   // Track setTimeout IDs so they can be cleared on unmount
   const timeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
@@ -158,6 +168,8 @@ export default function SandboxDetail() {
   const operatorToken = getCachedOperatorToken();
   const hasWallet = !!address;
   const sshDetectionKey = isInstance ? 'instance' : canonicalSandboxId ?? null;
+  const configuredAgentIdentifier = normalizeAgentIdentifier(sb?.agentIdentifier);
+  const agentConfigured = configuredAgentIdentifier.length > 0;
 
   // Chat client: always proxied through the operator API.
   const client: SandboxClient | null = useMemo(() => {
@@ -182,6 +194,48 @@ export default function SandboxDetail() {
     setSshUserHint(null);
     setSshUserDetecting(false);
   }, [sshDetectionKey]);
+
+  useEffect(() => {
+    if (!agentConfigured || !isRunning || !canonicalSandboxId) {
+      setAvailableAgents(null);
+      setAgentDiscoveryLoading(false);
+      setAgentDiscoveryError(null);
+      return;
+    }
+    if (!isOperatorAuthed && !operatorToken) {
+      setAvailableAgents(null);
+      setAgentDiscoveryLoading(false);
+      setAgentDiscoveryError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setAgentDiscoveryLoading(true);
+    setAgentDiscoveryError(null);
+
+    void operatorApiCall('agents', undefined, { method: 'GET' })
+      .then(async (response) => {
+        const body = await response.json() as { agents?: AgentDescriptor[] };
+        if (cancelled) return;
+        setAvailableAgents(Array.isArray(body.agents) ? body.agents : []);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setAvailableAgents(null);
+        setAgentDiscoveryError(
+          e instanceof Error ? parseApiError(e) : 'Could not load available agents.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAgentDiscoveryLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agentConfigured, canonicalSandboxId, isOperatorAuthed, isRunning, operatorApiCall, operatorToken]);
 
   useEffect(() => {
     if (tab !== 'ssh' || !sshDetectionKey) return;
@@ -446,7 +500,12 @@ export default function SandboxDetail() {
   const isStopped = sb.status === 'stopped' || sb.status === 'warm';
   const isGone = sb.status === 'gone';
 
-  const hasAgent = !!sb.agentIdentifier;
+  const hasAgent = agentConfigured;
+  const agentIdentifiers = availableAgents?.map((agent) => normalizeAgentIdentifier(agent.identifier)) ?? [];
+  const agentIdentifierValid = !agentConfigured
+    || (availableAgents != null && agentIdentifiers.includes(configuredAgentIdentifier));
+  const hasAgentValidationResult = availableAgents != null;
+  const agentAvailableList = agentIdentifiers.length > 0 ? agentIdentifiers.join(', ') : 'none reported';
 
   const tabs: { key: ActionTab; label: string; icon: string; disabled?: boolean; hidden?: boolean }[] = [
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
@@ -519,6 +578,17 @@ export default function SandboxDetail() {
       </div>
 
       <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-6" />
+
+      {agentConfigured && hasAgentValidationResult && !agentIdentifierValid && (
+        <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+          <p className="text-sm font-display font-medium text-amber-300">
+            Configured agent not available in this image
+          </p>
+          <p className="mt-1 text-xs text-amber-200/90">
+            This sandbox is configured to use <span className="font-data">{configuredAgentIdentifier}</span>, but the running image only reports {agentAvailableList}.
+          </p>
+        </div>
+      )}
 
       {/* Provision Progress (shown when creating) */}
       {sb.status === 'creating' && sb.callId != null && (
@@ -682,8 +752,33 @@ export default function SandboxDetail() {
                       : 'Authenticate to Chat'}
               </Button>
             </CardContent>
+          ) : agentConfigured && agentDiscoveryLoading && !hasAgentValidationResult ? (
+            <CardContent className="py-16 text-center">
+              <div className="i-ph:spinner-gap text-3xl text-cloud-elements-textTertiary mb-3 mx-auto animate-spin" />
+              <p className="text-sm text-cloud-elements-textSecondary">
+                Checking which agents this image exposes...
+              </p>
+            </CardContent>
+          ) : agentConfigured && hasAgentValidationResult && !agentIdentifierValid ? (
+            <CardContent className="py-16 text-center">
+              <div className="i-ph:warning-circle text-3xl text-amber-400 mb-3 mx-auto" />
+              <p className="text-sm text-cloud-elements-textSecondary mb-2">
+                The configured agent is not available in this sandbox image
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mb-2">
+                Configured agent: <span className="font-data">{configuredAgentIdentifier}</span>
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary">
+                Available agents: <span className="font-data">{agentAvailableList}</span>
+              </p>
+            </CardContent>
           ) : (
             <CardContent className="p-0">
+              {agentDiscoveryError && (
+                <div className="border-b border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                  <p className="text-xs text-amber-300">{agentDiscoveryError}</p>
+                </div>
+              )}
               <div className="h-[min(600px,65vh)]">
                 <SessionSidebar
                   sandboxId={canonicalSandboxId ?? sb.localId}

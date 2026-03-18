@@ -22,7 +22,7 @@ export interface LocalSandbox {
   sidecarUrl?: string;
   teeEnabled?: boolean;
   sshPort?: number;
-  /** Agent identifier — when non-empty, the sandbox has an AI agent and chat is available. */
+  /** Agent identifier configured for the sidecar image. Must match a registered agent inside that image. */
   agentIdentifier?: string;
   /** Local status (hydrated from contract + events) */
   status: 'creating' | 'running' | 'stopped' | 'warm' | 'cold' | 'gone' | 'error';

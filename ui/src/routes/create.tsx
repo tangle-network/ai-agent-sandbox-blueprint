@@ -6,6 +6,7 @@ import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
+import { Input, Select } from '@tangle-network/blueprint-ui/components';
 import { InfrastructureModal, InfraBar } from '~/components/shared/InfrastructureModal';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { infraStore, updateInfra } from '@tangle-network/blueprint-ui';
@@ -26,6 +27,13 @@ import { BlueprintBadgeInline } from '~/components/shared/InfraSummaryBits';
 import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { EnvEditor } from '~/components/shared/EnvEditor';
+import {
+  BUNDLED_AGENT_OPTIONS,
+  BUNDLED_NO_AGENT_VALUE,
+  isBundledSandboxImage,
+  normalizeAgentIdentifier,
+  sanitizeBundledAgentIdentifier,
+} from '~/lib/agents';
 
 // ── Blueprint → on-chain ID mapping from env vars ──
 
@@ -46,8 +54,21 @@ const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }
 
 // ── Form sections for provision/create jobs (organized layout) ──
 
+const SANDBOX_PRE_AGENT_SECTIONS: FormSection[] = [
+  { label: 'Identity', fields: ['name'] },
+  { label: 'Image', fields: ['image'] },
+];
+
+const SANDBOX_POST_AGENT_SECTIONS: FormSection[] = [
+  { label: 'Runtime & Stack', fields: ['runtimeBackend', 'stack'] },
+  { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
+  { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
+  { label: 'Features', fields: ['sshEnabled', 'sshPublicKey'] },
+  { label: 'Advanced Options', fields: ['metadataJson', 'teeRequired', 'teeType'], collapsed: true },
+];
+
 const PROVISION_SECTIONS: FormSection[] = [
-  { label: 'Identity', fields: ['name', 'agentIdentifier'] },
+  { label: 'Identity', fields: ['name'] },
   { label: 'Image & Stack', fields: ['image', 'runtimeBackend', 'stack'] },
   { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
   { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
@@ -139,6 +160,10 @@ export default function CreatePage() {
   const [portsInput, setPortsInput] = useState('');
   const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
   const supportsMetadataPorts = runtimeBackend !== 'firecracker';
+  const selectedImage = String(values.image || '');
+  const usesBundledAgentSelector = selectedBlueprint?.id === 'ai-agent-sandbox-blueprint' && isBundledSandboxImage(selectedImage);
+  const configuredAgentIdentifier = normalizeAgentIdentifier(values.agentIdentifier);
+  const isSandboxBlueprint = selectedBlueprint?.id === 'ai-agent-sandbox-blueprint';
 
   // Keep TEE controls in sync with runtime backend selection.
   useEffect(() => {
@@ -162,6 +187,13 @@ export default function CreatePage() {
       setPortsInput('');
     }
   }, [supportsMetadataPorts, portsInput]);
+
+  useEffect(() => {
+    if (!usesBundledAgentSelector) return;
+    const sanitized = sanitizeBundledAgentIdentifier(values.agentIdentifier);
+    if (sanitized === configuredAgentIdentifier) return;
+    onChange('agentIdentifier', sanitized);
+  }, [usesBundledAgentSelector, values.agentIdentifier, configuredAgentIdentifier, onChange]);
 
   // Merge runtime backend + ports into metadataJson.
   const mergedValues = useMemo(() => {
@@ -308,13 +340,40 @@ export default function CreatePage() {
               <CardDescription>Configure your {entityLabel.toLowerCase()} resources and settings</CardDescription>
             </CardHeader>
             <CardContent>
-              <BlueprintJobForm
-                job={createJob}
-                values={values}
-                onChange={onChange}
-                errors={errors}
-                sections={PROVISION_SECTIONS}
-              />
+              {isSandboxBlueprint ? (
+                <>
+                  <BlueprintJobForm
+                    job={createJob}
+                    values={values}
+                    onChange={onChange}
+                    errors={errors}
+                    sections={SANDBOX_PRE_AGENT_SECTIONS}
+                  />
+
+                  <AgentConfigurationField
+                    image={selectedImage}
+                    value={configuredAgentIdentifier}
+                    usesBundledSelector={usesBundledAgentSelector}
+                    onChange={(next) => onChange('agentIdentifier', next)}
+                  />
+
+                  <BlueprintJobForm
+                    job={createJob}
+                    values={values}
+                    onChange={onChange}
+                    errors={errors}
+                    sections={SANDBOX_POST_AGENT_SECTIONS}
+                  />
+                </>
+              ) : (
+                <BlueprintJobForm
+                  job={createJob}
+                  values={values}
+                  onChange={onChange}
+                  errors={errors}
+                  sections={PROVISION_SECTIONS}
+                />
+              )}
 
               {/* Environment variables — key-value editor instead of raw JSON */}
               <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
@@ -396,6 +455,48 @@ export default function CreatePage() {
         />
       )}
     </AnimatedPage>
+  );
+}
+
+function AgentConfigurationField({
+  image,
+  value,
+  usesBundledSelector,
+  onChange,
+}: {
+  image: string;
+  value: string;
+  usesBundledSelector: boolean;
+  onChange: (value: string) => void;
+}) {
+  const helpText = usesBundledSelector
+    ? 'Choose an agent already bundled in this image. “None” keeps the sandbox compute-only and hides chat.'
+    : 'Custom images must already register this agent identifier internally. Typing a new name here does not create a new agent.';
+  const selectValue = value || BUNDLED_NO_AGENT_VALUE;
+
+  return (
+    <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
+      <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+        Agent
+      </label>
+      {usesBundledSelector ? (
+        <Select
+          value={selectValue}
+          onValueChange={(next) => onChange(sanitizeBundledAgentIdentifier(next))}
+          options={BUNDLED_AGENT_OPTIONS}
+        />
+      ) : (
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={image ? 'default' : 'Choose an image first'}
+          className="font-data text-sm"
+        />
+      )}
+      <p className="text-[11px] text-cloud-elements-textTertiary">
+        {helpText}
+      </p>
+    </div>
   );
 }
 
@@ -573,6 +674,7 @@ function DeployStep({
     if (f.type === 'boolean') return !!v;
     return v != null && v !== '' && v !== '{}' && v !== f.defaultValue;
   });
+  const configuredAgentIdentifier = normalizeAgentIdentifier(values.agentIdentifier);
 
   const otherJobs = blueprint.jobs.filter((j) => j.id !== job.id);
 
@@ -617,7 +719,7 @@ function DeployStep({
         </div>
 
         {/* Active config options (non-default) */}
-        {activeExtras.length > 0 && (
+        {(activeExtras.length > 0 || configuredAgentIdentifier) && (
           <div className="mt-3 pt-3 border-t border-white/[0.04] flex flex-wrap gap-1.5">
             {activeExtras.map((f) => {
               const v = values[f.name];
@@ -633,6 +735,12 @@ function DeployStep({
                 </span>
               );
             })}
+            {configuredAgentIdentifier && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] text-[11px] font-data text-cloud-elements-textSecondary">
+                <div className="i-ph:robot text-[10px] text-teal-400" />
+                Agent: {configuredAgentIdentifier}
+              </span>
+            )}
           </div>
         )}
       </div>

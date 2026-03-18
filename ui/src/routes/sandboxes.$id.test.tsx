@@ -350,6 +350,30 @@ describe('SandboxDetail snapshot flow', () => {
     expect(await screen.findByText('Operator Terminal')).toBeInTheDocument();
   });
 
+  it('blocks chat when the configured agent is not provided by the running image', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+    sandboxesRef.current = [makeSandbox({ agentIdentifier: 'a1' })];
+    mockOperatorApiCall.mockImplementation((action: string) => {
+      if (action === 'agents') {
+        return Promise.resolve(jsonResponse({
+          agents: [
+            { identifier: 'default' },
+            { identifier: 'batch' },
+          ],
+        }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+
+    renderSubject();
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
+
+    expect(await screen.findByText(/configured agent is not available/i)).toBeInTheDocument();
+    expect(screen.getByText(/available agents:/i)).toBeInTheDocument();
+    expect(screen.queryByText('Session Sidebar')).not.toBeInTheDocument();
+  });
+
   it('renders provision progress when a creating sandbox has callId 0', () => {
     sandboxesRef.current = [makeSandbox({ status: 'creating', callId: 0 })];
 

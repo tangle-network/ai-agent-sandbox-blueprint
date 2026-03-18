@@ -26,7 +26,7 @@ use std::time::Duration;
 use crate::api_types::*;
 use crate::circuit_breaker;
 use crate::error::SandboxError;
-use crate::http::sidecar_post_json;
+use crate::http::{sidecar_get_json, sidecar_post_json};
 use crate::live_operator_sessions::{
     LiveChatSession, LiveJsonEvent, LiveSessionStore, LiveTerminalSession, sse_from_json_events,
     sse_from_terminal_output,
@@ -1189,6 +1189,101 @@ struct AgentResponse {
     output_tokens: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AgentDescriptor {
+    identifier: String,
+    #[serde(
+        rename = "displayName",
+        alias = "display_name",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    display_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SidecarAgentList {
+    #[serde(default)]
+    agents: Vec<AgentDescriptor>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentListApiResponse {
+    agents: Vec<AgentDescriptor>,
+    count: usize,
+}
+
+fn format_available_agents(agents: &[AgentDescriptor]) -> String {
+    agents
+        .iter()
+        .map(|agent| agent.identifier.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn invalid_agent_identifier_error(
+    agent_identifier: &str,
+    agents: &[AgentDescriptor],
+) -> (StatusCode, Json<ApiError>) {
+    let trimmed = agent_identifier.trim();
+    if agents.is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Unknown agent identifier \"{trimmed}\". This sidecar image does not register that agent."
+            ),
+        );
+    }
+
+    api_error(
+        StatusCode::BAD_REQUEST,
+        format!(
+            "Unknown agent identifier \"{trimmed}\". Available agents: {}",
+            format_available_agents(agents)
+        ),
+    )
+}
+
+fn translate_missing_agent_factory_error(
+    agent_identifier: &str,
+    err: &(StatusCode, Json<ApiError>),
+) -> Option<(StatusCode, Json<ApiError>)> {
+    if agent_identifier.trim().is_empty() {
+        return None;
+    }
+
+    let message = err.1.0.error.as_str();
+    if message.contains("No factory registered for agent identifier") {
+        return Some(invalid_agent_identifier_error(agent_identifier, &[]));
+    }
+
+    None
+}
+
+fn agents_endpoint_unsupported(err: &(StatusCode, Json<ApiError>)) -> bool {
+    let message = err.1.0.error.as_str();
+    message.contains("HTTP 404") || message.contains("HTTP 405") || message.contains("HTTP 501")
+}
+
+fn agent_discovery_not_supported_message(message: &str) -> bool {
+    message.contains("HTTP 404") || message.contains("HTTP 405") || message.contains("HTTP 501")
+}
+
+fn parse_agent_descriptors(
+    parsed: Value,
+) -> Result<Vec<AgentDescriptor>, (StatusCode, Json<ApiError>)> {
+    serde_json::from_value::<SidecarAgentList>(parsed)
+        .map(|body| body.agents)
+        .map_err(|err| {
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                format!("Invalid sidecar /agents response: {err}"),
+            )
+        })
+}
+
 /// Parse agent response from sidecar (used by both prompt and task).
 ///
 /// Extracts usage metrics (`duration_ms`, `input_tokens`, `output_tokens`)
@@ -1327,6 +1422,23 @@ async fn run_sidecar_json_attempt(
     }
 }
 
+async fn run_sidecar_get_json_attempt(
+    record: &SandboxRecord,
+    path: &str,
+    timeout: Duration,
+) -> std::result::Result<Value, SidecarAttemptFailure> {
+    match tokio::time::timeout(
+        timeout,
+        sidecar_get_json(&record.sidecar_url, path, &record.token),
+    )
+    .await
+    {
+        Err(_) => Err(SidecarAttemptFailure::Timeout),
+        Ok(Err(err)) => Err(SidecarAttemptFailure::Error(err)),
+        Ok(Ok(parsed)) => Ok(parsed),
+    }
+}
+
 /// Call a sidecar endpoint with circuit-breaker integration and timeout.
 ///
 /// This is the single entry point for all sidecar HTTP calls. It:
@@ -1388,6 +1500,117 @@ async fn sidecar_call(
     }
 }
 
+async fn sidecar_get_call(
+    record: &SandboxRecord,
+    path: &str,
+    timeout: Duration,
+    op_name: &str,
+) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    require_running(record)?;
+    circuit_breaker::check_health(&record.id)
+        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+
+    match run_sidecar_get_json_attempt(record, path, timeout).await {
+        Err(SidecarAttemptFailure::Timeout) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+            ))
+        }
+        Err(SidecarAttemptFailure::Error(err)) => {
+            let err_message = err.to_string();
+            if op_name == "agents" && agent_discovery_not_supported_message(&err_message) {
+                return Err(api_error(StatusCode::BAD_GATEWAY, err_message));
+            }
+
+            if is_retryable_transport_error(&err) {
+                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
+                    match run_sidecar_get_json_attempt(&refreshed, path, timeout).await {
+                        Ok(parsed) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+                            return Ok(parsed);
+                        }
+                        Err(SidecarAttemptFailure::Timeout) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
+                        }
+                        Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            let retry_message = retry_err.to_string();
+                            if op_name == "agents"
+                                && agent_discovery_not_supported_message(&retry_message)
+                            {
+                                return Err(api_error(StatusCode::BAD_GATEWAY, retry_message));
+                            }
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_message));
+                        }
+                    }
+                }
+            }
+
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(StatusCode::BAD_GATEWAY, err_message))
+        }
+        Ok(parsed) => {
+            circuit_breaker::mark_healthy(&record.id);
+            runtime::touch_sandbox(&record.id);
+            Ok(parsed)
+        }
+    }
+}
+
+async fn fetch_sidecar_agents(
+    record: &SandboxRecord,
+) -> Result<Option<Vec<AgentDescriptor>>, (StatusCode, Json<ApiError>)> {
+    let parsed = match sidecar_get_call(record, "/agents", SIDECAR_DEFAULT_TIMEOUT, "agents").await
+    {
+        Ok(parsed) => parsed,
+        Err(err) if agents_endpoint_unsupported(&err) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+
+    parse_agent_descriptors(parsed).map(Some)
+}
+
+async fn list_agents_on_sidecar(
+    record: &SandboxRecord,
+) -> Result<Vec<AgentDescriptor>, (StatusCode, Json<ApiError>)> {
+    match fetch_sidecar_agents(record).await? {
+        Some(agents) => Ok(agents),
+        None => Err(api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "This sidecar image does not expose agent discovery.",
+        )),
+    }
+}
+
+async fn validate_configured_agent(
+    record: &SandboxRecord,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let configured = record.agent_identifier.trim();
+    if configured.is_empty() {
+        return Ok(());
+    }
+
+    let Some(agents) = fetch_sidecar_agents(record).await? else {
+        return Ok(());
+    };
+
+    if agents
+        .iter()
+        .any(|agent| agent.identifier.trim() == configured)
+    {
+        return Ok(());
+    }
+
+    Err(invalid_agent_identifier_error(configured, &agents))
+}
+
 async fn exec_on_sidecar(
     record: &SandboxRecord,
     req: &ExecApiRequest,
@@ -1404,6 +1627,33 @@ async fn exec_on_sidecar(
     Ok(parse_exec_response(&parsed))
 }
 
+async fn sandbox_agents_handler(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let agents = list_agents_on_sidecar(&record).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(AgentListApiResponse {
+            count: agents.len(),
+            agents,
+        }),
+    ))
+}
+
+async fn instance_agents_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let agents = list_agents_on_sidecar(&record).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(AgentListApiResponse {
+            count: agents.len(),
+            agents,
+        }),
+    ))
+}
+
 async fn agent_on_sidecar(
     record: &SandboxRecord,
     message: &str,
@@ -1413,6 +1663,7 @@ async fn agent_on_sidecar(
     timeout_ms: u64,
     max_turns: Option<u64>,
 ) -> Result<AgentResponse, (StatusCode, Json<ApiError>)> {
+    validate_configured_agent(record).await?;
     let payload = build_agent_payload(
         message,
         session_id,
@@ -1422,14 +1673,23 @@ async fn agent_on_sidecar(
         max_turns,
         &record.agent_identifier,
     );
-    let parsed = sidecar_call(
+    let parsed = match sidecar_call(
         record,
         "/agents/run",
         payload,
         SIDECAR_AGENT_TIMEOUT,
         "agent",
     )
-    .await?;
+    .await
+    {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return Err(
+                translate_missing_agent_factory_error(&record.agent_identifier, &err)
+                    .unwrap_or(err),
+            );
+        }
+    };
     Ok(parse_agent_response(&parsed))
 }
 
@@ -2457,7 +2717,12 @@ pub fn operator_api_router_with_tee(
             "/api/sandboxes/{sandbox_id}/ports",
             get(sandbox_ports_handler),
         )
+        .route(
+            "/api/sandboxes/{sandbox_id}/agents",
+            get(sandbox_agents_handler),
+        )
         .route("/api/sandbox/ports", get(instance_ports_handler))
+        .route("/api/sandbox/agents", get(instance_agents_handler))
         .route(
             "/api/sandboxes/{sandbox_id}/live/terminal/sessions",
             get(sandbox_terminal_session_list_handler),
@@ -2731,6 +2996,7 @@ mod tests {
         last_exec_payload: Arc<Mutex<Option<Value>>>,
         last_agent_payload: Arc<Mutex<Option<Value>>>,
         exec_response: Arc<Mutex<Value>>,
+        agents_response: Arc<Mutex<Value>>,
     }
 
     async fn mock_sidecar_exec(
@@ -2767,6 +3033,15 @@ mod tests {
         }))
     }
 
+    async fn mock_sidecar_agents(State(state): State<MockSidecarState>) -> Json<Value> {
+        let response = state
+            .agents_response
+            .lock()
+            .expect("agents response lock")
+            .clone();
+        Json(response)
+    }
+
     async fn spawn_mock_sidecar() -> (String, MockSidecarState, JoinHandle<()>) {
         let state = MockSidecarState::default();
         *state.exec_response.lock().expect("exec response lock") = json!({
@@ -2776,12 +3051,20 @@ mod tests {
                 "stderr": ""
             }
         });
+        *state.agents_response.lock().expect("agents response lock") = json!({
+            "agents": [
+                { "identifier": "default", "displayName": "Default" },
+                { "identifier": "batch", "displayName": "Batch" }
+            ],
+            "count": 2
+        });
         let app = Router::new()
             .route(
                 "/health",
                 get(|| async { (StatusCode::OK, Json(json!({"status":"ok"}))) }),
             )
             .route("/terminals/commands", post(mock_sidecar_exec))
+            .route("/agents", get(mock_sidecar_agents))
             .route("/agents/run", post(mock_sidecar_agent))
             .with_state(state.clone());
 
@@ -2807,6 +3090,68 @@ mod tests {
         }
 
         (sidecar_url, state, server)
+    }
+
+    async fn spawn_mock_sidecar_without_agent_listing() -> (String, JoinHandle<()>) {
+        let app = Router::new()
+            .route(
+                "/health",
+                get(|| async { (StatusCode::OK, Json(json!({"status":"ok"}))) }),
+            )
+            .route(
+                "/agents/run",
+                post(|Json(payload): Json<Value>| async move {
+                    let identifier = payload
+                        .get("identifier")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if identifier == "a1" {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "success": false,
+                                "error": {
+                                    "code": "AGENT_EXECUTION_FAILED",
+                                    "message": "No factory registered for agent identifier a1"
+                                }
+                            })),
+                        );
+                    }
+
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "success": true,
+                            "response": "ok",
+                            "traceId": "trace-mock-compat",
+                            "sessionId": "mock-agent-session"
+                        })),
+                    )
+                }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock sidecar without /agents");
+        let addr = listener.local_addr().expect("mock sidecar addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve mock sidecar");
+        });
+
+        let sidecar_url = format!("http://{addr}");
+        let health_url = format!("{sidecar_url}/health");
+        for _ in 0..20 {
+            if let Ok(resp) = reqwest::get(&health_url).await {
+                if resp.status().is_success() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        (sidecar_url, server)
     }
 
     async fn read_first_sse_frame(mut body: Body) -> Option<String> {
@@ -3229,6 +3574,18 @@ mod tests {
         insert_plain_sandbox_with_url(id, owner, "http://localhost:9999");
     }
 
+    fn set_agent_identifier(id: &str, agent_identifier: &str) {
+        use crate::runtime::{sandboxes, seal_record};
+        let mut record = sandboxes()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .expect("sandbox must exist to update agent identifier");
+        record.agent_identifier = agent_identifier.to_string();
+        seal_record(&mut record).unwrap();
+        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
+    }
+
     /// Insert a singleton instance record (stored under key "instance").
     fn insert_instance_sandbox_with_url(id: &str, owner: &str, sidecar_url: &str) {
         insert_plain_sandbox_with_url(id, owner, sidecar_url);
@@ -3257,10 +3614,7 @@ mod tests {
             .expect("sandbox must exist to enable ssh");
         record.ssh_port = Some(port);
         seal_record(&mut record).unwrap();
-        sandboxes()
-            .unwrap()
-            .insert(id.to_string(), record)
-            .unwrap();
+        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
     // Use a distinct owner for TEE tests so sandbox inserts don't pollute
@@ -3565,6 +3919,19 @@ mod tests {
                 "Expected 401 for {path} (not 404), confirming route exists"
             );
         }
+
+        let response = app()
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/sandbox/agents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -4851,6 +5218,91 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_agents_endpoint_lists_registered_agents() {
+        let (sidecar_url, _sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("agents-list-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/agents-list-1/agents")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response.into_body()).await;
+        assert_eq!(body["count"], 2);
+        assert_eq!(body["agents"][0]["identifier"], "default");
+        assert_eq!(body["agents"][1]["identifier"], "batch");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_rejects_unknown_configured_agent_identifier() {
+        let (sidecar_url, _sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("bad-agent-1", OP_TEST_OWNER, &sidecar_url);
+        set_agent_identifier("bad-agent-1", "a1");
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "hello" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/bad-agent-1/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let payload = body_json(response.into_body()).await;
+        assert_eq!(
+            payload["error"],
+            "Unknown agent identifier \"a1\". Available agents: default, batch"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_translates_missing_factory_error_when_agent_listing_is_unavailable() {
+        let (sidecar_url, server) = spawn_mock_sidecar_without_agent_listing().await;
+        insert_plain_sandbox_with_url("bad-agent-compat-1", OP_TEST_OWNER, &sidecar_url);
+        set_agent_identifier("bad-agent-compat-1", "a1");
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "hello" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/bad-agent-compat-1/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let payload = body_json(response.into_body()).await;
+        assert_eq!(
+            payload["error"],
+            "Unknown agent identifier \"a1\". This sidecar image does not register that agent."
+        );
         server.abort();
     }
 
