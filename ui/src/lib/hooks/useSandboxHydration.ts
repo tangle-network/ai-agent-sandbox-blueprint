@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { publicClient, tangleJobsAbi } from '@tangle-network/blueprint-ui';
+import { decodeEventLog } from 'viem';
 import { useOperatorAuth } from './useOperatorAuth';
-import { sandboxListStore } from '~/lib/stores/sandboxes';
+import { sandboxListStore, type LocalSandbox } from '~/lib/stores/sandboxes';
 import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
 import {
   fetchSandboxes,
+  hasRecentPendingTx,
   reconcileSandboxes,
   type ApiProvision,
   type ApiSandbox,
@@ -27,6 +30,76 @@ export interface SandboxHydrationState {
   isHydrating: boolean;
   authRequired: boolean;
   lastError: string | null;
+}
+
+function getCallIdFromReceiptLogs(logs: Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>): number | null {
+  for (const log of logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: tangleJobsAbi,
+        data: log.data,
+        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
+      });
+      if (decoded.eventName === 'JobCalled' && 'callId' in decoded.args) {
+        return Number(decoded.args.callId);
+      }
+    } catch {
+      // Ignore unrelated logs while scanning the receipt.
+    }
+  }
+
+  return null;
+}
+
+async function recoverDraftFromReceipt(
+  sandbox: LocalSandbox,
+  signal: AbortSignal,
+): Promise<LocalSandbox> {
+  if (
+    signal.aborted
+    || sandbox.sandboxId
+    || sandbox.callId != null
+    || !sandbox.txHash
+    || sandbox.status !== 'creating'
+  ) {
+    return sandbox;
+  }
+
+  try {
+    const receipt = await publicClient.getTransactionReceipt({
+      hash: sandbox.txHash as `0x${string}`,
+    });
+    if (signal.aborted) return sandbox;
+
+    if (receipt.status === 'reverted') {
+      return {
+        ...sandbox,
+        status: 'error',
+        errorMessage: 'Sandbox creation transaction reverted before provisioning started.',
+      };
+    }
+
+    const callId = getCallIdFromReceiptLogs(receipt.logs as Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>);
+    if (callId != null) {
+      return {
+        ...sandbox,
+        callId,
+      };
+    }
+
+    return {
+      ...sandbox,
+      status: 'error',
+      errorMessage: 'Sandbox transaction confirmed without a JobCalled event.',
+    };
+  } catch {
+    if (hasRecentPendingTx(sandbox)) return sandbox;
+    return {
+      ...sandbox,
+      status: 'error',
+      errorMessage: 'Sandbox transaction receipt could not be recovered from the RPC.',
+    };
+  }
 }
 
 /**
@@ -55,8 +128,10 @@ export function useSandboxHydration() {
     setAuthRequired(false);
 
     try {
-      const fetchProvisionStatuses = async () => {
-        const existing = sandboxListStore.get();
+      const recoverDraftReceipts = async (existing: LocalSandbox[]) =>
+        Promise.all(existing.map((sandbox) => recoverDraftFromReceipt(sandbox, signal)));
+
+      const fetchProvisionStatuses = async (existing: LocalSandbox[]) => {
         const drafts = existing.filter((sandbox) => !sandbox.sandboxId && sandbox.callId != null);
         const provisions = new Map<number, ApiProvision | null>();
         if (drafts.length === 0) return provisions;
@@ -81,12 +156,16 @@ export function useSandboxHydration() {
         return provisions;
       };
 
+      const existing = sandboxListStore.get();
+      const recoveredExisting = await recoverDraftReceipts(existing);
+      if (signal.aborted) return false;
+
       const results: ApiSandbox[] = [];
       let hadError = false;
       let sandboxFetchSucceeded = false;
       let instanceFetchSucceeded = false;
       let sandboxAuthRequired = false;
-      const provisionResults = await fetchProvisionStatuses();
+      const provisionResults = await fetchProvisionStatuses(recoveredExisting);
 
       // Fetch from sandbox operator
       try {
@@ -168,8 +247,7 @@ export function useSandboxHydration() {
         return false;
       }
 
-      const existing = sandboxListStore.get();
-      const merged = reconcileSandboxes(existing, results, provisionResults, {
+      const merged = reconcileSandboxes(recoveredExisting, results, provisionResults, {
         pruneUnverifiedDrafts: sandboxFetchSucceeded,
         pruneMissingCanonical: sandboxFetchSucceeded,
       });

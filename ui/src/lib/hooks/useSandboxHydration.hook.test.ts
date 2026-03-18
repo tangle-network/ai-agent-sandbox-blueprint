@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { sandboxListStore, type LocalSandbox } from '~/lib/stores/sandboxes';
 
-const { sandboxAuth, instanceAuth, toastError } = vi.hoisted(() => ({
+const { sandboxAuth, instanceAuth, toastError, mockGetTransactionReceipt, mockDecodeEventLog } = vi.hoisted(() => ({
   sandboxAuth: {
     getToken: vi.fn(),
     getCachedToken: vi.fn(),
@@ -18,6 +18,8 @@ const { sandboxAuth, instanceAuth, toastError } = vi.hoisted(() => ({
     error: null as string | null,
   },
   toastError: vi.fn(),
+  mockGetTransactionReceipt: vi.fn(),
+  mockDecodeEventLog: vi.fn(),
 }));
 
 vi.mock('./useOperatorAuth', () => ({
@@ -28,6 +30,26 @@ vi.mock('~/lib/config', () => ({
   OPERATOR_API_URL: 'http://operator:9100',
   INSTANCE_OPERATOR_API_URL: 'http://instance:9200',
 }));
+
+vi.mock('@tangle-network/blueprint-ui', async () => {
+  const actual = await vi.importActual<typeof import('@tangle-network/blueprint-ui')>('@tangle-network/blueprint-ui');
+  return {
+    ...actual,
+    publicClient: {
+      ...actual.publicClient,
+      getTransactionReceipt: mockGetTransactionReceipt,
+    },
+    tangleJobsAbi: [],
+  };
+});
+
+vi.mock('viem', async () => {
+  const actual = await vi.importActual<typeof import('viem')>('viem');
+  return {
+    ...actual,
+    decodeEventLog: mockDecodeEventLog,
+  };
+});
 
 vi.mock('sonner', () => ({
   toast: {
@@ -78,6 +100,9 @@ describe('useSandboxHydration hook', () => {
     instanceAuth.getToken.mockReset();
     instanceAuth.getCachedToken.mockReset();
     toastError.mockReset();
+    mockGetTransactionReceipt.mockReset();
+    mockDecodeEventLog.mockReset();
+    mockGetTransactionReceipt.mockRejectedValue(new Error('receipt not found'));
     vi.stubGlobal('fetch', vi.fn());
   });
 
@@ -197,6 +222,79 @@ describe('useSandboxHydration hook', () => {
     expect(sandboxListStore.get()[1].localId).toBe('canonical:sandbox-live-2');
     expect(sandboxListStore.get()[1].sandboxId).toBe('sandbox-live-2');
     expect(sandboxListStore.get()[1].name).toBe('sb1');
+  });
+
+  it('recovers a missing callId from the tx receipt and marks failed provisions as error', async () => {
+    sandboxListStore.set([
+      makeLocalSandbox({
+        localId: 'draft:tx-pending',
+        txHash: '0xabc',
+        createdAt: Date.now(),
+      }),
+    ]);
+    sandboxAuth.getCachedToken.mockReturnValue('cached-token');
+    instanceAuth.getCachedToken.mockReturnValue(null);
+    mockGetTransactionReceipt.mockResolvedValue({
+      status: 'success',
+      logs: [{ data: '0x', topics: [] }],
+    });
+    mockDecodeEventLog.mockReturnValue({
+      eventName: 'JobCalled',
+      args: { callId: 0n },
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ call_id: 0, phase: 'failed', message: 'boom' }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ sandboxes: [] }),
+      } as Response);
+
+    renderHook(() => useSandboxHydration());
+
+    await waitFor(() => {
+      expect(sandboxListStore.get()).toHaveLength(1);
+      expect(sandboxListStore.get()[0].callId).toBe(0);
+      expect(sandboxListStore.get()[0].status).toBe('error');
+      expect(sandboxListStore.get()[0].errorMessage).toBe('boom');
+    });
+  });
+
+  it('marks a confirmed tx-backed draft as error when no JobCalled event is present', async () => {
+    sandboxListStore.set([
+      makeLocalSandbox({
+        localId: 'draft:tx-confirmed',
+        txHash: '0xdef',
+        createdAt: Date.now(),
+      }),
+    ]);
+    sandboxAuth.getCachedToken.mockReturnValue('cached-token');
+    instanceAuth.getCachedToken.mockReturnValue(null);
+    mockGetTransactionReceipt.mockResolvedValue({
+      status: 'success',
+      logs: [],
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ sandboxes: [] }),
+    } as Response);
+
+    renderHook(() => useSandboxHydration());
+
+    await waitFor(() => {
+      expect(sandboxListStore.get()).toHaveLength(1);
+      expect(sandboxListStore.get()[0].status).toBe('error');
+      expect(sandboxListStore.get()[0].errorMessage).toBe('Sandbox transaction confirmed without a JobCalled event.');
+    });
   });
 
   it('passive hydration prunes stale canonical sandboxes once operator truth is available', async () => {
