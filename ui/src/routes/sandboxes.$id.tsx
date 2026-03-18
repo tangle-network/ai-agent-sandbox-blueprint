@@ -412,15 +412,22 @@ export default function SandboxDetail() {
       <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-6" />
 
       {/* Provision Progress (shown when creating) */}
-      {sb.status === 'creating' && sb.callId && (
+      {sb.status === 'creating' && sb.callId != null && (
         <ProvisionProgress
           callId={sb.callId}
           className="mb-4"
           onReady={(sandboxId, sidecarUrl) => {
-            updateSandboxStatus(routeKey, 'running', { sandboxId, sidecarUrl });
+            updateSandboxStatus(routeKey, 'running', { sandboxId, sidecarUrl, errorMessage: undefined });
           }}
-          onFailed={() => updateSandboxStatus(routeKey, 'error')}
+          onFailed={(message) => updateSandboxStatus(routeKey, 'error', { errorMessage: message })}
         />
+      )}
+
+      {sb.status === 'error' && sb.errorMessage && (
+        <div className="mb-4 rounded-xl border border-crimson-500/20 bg-crimson-500/5 p-4">
+          <p className="text-sm font-display font-medium text-crimson-300">Provisioning failed</p>
+          <p className="mt-1 text-xs text-crimson-200/90">{sb.errorMessage}</p>
+        </div>
       )}
 
       {/* Tab Content */}

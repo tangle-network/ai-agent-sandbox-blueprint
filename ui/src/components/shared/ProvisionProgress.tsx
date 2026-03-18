@@ -3,7 +3,6 @@ import { cn } from '@tangle-network/blueprint-ui';
 import {
   useProvisionProgress,
   getPhaseLabel,
-  isTerminalPhase,
   type ProvisionPhase,
 } from '@tangle-network/blueprint-ui';
 
@@ -65,7 +64,7 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady, onFailed
 
   // Start / stop the elapsed-time ticker.
   useEffect(() => {
-    if (!callId || isTerminal) {
+    if (callId == null || isTerminal) {
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -121,7 +120,7 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady, onFailed
     }
   }, [isFailed, message, onFailed]);
 
-  if (!callId) return null;
+  if (callId == null) return null;
 
   const currentIdx = phase ? phaseIndex(phase) : -1;
   const showTimeout = isTimedOut && !isReady && !isFailed;

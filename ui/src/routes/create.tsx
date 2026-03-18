@@ -701,13 +701,13 @@ function DeployStep({
       )}
 
       {/* ── Provision Progress ── */}
-      {status === 'confirmed' && isSandbox && callId && (
+      {status === 'confirmed' && isSandbox && callId != null && (
         <ProvisionProgress
           callId={callId}
           onReady={onProvisionReady}
           onFailed={(message) => {
             setProvisionError(message);
-            if (sandboxDraftKey) updateSandboxStatus(sandboxDraftKey, 'error');
+            if (sandboxDraftKey) updateSandboxStatus(sandboxDraftKey, 'error', { errorMessage: message });
           }}
         />
       )}

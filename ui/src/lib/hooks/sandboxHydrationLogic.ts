@@ -106,7 +106,7 @@ function sandboxFromApi(api: ApiSandbox): LocalSandbox {
   });
 }
 
-function hasRecentPendingTx(sandbox: LocalSandbox): boolean {
+export function hasRecentPendingTx(sandbox: LocalSandbox): boolean {
   if (!sandbox.txHash || sandbox.status !== 'creating') return false;
   return Date.now() - sandbox.createdAt <= DRAFT_TX_GRACE_MS;
 }
@@ -167,9 +167,14 @@ export function reconcileSandboxes(
         sandboxId: provision.sandbox_id ?? undefined,
         sidecarUrl: provision.sidecar_url || next.sidecarUrl,
         status: 'running',
+        errorMessage: undefined,
       });
     } else if (!next.sandboxId && provision?.phase === 'failed') {
-      next = normalizeSandbox({ ...next, status: 'error' });
+      next = normalizeSandbox({
+        ...next,
+        status: 'error',
+        errorMessage: provision.message || next.errorMessage,
+      });
     }
 
     const api = next.sandboxId ? apiById.get(next.sandboxId) : undefined;
@@ -183,6 +188,7 @@ export function reconcileSandboxes(
         agentIdentifier: api.agent_identifier || next.agentIdentifier,
         teeEnabled: next.teeEnabled || !!api.tee_deployment_id,
         status: statusFromApi(api.state),
+        errorMessage: undefined,
       }));
       continue;
     }
@@ -203,7 +209,13 @@ export function reconcileSandboxes(
           agentIdentifier: inferredApi.agent_identifier || next.agentIdentifier,
           teeEnabled: next.teeEnabled || !!inferredApi.tee_deployment_id,
           status: statusFromApi(inferredApi.state),
+          errorMessage: undefined,
         }));
+        continue;
+      }
+
+      if (next.status === 'error') {
+        reconciled.push(next);
         continue;
       }
 

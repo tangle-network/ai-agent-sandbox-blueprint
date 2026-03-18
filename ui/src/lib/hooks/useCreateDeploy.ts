@@ -228,7 +228,9 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   useEffect(() => {
     if (!sandboxDraftKeyRef.current || modeRef.current !== 'sandbox') return;
     if (!jobError && !jobTxFailed) return;
-    updateSandboxStatus(sandboxDraftKeyRef.current, 'error');
+    updateSandboxStatus(sandboxDraftKeyRef.current, 'error', {
+      errorMessage: jobError ?? 'Sandbox creation transaction failed before provisioning started.',
+    });
   }, [jobError, jobTxFailed]);
 
   // Add instance to store when requestService confirms

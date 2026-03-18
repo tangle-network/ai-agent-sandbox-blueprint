@@ -338,6 +338,14 @@ describe('SandboxDetail snapshot flow', () => {
     expect(await screen.findByText('Operator Terminal')).toBeInTheDocument();
   });
 
+  it('renders provision progress when a creating sandbox has callId 0', () => {
+    sandboxesRef.current = [makeSandbox({ status: 'creating', callId: 0 })];
+
+    renderSubject();
+
+    expect(screen.getByText('Provision Progress')).toBeInTheDocument();
+  });
+
   it('surfaces backend failure and keeps the modal open', async () => {
     mockOperatorApiCall.mockRejectedValueOnce(new Error('snapshot failed (400): invalid destination'));
     renderSubject();

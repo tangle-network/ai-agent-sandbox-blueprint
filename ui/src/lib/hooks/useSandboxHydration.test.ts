@@ -409,6 +409,7 @@ describe('sandbox hydration merge logic', () => {
 
     expect(reconciled).toHaveLength(1);
     expect(reconciled[0].status).toBe('error');
+    expect(reconciled[0].errorMessage).toBe('boom');
   });
 
   it('keeps recent tx-backed drafts while waiting for the receipt to yield a callId when operator truth is unavailable', () => {
@@ -455,6 +456,27 @@ describe('sandbox hydration merge logic', () => {
     expect(reconciled[0].localId).toBe('draft:tx-pending');
     expect(reconciled[0].sandboxId).toBeUndefined();
     expect(reconciled[1].sandboxId).toBe('sandbox-live-1');
+  });
+
+  it('keeps local error drafts visible even when operator truth is empty', () => {
+    const existing = [
+      makeLocalSandbox({
+        id: 'draft:failed',
+        sandboxId: undefined,
+        status: 'error',
+        sidecarUrl: '',
+        errorMessage: 'receipt missing',
+      }),
+    ];
+
+    const reconciled = reconcileSandboxes(existing, [], new Map(), {
+      pruneUnverifiedDrafts: true,
+      pruneMissingCanonical: true,
+    });
+
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0].status).toBe('error');
+    expect(reconciled[0].errorMessage).toBe('receipt missing');
   });
 
   it('prunes stale canonical sandboxes after a successful authoritative refresh', () => {

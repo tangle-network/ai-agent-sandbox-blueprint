@@ -27,6 +27,7 @@ export interface LocalSandbox {
   status: 'creating' | 'running' | 'stopped' | 'warm' | 'cold' | 'gone' | 'error';
   txHash?: string;
   callId?: number;
+  errorMessage?: string;
 }
 
 interface LegacySandboxRecord extends Partial<LocalSandbox> {
@@ -143,6 +144,7 @@ export function normalizeSandbox(record: LegacySandboxRecord): LocalSandbox {
     status: record.status ?? 'creating',
     txHash: record.txHash,
     callId: record.callId,
+    errorMessage: record.errorMessage,
   };
 }
 
