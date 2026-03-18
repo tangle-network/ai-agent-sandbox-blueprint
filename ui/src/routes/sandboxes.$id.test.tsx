@@ -219,6 +219,10 @@ function renderSubject() {
   return render(<SandboxDetail />);
 }
 
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status });
+}
+
 describe('SandboxDetail snapshot flow', () => {
   beforeEach(() => {
     sandboxesRef.current = [makeSandbox()];
@@ -375,5 +379,111 @@ describe('SandboxDetail snapshot flow', () => {
     await waitFor(() => {
       expect(screen.queryByPlaceholderText(/https:\/\/storage\.example\.com\/snapshots\//i)).not.toBeInTheDocument();
     });
+  });
+
+  it('auto-detects the SSH username when the SSH tab opens', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+    mockOperatorApiCall.mockImplementation(async (action: string) => {
+      if (action === 'ssh/user') {
+        return jsonResponse({ success: true, username: 'sidecar' });
+      }
+      return jsonResponse({});
+    });
+
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
+
+    await waitFor(() => {
+      expect(mockOperatorApiCall).toHaveBeenCalledWith('ssh/user', undefined, { method: 'GET' });
+    });
+    expect(await screen.findByDisplayValue('sidecar')).toBeInTheDocument();
+    expect(screen.getByText('Detected sandbox user: sidecar')).toBeInTheDocument();
+  });
+
+  it('preserves a manual username edit if detection finishes later', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+    let resolveDetection: ((value: Response) => void) | undefined;
+    const detectionPromise = new Promise<Response>((resolve) => {
+      resolveDetection = resolve;
+    });
+    mockOperatorApiCall.mockImplementation(async (action: string) => {
+      if (action === 'ssh/user') {
+        return detectionPromise;
+      }
+      return jsonResponse({});
+    });
+
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
+    const usernameInput = screen.getByLabelText('SSH username');
+    fireEvent.change(usernameInput, { target: { value: 'custom-user' } });
+    resolveDetection?.(jsonResponse({ success: true, username: 'sidecar' }));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('custom-user')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Detected sandbox user: sidecar')).toBeInTheDocument();
+  });
+
+  it('does not add an SSH key when the backend returns an error', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+    mockOperatorApiCall.mockImplementation(async (action: string) => {
+      if (action === 'ssh/user') {
+        return jsonResponse({ success: true, username: 'sidecar' });
+      }
+      if (action === 'ssh') {
+        throw new Error('ssh failed (422): {"error":"SSH provision failed for user \'agent\' (exit 2): User agent does not exist"}');
+      }
+      return jsonResponse({});
+    });
+
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
+    fireEvent.change(await screen.findByLabelText('SSH public key'), {
+      target: { value: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest route@test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Key' }));
+
+    expect(await screen.findByText("SSH provision failed for user 'agent' (exit 2): User agent does not exist")).toBeInTheDocument();
+    expect(screen.queryByText('Active Keys')).not.toBeInTheDocument();
+    expect(screen.queryByText('SSH key provisioned')).not.toBeInTheDocument();
+  });
+
+  it('stores the backend-returned SSH username after a successful add', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+    mockOperatorApiCall.mockImplementation(async (action: string) => {
+      if (action === 'ssh/user') {
+        return jsonResponse({ success: true, username: 'sidecar' });
+      }
+      if (action === 'ssh') {
+        return jsonResponse({
+          success: true,
+          username: 'sidecar',
+          result: { result: { exitCode: 0, stdout: '', stderr: '' } },
+        });
+      }
+      return jsonResponse({});
+    });
+
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
+    fireEvent.change(await screen.findByLabelText('SSH username'), {
+      target: { value: 'agent' },
+    });
+    fireEvent.change(screen.getByLabelText('SSH public key'), {
+      target: { value: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest route@test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Key' }));
+
+    expect(await screen.findByText('sidecar@')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('sidecar')).toBeInTheDocument();
   });
 });

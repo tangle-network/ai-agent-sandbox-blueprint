@@ -21,16 +21,26 @@ export function useOperatorApiCall(
     if (!token) throw new Error('Wallet authentication required');
 
     const url = `${operatorUrl}${buildPath(action)}`;
+    const method = opts?.method ?? 'POST';
+    const methodUpper = method.toUpperCase();
+    const shouldSendBody = methodUpper !== 'GET' && methodUpper !== 'HEAD';
 
-    const doFetch = (bearerToken: string) =>
-      fetch(url, {
-        method: opts?.method ?? 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${bearerToken}`,
-        },
-        body: body ? JSON.stringify(body) : '{}',
+    const doFetch = (bearerToken: string) => {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${bearerToken}`,
+      };
+      if (shouldSendBody) {
+        headers['Content-Type'] = 'application/json';
+      }
+
+      return fetch(url, {
+        method,
+        headers,
+        ...(shouldSendBody
+          ? { body: body ? JSON.stringify(body) : '{}' }
+          : {}),
       });
+    };
 
     let res = await doFetch(token);
 

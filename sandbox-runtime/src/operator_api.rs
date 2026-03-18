@@ -1045,6 +1045,77 @@ fn parse_exec_response(parsed: &Value) -> ExecApiResponse {
     }
 }
 
+fn first_nonempty_output_line(output: &str) -> Option<&str> {
+    output.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
+fn strip_terminal_control_sequences(output: &str) -> String {
+    let mut cleaned = String::with_capacity(output.len());
+    let mut chars = output.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if matches!(chars.peek(), Some('[')) {
+                chars.next();
+                while let Some(next) = chars.next() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if ch.is_control() && ch != '\n' && ch != '\t' {
+            continue;
+        }
+
+        cleaned.push(ch);
+    }
+
+    cleaned
+}
+
+fn summarize_exec_failure(exec: &ExecApiResponse) -> String {
+    let stderr = strip_terminal_control_sequences(&exec.stderr);
+    let stdout = strip_terminal_control_sequences(&exec.stdout);
+    first_nonempty_output_line(&stderr)
+        .or_else(|| first_nonempty_output_line(&stdout))
+        .unwrap_or("command failed")
+        .to_string()
+}
+
+fn parse_detected_ssh_username(
+    exec: &ExecApiResponse,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    if exec.exit_code != 0 {
+        return Err(api_error(
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "SSH username detection failed (exit {}): {}",
+                exec.exit_code,
+                summarize_exec_failure(exec)
+            ),
+        ));
+    }
+
+    let stdout = strip_terminal_control_sequences(&exec.stdout);
+    for line in stdout.lines() {
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        if crate::ssh_validation::validate_ssh_username(candidate).is_ok() {
+            return Ok(candidate.to_string());
+        }
+    }
+
+    Err(api_error(
+        StatusCode::BAD_GATEWAY,
+        "SSH username detection failed: could not find a valid username in command output",
+    ))
+}
+
 /// Build `/agents/run` payload for prompt/task operations.
 fn build_agent_payload(
     message: &str,
@@ -1805,12 +1876,71 @@ fi"
     )
 }
 
+async fn detect_ssh_username(
+    record: &SandboxRecord,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    let payload = build_exec_payload("id -un || whoami", "", "", 0);
+    let parsed = sidecar_call(
+        record,
+        "/terminals/commands",
+        payload,
+        SIDECAR_EXEC_TIMEOUT,
+        "ssh-user",
+    )
+    .await?;
+    let exec = parse_exec_response(&parsed);
+    parse_detected_ssh_username(&exec)
+}
+
+fn resolve_requested_ssh_username(
+    requested: Option<&str>,
+) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
+    let Some(username) = requested.map(str::trim) else {
+        return Ok(None);
+    };
+    if username.is_empty() {
+        return Ok(None);
+    }
+    crate::ssh_validation::validate_ssh_username(username)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Some(username.to_string()))
+}
+
+async fn resolve_effective_ssh_username(
+    record: &SandboxRecord,
+    requested: Option<&str>,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    match resolve_requested_ssh_username(requested)? {
+        Some(username) => Ok(username),
+        None => detect_ssh_username(record).await,
+    }
+}
+
+fn ensure_ssh_command_succeeded(
+    action: &str,
+    username: &str,
+    parsed: &Value,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let exec = parse_exec_response(parsed);
+    if exec.exit_code == 0 {
+        return Ok(());
+    }
+
+    Err(api_error(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        format!(
+            "SSH {action} failed for user '{username}' (exit {}): {}",
+            exec.exit_code,
+            summarize_exec_failure(&exec)
+        ),
+    ))
+}
+
 async fn run_ssh_provision(
     record: &SandboxRecord,
     req: &SshProvisionApiRequest,
 ) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
-    let username = crate::util::normalize_username(&req.username)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let username = resolve_effective_ssh_username(record, req.username.as_deref()).await?;
     let command = build_ssh_provision_command(&username, &req.public_key);
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
     let parsed = sidecar_call(
@@ -1821,8 +1951,10 @@ async fn run_ssh_provision(
         "ssh-provision",
     )
     .await?;
+    ensure_ssh_command_succeeded("provision", &username, &parsed)?;
     Ok(SshApiResponse {
         success: true,
+        username,
         result: parsed,
     })
 }
@@ -1831,8 +1963,7 @@ async fn run_ssh_revoke(
     record: &SandboxRecord,
     req: &SshRevokeApiRequest,
 ) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
-    let username = crate::util::normalize_username(&req.username)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let username = resolve_effective_ssh_username(record, req.username.as_deref()).await?;
     let command = build_ssh_revoke_cmd(&username, &req.public_key);
     let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
     let parsed = sidecar_call(
@@ -1843,10 +1974,27 @@ async fn run_ssh_revoke(
         "ssh-revoke",
     )
     .await?;
+    ensure_ssh_command_succeeded("revoke", &username, &parsed)?;
     Ok(SshApiResponse {
         success: true,
+        username,
         result: parsed,
     })
+}
+
+async fn sandbox_ssh_user_handler(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let username = detect_ssh_username(&record).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(SshUserApiResponse {
+            success: true,
+            username,
+        }),
+    ))
 }
 
 async fn sandbox_ssh_provision_handler(
@@ -1871,6 +2019,18 @@ async fn sandbox_ssh_revoke_handler(
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let resp = run_ssh_revoke(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
+async fn instance_ssh_user_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let username = detect_ssh_username(&record).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(SshUserApiResponse {
+            success: true,
+            username,
+        }),
+    ))
 }
 
 async fn instance_ssh_provision_handler(
@@ -2395,6 +2555,10 @@ pub fn operator_api_router_with_tee(
             post(sandbox_ssh_provision_handler).delete(sandbox_ssh_revoke_handler),
         )
         .route(
+            "/api/sandboxes/{sandbox_id}/ssh/user",
+            get(sandbox_ssh_user_handler),
+        )
+        .route(
             "/api/sandboxes/{sandbox_id}/port/{port}/{*rest}",
             any(sandbox_port_proxy_handler),
         )
@@ -2416,6 +2580,7 @@ pub fn operator_api_router_with_tee(
             "/api/sandbox/ssh",
             post(instance_ssh_provision_handler).delete(instance_ssh_revoke_handler),
         )
+        .route("/api/sandbox/ssh/user", get(instance_ssh_user_handler))
         .route(
             "/api/sandbox/port/{port}/{*rest}",
             any(instance_port_proxy_handler),
@@ -2549,6 +2714,7 @@ mod tests {
     struct MockSidecarState {
         last_exec_payload: Arc<Mutex<Option<Value>>>,
         last_agent_payload: Arc<Mutex<Option<Value>>>,
+        exec_response: Arc<Mutex<Value>>,
     }
 
     async fn mock_sidecar_exec(
@@ -2556,13 +2722,12 @@ mod tests {
         Json(payload): Json<Value>,
     ) -> Json<Value> {
         *state.last_exec_payload.lock().expect("exec lock") = Some(payload);
-        Json(json!({
-            "result": {
-                "exitCode": 0,
-                "stdout": "mock-exec-stdout",
-                "stderr": ""
-            }
-        }))
+        let response = state
+            .exec_response
+            .lock()
+            .expect("exec response lock")
+            .clone();
+        Json(response)
     }
 
     async fn mock_sidecar_agent(
@@ -2588,6 +2753,13 @@ mod tests {
 
     async fn spawn_mock_sidecar() -> (String, MockSidecarState, JoinHandle<()>) {
         let state = MockSidecarState::default();
+        *state.exec_response.lock().expect("exec response lock") = json!({
+            "result": {
+                "exitCode": 0,
+                "stdout": "mock-exec-stdout",
+                "stderr": ""
+            }
+        });
         let app = Router::new()
             .route(
                 "/health",
@@ -4647,6 +4819,106 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_ssh_user_endpoint_detects_runtime_user() {
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        *sidecar_state
+            .exec_response
+            .lock()
+            .expect("exec response lock") = json!({
+            "result": {
+                "exitCode": 0,
+                "stdout": "sidecar\n",
+                "stderr": ""
+            }
+        });
+        insert_plain_sandbox_with_url("ssh-user-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/ssh-user-1/ssh/user")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response.into_body()).await;
+        assert_eq!(body["success"], true, "body: {body}");
+        assert_eq!(body["username"], "sidecar", "body: {body}");
+
+        let payload = sidecar_state
+            .last_exec_payload
+            .lock()
+            .expect("payload lock")
+            .clone()
+            .expect("sidecar should have received exec payload");
+        assert_eq!(payload["command"], "id -un || whoami");
+        server.abort();
+    }
+
+    #[test]
+    fn test_parse_detected_ssh_username_tolerates_terminal_noise() {
+        let exec = ExecApiResponse {
+            exit_code: 0,
+            stdout: "\u{1b}[?2004l\rsidecar\r\n\u{1b}[?2004hcontainer:/sidecar$ exit\r\n"
+                .to_string(),
+            stderr: String::new(),
+        };
+
+        let username = parse_detected_ssh_username(&exec).expect("username should parse");
+        assert_eq!(username, "sidecar");
+    }
+
+    #[tokio::test]
+    async fn test_ssh_provision_returns_422_when_sidecar_command_fails() {
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        *sidecar_state
+            .exec_response
+            .lock()
+            .expect("exec response lock") = json!({
+            "result": {
+                "exitCode": 2,
+                "stdout": "",
+                "stderr": "User agent does not exist"
+            }
+        });
+        insert_plain_sandbox_with_url("ssh-fail-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({
+            "username": "agent",
+            "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test"
+        });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/ssh-fail-1/ssh")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(response.into_body()).await;
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("SSH provision failed for user 'agent'"),
+            "body: {json}"
+        );
         server.abort();
     }
 

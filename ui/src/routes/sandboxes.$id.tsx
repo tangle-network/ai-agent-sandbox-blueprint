@@ -48,6 +48,18 @@ interface SshKey {
   publicKey: string;
 }
 
+/** Extract human-readable error from operator API Error messages. */
+function parseApiError(err: Error): string {
+  const idx = err.message.indexOf('): ');
+  if (idx === -1) return err.message;
+  const body = err.message.slice(idx + 3);
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed.error === 'string') return parsed.error;
+  } catch { /* not JSON */ }
+  return err.message;
+}
+
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -56,6 +68,7 @@ export default function SandboxDetail() {
   const sb = findSandboxByKey(sandboxes, decodedKey);
   const canonicalSandboxId = sb?.sandboxId;
   const routeKey = sb ? getSandboxRouteKey(sb) : decodedKey;
+  const isRunning = sb?.status === 'running';
 
   const { data: isActive } = useSandboxActive(canonicalSandboxId);
   const { data: operator } = useSandboxOperator(canonicalSandboxId);
@@ -67,11 +80,15 @@ export default function SandboxDetail() {
 
   // SSH state
   const [sshPublicKey, setSshPublicKey] = useState('');
-  const [sshUsername, setSshUsername] = useState('agent');
+  const [sshUsername, setSshUsername] = useState('');
   const [sshKeys, setSshKeys] = useState<SshKey[]>([]);
   const [sshBusy, setSshBusy] = useState(false);
   const [sshError, setSshError] = useState<string | null>(null);
   const [sshSuccess, setSshSuccess] = useState<string | null>(null);
+  const [sshUserDetecting, setSshUserDetecting] = useState(false);
+  const [sshUserHint, setSshUserHint] = useState<string | null>(null);
+  const sshUsernameDirtyRef = useRef(false);
+  const sshUserDetectionKeyRef = useRef<string | null>(null);
 
   // Secrets state
   const [secretsJson, setSecretsJson] = useState('{\n  \n}');
@@ -140,6 +157,7 @@ export default function SandboxDetail() {
   );
   const operatorToken = getCachedOperatorToken();
   const hasWallet = !!address;
+  const sshDetectionKey = isInstance ? 'instance' : canonicalSandboxId ?? null;
 
   // Chat client: always proxied through the operator API.
   const client: SandboxClient | null = useMemo(() => {
@@ -156,6 +174,58 @@ export default function SandboxDetail() {
     if (decodedKey === sb.sandboxId) return;
     navigate(`/sandboxes/${encodeURIComponent(sb.sandboxId)}`, { replace: true });
   }, [sb?.sandboxId, decodedKey, navigate]);
+
+  useEffect(() => {
+    sshUsernameDirtyRef.current = false;
+    sshUserDetectionKeyRef.current = null;
+    setSshUsername('');
+    setSshUserHint(null);
+    setSshUserDetecting(false);
+  }, [sshDetectionKey]);
+
+  useEffect(() => {
+    if (tab !== 'ssh' || !sshDetectionKey) return;
+    if (!isRunning) return;
+    if (!isOperatorAuthed && !operatorToken) return;
+    if (sshUserDetectionKeyRef.current === sshDetectionKey) return;
+
+    let cancelled = false;
+    sshUserDetectionKeyRef.current = sshDetectionKey;
+    setSshUserDetecting(true);
+    setSshUserHint(null);
+
+    void operatorApiCall('ssh/user', undefined, { method: 'GET' })
+      .then(async (response) => {
+        const body = await response.json() as { username?: string };
+        const detectedUsername = typeof body.username === 'string' ? body.username.trim() : '';
+        if (cancelled) return;
+        if (detectedUsername) {
+          if (!sshUsernameDirtyRef.current) {
+            setSshUsername(detectedUsername);
+          }
+          setSshUserHint(`Detected sandbox user: ${detectedUsername}`);
+        } else {
+          setSshUserHint('Could not detect the sandbox user. You can enter one manually.');
+        }
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setSshUserHint(
+          e instanceof Error
+            ? `Could not detect the sandbox user: ${parseApiError(e)}`
+            : 'Could not detect the sandbox user. You can enter one manually.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSshUserDetecting(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, sshDetectionKey, isRunning, isOperatorAuthed, operatorToken, operatorApiCall]);
 
   const bpId = 'ai-agent-sandbox-blueprint';
 
@@ -229,6 +299,18 @@ export default function SandboxDetail() {
   const handleSshProvision = useCallback(async () => {
     const key = sshPublicKey.trim();
     if (!key) return;
+
+    const requestedUsername = sshUsername.trim();
+
+    if (requestedUsername && requestedUsername.length > 32) {
+      setSshError('Username must be 32 characters or fewer');
+      return;
+    }
+    if (requestedUsername && !/^[a-zA-Z0-9\-_.]+$/.test(requestedUsername)) {
+      setSshError('Username may only contain letters, numbers, dashes, underscores, and dots');
+      return;
+    }
+
     const validPrefixes = ['ssh-rsa ', 'ssh-ed25519 ', 'ssh-dss ', 'ecdsa-sha2-'];
     if (!validPrefixes.some((p) => key.startsWith(p))) {
       setSshError('Invalid SSH key format. Must start with ssh-rsa, ssh-ed25519, or ecdsa-sha2-*');
@@ -238,13 +320,30 @@ export default function SandboxDetail() {
     setSshError(null);
     setSshSuccess(null);
     try {
-      await operatorApiCall('ssh', { username: sshUsername, public_key: key });
-      setSshKeys((prev) => [...prev, { username: sshUsername, publicKey: sshPublicKey.trim() }]);
+      const payload: Record<string, unknown> = { public_key: key };
+      if (requestedUsername) {
+        payload.username = requestedUsername;
+      }
+      const response = await operatorApiCall('ssh', payload);
+      const body = await response.json() as { username?: string };
+      const effectiveUsername = typeof body.username === 'string' && body.username.trim()
+        ? body.username.trim()
+        : requestedUsername;
+      setSshKeys((prev) => {
+        const exists = prev.some((k) => k.publicKey === key);
+        if (exists) {
+          return prev.map((k) => k.publicKey === key ? { ...k, username: effectiveUsername } : k);
+        }
+        return [...prev, { username: effectiveUsername, publicKey: key }];
+      });
+      sshUsernameDirtyRef.current = false;
+      setSshUsername(effectiveUsername);
+      setSshUserHint(`Detected sandbox user: ${effectiveUsername}`);
       setSshPublicKey('');
       setSshSuccess('SSH key provisioned');
       scheduleDismiss(() => setSshSuccess(null), 3000);
     } catch (e) {
-      setSshError(e instanceof Error ? e.message : 'Failed to provision SSH key');
+      setSshError(e instanceof Error ? parseApiError(e) : 'Failed to provision SSH key');
     } finally {
       setSshBusy(false);
     }
@@ -255,12 +354,23 @@ export default function SandboxDetail() {
     setSshError(null);
     setSshSuccess(null);
     try {
-      await operatorApiCall('ssh', { username: key.username, public_key: key.publicKey }, { method: 'DELETE' });
+      const response = await operatorApiCall(
+        'ssh',
+        { username: key.username, public_key: key.publicKey },
+        { method: 'DELETE' },
+      );
+      const body = await response.json() as { username?: string };
+      const effectiveUsername = typeof body.username === 'string' && body.username.trim()
+        ? body.username.trim()
+        : key.username;
       setSshKeys((prev) => prev.filter((k) => k.publicKey !== key.publicKey));
+      sshUsernameDirtyRef.current = false;
+      setSshUsername(effectiveUsername);
+      setSshUserHint(`Detected sandbox user: ${effectiveUsername}`);
       setSshSuccess('SSH key revoked');
       scheduleDismiss(() => setSshSuccess(null), 3000);
     } catch (e) {
-      setSshError(e instanceof Error ? e.message : 'Failed to revoke SSH key');
+      setSshError(e instanceof Error ? parseApiError(e) : 'Failed to revoke SSH key');
     } finally {
       setSshBusy(false);
     }
@@ -333,7 +443,6 @@ export default function SandboxDetail() {
 
   const isCreating = sb.status === 'creating';
   const hasProvisionedSandbox = !!canonicalSandboxId;
-  const isRunning = sb.status === 'running';
   const isStopped = sb.status === 'stopped' || sb.status === 'warm';
   const isGone = sb.status === 'gone';
 
@@ -345,7 +454,7 @@ export default function SandboxDetail() {
     { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !hasProvisionedSandbox || !isRunning, hidden: !hasAgent },
     { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !hasProvisionedSandbox || !isRunning },
     { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', disabled: !hasProvisionedSandbox || !isRunning },
-    { key: 'attestation', label: 'Attestation', icon: 'i-ph:shield-check', disabled: !hasProvisionedSandbox || !sb.teeEnabled },
+    { key: 'attestation', label: 'Attestation', icon: 'i-ph:shield-check', hidden: !hasProvisionedSandbox || !sb.teeEnabled },
   ];
 
   return (
@@ -600,15 +709,23 @@ export default function SandboxDetail() {
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-cloud-elements-textSecondary">Username</label>
                 <Input
+                  aria-label="SSH username"
                   value={sshUsername}
-                  onChange={(e) => setSshUsername(e.target.value)}
-                  placeholder="agent"
+                  onChange={(e) => {
+                    sshUsernameDirtyRef.current = true;
+                    setSshUsername(e.target.value);
+                  }}
+                  placeholder={sshUserDetecting ? 'Detecting sandbox user...' : 'Auto-detected from sandbox'}
                   className="font-data text-sm"
                 />
+                {sshUserHint && (
+                  <p className="text-xs text-cloud-elements-textSecondary">{sshUserHint}</p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-cloud-elements-textSecondary">Public Key</label>
                 <Textarea
+                  aria-label="SSH public key"
                   value={sshPublicKey}
                   onChange={(e) => setSshPublicKey(e.target.value)}
                   placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."

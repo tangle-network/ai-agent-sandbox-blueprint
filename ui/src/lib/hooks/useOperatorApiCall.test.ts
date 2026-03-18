@@ -56,7 +56,26 @@ describe('success path', () => {
       await result.current('ports', undefined, { method: 'GET' });
     });
 
-    expect(fetchMock.mock.calls[0][1].method).toBe('GET');
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(opts.method).toBe('GET');
+    expect(opts.body).toBeUndefined();
+    expect(opts.headers.Authorization).toBe('Bearer test-token');
+    expect(opts.headers['Content-Type']).toBeUndefined();
+  });
+
+  it('uses HEAD without sending a body', async () => {
+    fetchMock.mockResolvedValue(okResponse());
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current('status', undefined, { method: 'HEAD' });
+    });
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(opts.method).toBe('HEAD');
+    expect(opts.body).toBeUndefined();
+    expect(opts.headers.Authorization).toBe('Bearer test-token');
+    expect(opts.headers['Content-Type']).toBeUndefined();
   });
 
   it('sends empty JSON body when no body provided', async () => {
@@ -68,6 +87,20 @@ describe('success path', () => {
     });
 
     expect(fetchMock.mock.calls[0][1].body).toBe('{}');
+  });
+
+  it('keeps JSON headers for POST requests', async () => {
+    fetchMock.mockResolvedValue(okResponse());
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current('resume', { force: true });
+    });
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(opts.method).toBe('POST');
+    expect(opts.body).toBe(JSON.stringify({ force: true }));
+    expect(opts.headers['Content-Type']).toBe('application/json');
   });
 
   it('returns the Response on success', async () => {

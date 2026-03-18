@@ -240,6 +240,54 @@ fn auth_header() -> HeaderValue {
     HeaderValue::from_str(&format!("Bearer {AUTH_TOKEN}")).unwrap()
 }
 
+async fn detect_runtime_user(url: &str) -> String {
+    let body: Value = http()
+        .post(format!("{url}/terminals/commands"))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({ "command": "id -un || whoami" }))
+        .send()
+        .await
+        .expect("detect runtime user request")
+        .json()
+        .await
+        .expect("detect runtime user body");
+    let (exit_code, stdout, stderr) = extract_exec_fields(&body);
+    assert_eq!(exit_code, 0, "detect runtime user failed: {body}");
+    let username = stdout
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    assert!(
+        !username.is_empty(),
+        "runtime user missing: stdout='{stdout}' stderr='{stderr}'"
+    );
+    username
+}
+
+async fn ssh_key_present(url: &str, username: &str, key: &str) -> bool {
+    let body: Value = http()
+        .post(format!("{url}/terminals/commands"))
+        .header(AUTHORIZATION, auth_header())
+        .header(CONTENT_TYPE, "application/json")
+        .json(&json!({
+            "command": format!(
+                "sh -lc \"home=$(getent passwd \\\"{username}\\\" | cut -d: -f6); if grep -qxF \\\"{key}\\\" \\\"\\$home/.ssh/authorized_keys\\\" 2>/dev/null; then echo PRESENT; else echo ABSENT; fi\""
+            )
+        }))
+        .send()
+        .await
+        .expect("authorized_keys probe request")
+        .json()
+        .await
+        .expect("authorized_keys probe body");
+    let (exit_code, stdout, _stderr) = extract_exec_fields(&body);
+    assert_eq!(exit_code, 0, "authorized_keys probe failed: {body}");
+    stdout.contains("PRESENT")
+}
+
 fn should_run() -> bool {
     std::env::var("REAL_SIDECAR")
         .map(|v| v == "1")
@@ -683,24 +731,23 @@ async fn blueprint_run_exec_captures_exit_code() {
 // SSH jobs against real sidecar
 // ===================================================================
 
-/// SSH provision calls `/terminals/commands` to add a key.
-/// The container user is "agent", not "root", so we test with "agent".
+/// SSH provision calls `/terminals/commands` to add a key for the detected user.
 #[tokio::test]
 async fn ssh_provision_works_against_real_sidecar() {
     skip_unless_real!();
     let s = ensure_sidecar().await;
+    let username = detect_runtime_user(&s.url).await;
+    let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test";
 
-    let result = ai_agent_sandbox_blueprint_lib::provision_key(
-        &s.url,
-        "agent",
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test",
-        AUTH_TOKEN,
-    )
-    .await;
+    let result =
+        ai_agent_sandbox_blueprint_lib::provision_key(&s.url, &username, key, AUTH_TOKEN).await;
 
     eprintln!("provision_key result: {result:?}");
-    // Should succeed — the command runs `getent passwd agent` which exists.
     assert!(result.is_ok(), "provision_key should succeed: {result:?}");
+    assert!(
+        ssh_key_present(&s.url, &username, key).await,
+        "key should be present in authorized_keys",
+    );
 }
 
 /// SSH revoke calls `/terminals/commands` to remove a key.
@@ -708,17 +755,25 @@ async fn ssh_provision_works_against_real_sidecar() {
 async fn ssh_revoke_works_against_real_sidecar() {
     skip_unless_real!();
     let s = ensure_sidecar().await;
+    let username = detect_runtime_user(&s.url).await;
+    let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test";
 
-    let result = ai_agent_sandbox_blueprint_lib::revoke_key(
-        &s.url,
-        "agent",
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test",
-        AUTH_TOKEN,
-    )
-    .await;
+    let provision =
+        ai_agent_sandbox_blueprint_lib::provision_key(&s.url, &username, key, AUTH_TOKEN).await;
+    assert!(
+        provision.is_ok(),
+        "precondition provision failed: {provision:?}"
+    );
+
+    let result =
+        ai_agent_sandbox_blueprint_lib::revoke_key(&s.url, &username, key, AUTH_TOKEN).await;
 
     eprintln!("revoke_key result: {result:?}");
     assert!(result.is_ok(), "revoke_key should succeed: {result:?}");
+    assert!(
+        !ssh_key_present(&s.url, &username, key).await,
+        "key should be removed from authorized_keys",
+    );
 }
 
 // ===================================================================
@@ -1218,21 +1273,26 @@ async fn build_exec_payload_works_with_real_sidecar() {
 async fn ssh_provision_idempotent() {
     skip_unless_real!();
     let s = ensure_sidecar().await;
+    let username = detect_runtime_user(&s.url).await;
 
     let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIdempotent idempotent@test";
 
-    // Both calls should return Ok (HTTP-level success).
-    let r1 = ai_agent_sandbox_blueprint_lib::provision_key(&s.url, "agent", key, AUTH_TOKEN).await;
+    let r1 =
+        ai_agent_sandbox_blueprint_lib::provision_key(&s.url, &username, key, AUTH_TOKEN).await;
     assert!(r1.is_ok(), "first provision failed: {r1:?}");
 
-    let r2 = ai_agent_sandbox_blueprint_lib::provision_key(&s.url, "agent", key, AUTH_TOKEN).await;
+    let r2 =
+        ai_agent_sandbox_blueprint_lib::provision_key(&s.url, &username, key, AUTH_TOKEN).await;
     assert!(r2.is_ok(), "second provision failed: {r2:?}");
 
-    // Both should return identical sidecar response structure.
     let v1 = r1.unwrap();
     let v2 = r2.unwrap();
     assert!(v1["success"].as_bool().unwrap_or(false), "r1: {v1}");
     assert!(v2["success"].as_bool().unwrap_or(false), "r2: {v2}");
+    assert!(
+        ssh_key_present(&s.url, &username, key).await,
+        "idempotent provision should still leave the key present",
+    );
 }
 
 // ===================================================================

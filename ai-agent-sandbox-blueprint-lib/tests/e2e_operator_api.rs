@@ -60,6 +60,40 @@ async fn spawn_harness() -> Result<Option<BlueprintHarness>> {
     }
 }
 
+async fn detect_ssh_user(api_url: &str, auth: &str, sandbox_id: &str) -> Result<String> {
+    let body = api_get(
+        api_url,
+        &format!("/api/sandboxes/{sandbox_id}/ssh/user"),
+        auth,
+    )
+    .await?;
+    body["username"]
+        .as_str()
+        .map(str::to_string)
+        .context("ssh user response missing username")
+}
+
+async fn ssh_key_presence(
+    api_url: &str,
+    auth: &str,
+    sandbox_id: &str,
+    username: &str,
+    key: &str,
+) -> Result<bool> {
+    let body = api_post(
+        api_url,
+        &format!("/api/sandboxes/{sandbox_id}/exec"),
+        auth,
+        json!({
+            "command": format!(
+                "sh -lc \"home=$(getent passwd \\\"{username}\\\" | cut -d: -f6); if grep -qxF \\\"{key}\\\" \\\"\\$home/.ssh/authorized_keys\\\" 2>/dev/null; then echo PRESENT; else echo ABSENT; fi\""
+            )
+        }),
+    )
+    .await?;
+    Ok(body["stdout"].as_str().unwrap_or("").contains("PRESENT"))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test: Full sandbox lifecycle with on-chain verification (31 steps)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -323,26 +357,52 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         eprintln!("  Snapshot validation OK (http:// rejected)");
 
         // ─── Step 16: SSH provision + idempotency ────────────────────────
-        e2e_step!(16, "SSH provision + idempotency...");
+        e2e_step!(16, "SSH user detection + provision + idempotency...");
         let ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp9pDAVl8TpDBLVnpXjAIRxMf3K+m6UPlv3VBMbRp2o e2e-test";
-        let ssh_body = json!({"username": "agent", "public_key": ssh_key});
+        let ssh_user = detect_ssh_user(&api_url, &auth, &sandbox_id).await?;
+        assert!(!ssh_user.is_empty(), "ssh user should not be empty");
         let path = format!("/api/sandboxes/{sandbox_id}/ssh");
-        assert_api_status(&api_url, "POST", &path, &auth, ssh_body.clone(), 200).await;
+        let body = api_post(&api_url, &path, &auth, json!({"public_key": ssh_key})).await?;
+        assert_eq!(body["success"], true, "ssh response: {body}");
+        assert_eq!(body["username"], ssh_user, "ssh response: {body}");
+        assert!(
+            ssh_key_presence(&api_url, &auth, &sandbox_id, &ssh_user, ssh_key).await?,
+            "key should be present after provision"
+        );
         // Idempotent second call
-        assert_api_status(&api_url, "POST", &path, &auth, ssh_body, 200).await;
+        let body = api_post(&api_url, &path, &auth, json!({"public_key": ssh_key})).await?;
+        assert_eq!(body["success"], true, "ssh response: {body}");
+        assert_eq!(body["username"], ssh_user, "ssh response: {body}");
         eprintln!("  SSH provisioned (idempotent)");
+
+        let wrong_user_resp = http()
+            .post(format!("{api_url}{path}"))
+            .header("authorization", &auth)
+            .json(&json!({"username": "no-such-user", "public_key": ssh_key}))
+            .send()
+            .await?;
+        assert_eq!(wrong_user_resp.status(), 422, "wrong user should fail");
+        assert!(
+            ssh_key_presence(&api_url, &auth, &sandbox_id, &ssh_user, ssh_key).await?,
+            "wrong-user attempt should not remove the existing key"
+        );
 
         // ─── Step 17: SSH revoke ─────────────────────────────────────────
         e2e_step!(17, "SSH revoke...");
-        assert_api_status(
-            &api_url,
-            "DELETE",
-            &path,
-            &auth,
-            json!({"username": "agent", "public_key": ssh_key}),
-            200,
-        )
-        .await;
+        let resp = http()
+            .delete(format!("{api_url}{path}"))
+            .header("authorization", &auth)
+            .json(&json!({"public_key": ssh_key}))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), 200, "ssh revoke should succeed");
+        let body: Value = resp.json().await?;
+        assert_eq!(body["success"], true, "ssh revoke response: {body}");
+        assert_eq!(body["username"], ssh_user, "ssh revoke response: {body}");
+        assert!(
+            !ssh_key_presence(&api_url, &auth, &sandbox_id, &ssh_user, ssh_key).await?,
+            "key should be absent after revoke"
+        );
         eprintln!("  SSH revoked");
 
         // ─── Step 18: Secrets inject ─────────────────────────────────────
