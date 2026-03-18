@@ -186,6 +186,8 @@ mod tests {
             owner: owner.to_string(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes()

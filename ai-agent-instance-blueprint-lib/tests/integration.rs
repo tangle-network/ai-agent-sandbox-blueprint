@@ -92,6 +92,8 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 owner: String::new(),
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
+                ssh_login_user: None,
+                ssh_authorized_keys: Vec::new(),
             },
         )
         .unwrap();
@@ -777,6 +779,8 @@ mod instance_state_tests {
             owner: String::new(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -827,6 +831,8 @@ mod instance_state_tests {
             owner: String::new(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -1462,6 +1468,8 @@ mod provision_guard_tests {
             owner: String::new(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         set_instance_sandbox(record).unwrap();
 
@@ -1514,6 +1522,8 @@ mod provision_guard_tests {
             owner: String::new(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         set_instance_sandbox(record).unwrap();
         assert!(get_instance_sandbox().unwrap().is_some());
@@ -1568,6 +1578,8 @@ mod provision_guard_tests {
             owner: "0xdeadbeef".to_string(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -1636,6 +1648,8 @@ mod provision_guard_tests {
             owner: String::new(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         let record_b = SandboxRecord {
@@ -1672,6 +1686,8 @@ mod provision_guard_tests {
             owner: String::new(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         set_instance_sandbox(record_a).unwrap();
@@ -1728,6 +1744,8 @@ mod provision_guard_tests {
             owner: String::new(),
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         set_instance_sandbox(record).unwrap();
 
@@ -1804,6 +1822,8 @@ fn set_instance_for_test(url: &str, token: &str) -> String {
                 owner: String::new(),
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
+                ssh_login_user: None,
+                ssh_authorized_keys: Vec::new(),
             },
         )
         .unwrap();
@@ -1842,6 +1862,8 @@ fn set_instance_for_test(url: &str, token: &str) -> String {
         owner: String::new(),
         tee_config: None,
         extra_ports: std::collections::HashMap::new(),
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
     set_instance_sandbox(record).unwrap();
     id

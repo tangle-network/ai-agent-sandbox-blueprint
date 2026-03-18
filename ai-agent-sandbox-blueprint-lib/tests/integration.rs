@@ -99,6 +99,8 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 owner: String::new(),
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
+                ssh_login_user: None,
+                ssh_authorized_keys: Vec::new(),
             },
         )
         .unwrap();
@@ -146,6 +148,8 @@ fn insert_sandbox_with_owner(url: &str, token: &str, owner: &str) -> String {
                 owner: owner.to_string(),
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
+                ssh_login_user: None,
+                ssh_authorized_keys: Vec::new(),
             },
         )
         .unwrap();

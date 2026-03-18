@@ -425,6 +425,8 @@ mod tests {
             owner: "0xabc".to_string(),
             tee_config: None,
             extra_ports: HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         let output = provision_output_from_record(&record);
@@ -471,6 +473,8 @@ mod tests {
             owner: "0xabc".to_string(),
             tee_config: None,
             extra_ports: HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         let output = provision_output_from_record(&record);

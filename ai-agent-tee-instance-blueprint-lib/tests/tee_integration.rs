@@ -79,6 +79,8 @@ fn tee_provision_idempotent_returns_stored_attestation() {
             tee_type: TeeType::Tdx,
         }),
         extra_ports: std::collections::HashMap::new(),
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
 
     set_instance_sandbox(record).unwrap();
@@ -165,6 +167,8 @@ fn tee_deprovision_clears_instance_sandbox() {
         owner: "0xdeadbeef".into(),
         tee_config: None,
         extra_ports: std::collections::HashMap::new(),
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
 
     set_instance_sandbox(record).unwrap();

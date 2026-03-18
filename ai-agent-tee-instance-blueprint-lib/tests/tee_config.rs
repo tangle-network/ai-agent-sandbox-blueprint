@@ -276,6 +276,8 @@ fn tee_fields_persistence_roundtrip() {
             tee_type: TeeType::Tdx,
         }),
         extra_ports: std::collections::HashMap::new(),
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
 
     set_instance_sandbox(record).unwrap();
