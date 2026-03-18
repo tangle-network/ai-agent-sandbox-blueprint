@@ -52,14 +52,24 @@ export function OperatorTerminalView({
   const lineBufferRef = useRef('');
 
   const writePrompt = useCallback(() => {
+    termRef.current?.write(prompt);
+  }, []);
+
+  const writePromptOnNewLine = useCallback(() => {
     termRef.current?.write(`\r\n${prompt}`);
   }, []);
 
-  const onData = useCallback((data: string) => {
+  const handleOutput = useCallback((data: string) => {
+    if (!data) {
+      return;
+    }
     termRef.current?.write(data);
     if (!data.endsWith('\n') && !data.endsWith('\r')) {
       termRef.current?.write('\r\n');
     }
+  }, []);
+
+  const handleCommandComplete = useCallback(() => {
     termRef.current?.write(prompt);
   }, []);
 
@@ -67,7 +77,8 @@ export function OperatorTerminalView({
     apiUrl,
     resourcePath,
     token,
-    onData,
+    onOutput: handleOutput,
+    onCommandComplete: handleCommandComplete,
   });
 
   useEffect(() => {
@@ -104,7 +115,7 @@ export function OperatorTerminalView({
     term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  \x1b[1m${padTitle}\x1b[0m\x1b[38;5;48m\u2502\x1b[0m`);
     term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${padSubtitle}\x1b[38;5;48m\u2502\x1b[0m`);
     term.writeln(`\x1b[38;5;48m\u2570${'─'.repeat(41)}\u256f\x1b[0m`);
-    term.write(prompt);
+    writePrompt();
 
     term.onData((data) => {
       const code = data.charCodeAt(0);
@@ -130,7 +141,7 @@ export function OperatorTerminalView({
       } else if (data === '\x03') {
         lineBufferRef.current = '';
         term.write('^C');
-        writePrompt();
+        writePromptOnNewLine();
       } else if (data === '\x0c') {
         lineBufferRef.current = '';
         term.clear();
@@ -153,7 +164,7 @@ export function OperatorTerminalView({
       term.dispose();
       termRef.current = null;
     };
-  }, [sendCommand, subtitle, title, writePrompt]);
+  }, [sendCommand, subtitle, title, writePrompt, writePromptOnNewLine]);
 
   return (
     <div className="relative h-full w-full">

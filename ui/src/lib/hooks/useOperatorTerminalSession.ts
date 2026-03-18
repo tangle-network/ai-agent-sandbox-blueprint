@@ -4,7 +4,8 @@ export interface UseOperatorTerminalSessionOptions {
   apiUrl: string;
   resourcePath: string;
   token: string;
-  onData: (data: string) => void;
+  onOutput: (data: string) => void;
+  onCommandComplete: () => void;
 }
 
 export interface UseOperatorTerminalSessionReturn {
@@ -23,6 +24,18 @@ interface ExecResponse {
   stdout?: string;
   stderr?: string;
 }
+
+interface PendingCommand {
+  id: number;
+  streamSeen: boolean;
+  fallbackTimer?: ReturnType<typeof setTimeout>;
+  settleTimer?: ReturnType<typeof setTimeout>;
+}
+
+const STREAM_FALLBACK_MS = 150;
+const STREAM_SETTLE_MS = 40;
+const LATE_STREAM_DEDUPE_MS = 1000;
+const KEEP_ALIVE_MESSAGE = 'keep-alive';
 
 function parseSseFrames(chunk: string): string[] {
   const messages: string[] = [];
@@ -49,7 +62,8 @@ export function useOperatorTerminalSession({
   apiUrl,
   resourcePath,
   token,
-  onData,
+  onOutput,
+  onCommandComplete,
 }: UseOperatorTerminalSessionOptions): UseOperatorTerminalSessionReturn {
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,11 +72,95 @@ export function useOperatorTerminalSession({
   const streamAbortRef = useRef<AbortController | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const mountedRef = useRef(true);
-  const onDataRef = useRef(onData);
-  onDataRef.current = onData;
+  const nextCommandIdRef = useRef(1);
+  const pendingCommandRef = useRef<PendingCommand | null>(null);
+  const recentFallbackChunksRef = useRef<Map<string, number>>(new Map());
+  const onOutputRef = useRef(onOutput);
+  const onCommandCompleteRef = useRef(onCommandComplete);
+  onOutputRef.current = onOutput;
+  onCommandCompleteRef.current = onCommandComplete;
 
   const terminalSessionBaseUrl = `${apiUrl}${resourcePath}/live/terminal/sessions`;
   const execUrl = `${apiUrl}${resourcePath}/exec`;
+
+  const clearCommandTimer = useCallback((timer?: ReturnType<typeof setTimeout>) => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }, []);
+
+  const clearPendingCommand = useCallback((pending: PendingCommand | null) => {
+    if (!pending) {
+      return;
+    }
+    clearCommandTimer(pending.fallbackTimer);
+    clearCommandTimer(pending.settleTimer);
+  }, [clearCommandTimer]);
+
+  const finishPendingCommand = useCallback((commandId: number) => {
+    const pending = pendingCommandRef.current;
+    if (!pending || pending.id !== commandId) {
+      return;
+    }
+    clearPendingCommand(pending);
+    pendingCommandRef.current = null;
+    if (mountedRef.current) {
+      onCommandCompleteRef.current();
+    }
+  }, [clearPendingCommand]);
+
+  const rememberFallbackChunk = useCallback((chunk: string) => {
+    if (!chunk) {
+      return;
+    }
+    recentFallbackChunksRef.current.set(chunk, Date.now() + LATE_STREAM_DEDUPE_MS);
+  }, []);
+
+  const shouldSuppressLateStreamChunk = useCallback((chunk: string) => {
+    const now = Date.now();
+    for (const [value, expiresAt] of recentFallbackChunksRef.current.entries()) {
+      if (expiresAt <= now) {
+        recentFallbackChunksRef.current.delete(value);
+      }
+    }
+    const expiresAt = recentFallbackChunksRef.current.get(chunk);
+    if (!expiresAt) {
+      return false;
+    }
+    recentFallbackChunksRef.current.delete(chunk);
+    return expiresAt > now;
+  }, []);
+
+  const emitOutput = useCallback((data: string) => {
+    if (!data) {
+      return;
+    }
+    onOutputRef.current(data);
+  }, []);
+
+  const handleStreamMessage = useCallback((message: string) => {
+    if (!message || message === KEEP_ALIVE_MESSAGE) {
+      return;
+    }
+    if (shouldSuppressLateStreamChunk(message)) {
+      return;
+    }
+
+    emitOutput(message);
+
+    const pending = pendingCommandRef.current;
+    if (!pending) {
+      onCommandCompleteRef.current();
+      return;
+    }
+
+    pending.streamSeen = true;
+    clearCommandTimer(pending.fallbackTimer);
+    clearCommandTimer(pending.settleTimer);
+    pending.settleTimer = setTimeout(() => {
+      finishPendingCommand(pending.id);
+    }, STREAM_SETTLE_MS);
+  }, [clearCommandTimer, emitOutput, finishPendingCommand, shouldSuppressLateStreamChunk]);
 
   const cleanup = useCallback(() => {
     if (retryTimerRef.current) {
@@ -73,6 +171,9 @@ export function useOperatorTerminalSession({
       streamAbortRef.current.abort();
       streamAbortRef.current = null;
     }
+    clearPendingCommand(pendingCommandRef.current);
+    pendingCommandRef.current = null;
+    recentFallbackChunksRef.current.clear();
     if (sessionIdRef.current) {
       const sessionId = sessionIdRef.current;
       sessionIdRef.current = null;
@@ -146,7 +247,7 @@ export function useOperatorTerminalSession({
         for (const frame of frames) {
           if (!frame.trim()) continue;
           for (const message of parseSseFrames(frame)) {
-            if (message) onDataRef.current(message);
+            handleStreamMessage(message);
           }
         }
       }
@@ -160,34 +261,76 @@ export function useOperatorTerminalSession({
         }
       }, 3000);
     }
-  }, [cleanup, terminalSessionBaseUrl, token]);
+  }, [cleanup, handleStreamMessage, terminalSessionBaseUrl, token]);
 
   const sendCommand = useCallback(async (command: string) => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) throw new Error('Terminal session is not connected');
 
-    const res = await fetch(execUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        command,
-        session_id: sessionId,
-      }),
-    });
+    clearPendingCommand(pendingCommandRef.current);
+    const commandId = nextCommandIdRef.current++;
+    pendingCommandRef.current = {
+      id: commandId,
+      streamSeen: false,
+    };
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || `Command failed: ${res.status}`);
-    }
+    try {
+      const res = await fetch(execUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          command,
+          session_id: sessionId,
+        }),
+      });
 
-    const execBody = await res.json() as ExecResponse;
-    if (!execBody.stdout && !execBody.stderr) {
-      onDataRef.current('');
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Command failed: ${res.status}`);
+      }
+
+      const execBody = await res.json() as ExecResponse;
+      const fallbackChunks = [
+        execBody.stdout ?? '',
+        execBody.stderr ? `[stderr] ${execBody.stderr}` : '',
+      ].filter(Boolean);
+
+      const pending = pendingCommandRef.current;
+      if (!pending || pending.id !== commandId) {
+        return;
+      }
+
+      if (pending.streamSeen) {
+        return;
+      }
+
+      if (fallbackChunks.length === 0) {
+        finishPendingCommand(commandId);
+        return;
+      }
+
+      pending.fallbackTimer = setTimeout(() => {
+        const current = pendingCommandRef.current;
+        if (!current || current.id !== commandId || current.streamSeen) {
+          return;
+        }
+
+        for (const chunk of fallbackChunks) {
+          rememberFallbackChunk(chunk);
+          emitOutput(chunk);
+        }
+
+        finishPendingCommand(commandId);
+      }, STREAM_FALLBACK_MS);
+    } catch (err) {
+      clearPendingCommand(pendingCommandRef.current);
+      pendingCommandRef.current = null;
+      throw err;
     }
-  }, [execUrl, token]);
+  }, [clearPendingCommand, emitOutput, execUrl, finishPendingCommand, rememberFallbackChunk, token]);
 
   useEffect(() => {
     mountedRef.current = true;
