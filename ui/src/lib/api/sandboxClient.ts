@@ -46,6 +46,12 @@ export interface TaskResult {
   isComplete: boolean;
 }
 
+interface OperatorErrorBody {
+  error?: string;
+  code?: string;
+  retry_after_ms?: number;
+}
+
 export class SandboxClient {
   private config: SandboxClientConfig;
 
@@ -89,25 +95,27 @@ export class SandboxClient {
     return headers;
   }
 
-  private async ensureProxiedChatSessionId(existingSessionId?: string): Promise<string | undefined> {
-    if (this.config.mode !== 'proxied') return existingSessionId;
-    if (existingSessionId?.trim()) return existingSessionId;
+  private formatApiFailure(
+    operation: 'Prompt' | 'Task',
+    status: number,
+    errorBody: string,
+  ): Error {
+    try {
+      const parsed = JSON.parse(errorBody) as OperatorErrorBody;
+      if (parsed.code === 'AGENT_WARMING_UP') {
+        const retryMs = typeof parsed.retry_after_ms === 'number' ? parsed.retry_after_ms : null;
+        const retryHint = retryMs && retryMs > 0
+          ? ` Retry in about ${Math.ceil(retryMs / 1000)}s.`
+          : '';
+        return new Error(
+          `${operation} failed (${status}): ${parsed.error ?? 'Sandbox agent is still starting up.'}${retryHint}`,
+        );
+      }
+    } catch {
+      // Fall back to the raw response body for non-JSON errors.
+    }
 
-    const res = await fetch(`${this.baseUrl}${this.proxiedResourcePath}/live/chat/sessions`, {
-      method: 'POST',
-      headers: await this.resolveAuthHeaders(true),
-      body: JSON.stringify({}),
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Create chat session failed (${res.status}): ${body}`);
-    }
-    const data = await res.json();
-    const created = data.session_id ?? data.sessionId;
-    if (!created || typeof created !== 'string') {
-      throw new Error('Create chat session failed: missing session_id');
-    }
-    return created;
+    return new Error(`${operation} failed (${status}): ${errorBody}`);
   }
 
   /** Execute a shell command in the sandbox. */
@@ -143,7 +151,6 @@ export class SandboxClient {
         ? `${this.baseUrl}/agent/prompt`
         : `${this.baseUrl}${this.proxiedResourcePath}/prompt`;
 
-    const resolvedSessionId = await this.ensureProxiedChatSessionId(sessionId);
     const body: Record<string, unknown> = this.config.mode === 'direct'
       ? { prompt: text }
       : { message: text };
@@ -153,7 +160,7 @@ export class SandboxClient {
     } else if (systemPrompt) {
       body.context_json = JSON.stringify({ system_prompt: systemPrompt });
     }
-    if (resolvedSessionId) body.session_id = resolvedSessionId;
+    if (sessionId?.trim()) body.session_id = sessionId;
 
     const res = await fetch(url, {
       method: 'POST',
@@ -163,13 +170,13 @@ export class SandboxClient {
 
     if (!res.ok) {
       const errorBody = await res.text();
-      throw new Error(`Prompt failed (${res.status}): ${errorBody}`);
+      throw this.formatApiFailure('Prompt', res.status, errorBody);
     }
 
     const data = await res.json();
     return {
       response: data.response ?? data.text ?? '',
-      sessionId: data.session_id ?? data.sessionId ?? resolvedSessionId,
+      sessionId: data.session_id ?? data.sessionId ?? sessionId,
     };
   }
 
@@ -180,7 +187,6 @@ export class SandboxClient {
         ? `${this.baseUrl}/agent/task`
         : `${this.baseUrl}${this.proxiedResourcePath}/task`;
 
-    const resolvedSessionId = await this.ensureProxiedChatSessionId(sessionId);
     const body: Record<string, unknown> = this.config.mode === 'direct'
       ? { task: description }
       : { prompt: description };
@@ -190,7 +196,7 @@ export class SandboxClient {
     } else if (systemPrompt) {
       body.context_json = JSON.stringify({ system_prompt: systemPrompt });
     }
-    if (resolvedSessionId) body.session_id = resolvedSessionId;
+    if (sessionId?.trim()) body.session_id = sessionId;
 
     const res = await fetch(url, {
       method: 'POST',
@@ -200,13 +206,13 @@ export class SandboxClient {
 
     if (!res.ok) {
       const errorBody = await res.text();
-      throw new Error(`Task failed (${res.status}): ${errorBody}`);
+      throw this.formatApiFailure('Task', res.status, errorBody);
     }
 
     const data = await res.json();
     return {
       response: data.result ?? data.response ?? data.text ?? '',
-      sessionId: data.session_id ?? data.sessionId ?? resolvedSessionId,
+      sessionId: data.session_id ?? data.sessionId ?? sessionId,
       isComplete: data.is_complete ?? data.isComplete ?? true,
     };
   }

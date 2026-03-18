@@ -13,6 +13,7 @@ import {
 
 const DRAFT_TX_GRACE_MS = 15 * 60 * 1000;
 const DRAFT_MATCH_WINDOW_MS = 10 * 60 * 1000;
+const CANONICAL_MISSING_GRACE_MS = 15_000;
 
 export interface ApiSandbox {
   id: string;
@@ -104,6 +105,7 @@ function sandboxFromApi(api: ApiSandbox): LocalSandbox {
     teeEnabled: !!api.tee_deployment_id,
     sshPort: api.ssh_port || undefined,
     status: statusFromApi(api.state),
+    missingSince: undefined,
   });
 }
 
@@ -154,6 +156,7 @@ export function reconcileSandboxes(
   provisionsByCallId: Map<number, ApiProvision | null>,
   opts: { pruneUnverifiedDrafts: boolean; pruneMissingCanonical: boolean },
 ): LocalSandbox[] {
+  const now = Date.now();
   const apiById = new Map(apiResults.map((sandbox) => [sandbox.id, sandbox]));
   const matchedApiIds = new Set<string>();
   const reconciled: LocalSandbox[] = [];
@@ -191,11 +194,19 @@ export function reconcileSandboxes(
         sshPort: api.ssh_port || next.sshPort,
         status: statusFromApi(api.state),
         errorMessage: undefined,
+        missingSince: undefined,
       }));
       continue;
     }
 
     if (next.sandboxId && opts.pruneMissingCanonical) {
+      const missingSince = next.missingSince ?? now;
+      if (now - missingSince < CANONICAL_MISSING_GRACE_MS) {
+        reconciled.push(normalizeSandbox({
+          ...next,
+          missingSince,
+        }));
+      }
       continue;
     }
 

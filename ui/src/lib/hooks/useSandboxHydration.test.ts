@@ -486,6 +486,7 @@ describe('sandbox hydration merge logic', () => {
         localId: 'canonical:sandbox-stale',
         sandboxId: 'sandbox-stale',
         status: 'stopped',
+        missingSince: Date.now() - 20_000,
       }),
       makeLocalSandbox({
         id: 'sandbox-live-1',
@@ -502,5 +503,25 @@ describe('sandbox hydration merge logic', () => {
 
     expect(reconciled).toHaveLength(1);
     expect(reconciled[0].sandboxId).toBe('sandbox-live-1');
+  });
+
+  it('keeps canonical sandboxes during a short authoritative hydration gap', () => {
+    const existing = [
+      makeLocalSandbox({
+        id: 'sandbox-restarting',
+        localId: 'canonical:sandbox-restarting',
+        sandboxId: 'sandbox-restarting',
+        status: 'running',
+      }),
+    ];
+
+    const reconciled = reconcileSandboxes(existing, [], new Map(), {
+      pruneUnverifiedDrafts: true,
+      pruneMissingCanonical: true,
+    });
+
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0].sandboxId).toBe('sandbox-restarting');
+    expect(reconciled[0].missingSince).toEqual(expect.any(Number));
   });
 });

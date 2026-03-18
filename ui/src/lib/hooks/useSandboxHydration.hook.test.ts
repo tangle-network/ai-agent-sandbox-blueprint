@@ -297,7 +297,7 @@ describe('useSandboxHydration hook', () => {
     });
   });
 
-  it('passive hydration prunes stale canonical sandboxes once operator truth is available', async () => {
+  it('passive hydration keeps a briefly missing canonical sandbox during the grace window', async () => {
     sandboxListStore.set([
       makeLocalSandbox({
         localId: 'canonical:sandbox-stale',
@@ -325,8 +325,12 @@ describe('useSandboxHydration hook', () => {
     renderHook(() => useSandboxHydration());
 
     await waitFor(() => {
-      expect(sandboxListStore.get()).toHaveLength(1);
-      expect(sandboxListStore.get()[0].sandboxId).toBe('sandbox-live-1');
+      expect(sandboxListStore.get()).toHaveLength(2);
+      expect(sandboxListStore.get().map((sandbox) => sandbox.sandboxId)).toEqual([
+        'sandbox-stale',
+        'sandbox-live-1',
+      ]);
+      expect(sandboxListStore.get()[0].missingSince).toEqual(expect.any(Number));
     });
   });
 

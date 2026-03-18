@@ -76,6 +76,14 @@ export default function SandboxDetail() {
   const canonicalSandboxId = sb?.sandboxId;
   const routeKey = sb ? getSandboxRouteKey(sb) : decodedKey;
   const isRunning = sb?.status === 'running';
+  const sshHost = useMemo(() => {
+    if (!sb?.sidecarUrl) return '';
+    try {
+      return new URL(sb.sidecarUrl).hostname;
+    } catch {
+      return '';
+    }
+  }, [sb?.sidecarUrl]);
 
   const { data: isActive } = useSandboxActive(canonicalSandboxId);
   const { data: operator } = useSandboxOperator(canonicalSandboxId);
@@ -133,6 +141,11 @@ export default function SandboxDetail() {
   }, []);
 
   const serviceId = BigInt(sb?.serviceId ?? '1');
+  const sshConnectionCommand = useMemo(() => {
+    if (!sb?.sshPort || !sshHost) return '';
+    const user = sshUsername.trim() || 'sidecar';
+    return `ssh ${user}@${sshHost} -p ${sb.sshPort}`;
+  }, [sb?.sshPort, sshHost, sshUsername]);
 
   // Resolve correct operator API URL (instance blueprints run on a different port)
   const instanceBpId = import.meta.env.VITE_INSTANCE_BLUEPRINT_ID;
@@ -441,6 +454,7 @@ export default function SandboxDetail() {
         throw new Error('Secrets must be a JSON object');
       }
       await operatorApiCall('secrets', { env_json: parsed });
+      await refreshSandboxState({ interactive: true });
       setSecretsSuccess('Secrets injected');
       scheduleDismiss(() => setSecretsSuccess(null), 3000);
     } catch (e) {
@@ -448,7 +462,7 @@ export default function SandboxDetail() {
     } finally {
       setSecretsBusy(false);
     }
-  }, [secretsJson, operatorApiCall, scheduleDismiss]);
+  }, [secretsJson, operatorApiCall, refreshSandboxState, scheduleDismiss]);
 
   const handleWipeSecrets = useCallback(() => {
     setConfirmAction({
@@ -461,6 +475,7 @@ export default function SandboxDetail() {
         setSecretsSuccess(null);
         try {
           await operatorApiCall('secrets', undefined, { method: 'DELETE' });
+          await refreshSandboxState({ interactive: true });
           setSecretsSuccess('Secrets wiped');
           scheduleDismiss(() => setSecretsSuccess(null), 3000);
         } catch (e) {
@@ -470,7 +485,7 @@ export default function SandboxDetail() {
         }
       },
     });
-  }, [operatorApiCall, scheduleDismiss]);
+  }, [operatorApiCall, refreshSandboxState, scheduleDismiss]);
 
   const {
     attestation,
@@ -795,6 +810,22 @@ export default function SandboxDetail() {
       {/* SSH Tab — provision and revoke SSH keys */}
       {tab === 'ssh' && (
         <div className="space-y-4">
+          {sshConnectionCommand && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">SSH Connection</CardTitle>
+                <CardDescription>
+                  Docker sandboxes are usually reachable from this machine only unless the runtime exposes them more broadly.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <p className="text-xs font-data rounded-lg bg-cloud-elements-background-depth-2 px-3 py-2 break-all">
+                  {sshConnectionCommand}
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">Add SSH Key</CardTitle>

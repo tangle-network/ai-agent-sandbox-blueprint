@@ -29,6 +29,8 @@ export interface LocalSandbox {
   txHash?: string;
   callId?: number;
   errorMessage?: string;
+  /** Timestamp when the sandbox first went missing from authoritative operator hydration. */
+  missingSince?: number;
 }
 
 interface LegacySandboxRecord extends Partial<LocalSandbox> {
@@ -147,6 +149,7 @@ export function normalizeSandbox(record: LegacySandboxRecord): LocalSandbox {
     txHash: record.txHash,
     callId: record.callId,
     errorMessage: record.errorMessage,
+    missingSince: record.missingSince,
   };
 }
 
