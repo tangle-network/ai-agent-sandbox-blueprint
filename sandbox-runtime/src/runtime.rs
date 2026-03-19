@@ -1296,6 +1296,10 @@ if [ "$current_shell" = "/sbin/nologin" ] || [ "$current_shell" = "/bin/false" ]
   cat /tmp/passwd.tangle > /etc/passwd;
   rm -f /tmp/passwd.tangle;
 fi;
+if command -v passwd >/dev/null 2>&1; then
+  # OpenSSH rejects locked accounts before checking authorized_keys.
+  passwd -u "$user" >/dev/null 2>&1 || true;
+fi;
 if ! command -v sshd >/dev/null 2>&1; then
   if command -v apk >/dev/null 2>&1; then
     apk add --no-cache openssh-server >/dev/null;
@@ -1320,7 +1324,6 @@ PubkeyAuthentication yes
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
-UsePAM no
 PermitRootLogin no
 AllowUsers {SSH_DEFAULT_LOGIN_USER}
 AuthorizedKeysFile .ssh/authorized_keys
@@ -1973,6 +1976,10 @@ fn build_docker_config(
                 "SETUID".to_string(),
             ];
             if ssh_enabled {
+                // PTY allocation chowns /dev/pts/* to the SSH login user.
+                caps.push("CHOWN".to_string());
+                // OpenSSH's pre-auth sandbox chroots into /var/empty.
+                caps.push("SYS_CHROOT".to_string());
                 caps.push("NET_BIND_SERVICE".to_string());
             }
             caps
@@ -3077,6 +3084,24 @@ mod port_mapping_tests {
         // Only sidecar port should be exposed (no SSH since ssh_enabled=false)
         assert_eq!(exposed.len(), 1);
         assert!(exposed.contains_key(&format!("{}/tcp", config.container_port)));
+    }
+
+    #[test]
+    fn build_docker_config_adds_ssh_caps_when_enabled() {
+        init();
+        let config = SidecarRuntimeConfig::load();
+        let docker_config = build_docker_config(config, true, 1, 512, None, &[]);
+
+        let caps = docker_config.host_config.unwrap().cap_add.unwrap();
+        assert!(caps.contains(&"CHOWN".to_string()));
+        assert!(caps.contains(&"NET_BIND_SERVICE".to_string()));
+        assert!(caps.contains(&"SYS_CHROOT".to_string()));
+    }
+
+    #[test]
+    fn docker_ssh_bootstrap_unlocks_login_user() {
+        let command = build_docker_ssh_bootstrap_command();
+        assert!(command.contains("passwd -u \"$user\""));
     }
 
     #[test]
