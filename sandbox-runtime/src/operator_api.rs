@@ -291,6 +291,8 @@ struct SandboxSummary {
     last_activity_at: u64,
     ssh_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    service_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tee_deployment_id: Option<String>,
     /// Extra user-exposed ports: container_port → host_port.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -315,6 +317,7 @@ impl From<&SandboxRecord> for SandboxSummary {
             created_at: r.created_at,
             last_activity_at: r.last_activity_at,
             ssh_port: r.ssh_port,
+            service_id: r.service_id,
             tee_deployment_id: r.tee_deployment_id.clone(),
             extra_ports: r.extra_ports.clone(),
         }
@@ -3531,6 +3534,7 @@ mod tests {
             disk_gb: 50,
             stack: String::new(),
             owner: owner.to_string(),
+            service_id: None,
             tee_config: Some(crate::tee::TeeConfig {
                 required: true,
                 tee_type: crate::tee::TeeType::Tdx,
@@ -3585,6 +3589,7 @@ mod tests {
             disk_gb: 10,
             stack: String::new(),
             owner: owner.to_string(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
@@ -4601,6 +4606,7 @@ mod tests {
             disk_gb: 10,
             stack: String::new(),
             owner: owner.to_string(),
+            service_id: None,
             tee_config: None,
             extra_ports: ports,
             ssh_login_user: None,

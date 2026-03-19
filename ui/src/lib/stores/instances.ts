@@ -3,6 +3,8 @@ import { persistedAtom } from '@tangle-network/blueprint-ui';
 
 export interface LocalInstance {
   id: string;
+  sandboxId?: string;
+  requestId?: number;
   name: string;
   image: string;
   cpuCores: number;
@@ -19,6 +21,7 @@ export interface LocalInstance {
   status: 'creating' | 'running' | 'stopped' | 'gone' | 'error';
   txHash?: string;
   callId?: number;
+  errorMessage?: string;
 }
 
 export const instanceListStore = persistedAtom<LocalInstance[]>({
@@ -34,24 +37,58 @@ export const activeInstances = computed(instanceListStore, (list) =>
   list.filter((s) => s.status !== 'gone'),
 );
 
+export function matchesInstanceKey(instance: LocalInstance, key: string): boolean {
+  return instance.id === key || instance.sandboxId === key;
+}
+
+function dedupeInstances(records: LocalInstance[]): LocalInstance[] {
+  const seenIds = new Set<string>();
+  const seenSandboxIds = new Set<string>();
+  const deduped: LocalInstance[] = [];
+
+  for (const record of records) {
+    if (seenIds.has(record.id)) continue;
+    if (record.sandboxId && seenSandboxIds.has(record.sandboxId)) continue;
+    seenIds.add(record.id);
+    if (record.sandboxId) seenSandboxIds.add(record.sandboxId);
+    deduped.push(record);
+  }
+
+  return deduped;
+}
+
+function setInstances(records: LocalInstance[]) {
+  instanceListStore.set(dedupeInstances(records));
+}
+
 export function addInstance(instance: LocalInstance) {
   const existing = instanceListStore.get();
-  if (existing.some((s) => s.id === instance.id)) return;
-  instanceListStore.set([instance, ...existing]);
+  if (existing.some((s) => s.id === instance.id || (!!instance.sandboxId && s.sandboxId === instance.sandboxId))) {
+    return;
+  }
+  setInstances([instance, ...existing]);
+}
+
+export function updateInstance(id: string, extra: Partial<LocalInstance>) {
+  setInstances(
+    instanceListStore.get().map((instance) =>
+      matchesInstanceKey(instance, id) ? { ...instance, ...extra } : instance,
+    ),
+  );
 }
 
 export function updateInstanceStatus(id: string, status: LocalInstance['status'], extra?: Partial<LocalInstance>) {
-  instanceListStore.set(
-    instanceListStore.get().map((s) =>
-      s.id === id ? { ...s, ...extra, status } : s,
+  setInstances(
+    instanceListStore.get().map((instance) =>
+      matchesInstanceKey(instance, id) ? { ...instance, ...extra, status } : instance,
     ),
   );
 }
 
 export function getInstance(id: string): LocalInstance | undefined {
-  return instanceListStore.get().find((s) => s.id === id);
+  return instanceListStore.get().find((instance) => matchesInstanceKey(instance, id));
 }
 
 export function removeInstance(id: string) {
-  instanceListStore.set(instanceListStore.get().filter((s) => s.id !== id));
+  setInstances(instanceListStore.get().filter((instance) => !matchesInstanceKey(instance, id)));
 }

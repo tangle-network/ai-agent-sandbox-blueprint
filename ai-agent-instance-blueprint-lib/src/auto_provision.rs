@@ -17,8 +17,9 @@ use std::time::Duration;
 
 use crate::tee::TeeBackend;
 use crate::{
-    IBsmRead, ProvisionRequest, ensure_local_provision_reported, get_instance_sandbox,
-    mark_pending_provision_report, provision_core, report_local_provision, set_instance_sandbox,
+    IBsmRead, ProvisionRequest, clear_instance_sandbox, ensure_local_provision_reported,
+    get_instance_sandbox, mark_pending_provision_report, provision_core, report_local_provision,
+    set_instance_sandbox,
 };
 
 /// Configuration for auto-provision from environment.
@@ -137,6 +138,104 @@ pub fn decode_provision_config(config_bytes: &[u8]) -> Result<ProvisionRequest, 
         .map_err(|e| format!("Failed to decode ProvisionRequest from service config: {e}"))
 }
 
+fn bind_service_id(mut record: crate::SandboxRecord, service_id: u64) -> crate::SandboxRecord {
+    record.service_id = Some(service_id);
+    record
+}
+
+fn should_reuse_existing_record(
+    record: &crate::SandboxRecord,
+    service_id: u64,
+    current_owner: Option<&str>,
+) -> bool {
+    if record.service_id == Some(service_id) {
+        return true;
+    }
+
+    record.service_id.is_none()
+        && current_owner
+            .map(|owner| !owner.is_empty() && record.owner.eq_ignore_ascii_case(owner))
+            .unwrap_or(false)
+}
+
+fn sync_runtime_service_binding(record: &crate::SandboxRecord) -> Result<(), String> {
+    let Some(service_id) = record.service_id else {
+        return Ok(());
+    };
+
+    if let Ok(store) = crate::runtime::sandboxes() {
+        let updated = store.update(&record.id, |existing| {
+            existing.service_id = Some(service_id);
+        });
+
+        if matches!(updated, Ok(true)) {
+            return Ok(());
+        }
+
+        let mut sealed = record.clone();
+        crate::runtime::seal_record(&mut sealed).map_err(|e| e.to_string())?;
+        store.insert(record.id.clone(), sealed)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+async fn reset_stale_instance_record(
+    record: &crate::SandboxRecord,
+    tee: Option<&dyn TeeBackend>,
+) -> Result<(), String> {
+    warn!(
+        sandbox_id = %record.id,
+        previous_service_id = ?record.service_id,
+        previous_owner = %record.owner,
+        "Auto-provision: clearing stale singleton instance state before reprovisioning"
+    );
+
+    if let Err(err) = crate::runtime::delete_sidecar(record, tee).await {
+        warn!(
+            sandbox_id = %record.id,
+            error = %err,
+            "Auto-provision: stale sandbox teardown failed; clearing local state anyway"
+        );
+    }
+
+    if let Ok(store) = crate::runtime::sandboxes() {
+        let _ = store.remove(&record.id);
+    }
+
+    clear_instance_sandbox().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn reuse_existing_instance_record(
+    record: crate::SandboxRecord,
+    service_id: u64,
+    report_client: Option<&blueprint_sdk::contexts::tangle::TangleClient>,
+) -> Result<(), String> {
+    let record = bind_service_id(record, service_id);
+    set_instance_sandbox(record.clone()).map_err(|e| e.to_string())?;
+    sync_runtime_service_binding(&record)?;
+
+    info!(
+        "Auto-provision: local instance already provisioned (sandbox_id='{}')",
+        record.id
+    );
+
+    if let Some(client) = report_client {
+        if let Err(err) = ensure_local_provision_reported(client, service_id, &record).await {
+            warn!(
+                service_id = service_id,
+                error = %err,
+                sandbox_id = %record.id,
+                "Auto-provision: reconcile report failed; pending report will be retried"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Run auto-provision: poll for config and provision when available.
 ///
 /// This is designed to be spawned as a background task. It will:
@@ -151,23 +250,28 @@ pub async fn run_auto_provision(
 ) -> Result<(), String> {
     // Already provisioned locally?
     if let Some(record) = get_instance_sandbox().map_err(|e| e.to_string())? {
-        info!(
-            "Auto-provision: local instance already provisioned (sandbox_id='{}')",
-            record.id
-        );
-        if let Some(client) = report_client.as_ref() {
-            if let Err(err) =
-                ensure_local_provision_reported(client, config.service_id, &record).await
-            {
-                warn!(
-                    service_id = config.service_id,
-                    error = %err,
-                    sandbox_id = %record.id,
-                    "Auto-provision: reconcile report failed; pending report will be retried"
-                );
+        if should_reuse_existing_record(&record, config.service_id, None) {
+            return reuse_existing_instance_record(
+                record,
+                config.service_id,
+                report_client.as_ref(),
+            )
+            .await;
+        }
+
+        if record.service_id.is_none() {
+            let owner = read_service_owner(&config).await?;
+            if should_reuse_existing_record(&record, config.service_id, Some(&owner)) {
+                return reuse_existing_instance_record(
+                    record,
+                    config.service_id,
+                    report_client.as_ref(),
+                )
+                .await;
             }
         }
-        return Ok(());
+
+        reset_stale_instance_record(&record, tee).await?;
     }
 
     info!(
@@ -278,9 +382,11 @@ pub async fn run_auto_provision(
 
     // Provision
     let (output, record) = provision_core(&request, tee, &owner).await?;
+    let record = bind_service_id(record, config.service_id);
 
     // Store record
-    set_instance_sandbox(record).map_err(|e| e.to_string())?;
+    set_instance_sandbox(record.clone()).map_err(|e| e.to_string())?;
+    sync_runtime_service_binding(&record)?;
 
     if let Some(client) = report_client.as_ref() {
         if let Err(err) = report_local_provision(client, config.service_id, &output).await {
@@ -305,12 +411,78 @@ pub async fn run_auto_provision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn test_record(service_id: Option<u64>, owner: &str) -> crate::SandboxRecord {
+        crate::SandboxRecord {
+            id: "sandbox-test-1".to_string(),
+            container_id: "ctr-test-1".to_string(),
+            sidecar_url: "http://127.0.0.1:9202".to_string(),
+            sidecar_port: 9202,
+            ssh_port: None,
+            token: "token".to_string(),
+            created_at: 1,
+            cpu_cores: 2,
+            memory_mb: 2048,
+            state: crate::SandboxState::Running,
+            idle_timeout_seconds: 0,
+            max_lifetime_seconds: 0,
+            last_activity_at: 1,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: "agent-dev".to_string(),
+            base_env_json: "{}".to_string(),
+            user_env_json: "{}".to_string(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            tee_attestation_json: None,
+            name: "instance".to_string(),
+            agent_identifier: "test-agent".to_string(),
+            metadata_json: "{}".to_string(),
+            disk_gb: 20,
+            stack: "default".to_string(),
+            owner: owner.to_string(),
+            service_id,
+            tee_config: None,
+            extra_ports: HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
+        }
+    }
 
     #[test]
     fn config_from_env_returns_none_without_bsm() {
         // BSM_ADDRESS not set → None
         unsafe { std::env::remove_var("BSM_ADDRESS") };
         assert!(AutoProvisionConfig::from_env(1).is_none());
+    }
+
+    #[test]
+    fn bind_service_id_sets_binding() {
+        let record = bind_service_id(test_record(None, "0xabc"), 7);
+        assert_eq!(record.service_id, Some(7));
+    }
+
+    #[test]
+    fn reuse_check_accepts_matching_bound_service() {
+        let record = test_record(Some(7), "0xabc");
+        assert!(should_reuse_existing_record(&record, 7, None));
+    }
+
+    #[test]
+    fn reuse_check_accepts_legacy_record_for_same_owner() {
+        let record = test_record(None, "0xabc");
+        assert!(should_reuse_existing_record(&record, 7, Some("0xAbC")));
+    }
+
+    #[test]
+    fn reuse_check_rejects_legacy_record_for_different_owner() {
+        let record = test_record(None, "0xabc");
+        assert!(!should_reuse_existing_record(&record, 7, Some("0xdef")));
     }
 
     #[test]

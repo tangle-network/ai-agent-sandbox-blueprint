@@ -10,7 +10,7 @@ import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
 import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
 import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
 import { ResourceTabs } from '~/components/shared/ResourceTabs';
-import { instanceListStore, updateInstanceStatus } from '~/lib/stores/instances';
+import { instanceListStore, getInstance, updateInstanceStatus } from '~/lib/stores/instances';
 import { getBlueprint } from '@tangle-network/blueprint-ui';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
@@ -29,15 +29,15 @@ export default function InstanceDetail() {
   const { id } = useParams<{ id: string }>();
   const decodedId = id ? decodeURIComponent(id) : '';
   const instances = useStore(instanceListStore);
-  const inst = instances.find((s) => s.id === decodedId);
+  const inst = getInstance(decodedId) ?? instances.find((s) => s.id === decodedId);
   const { address } = useAccount();
 
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
 
-  const serviceId = BigInt(inst?.serviceId ?? '1');
+  const serviceId = inst?.serviceId ? BigInt(inst.serviceId) : null;
   const bpId = inst?.teeEnabled ? 'ai-agent-tee-instance-blueprint' : 'ai-agent-instance-blueprint';
-  const isCreating = inst?.status === 'creating' && !inst?.sidecarUrl;
+  const isCreating = inst?.status === 'creating' && !inst?.sandboxId;
 
   // Watch for OperatorProvisioned event if instance is still creating
   const instanceProvision = useInstanceProvisionWatcher(
@@ -49,7 +49,7 @@ export default function InstanceDetail() {
   useEffect(() => {
     if (instanceProvision && decodedId) {
       updateInstanceStatus(decodedId, 'running', {
-        id: instanceProvision.sandboxId,
+        sandboxId: instanceProvision.sandboxId,
         sidecarUrl: instanceProvision.sidecarUrl,
       });
     }
@@ -153,13 +153,20 @@ export default function InstanceDetail() {
             </CardHeader>
             <CardContent className="space-y-3">
               <LabeledValueRow label="ID" value={inst.id} mono copyable />
+              <LabeledValueRow
+                label="Sandbox"
+                value={inst.sandboxId || 'Pending operator provision'}
+                mono={!!inst.sandboxId}
+                copyable={!!inst.sandboxId}
+                copyValue={inst.sandboxId ?? undefined}
+              />
               <LabeledValueRow label="Image" value={inst.image} mono copyable />
               <LabeledValueRow label="CPU" value={`${inst.cpuCores} cores`} />
               <LabeledValueRow label="Memory" value={`${inst.memoryMb} MB`} />
               <LabeledValueRow label="Disk" value={`${inst.diskGb} GB`} />
               <LabeledValueRow label="Created" value={new Date(inst.createdAt).toLocaleString()} />
               <LabeledValueRow label="Blueprint" value={getBlueprint(bpId)?.name ?? bpId} />
-              <LabeledValueRow label="Service" value={`#${inst.serviceId}`} />
+              <LabeledValueRow label="Service" value={inst.serviceId ? `#${inst.serviceId}` : 'Pending activation'} />
             </CardContent>
           </Card>
           <Card>
@@ -230,7 +237,7 @@ export default function InstanceDetail() {
             {isOperatorAuthed ? (
               <div className="h-[min(600px,65vh)]">
                 <SessionSidebar
-                  sandboxId={decodedId}
+                  sandboxId={inst.sandboxId ?? decodedId}
                   client={client}
                   systemPrompt={systemPrompt}
                   onSystemPromptChange={setSystemPrompt}

@@ -309,6 +309,8 @@ pub struct SandboxRecord {
     /// ownership checks — only the owner may stop, resume, or delete a sandbox.
     #[serde(default)]
     pub owner: String,
+    #[serde(default)]
+    pub service_id: Option<u64>,
     /// TEE configuration used to create this sandbox (preserved for recreation).
     #[serde(default)]
     pub tee_config: Option<crate::tee::TeeConfig>,
@@ -995,6 +997,7 @@ async fn create_sidecar_tee(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
+        service_id: None,
         tee_config: request.tee_config.clone(),
         extra_ports: deployment.extra_ports,
         ssh_login_user: None,
@@ -1841,6 +1844,7 @@ async fn create_sidecar_firecracker(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
+        service_id: None,
         tee_config: None,
         extra_ports: HashMap::new(),
         ssh_login_user: None,
@@ -2157,6 +2161,7 @@ async fn create_sidecar_docker(
             disk_gb: request.disk_gb,
             stack: request.stack.clone(),
             owner: request.owner.clone(),
+            service_id: None,
             tee_config: None,
             extra_ports: extra_port_map,
             ssh_login_user: None,
@@ -3410,6 +3415,7 @@ mod seal_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             extra_ports: HashMap::new(),
             ssh_login_user: None,

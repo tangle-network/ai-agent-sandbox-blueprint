@@ -293,6 +293,8 @@ export default function CreatePage() {
               infra={infra}
               operators={deploy.operators}
               operatorsLoading={deploy.operatorsLoading}
+              operatorsError={deploy.operatorsError}
+              operatorCount={deploy.operatorCount}
               hasValidService={deploy.hasValidService}
               onOpenModal={() => setShowInfra(true)}
             />
@@ -449,7 +451,7 @@ export default function CreatePage() {
               }
             } else {
               const name = String(values.name || '');
-              updateInstanceStatus(name, 'running', { id: sandboxId, sidecarUrl });
+              updateInstanceStatus(name, 'running', { sandboxId, sidecarUrl });
             }
           }}
         />
@@ -503,14 +505,24 @@ function AgentConfigurationField({
 // ── Instance Infra Bar ──
 
 function InstanceInfraBar({
-  infra, operators, operatorsLoading, hasValidService, onOpenModal,
+  infra, operators, operatorsLoading, operatorsError, operatorCount, hasValidService, onOpenModal,
 }: {
   infra: { blueprintId: string; serviceId: string };
   operators: DiscoveredOperator[];
   operatorsLoading: boolean;
+  operatorsError?: Error | null;
+  operatorCount: bigint;
   hasValidService: boolean;
   onOpenModal: () => void;
 }) {
+  const operatorSummary = operatorsLoading
+    ? 'Discovering...'
+    : operatorsError
+      ? operatorCount > 0n
+        ? `${operatorCount.toString()} registered (verification failed)`
+        : 'Lookup failed'
+      : `${operators.length} operators`;
+
   return (
     <div className="glass-card rounded-lg p-3 flex items-center justify-between mb-6">
       <div className="flex items-center gap-4">
@@ -518,13 +530,13 @@ function InstanceInfraBar({
         <div className="flex items-center gap-2">
           <div className="i-ph:users-three text-sm text-cloud-elements-textTertiary" />
           <span className="text-xs text-cloud-elements-textTertiary">
-            {operatorsLoading ? 'Discovering...' : `${operators.length} operators`}
+            {operatorSummary}
           </span>
         </div>
         {hasValidService && (
           <div className="flex items-center gap-2">
-            <div className="i-ph:check-circle text-sm text-teal-400" />
-            <span className="text-xs text-teal-400">Service #{infra.serviceId}</span>
+            <div className="i-ph:info text-sm text-cloud-elements-textTertiary" />
+            <span className="text-xs text-cloud-elements-textTertiary">Verified service #{infra.serviceId} available</span>
           </div>
         )}
       </div>
@@ -652,6 +664,8 @@ function DeployStep({
     hasValidService,
     operators,
     operatorsLoading,
+    operatorsError,
+    operatorCount,
     provision,
     callId,
     contractsDeployed,
@@ -713,7 +727,6 @@ function DeployStep({
               serviceValidating={serviceValidating}
               serviceError={serviceError}
               isInstanceMode={isInstanceMode}
-              hasValidService={hasValidService}
             />
           </div>
         </div>
@@ -827,7 +840,13 @@ function DeployStep({
 
       {/* ── Operators (instance mode, new service, idle) ── */}
       {isNewService && status === 'idle' && (
-        <OperatorList operators={operators} operatorsLoading={operatorsLoading} blueprintId={infra.blueprintId} />
+        <OperatorList
+          operators={operators}
+          operatorsLoading={operatorsLoading}
+          operatorsError={operatorsError}
+          operatorCount={operatorCount}
+          blueprintId={infra.blueprintId}
+        />
       )}
 
       {/* ── Service warning (sandbox mode only) ── */}
@@ -909,14 +928,13 @@ function DeployStep({
 // ── Sub-components (extracted for readability) ──
 
 function ServiceStatusBadge({
-  infra, serviceInfo, serviceValidating, serviceError, isInstanceMode, hasValidService,
+  infra, serviceInfo, serviceValidating, serviceError, isInstanceMode,
 }: {
   infra: { serviceId: string };
   serviceInfo: { active: boolean; permitted: boolean } | null;
   serviceValidating: boolean;
   serviceError: string | null;
   isInstanceMode: boolean;
-  hasValidService: boolean;
 }) {
   if (serviceValidating) {
     return (
@@ -926,19 +944,19 @@ function ServiceStatusBadge({
       </>
     );
   }
+  if (isInstanceMode) {
+    return (
+      <>
+        <div className="i-ph:plus-circle text-sm text-violet-400" />
+        <span className="text-violet-400">New service</span>
+      </>
+    );
+  }
   if (serviceInfo?.active && serviceInfo?.permitted) {
     return (
       <>
         <div className="i-ph:check-circle-fill text-sm text-teal-400" />
         <span className="text-teal-400">Service #{infra.serviceId}</span>
-      </>
-    );
-  }
-  if (isInstanceMode && !hasValidService) {
-    return (
-      <>
-        <div className="i-ph:plus-circle text-sm text-violet-400" />
-        <span className="text-violet-400">New service</span>
       </>
     );
   }
@@ -1075,19 +1093,51 @@ function InstanceProvisionCard({ provision }: { provision?: { sandboxId: string;
   );
 }
 
-function OperatorList({ operators, operatorsLoading, blueprintId }: { operators: DiscoveredOperator[]; operatorsLoading: boolean; blueprintId: string }) {
+function OperatorList({
+  operators,
+  operatorsLoading,
+  operatorsError,
+  operatorCount,
+  blueprintId,
+}: {
+  operators: DiscoveredOperator[];
+  operatorsLoading: boolean;
+  operatorsError?: Error | null;
+  operatorCount: bigint;
+  blueprintId: string;
+}) {
+  const titleCount = operatorsLoading
+    ? '...'
+    : operatorsError && operatorCount > 0n
+      ? operatorCount.toString()
+      : String(operators.length);
+
   return (
     <div className="glass-card rounded-xl p-4">
       <div className="flex items-center gap-2 mb-3">
         <div className="i-ph:users-three text-sm text-cloud-elements-textTertiary" />
         <span className="text-xs font-display font-medium text-cloud-elements-textSecondary">
-          Operators ({operatorsLoading ? '...' : operators.length})
+          Operators ({titleCount})
         </span>
       </div>
       {operatorsLoading ? (
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full border border-cloud-elements-textTertiary border-t-transparent animate-spin" />
           <span className="text-xs text-cloud-elements-textTertiary">Discovering operators for blueprint #{blueprintId}...</span>
+        </div>
+      ) : operatorsError ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="i-ph:warning-circle text-sm text-amber-400" />
+            <span className="text-xs text-amber-400">
+              {operatorCount > 0n
+                ? `Found ${operatorCount.toString()} registered operator${operatorCount === 1n ? '' : 's'} on-chain, but verification failed`
+                : 'Operator lookup failed for this blueprint'}
+            </span>
+          </div>
+          <p className="text-[11px] text-cloud-elements-textTertiary">
+            This is usually a local RPC or multicall issue. The app could not build a verified operator list for service creation.
+          </p>
         </div>
       ) : operators.length === 0 ? (
         <div className="flex items-center gap-2">

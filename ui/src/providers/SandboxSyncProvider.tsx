@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef } from 'react';
 import { useAccount } from 'wagmi';
 import { useSandboxHydration } from '~/lib/hooks/useSandboxHydration';
+import { useInstanceHydration } from '~/lib/hooks/useInstanceHydration';
 
 const POLL_INTERVAL_MS = 5_000;
 
@@ -10,7 +11,16 @@ function makeAuthAttemptKey(address: string) {
 
 export function SandboxSyncProvider({ children }: { children: ReactNode }) {
   const { address, isConnected } = useAccount();
-  const { refresh, authRequired, isHydrating } = useSandboxHydration();
+  const {
+    refresh: refreshSandboxes,
+    authRequired: sandboxAuthRequired,
+    isHydrating: sandboxesHydrating,
+  } = useSandboxHydration();
+  const {
+    refresh: refreshInstances,
+    authRequired: instanceAuthRequired,
+    isHydrating: instancesHydrating,
+  } = useInstanceHydration();
   const autoAuthAttemptKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -26,15 +36,29 @@ export function SandboxSyncProvider({ children }: { children: ReactNode }) {
   }, [address, isConnected]);
 
   useEffect(() => {
-    if (!isConnected || !address || !authRequired || isHydrating) return;
+    const needsAuth = sandboxAuthRequired || instanceAuthRequired;
+    const isBusy = sandboxesHydrating || instancesHydrating;
+    if (!isConnected || !address || !needsAuth || isBusy) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
 
     const attemptKey = makeAuthAttemptKey(address);
     if (autoAuthAttemptKeyRef.current === attemptKey) return;
 
     autoAuthAttemptKeyRef.current = attemptKey;
-    void refresh({ interactive: true });
-  }, [address, authRequired, isConnected, isHydrating, refresh]);
+    void Promise.all([
+      refreshSandboxes({ interactive: true }),
+      refreshInstances({ interactive: true }),
+    ]);
+  }, [
+    address,
+    isConnected,
+    instanceAuthRequired,
+    instancesHydrating,
+    refreshInstances,
+    refreshSandboxes,
+    sandboxAuthRequired,
+    sandboxesHydrating,
+  ]);
 
   useEffect(() => {
     if (!isConnected || !address) return;
@@ -42,13 +66,16 @@ export function SandboxSyncProvider({ children }: { children: ReactNode }) {
 
     const intervalId = window.setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      void refresh({ interactive: false });
+      void Promise.all([
+        refreshSandboxes({ interactive: false }),
+        refreshInstances({ interactive: false }),
+      ]);
     }, POLL_INTERVAL_MS);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [address, isConnected, refresh]);
+  }, [address, isConnected, refreshInstances, refreshSandboxes]);
 
   return <>{children}</>;
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   instanceListStore,
   addInstance,
+  updateInstance,
   updateInstanceStatus,
   removeInstance,
   getInstance,
@@ -64,6 +65,25 @@ describe('updateInstanceStatus', () => {
     updateInstanceStatus('unknown', 'gone');
     expect(getInstance('inst-1')?.status).toBe('running');
   });
+
+  it('updates by sandboxId when the route key stays stable', () => {
+    addInstance(makeInstance({ id: 'draft-name', sandboxId: 'sandbox-live-1', status: 'creating' }));
+    updateInstanceStatus('sandbox-live-1', 'running', { sidecarUrl: 'http://sidecar:9090' });
+    const inst = getInstance('draft-name')!;
+    expect(inst.status).toBe('running');
+    expect(inst.sidecarUrl).toBe('http://sidecar:9090');
+  });
+});
+
+describe('updateInstance', () => {
+  it('merges metadata without changing status', () => {
+    addInstance(makeInstance({ id: 'inst-1', status: 'creating' }));
+    updateInstance('inst-1', { requestId: 7, serviceId: '3' });
+    const inst = getInstance('inst-1')!;
+    expect(inst.status).toBe('creating');
+    expect(inst.requestId).toBe(7);
+    expect(inst.serviceId).toBe('3');
+  });
 });
 
 describe('removeInstance', () => {
@@ -73,6 +93,12 @@ describe('removeInstance', () => {
     removeInstance('inst-1');
     expect(instanceListStore.get()).toHaveLength(1);
     expect(getInstance('inst-1')).toBeUndefined();
+  });
+
+  it('removes by sandboxId', () => {
+    addInstance(makeInstance({ id: 'draft-name', sandboxId: 'sandbox-live-1' }));
+    removeInstance('sandbox-live-1');
+    expect(instanceListStore.get()).toHaveLength(0);
   });
 });
 

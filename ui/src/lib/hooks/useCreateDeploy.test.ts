@@ -40,8 +40,8 @@ describe('useCreateDeploy: deriveIsNewService', () => {
     expect(deriveIsNewService('instance', false, false, '')).toBe(true);
   });
 
-  it('returns false for instance mode with active, permitted service', () => {
-    expect(deriveIsNewService('instance', true, true, '42')).toBe(false);
+  it('returns true for instance mode with active, permitted service', () => {
+    expect(deriveIsNewService('instance', true, true, '42')).toBe(true);
   });
 
   it('returns true for instance mode when service is active but not permitted', () => {
@@ -233,12 +233,14 @@ describe('useCreateDeploy: computeCanDeploy', () => {
     })).toBe(false);
   });
 
-  it('returns true for instance mode with valid existing service (Path A)', () => {
+  it('returns true for instance mode with a reusable service because create still opens a new service request', () => {
     expect(computeCanDeploy({
       ...baseOpts,
       mode: 'instance',
       hasValidService: true,
-      isNewService: false,
+      isNewService: true,
+      operatorCount: 3,
+      operatorsLoading: false,
     })).toBe(true);
   });
 });

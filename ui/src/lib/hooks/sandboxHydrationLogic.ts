@@ -28,6 +28,7 @@ export interface ApiSandbox {
   created_at: number;
   last_activity_at: number;
   ssh_port?: number;
+  service_id?: number;
   tee_deployment_id?: string;
 }
 

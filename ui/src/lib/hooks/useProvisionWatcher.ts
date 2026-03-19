@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWatchContractEvent } from 'wagmi';
 import { agentInstanceBlueprintAbi } from '~/lib/contracts/abi';
 import { getAddresses } from '@tangle-network/blueprint-ui';
@@ -30,6 +30,11 @@ export function useInstanceProvisionWatcher(
 ): ProvisionResult | null {
   const [result, setResult] = useState<ProvisionResult | null>(null);
   const resultRef = useRef<ProvisionResult | null>(null);
+
+  useEffect(() => {
+    resultRef.current = null;
+    setResult(null);
+  }, [serviceId, blueprintType, enabled]);
 
   const addrs = getAddresses<SandboxAddresses>();
   const address = blueprintType === 'tee-instance'

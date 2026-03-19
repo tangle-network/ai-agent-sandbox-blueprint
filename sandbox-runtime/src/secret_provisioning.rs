@@ -184,6 +184,7 @@ mod tests {
             disk_gb: 10,
             stack: String::new(),
             owner: owner.to_string(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,

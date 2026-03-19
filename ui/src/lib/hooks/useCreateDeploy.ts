@@ -2,8 +2,8 @@
  * useCreateDeploy — unified deploy hook for the create wizard.
  *
  * Abstracts the two deployment paths behind a single state machine:
- *   Path A (sandbox / instance with existing service): submitJob → watch provision
- *   Path B (instance without service): requestService → watch ServiceActivated → watch OperatorProvisioned
+ *   Path A (sandbox): submitJob → watch provision
+ *   Path B (instance): requestService → watch operator provisioning
  *
  * Path A bypasses MetaMask's built-in gas estimation by pre-estimating gas
  * through publicClient (uses the working Vite RPC proxy). This avoids the
@@ -30,7 +30,7 @@ import {
 } from './createDeployLogic';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { addSandbox, createSandboxDraftId, updateSandboxStatus } from '~/lib/stores/sandboxes';
-import { addInstance, updateInstanceStatus } from '~/lib/stores/instances';
+import { addInstance, updateInstance, updateInstanceStatus, type LocalInstance } from '~/lib/stores/instances';
 import type { BlueprintDefinition, JobDefinition } from '@tangle-network/blueprint-ui';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
 import type { InfraConfig } from '@tangle-network/blueprint-ui';
@@ -56,6 +56,8 @@ export interface CreateDeployState {
   /** Discovered operators (only relevant for instance mode without existing service) */
   operators: DiscoveredOperator[];
   operatorsLoading: boolean;
+  operatorsError?: Error | null;
+  operatorCount: bigint;
   /** Whether we're creating a new service (instance Path B) vs submitting a job (Path A) */
   isNewService: boolean;
 }
@@ -71,6 +73,54 @@ interface UseCreateDeployOpts {
 /** ~30 days at 3s blocks */
 const TTL_BLOCKS_30_DAYS = 864000n;
 const useSafeLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+function getRequestIdFromServiceReceiptLogs(
+  logs: Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>,
+): number | null {
+  for (const log of logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: tangleServicesAbi,
+        data: log.data,
+        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
+      });
+      if (decoded.eventName === 'ServiceRequested' && 'requestId' in decoded.args) {
+        return Number(decoded.args.requestId);
+      }
+    } catch {
+      // Ignore unrelated logs while scanning the receipt.
+    }
+  }
+
+  return null;
+}
+
+async function resolveActivatedServiceId(requestId: number): Promise<string | null> {
+  const addrs = getAddresses<SandboxAddresses>();
+  const logs = await publicClient.getLogs({
+    address: addrs.services,
+    fromBlock: 0n,
+    toBlock: 'latest',
+  });
+
+  for (const log of logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: tangleServicesAbi,
+        data: log.data,
+        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
+      });
+      if (decoded.eventName !== 'ServiceActivated') continue;
+      if (!('requestId' in decoded.args) || !('serviceId' in decoded.args)) continue;
+      if (Number(decoded.args.requestId) !== requestId) continue;
+      return String(decoded.args.serviceId);
+    } catch {
+      // Ignore unrelated logs while scanning the chain.
+    }
+  }
+
+  return null;
+}
 
 // ── Hook ──
 
@@ -98,7 +148,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   isTeeInstanceRef.current = isTeeInstance;
   const sandboxDraftKeyRef = useRef<string | null>(null);
 
-  // ── Path A: submitJob (sandbox, or instance with existing service) ──
+  // ── Path A: submitJob (sandbox only) ──
   // Uses writeContractAsync directly with pre-estimated gas to bypass
   // MetaMask's gas estimation (which fails when its RPC URL is unreachable).
   const {
@@ -165,6 +215,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
     reset: resetServiceTx,
   } = useWriteContract();
   const {
+    data: serviceReceipt,
     isSuccess: serviceConfirmed,
     isLoading: serviceTxPending,
   } = useWaitForTransactionReceipt({ hash: serviceTxHash });
@@ -173,21 +224,24 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   const [serviceError, setServiceError] = useState<string | null>(null);
   // Pre-flight error (simulation failure, wallet not connected, etc.)
   const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [resolvedServiceId, setResolvedServiceId] = useState<string | null>(null);
 
   // Operator discovery (instance mode)
-  const { operators, isLoading: operatorsLoading } = useOperators(
+  const { operators, isLoading: operatorsLoading, error: operatorsError, operatorCount } = useOperators(
     isInstanceMode ? BigInt(infra.blueprintId || '0') : 0n,
   );
 
-  // Check if existing service is valid (cached in infra store)
+  // Check if the prefilled service is valid (used for display / workflow routes).
   const hasValidService = !!(
     infra.serviceInfo?.active &&
     infra.serviceInfo?.permitted &&
     infra.serviceId
   );
 
-  // Whether we're creating a new service (Path B) vs submitting a job (Path A)
-  const isNewService = isInstanceMode && !hasValidService;
+  // Instance provisioning is service creation, not an on-chain submitJob.
+  // Even if the app has a verified instance service cached, the create wizard
+  // should open a fresh requestService flow for a new singleton instance.
+  const isNewService = isInstanceMode;
 
   // ── Unified status ──
 
@@ -201,12 +255,51 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
   const txHash = isNewService ? serviceTxHash : jobTxHash;
   const error = preflightError ?? (isNewService ? serviceError : jobError);
 
+  const requestId = useMemo<number | null>(() => {
+    if (!serviceReceipt?.logs) return null;
+    return getRequestIdFromServiceReceiptLogs(
+      serviceReceipt.logs as Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>,
+    );
+  }, [serviceReceipt]);
+
+  useEffect(() => {
+    if (!serviceTxHash) {
+      setResolvedServiceId(null);
+    }
+  }, [serviceTxHash]);
+
+  useEffect(() => {
+    if (!isInstanceMode || requestId == null || resolvedServiceId) return;
+
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const serviceId = await resolveActivatedServiceId(requestId);
+        if (!cancelled && serviceId) {
+          setResolvedServiceId(serviceId);
+        }
+      } catch {
+        // Keep polling while the service is still awaiting approvals.
+      }
+    };
+
+    void tick();
+    const intervalId = window.setInterval(() => {
+      void tick();
+    }, 5_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [isInstanceMode, requestId, resolvedServiceId]);
+
   // ── Instance provision watching ──
 
   const instanceProvision = useInstanceProvisionWatcher(
-    infra.serviceId ? BigInt(infra.serviceId) : null,
+    resolvedServiceId ? BigInt(resolvedServiceId) : null,
     isTeeInstance ? 'tee-instance' : 'instance',
-    status === 'confirmed' && isInstanceMode,
+    status === 'confirmed' && isInstanceMode && !!resolvedServiceId,
   );
 
   // ── Store updates ──
@@ -248,14 +341,29 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
         diskGb: Number(v.diskGb) || 10,
         createdAt: Date.now(),
         blueprintId: infraRef.current.blueprintId,
-        serviceId: infraRef.current.serviceId || '',
+        sandboxId: undefined,
+        requestId: requestId ?? undefined,
+        serviceId: resolvedServiceId || '',
         teeEnabled: isTeeInstanceRef.current,
         agentIdentifier: String(v.agentIdentifier || '') || undefined,
         status: 'creating',
         txHash: serviceTxHash,
       });
     }
-  }, [serviceConfirmed, isInstanceMode, serviceTxHash]);
+  }, [isInstanceMode, requestId, resolvedServiceId, serviceConfirmed, serviceTxHash]);
+
+  useEffect(() => {
+    if (!isInstanceMode || !serviceConfirmed) return;
+    const name = String(valuesRef.current.name || '');
+    if (!name) return;
+
+    const extra: Partial<LocalInstance> = {};
+    if (requestId != null) extra.requestId = requestId;
+    if (resolvedServiceId) extra.serviceId = resolvedServiceId;
+    if (Object.keys(extra).length > 0) {
+      updateInstance(name, extra);
+    }
+  }, [isInstanceMode, requestId, resolvedServiceId, serviceConfirmed]);
 
   // Update store when instance provision event arrives
   useEffect(() => {
@@ -263,7 +371,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
       const name = String(valuesRef.current.name || '');
       if (name) {
         updateInstanceStatus(name, 'running', {
-          id: instanceProvision.sandboxId,
+          sandboxId: instanceProvision.sandboxId,
           sidecarUrl: instanceProvision.sidecarUrl,
         });
       }
@@ -494,6 +602,8 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
     sandboxDraftKey: sandboxDraftKeyRef.current ?? undefined,
     operators,
     operatorsLoading,
+    operatorsError,
+    operatorCount,
     isNewService,
     isInstanceMode,
     isTeeInstance,
