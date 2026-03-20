@@ -54,22 +54,13 @@ const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }
 
 // ── Form sections for provision/create jobs (organized layout) ──
 
-const SANDBOX_PRE_AGENT_SECTIONS: FormSection[] = [
+const PRE_AGENT_SECTIONS: FormSection[] = [
   { label: 'Identity', fields: ['name'] },
   { label: 'Image', fields: ['image'] },
 ];
 
-const SANDBOX_POST_AGENT_SECTIONS: FormSection[] = [
+const POST_AGENT_SECTIONS: FormSection[] = [
   { label: 'Runtime & Stack', fields: ['runtimeBackend', 'stack'] },
-  { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
-  { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
-  { label: 'Features', fields: ['sshEnabled', 'sshPublicKey'] },
-  { label: 'Advanced Options', fields: ['metadataJson', 'teeRequired', 'teeType'], collapsed: true },
-];
-
-const PROVISION_SECTIONS: FormSection[] = [
-  { label: 'Identity', fields: ['name'] },
-  { label: 'Image & Stack', fields: ['image', 'runtimeBackend', 'stack'] },
   { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
   { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
   { label: 'Features', fields: ['sshEnabled', 'sshPublicKey'] },
@@ -161,9 +152,9 @@ export default function CreatePage() {
   const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
   const supportsMetadataPorts = runtimeBackend !== 'firecracker';
   const selectedImage = String(values.image || '');
-  const usesBundledAgentSelector = selectedBlueprint?.id === 'ai-agent-sandbox-blueprint' && isBundledSandboxImage(selectedImage);
+  const supportsAgentConfiguration = !!createJob?.fields.some((field) => field.name === 'agentIdentifier');
+  const usesBundledAgentSelector = supportsAgentConfiguration && isBundledSandboxImage(selectedImage);
   const configuredAgentIdentifier = normalizeAgentIdentifier(values.agentIdentifier);
-  const isSandboxBlueprint = selectedBlueprint?.id === 'ai-agent-sandbox-blueprint';
 
   // Keep TEE controls in sync with runtime backend selection.
   useEffect(() => {
@@ -343,40 +334,30 @@ export default function CreatePage() {
               <CardDescription>Configure your {entityLabel.toLowerCase()} resources and settings</CardDescription>
             </CardHeader>
             <CardContent>
-              {isSandboxBlueprint ? (
-                <>
-                  <BlueprintJobForm
-                    job={createJob}
-                    values={values}
-                    onChange={onChange}
-                    errors={errors}
-                    sections={SANDBOX_PRE_AGENT_SECTIONS}
-                  />
+              <BlueprintJobForm
+                job={createJob}
+                values={values}
+                onChange={onChange}
+                errors={errors}
+                sections={PRE_AGENT_SECTIONS}
+              />
 
-                  <AgentConfigurationField
-                    image={selectedImage}
-                    value={configuredAgentIdentifier}
-                    usesBundledSelector={usesBundledAgentSelector}
-                    onChange={(next) => onChange('agentIdentifier', next)}
-                  />
-
-                  <BlueprintJobForm
-                    job={createJob}
-                    values={values}
-                    onChange={onChange}
-                    errors={errors}
-                    sections={SANDBOX_POST_AGENT_SECTIONS}
-                  />
-                </>
-              ) : (
-                <BlueprintJobForm
-                  job={createJob}
-                  values={values}
-                  onChange={onChange}
-                  errors={errors}
-                  sections={PROVISION_SECTIONS}
+              {supportsAgentConfiguration && (
+                <AgentConfigurationField
+                  image={selectedImage}
+                  value={configuredAgentIdentifier}
+                  usesBundledSelector={usesBundledAgentSelector}
+                  onChange={(next) => onChange('agentIdentifier', next)}
                 />
               )}
+
+              <BlueprintJobForm
+                job={createJob}
+                values={values}
+                onChange={onChange}
+                errors={errors}
+                sections={POST_AGENT_SECTIONS}
+              />
 
               {/* Environment variables — key-value editor instead of raw JSON */}
               <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
@@ -473,7 +454,7 @@ function AgentConfigurationField({
   onChange: (value: string) => void;
 }) {
   const helpText = usesBundledSelector
-    ? 'Choose an agent already bundled in this image. “None” keeps the sandbox compute-only and hides chat.'
+    ? 'Choose an agent already bundled in this image. “None” keeps the resource compute-only and hides chat.'
     : 'Custom images must already register this agent identifier internally. Typing a new name here does not create a new agent.';
   const selectValue = value || BUNDLED_NO_AGENT_VALUE;
 
