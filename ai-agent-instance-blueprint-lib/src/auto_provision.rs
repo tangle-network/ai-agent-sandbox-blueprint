@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use crate::tee::TeeBackend;
 use crate::{
-    IBsmRead, ProvisionRequest, clear_instance_sandbox, ensure_local_provision_reported,
-    get_instance_sandbox, mark_pending_provision_report, provision_core, report_local_provision,
-    set_instance_sandbox,
+    IBsmRead, LegacyProvisionRequest, ProvisionRequest, clear_instance_sandbox,
+    ensure_local_provision_reported, get_instance_sandbox, mark_pending_provision_report,
+    provision_core, report_local_provision, set_instance_sandbox,
 };
 
 /// Configuration for auto-provision from environment.
@@ -133,7 +133,10 @@ pub async fn read_service_owner(config: &AutoProvisionConfig) -> Result<String, 
 /// e.g. from `cast abi-encode "f(string,...)" ...` or `abi.encode(field1, field2, ...)`.
 /// Accept both params-encoded and tuple-encoded representations.
 pub fn decode_provision_config(config_bytes: &[u8]) -> Result<ProvisionRequest, String> {
-    ProvisionRequest::abi_decode_params(config_bytes)
+    LegacyProvisionRequest::abi_decode_params(config_bytes)
+        .map(ProvisionRequest::from)
+        .or_else(|_| LegacyProvisionRequest::abi_decode(config_bytes).map(ProvisionRequest::from))
+        .or_else(|_| ProvisionRequest::abi_decode_params(config_bytes))
         .or_else(|_| ProvisionRequest::abi_decode(config_bytes))
         .map_err(|e| format!("Failed to decode ProvisionRequest from service config: {e}"))
 }
@@ -505,7 +508,6 @@ mod tests {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_gb: 20,
-            sidecar_token: String::new(),
             tee_required: false,
             tee_type: 0,
         };
@@ -541,7 +543,6 @@ mod tests {
             cpu_cores: 4,
             memory_mb: 8192,
             disk_gb: 40,
-            sidecar_token: "tok".to_string(),
             tee_required: true,
             tee_type: 1,
         };
@@ -555,6 +556,40 @@ mod tests {
         assert_eq!(decoded.memory_mb, 8192);
         assert!(decoded.tee_required);
         assert_eq!(decoded.tee_type, 1);
+    }
+
+    #[test]
+    fn decode_provision_config_legacy_shape_without_using_sidecar_token() {
+        use blueprint_sdk::alloy::sol_types::SolValue;
+
+        let request = LegacyProvisionRequest {
+            name: "legacy-sandbox".to_string(),
+            image: "agent-dev".to_string(),
+            stack: "default".to_string(),
+            agent_identifier: "test-agent".to_string(),
+            env_json: "{}".to_string(),
+            metadata_json: "{}".to_string(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 3600,
+            idle_timeout_seconds: 900,
+            cpu_cores: 2,
+            memory_mb: 4096,
+            disk_gb: 20,
+            sidecar_token: "legacy-token".to_string(),
+            tee_required: false,
+            tee_type: 0,
+        };
+
+        let encoded = request.abi_encode_params();
+        let decoded = decode_provision_config(&encoded).unwrap();
+
+        assert_eq!(decoded.name, "legacy-sandbox");
+        assert_eq!(decoded.image, "agent-dev");
+        assert_eq!(decoded.cpu_cores, 2);
+        assert_eq!(decoded.memory_mb, 4096);
+        assert!(!decoded.tee_required);
     }
 
     #[test]

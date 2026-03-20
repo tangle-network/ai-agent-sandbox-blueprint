@@ -119,7 +119,6 @@ async fn instance_full_lifecycle() -> Result<()> {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_gb: 20,
-            sidecar_token: String::new(),
             tee_required: false,
             tee_type: 0,
         };

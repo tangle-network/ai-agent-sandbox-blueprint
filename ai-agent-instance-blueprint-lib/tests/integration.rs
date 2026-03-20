@@ -954,7 +954,6 @@ mod abi_tests {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_gb: 10,
-            sidecar_token: "token".to_string(),
             tee_required: true,
             tee_type: 2, // Nitro
         };
@@ -1037,7 +1036,6 @@ mod conversion_tests {
             cpu_cores: 4,
             memory_mb: 8192,
             disk_gb: 50,
-            sidecar_token: "my-token".to_string(),
             tee_required: true,
             tee_type: 1, // Tdx
         };
@@ -1072,7 +1070,6 @@ mod conversion_tests {
             cpu_cores: 1,
             memory_mb: 512,
             disk_gb: 5,
-            sidecar_token: String::new(),
             tee_required: false,
             tee_type: 0,
         };
@@ -1105,7 +1102,6 @@ mod conversion_tests {
                 cpu_cores: 0,
                 memory_mb: 0,
                 disk_gb: 0,
-                sidecar_token: String::new(),
                 tee_required: true,
                 tee_type: tee_type_id,
             };
@@ -2492,7 +2488,6 @@ mod auto_provision_tests {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_gb: 20,
-            sidecar_token: String::new(),
             tee_required: false,
             tee_type: 0,
         };

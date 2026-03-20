@@ -81,7 +81,7 @@ export const WORKFLOW_CONTROL_ABI: AbiParamDef[] = [
   { name: 'workflow_id', type: 'uint64' },
 ];
 
-/** ProvisionRequest — includes sidecar_token before TEE fields */
+/** ProvisionRequest — canonical instance shape without sidecar_token */
 export const INSTANCE_PROVISION_ABI: AbiParamDef[] = [
   { name: 'name', type: 'string' },
   { name: 'image', type: 'string' },
@@ -97,7 +97,6 @@ export const INSTANCE_PROVISION_ABI: AbiParamDef[] = [
   { name: 'cpu_cores', type: 'uint64' },
   { name: 'memory_mb', type: 'uint64' },
   { name: 'disk_gb', type: 'uint64' },
-  { name: 'sidecar_token', type: 'string' },
   { name: 'tee_required', type: 'bool' },
   { name: 'tee_type', type: 'uint8' },
 ];
@@ -129,11 +128,10 @@ export const SANDBOX_CREATE_VALUES: Record<string, unknown> = {
   teeType: '0',
 };
 
-/** Instance provision form values (includes sidecarToken as internal) */
+/** Instance provision form values */
 export const INSTANCE_PROVISION_VALUES: Record<string, unknown> = {
   ...SANDBOX_CREATE_VALUES,
   name: 'test-instance',
-  sidecarToken: '',
 };
 
 /** Workflow create form values */

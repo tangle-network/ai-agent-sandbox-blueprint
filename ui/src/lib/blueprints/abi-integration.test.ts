@@ -24,7 +24,9 @@ import {
   SANDBOX_ID_ABI,
   WORKFLOW_CREATE_ABI,
   WORKFLOW_CONTROL_ABI,
+  INSTANCE_PROVISION_ABI,
   SANDBOX_CREATE_VALUES,
+  INSTANCE_PROVISION_VALUES,
   WORKFLOW_CREATE_VALUES,
   SANDBOX_ID_CONTEXT,
 } from '~/test/fixtures';
@@ -124,6 +126,21 @@ describe('Sandbox Blueprint ABI Integration', () => {
 describe('Instance Blueprint ABI Integration', () => {
   const BP = 'ai-agent-instance-blueprint';
 
+  it('instance_provision encodes the canonical 16-field request shape', () => {
+    const decoded = encodeAndDecode(
+      BP,
+      INSTANCE_JOB_IDS.PROVISION,
+      INSTANCE_PROVISION_VALUES,
+      undefined,
+      INSTANCE_PROVISION_ABI,
+    );
+    const d = decoded as readonly unknown[];
+    expect(d[0]).toBe('test-instance');
+    expect(d[13]).toBe(10n);
+    expect(d[14]).toBe(false);
+    expect(d[15]).toBe(0);
+  });
+
   it('all 3 on-chain jobs exist and are encodable', () => {
     for (const id of [
       INSTANCE_JOB_IDS.WORKFLOW_CREATE,
@@ -171,6 +188,10 @@ describe('Cross-Blueprint Consistency', () => {
     // SandboxCreateRequest: 16 fields
     const sandboxCreate = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.SANDBOX_CREATE)!;
     expect(sandboxCreate.fields.filter(f => f.abiType).length).toBe(16);
+
+    // ProvisionRequest: 16 fields
+    const instanceProvision = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
+    expect(instanceProvision.fields.filter(f => f.abiType).length).toBe(16);
 
     // WorkflowCreateRequest: 8 fields
     const instanceWorkflowCreate = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;

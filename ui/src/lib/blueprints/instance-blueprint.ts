@@ -22,7 +22,7 @@ export function createInstanceJobs(opts?: {
     {
       // ABI: ProvisionRequest { name, image, stack, agent_identifier, env_json, metadata_json,
       //   ssh_enabled, ssh_public_key, web_terminal_enabled, max_lifetime_seconds,
-      //   idle_timeout_seconds, cpu_cores, memory_mb, disk_gb, sidecar_token, tee_required, tee_type }
+      //   idle_timeout_seconds, cpu_cores, memory_mb, disk_gb, tee_required, tee_type }
       // Not an on-chain submitJob target — the encoded fields are passed as requestInputs
       // to requestService (Path B) or used by the operator's auto-provision decoder.
       id: INSTANCE_JOB_IDS.PROVISION,
@@ -57,7 +57,6 @@ export function createInstanceJobs(opts?: {
         { name: 'cpuCores', label: 'CPU Cores', type: 'number', defaultValue: 2, min: 1, max: 16, helperText: '1–4 for dev, 8–16 for production', abiType: 'uint64', abiParam: 'cpu_cores' },
         { name: 'memoryMb', label: 'Memory (MB)', type: 'number', defaultValue: 2048, min: 512, max: 32768, step: 512, helperText: '512 = 0.5 GB, 2048 = 2 GB, 8192 = 8 GB', abiType: 'uint64', abiParam: 'memory_mb' },
         { name: 'diskGb', label: 'Disk (GB)', type: 'number', defaultValue: 10, min: 1, max: 100, helperText: '10 GB typical for dev, 50+ for large models', abiType: 'uint64', abiParam: 'disk_gb' },
-        { name: 'sidecarToken', label: 'Sidecar Token', type: 'text', defaultValue: '', abiType: 'string', abiParam: 'sidecar_token', internal: true },
         { name: 'teeRequired', label: 'TEE Required', type: 'boolean', defaultValue: false, abiType: 'bool', abiParam: 'tee_required' },
         { name: 'teeType', label: 'TEE Type', type: 'select', defaultValue: '0', abiType: 'uint8', abiParam: 'tee_type', options: TEE_TYPE_OPTIONS },
       ],
