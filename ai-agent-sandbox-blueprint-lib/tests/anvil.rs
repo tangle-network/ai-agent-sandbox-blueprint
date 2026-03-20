@@ -400,6 +400,9 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             trigger_type: "cron".to_string(),
             trigger_config: "0 * * * * *".to_string(),
             sandbox_config_json: "{}".to_string(),
+            target_kind: 0,
+            target_sandbox_id: String::new(),
+            target_service_id: 1,
         }
         .abi_encode();
         let workflow_submission = harness

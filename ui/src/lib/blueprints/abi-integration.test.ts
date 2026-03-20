@@ -94,6 +94,9 @@ describe('Sandbox Blueprint ABI Integration', () => {
     expect(d[2]).toBe('cron');
     expect(d[3]).toBe('0 */6 * * *');
     expect(d[4]).toBe('{"image":"agent-dev:latest"}');
+    expect(d[5]).toBe(0);
+    expect(d[6]).toBe('sb-test-001');
+    expect(d[7]).toBe(1n);
   });
 
   it('workflow_trigger encodes WorkflowControlRequest', () => {
@@ -169,8 +172,8 @@ describe('Cross-Blueprint Consistency', () => {
     const sandboxCreate = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.SANDBOX_CREATE)!;
     expect(sandboxCreate.fields.filter(f => f.abiType).length).toBe(16);
 
-    // WorkflowCreateRequest: 5 fields
+    // WorkflowCreateRequest: 8 fields
     const instanceWorkflowCreate = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;
-    expect(instanceWorkflowCreate.fields.filter(f => f.abiType).length).toBe(5);
+    expect(instanceWorkflowCreate.fields.filter(f => f.abiType).length).toBe(8);
   });
 });

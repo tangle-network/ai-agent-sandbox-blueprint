@@ -16,6 +16,9 @@ use crate::util::now_ts;
 // Sidecar token in WorkflowTaskSpec is stored in the workflow JSON config
 // (not on-chain ABI). It's validated against the stored sandbox record.
 
+pub const WORKFLOW_TARGET_SANDBOX: u8 = 0;
+pub const WORKFLOW_TARGET_INSTANCE: u8 = 1;
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowEntry {
     pub id: u64,
@@ -24,6 +27,12 @@ pub struct WorkflowEntry {
     pub trigger_type: String,
     pub trigger_config: String,
     pub sandbox_config_json: String,
+    #[serde(default)]
+    pub target_kind: u8,
+    #[serde(default)]
+    pub target_sandbox_id: String,
+    #[serde(default)]
+    pub target_service_id: u64,
     pub active: bool,
     pub next_run_at: Option<u64>,
     pub last_run_at: Option<u64>,
@@ -40,7 +49,8 @@ pub struct WorkflowExecution {
 
 #[derive(Debug, Deserialize)]
 pub struct WorkflowTaskSpec {
-    pub sidecar_url: String,
+    #[serde(default)]
+    pub sidecar_url: Option<String>,
     pub prompt: String,
     #[serde(default)]
     pub session_id: Option<String>,
@@ -121,8 +131,12 @@ pub fn parse_workflow_task_spec(workflow_json: &str) -> Result<WorkflowTaskSpec,
 
 pub fn validate_workflow_execution_ready(workflow_json: &str) -> Result<WorkflowTaskSpec, String> {
     let spec = parse_workflow_task_spec(workflow_json)?;
+    let sidecar_url = spec
+        .sidecar_url
+        .as_deref()
+        .ok_or_else(|| "workflow_json must include sidecar_url when no sandbox target is provided".to_string())?;
     let record =
-        crate::runtime::get_sandbox_by_url(&spec.sidecar_url).map_err(|err| err.to_string())?;
+        crate::runtime::get_sandbox_by_url(sidecar_url).map_err(|err| err.to_string())?;
     let effective_env = record.effective_env_json();
     let has_credentials = crate::runtime::workflow_runtime_credentials_available(&effective_env)
         .map_err(|err| err.to_string())?;
@@ -136,17 +150,55 @@ pub fn validate_workflow_execution_ready(workflow_json: &str) -> Result<Workflow
     Ok(spec)
 }
 
+pub fn validate_workflow_execution_ready_with_target(
+    workflow_json: &str,
+    target_sandbox_id: &str,
+) -> Result<WorkflowTaskSpec, String> {
+    if target_sandbox_id.trim().is_empty() {
+        return validate_workflow_execution_ready(workflow_json);
+    }
+
+    let spec = parse_workflow_task_spec(workflow_json)?;
+    let record =
+        crate::runtime::get_sandbox_by_id(target_sandbox_id).map_err(|err| err.to_string())?;
+    let effective_env = record.effective_env_json();
+    let has_credentials = crate::runtime::workflow_runtime_credentials_available(&effective_env)
+        .map_err(|err| err.to_string())?;
+    if !has_credentials {
+        return Err(
+            "Workflow execution requires ANTHROPIC_API_KEY or ZAI_API_KEY in the operator environment, or valid AI credentials in the sandbox environment."
+                .to_string(),
+        );
+    }
+
+    Ok(spec)
+}
+
+fn resolve_workflow_sandbox(entry: &WorkflowEntry) -> Result<crate::SandboxRecord, String> {
+    if entry.target_kind == WORKFLOW_TARGET_SANDBOX && !entry.target_sandbox_id.trim().is_empty() {
+        return crate::runtime::get_sandbox_by_id(entry.target_sandbox_id.as_str())
+            .map_err(|err| err.to_string());
+    }
+
+    let spec = parse_workflow_task_spec(entry.workflow_json.as_str())?;
+    let sidecar_url = spec
+        .sidecar_url
+        .as_deref()
+        .ok_or_else(|| "workflow_json must include sidecar_url when no sandbox target is provided".to_string())?;
+    crate::runtime::get_sandbox_by_url(sidecar_url).map_err(|err| err.to_string())
+}
+
 pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, String> {
     let spec = parse_workflow_task_spec(entry.workflow_json.as_str())?;
+    let record = resolve_workflow_sandbox(entry)?;
 
     // Look up token from sandbox record. Falls back to spec.sidecar_token for
     // backward compat with workflows created before 2-phase provisioning.
-    let record = crate::runtime::get_sandbox_by_url(&spec.sidecar_url)?;
     let token = record.token.clone();
     if token.is_empty() {
         // Legacy path: use token from workflow spec
         let token_fallback = require_sidecar_token(spec.sidecar_token.as_deref().unwrap_or(""))?;
-        let _record = require_sidecar_auth(&spec.sidecar_url, &token_fallback)?;
+        let _record = require_sidecar_auth(&record.sidecar_url, &token_fallback)?;
     }
 
     // Session-per-tick: each execution gets a unique session so messages don't
@@ -159,7 +211,7 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
         _ => String::new(),
     };
 
-    let sidecar_url = spec.sidecar_url;
+    let sidecar_url = record.sidecar_url.clone();
     let request = SandboxTaskRequest {
         sidecar_url: sidecar_url.clone(),
         prompt: spec.prompt,
@@ -387,7 +439,7 @@ fn parse_workflow_config(
     let blueprint_sdk::alloy::dyn_abi::DynSolValue::Tuple(fields) = first else {
         return Err("Unexpected workflow output type".to_string());
     };
-    if fields.len() != 9 {
+    if fields.len() != 12 {
         return Err("Unexpected workflow tuple size".to_string());
     }
 
@@ -396,8 +448,11 @@ fn parse_workflow_config(
     let trigger_type = dyn_string(&fields[2])?;
     let trigger_config = dyn_string(&fields[3])?;
     let sandbox_config_json = dyn_string(&fields[4])?;
-    let active = dyn_bool(&fields[5])?;
-    let last_triggered_at = dyn_u64(&fields[8])?;
+    let target_kind = dyn_u8(&fields[5])?;
+    let target_sandbox_id = dyn_string(&fields[6])?;
+    let target_service_id = dyn_u64(&fields[7])?;
+    let active = dyn_bool(&fields[8])?;
+    let last_triggered_at = dyn_u64(&fields[11])?;
     let last_run_at = if last_triggered_at > 0 {
         Some(last_triggered_at)
     } else {
@@ -412,6 +467,9 @@ fn parse_workflow_config(
         trigger_type,
         trigger_config,
         sandbox_config_json,
+        target_kind,
+        target_sandbox_id,
+        target_service_id,
         active,
         next_run_at,
         last_run_at,
@@ -442,7 +500,16 @@ fn dyn_u64(value: &blueprint_sdk::alloy::dyn_abi::DynSolValue) -> Result<u64, St
     }
 }
 
-const WORKFLOW_REGISTRY_ABI: &str = r#"[{"type":"function","name":"getWorkflowIds","inputs":[{"name":"activeOnly","type":"bool"}],"outputs":[{"name":"","type":"uint64[]"}],"stateMutability":"view"},{"type":"function","name":"getWorkflow","inputs":[{"name":"workflowId","type":"uint64"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"name","type":"string"},{"name":"workflowJson","type":"string"},{"name":"triggerType","type":"string"},{"name":"triggerConfig","type":"string"},{"name":"sandboxConfigJson","type":"string"},{"name":"active","type":"bool"},{"name":"createdAt","type":"uint64"},{"name":"updatedAt","type":"uint64"},{"name":"lastTriggeredAt","type":"uint64"}]}],"stateMutability":"view"}]"#;
+fn dyn_u8(value: &blueprint_sdk::alloy::dyn_abi::DynSolValue) -> Result<u8, String> {
+    match value {
+        blueprint_sdk::alloy::dyn_abi::DynSolValue::Uint(val, _) => (*val)
+            .try_into()
+            .map_err(|_| "Uint field overflow".to_string()),
+        _ => Err("Unexpected uint field type".to_string()),
+    }
+}
+
+const WORKFLOW_REGISTRY_ABI: &str = r#"[{"type":"function","name":"getWorkflowIds","inputs":[{"name":"activeOnly","type":"bool"}],"outputs":[{"name":"","type":"uint64[]"}],"stateMutability":"view"},{"type":"function","name":"getWorkflow","inputs":[{"name":"workflowId","type":"uint64"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"name","type":"string"},{"name":"workflowJson","type":"string"},{"name":"triggerType","type":"string"},{"name":"triggerConfig","type":"string"},{"name":"sandboxConfigJson","type":"string"},{"name":"targetKind","type":"uint8"},{"name":"targetSandboxId","type":"string"},{"name":"targetServiceId","type":"uint64"},{"name":"active","type":"bool"},{"name":"createdAt","type":"uint64"},{"name":"updatedAt","type":"uint64"},{"name":"lastTriggeredAt","type":"uint64"}]}],"stateMutability":"view"}]"#;
 
 #[cfg(test)]
 mod tests {

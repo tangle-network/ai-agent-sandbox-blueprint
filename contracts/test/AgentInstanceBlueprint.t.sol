@@ -393,7 +393,10 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
             workflow_json: "{\"prompt\":\"hello\"}",
             trigger_type: "cron",
             trigger_config: "0 * * * * *",
-            sandbox_config_json: "{}"
+            sandbox_config_json: "{}",
+            target_kind: 1,
+            target_sandbox_id: "",
+            target_service_id: testServiceId
         });
 
         uint64 createCallId = 2100;
@@ -410,6 +413,8 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         AgentSandboxBlueprint.WorkflowConfig memory cfg = instance.getWorkflow(createCallId);
         assertEq(cfg.name, "instance-workflow");
         assertTrue(cfg.active);
+        assertEq(cfg.target_kind, 1);
+        assertEq(cfg.target_service_id, testServiceId);
 
         AgentSandboxBlueprint.WorkflowControlRequest memory ctrl =
             AgentSandboxBlueprint.WorkflowControlRequest({workflow_id: createCallId});

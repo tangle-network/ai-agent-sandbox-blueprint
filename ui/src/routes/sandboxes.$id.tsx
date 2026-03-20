@@ -624,6 +624,17 @@ export default function SandboxDetail() {
         </div>
       )}
 
+      <div className="flex justify-end mb-4">
+        {isRunning && sb.sandboxId && (
+          <Link to={`/workflows?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`}>
+            <Button variant="secondary" size="sm">
+              <div className="i-ph:flow-arrow text-sm" />
+              Create Workflow
+            </Button>
+          </Link>
+        )}
+      </div>
+
       {/* Tab Content */}
       {tab === 'overview' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

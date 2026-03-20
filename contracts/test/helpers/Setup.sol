@@ -139,7 +139,10 @@ contract BlueprintTestSetup is Test {
             request.workflow_json,
             request.trigger_type,
             request.trigger_config,
-            request.sandbox_config_json
+            request.sandbox_config_json,
+            request.target_kind,
+            request.target_sandbox_id,
+            request.target_service_id
         );
     }
 }

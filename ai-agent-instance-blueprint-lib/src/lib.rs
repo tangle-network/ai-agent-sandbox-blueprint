@@ -149,6 +149,9 @@ sol! {
         string trigger_type;
         string trigger_config;
         string sandbox_config_json;
+        uint8 target_kind;
+        string target_sandbox_id;
+        uint64 target_service_id;
     }
 
     struct WorkflowControlRequest {

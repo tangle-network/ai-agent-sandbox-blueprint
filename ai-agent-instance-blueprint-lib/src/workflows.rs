@@ -11,6 +11,9 @@ use crate::jobs::exec::run_instance_task;
 use crate::store::PersistentStore;
 use crate::util::now_ts;
 
+pub const WORKFLOW_TARGET_SANDBOX: u8 = 0;
+pub const WORKFLOW_TARGET_INSTANCE: u8 = 1;
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowEntry {
     pub id: u64,
@@ -19,6 +22,12 @@ pub struct WorkflowEntry {
     pub trigger_type: String,
     pub trigger_config: String,
     pub sandbox_config_json: String,
+    #[serde(default)]
+    pub target_kind: u8,
+    #[serde(default)]
+    pub target_sandbox_id: String,
+    #[serde(default)]
+    pub target_service_id: u64,
     pub active: bool,
     pub next_run_at: Option<u64>,
     pub last_run_at: Option<u64>,
@@ -98,11 +107,27 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
     if entry.workflow_json.trim().is_empty() {
         return Err("workflow_json is required".to_string());
     }
+    if entry.target_kind != WORKFLOW_TARGET_INSTANCE {
+        return Err("workflow target is not an instance".to_string());
+    }
+    if entry.target_service_id == 0 {
+        return Err("workflow target_service_id is required".to_string());
+    }
 
     let spec: WorkflowTaskSpec = serde_json::from_str(entry.workflow_json.as_str())
         .map_err(|err| format!("workflow_json must be valid task JSON: {err}"))?;
 
     let sandbox = crate::require_instance_sandbox()?;
+    match sandbox.service_id {
+        Some(service_id) if service_id == entry.target_service_id => {}
+        Some(service_id) => {
+            return Err(format!(
+                "Instance workflow targets service {} but local instance is bound to service {}",
+                entry.target_service_id, service_id
+            ));
+        }
+        None => return Err("Local instance sandbox is missing service binding".to_string()),
+    }
 
     // Session-per-tick: each execution gets a unique session so messages don't
     // accumulate in a single session forever. The stored session_id acts as a
@@ -324,7 +349,7 @@ fn parse_workflow_config(
     let blueprint_sdk::alloy::dyn_abi::DynSolValue::Tuple(fields) = first else {
         return Err("Unexpected workflow output type".to_string());
     };
-    if fields.len() != 9 {
+    if fields.len() != 12 {
         return Err("Unexpected workflow tuple size".to_string());
     }
 
@@ -333,8 +358,11 @@ fn parse_workflow_config(
     let trigger_type = dyn_string(&fields[2])?;
     let trigger_config = dyn_string(&fields[3])?;
     let sandbox_config_json = dyn_string(&fields[4])?;
-    let active = dyn_bool(&fields[5])?;
-    let last_triggered_at = dyn_u64(&fields[8])?;
+    let target_kind = dyn_u8(&fields[5])?;
+    let target_sandbox_id = dyn_string(&fields[6])?;
+    let target_service_id = dyn_u64(&fields[7])?;
+    let active = dyn_bool(&fields[8])?;
+    let last_triggered_at = dyn_u64(&fields[11])?;
     let last_run_at = if last_triggered_at > 0 {
         Some(last_triggered_at)
     } else {
@@ -349,6 +377,9 @@ fn parse_workflow_config(
         trigger_type,
         trigger_config,
         sandbox_config_json,
+        target_kind,
+        target_sandbox_id,
+        target_service_id,
         active,
         next_run_at,
         last_run_at,
@@ -379,7 +410,16 @@ fn dyn_u64(value: &blueprint_sdk::alloy::dyn_abi::DynSolValue) -> Result<u64, St
     }
 }
 
-const WORKFLOW_REGISTRY_ABI: &str = r#"[{"type":"function","name":"getWorkflowIds","inputs":[{"name":"activeOnly","type":"bool"}],"outputs":[{"name":"","type":"uint64[]"}],"stateMutability":"view"},{"type":"function","name":"getWorkflow","inputs":[{"name":"workflowId","type":"uint64"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"name","type":"string"},{"name":"workflowJson","type":"string"},{"name":"triggerType","type":"string"},{"name":"triggerConfig","type":"string"},{"name":"sandboxConfigJson","type":"string"},{"name":"active","type":"bool"},{"name":"createdAt","type":"uint64"},{"name":"updatedAt","type":"uint64"},{"name":"lastTriggeredAt","type":"uint64"}]}],"stateMutability":"view"}]"#;
+fn dyn_u8(value: &blueprint_sdk::alloy::dyn_abi::DynSolValue) -> Result<u8, String> {
+    match value {
+        blueprint_sdk::alloy::dyn_abi::DynSolValue::Uint(val, _) => (*val)
+            .try_into()
+            .map_err(|_| "Uint field overflow".to_string()),
+        _ => Err("Unexpected uint field type".to_string()),
+    }
+}
+
+const WORKFLOW_REGISTRY_ABI: &str = r#"[{"type":"function","name":"getWorkflowIds","inputs":[{"name":"activeOnly","type":"bool"}],"outputs":[{"name":"","type":"uint64[]"}],"stateMutability":"view"},{"type":"function","name":"getWorkflow","inputs":[{"name":"workflowId","type":"uint64"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"name","type":"string"},{"name":"workflowJson","type":"string"},{"name":"triggerType","type":"string"},{"name":"triggerConfig","type":"string"},{"name":"sandboxConfigJson","type":"string"},{"name":"targetKind","type":"uint8"},{"name":"targetSandboxId","type":"string"},{"name":"targetServiceId","type":"uint64"},{"name":"active","type":"bool"},{"name":"createdAt","type":"uint64"},{"name":"updatedAt","type":"uint64"},{"name":"lastTriggeredAt","type":"uint64"}]}],"stateMutability":"view"}]"#;
 
 #[cfg(test)]
 mod tests {

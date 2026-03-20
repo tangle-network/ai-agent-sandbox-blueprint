@@ -71,6 +71,9 @@ export const WORKFLOW_CREATE_ABI: AbiParamDef[] = [
   { name: 'trigger_type', type: 'string' },
   { name: 'trigger_config', type: 'string' },
   { name: 'sandbox_config_json', type: 'string' },
+  { name: 'target_kind', type: 'uint8' },
+  { name: 'target_sandbox_id', type: 'string' },
+  { name: 'target_service_id', type: 'uint64' },
 ];
 
 /** WorkflowControlRequest */
@@ -140,6 +143,9 @@ export const WORKFLOW_CREATE_VALUES: Record<string, unknown> = {
   triggerType: 'cron',
   triggerConfig: '0 */6 * * *',
   sandboxConfigJson: '{"image":"agent-dev:latest"}',
+  targetKind: '0',
+  targetSandboxId: 'sb-test-001',
+  targetServiceId: 1,
 };
 
 /** Context with sandbox_id */

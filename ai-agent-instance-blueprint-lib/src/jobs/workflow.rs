@@ -17,6 +17,15 @@ pub async fn workflow_create(
     if request.workflow_json.trim().is_empty() {
         return Err("workflow_json is required".to_string());
     }
+    if request.target_kind != crate::workflows::WORKFLOW_TARGET_INSTANCE {
+        return Err("instance workflows must target an instance resource".to_string());
+    }
+    if !request.target_sandbox_id.trim().is_empty() {
+        return Err("instance workflows must not set target_sandbox_id".to_string());
+    }
+    if request.target_service_id == 0 {
+        return Err("instance workflows require target_service_id".to_string());
+    }
 
     let trigger_type = request.trigger_type.to_string();
     let trigger_config = request.trigger_config.to_string();
@@ -29,6 +38,9 @@ pub async fn workflow_create(
         trigger_type,
         trigger_config,
         sandbox_config_json: request.sandbox_config_json.to_string(),
+        target_kind: request.target_kind,
+        target_sandbox_id: request.target_sandbox_id.to_string(),
+        target_service_id: request.target_service_id,
         active: true,
         next_run_at,
         last_run_at: None,

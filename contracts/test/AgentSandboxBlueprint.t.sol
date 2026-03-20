@@ -398,7 +398,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             workflow_json: "{}",
             trigger_type: "cron",
             trigger_config: "0 * * * *",
-            sandbox_config_json: "{}"
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: "sb-500",
+            target_service_id: 1
         });
 
         vm.expectEmit(true, false, false, true);
@@ -412,6 +415,9 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertEq(config.name, "test-workflow");
         assertEq(config.trigger_type, "cron");
         assertTrue(config.active);
+        assertEq(config.target_kind, 0);
+        assertEq(config.target_sandbox_id, "sb-500");
+        assertEq(config.target_service_id, 1);
     }
 
     function test_workflowCreateStoresRealisticJsonPayload() public {
@@ -420,7 +426,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             workflow_json: '{"sidecar_url":"http://127.0.0.1:54746","prompt":"Reply with exactly WORKFLOW_QA_OK","session_id":"workflow-qa","max_turns":1,"timeout_ms":60000}',
             trigger_type: "cron",
             trigger_config: "*/15 * * * * *",
-            sandbox_config_json: "{}"
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: "sb-qa",
+            target_service_id: 1
         });
 
         simulateJobResult(
@@ -445,7 +454,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             workflow_json: "{}",
             trigger_type: "manual",
             trigger_config: "",
-            sandbox_config_json: "{}"
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: "sb-trigger",
+            target_service_id: 1
         });
         simulateJobResult(
             1, blueprint.JOB_WORKFLOW_CREATE(), 510, operator1, encodeWorkflowCreateInputs(req), encodeJsonOutputs("{}")
@@ -473,7 +485,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             workflow_json: "{}",
             trigger_type: "cron",
             trigger_config: "0 * * * *",
-            sandbox_config_json: "{}"
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: "sb-cancel",
+            target_service_id: 1
         });
         simulateJobResult(
             1, blueprint.JOB_WORKFLOW_CREATE(), 520, operator1, encodeWorkflowCreateInputs(req), encodeJsonOutputs("{}")
@@ -856,7 +871,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             workflow_json: "{}",
             trigger_type: "cron",
             trigger_config: "* * * * *",
-            sandbox_config_json: "{}"
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: "sb-fuzz",
+            target_service_id: 1
         });
 
         // Create workflow with fuzzed ID — should always succeed

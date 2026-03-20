@@ -140,6 +140,14 @@ export default function InstanceDetail() {
             teeStyle="pill"
           />
         </div>
+        {inst.status === 'running' && inst.serviceId && (
+          <Link to={`/workflows?target=${encodeURIComponent(`instance:${inst.id}`)}`} className="ml-auto">
+            <Button variant="secondary" size="sm">
+              <div className="i-ph:flow-arrow text-sm" />
+              Create Workflow
+            </Button>
+          </Link>
+        )}
       </div>
 
       <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-6" />

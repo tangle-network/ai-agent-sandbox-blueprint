@@ -32,6 +32,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     uint8 public constant JOB_WORKFLOW_CREATE = 2;
     uint8 public constant JOB_WORKFLOW_TRIGGER = 3;
     uint8 public constant JOB_WORKFLOW_CANCEL = 4;
+    uint8 public constant WORKFLOW_TARGET_SANDBOX = 0;
+    uint8 public constant WORKFLOW_TARGET_INSTANCE = 1;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // METADATA
@@ -102,6 +104,9 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         string trigger_type;
         string trigger_config;
         string sandbox_config_json;
+        uint8 target_kind;
+        string target_sandbox_id;
+        uint64 target_service_id;
     }
 
     struct WorkflowControlRequest {
@@ -123,6 +128,9 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         string trigger_type;
         string trigger_config;
         string sandbox_config_json;
+        uint8 target_kind;
+        string target_sandbox_id;
+        uint64 target_service_id;
         bool active;
         uint64 created_at;
         uint64 updated_at;
@@ -196,6 +204,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     error SandboxIdTooLong(uint256 length);
     error WorkflowNotFound(uint64 workflowId);
     error MaxWorkflowsReached(uint64 serviceId);
+    error InvalidWorkflowTarget(uint8 targetKind);
 
     // Instance errors
     error AlreadyProvisioned(uint64 serviceId, address operator);
@@ -451,14 +460,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             if (instanceMode) revert CloudModeOnly();
             _handleDeleteResult(operator, inputs);
         } else if (job == JOB_WORKFLOW_CREATE) {
-            (
-                string memory name,
-                string memory workflowJson,
-                string memory triggerType,
-                string memory triggerConfig,
-                string memory sandboxConfigJson
-            ) = abi.decode(inputs, (string, string, string, string, string));
-            _upsertWorkflow(jobCallId, name, workflowJson, triggerType, triggerConfig, sandboxConfigJson);
+            _handleWorkflowCreateResult(serviceId, jobCallId, inputs);
         } else if (job == JOB_WORKFLOW_TRIGGER) {
             (uint64 workflowId) = abi.decode(inputs, (uint64));
             _markTriggered(workflowId);
@@ -913,13 +915,27 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @notice Creates or updates a workflow config in storage.
     /// @param workflowId The workflow ID (derived from jobCallId).
     function _upsertWorkflow(
+        uint64 serviceId,
         uint64 workflowId,
         string memory name,
         string memory workflowJson,
         string memory triggerType,
         string memory triggerConfig,
-        string memory sandboxConfigJson
+        string memory sandboxConfigJson,
+        uint8 targetKind,
+        string memory targetSandboxId,
+        uint64 targetServiceId
     ) internal {
+        if (instanceMode) {
+            if (targetKind != WORKFLOW_TARGET_INSTANCE) revert InvalidWorkflowTarget(targetKind);
+            if (bytes(targetSandboxId).length != 0) revert InvalidWorkflowTarget(targetKind);
+        } else {
+            if (targetKind != WORKFLOW_TARGET_SANDBOX) revert InvalidWorkflowTarget(targetKind);
+            if (bytes(targetSandboxId).length == 0) revert EmptySandboxId();
+            if (bytes(targetSandboxId).length > 255) revert SandboxIdTooLong(bytes(targetSandboxId).length);
+        }
+        if (targetServiceId != 0 && targetServiceId != serviceId) revert InvalidWorkflowTarget(targetKind);
+
         WorkflowConfig storage config = workflows[workflowId];
         if (workflow_index[workflowId] == 0) {
             if (workflow_ids.length >= MAX_WORKFLOWS) revert MaxWorkflowsReached(0);
@@ -933,10 +949,38 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         config.trigger_type = triggerType;
         config.trigger_config = triggerConfig;
         config.sandbox_config_json = sandboxConfigJson;
+        config.target_kind = targetKind;
+        config.target_sandbox_id = targetSandboxId;
+        config.target_service_id = serviceId;
         config.active = true;
         config.updated_at = uint64(block.timestamp);
 
         emit WorkflowStored(workflowId, triggerType, triggerConfig);
+    }
+
+    function _handleWorkflowCreateResult(uint64 serviceId, uint64 workflowId, bytes calldata inputs) internal {
+        (
+            string memory name,
+            string memory workflowJson,
+            string memory triggerType,
+            string memory triggerConfig,
+            string memory sandboxConfigJson,
+            uint8 targetKind,
+            string memory targetSandboxId,
+            uint64 targetServiceId
+        ) = abi.decode(inputs, (string, string, string, string, string, uint8, string, uint64));
+        _upsertWorkflow(
+            serviceId,
+            workflowId,
+            name,
+            workflowJson,
+            triggerType,
+            triggerConfig,
+            sandboxConfigJson,
+            targetKind,
+            targetSandboxId,
+            targetServiceId
+        );
     }
 
     /// @notice Records a workflow trigger timestamp and emits WorkflowTriggered.

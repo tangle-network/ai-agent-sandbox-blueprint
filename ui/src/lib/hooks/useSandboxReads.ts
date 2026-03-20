@@ -6,6 +6,7 @@ import {
   selectedChainIdStore,
 } from '@tangle-network/blueprint-ui';
 import { agentSandboxBlueprintAbi } from '~/lib/contracts/abi';
+import type { Address } from 'viem';
 
 function useSandboxReadDeps() {
   const chainId = useStore(selectedChainIdStore);
@@ -23,6 +24,9 @@ interface WorkflowConfig {
   trigger_type: string;
   trigger_config: string;
   sandbox_config_json: string;
+  target_kind: number;
+  target_sandbox_id: string;
+  target_service_id: bigint;
   active: boolean;
   created_at: bigint;
   updated_at: bigint;
@@ -35,6 +39,9 @@ export interface WorkflowView {
   trigger_type: string;
   trigger_config: string;
   sandbox_config_json: string;
+  target_kind: number;
+  target_sandbox_id: string;
+  target_service_id: string;
   active: boolean;
   created_at: number;
   updated_at: number;
@@ -49,6 +56,7 @@ type WorkflowBatchResult = {
 export function normalizeWorkflowConfig(workflow: WorkflowConfig): WorkflowView {
   return {
     ...workflow,
+    target_service_id: workflow.target_service_id.toString(),
     created_at: Number(workflow.created_at),
     updated_at: Number(workflow.updated_at),
     last_triggered_at: Number(workflow.last_triggered_at),
@@ -166,6 +174,23 @@ export function useWorkflowIds(activeOnly: boolean = false) {
   });
 }
 
+export function useWorkflowIdsForAddress(address: Address | undefined, activeOnly: boolean = false) {
+  const chainId = useStore(selectedChainIdStore);
+
+  return useQuery<readonly bigint[], Error>({
+    queryKey: ['workflow-contract-read', chainId, address, 'getWorkflowIds', activeOnly],
+    queryFn: async () =>
+      publicClient.readContract({
+        address: address as Address,
+        abi: agentSandboxBlueprintAbi,
+        functionName: 'getWorkflowIds',
+        args: [activeOnly],
+      }) as Promise<readonly bigint[]>,
+    enabled: !!address,
+    refetchInterval: 15_000,
+  });
+}
+
 /**
  * Get a specific workflow config.
  */
@@ -202,15 +227,25 @@ export function useDefaultJobRates(baseRate: bigint) {
  */
 export function useWorkflowBatch(workflowIds: bigint[]) {
   const { address, chainId } = useSandboxReadDeps();
+  return useWorkflowBatchForAddress(address, workflowIds, chainId);
+}
+
+export function useWorkflowBatchForAddress(
+  address: Address | undefined,
+  workflowIds: bigint[],
+  chainIdOverride?: number,
+) {
+  const chainId = useStore(selectedChainIdStore);
   const workflowIdKeys = workflowIds.map((id) => id.toString());
+  const effectiveChainId = chainIdOverride ?? chainId;
 
   return useQuery<WorkflowBatchResult[], Error>({
-    queryKey: ['sandbox-workflow-batch', chainId, address, workflowIdKeys],
+    queryKey: ['workflow-batch', effectiveChainId, address, workflowIdKeys],
     queryFn: async () =>
       Promise.all(
         workflowIds.map(async (id) => {
           const result = await publicClient.readContract({
-            address,
+            address: address as Address,
             abi: agentSandboxBlueprintAbi,
             functionName: 'getWorkflow' as any,
             args: [id] as any,

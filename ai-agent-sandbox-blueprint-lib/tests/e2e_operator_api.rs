@@ -823,6 +823,9 @@ async fn workflow_create_and_cancel() -> Result<()> {
             trigger_type: "manual".to_string(),
             trigger_config: String::new(),
             sandbox_config_json: "{}".to_string(),
+            target_kind: 0,
+            target_sandbox_id: String::new(),
+            target_service_id: 1,
         }
         .abi_encode();
 

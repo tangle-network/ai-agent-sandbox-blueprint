@@ -10,12 +10,16 @@ describe('normalizeWorkflowConfig', () => {
       trigger_type: 'cron',
       trigger_config: '*/15 * * * * *',
       sandbox_config_json: '{}',
+      target_kind: 0,
+      target_sandbox_id: 'sb-1',
+      target_service_id: 42n,
       active: true,
       created_at: 123n,
       updated_at: 456n,
       last_triggered_at: 789n,
     });
 
+    expect(normalized.target_service_id).toBe('42');
     expect(normalized.created_at).toBe(123);
     expect(normalized.updated_at).toBe(456);
     expect(normalized.last_triggered_at).toBe(789);
