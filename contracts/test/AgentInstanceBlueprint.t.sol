@@ -29,19 +29,12 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
 
         vm.expectEmit(true, true, false, true);
         emit AgentSandboxBlueprint.OperatorProvisioned(
-            testServiceId,
-            operator1,
-            string(abi.encodePacked("sb-", vm.toString(operator1))),
-            "http://sidecar:8080"
+            testServiceId, operator1, string(abi.encodePacked("sb-", vm.toString(operator1))), "http://sidecar:8080"
         );
 
         vm.prank(operator1);
         instance.reportProvisioned(
-            testServiceId,
-            string(abi.encodePacked("sb-", vm.toString(operator1))),
-            "http://sidecar:8080",
-            2222,
-            ""
+            testServiceId, string(abi.encodePacked("sb-", vm.toString(operator1))), "http://sidecar:8080", 2222, ""
         );
     }
 
@@ -117,9 +110,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     function test_deprovisionNotProvisionedReverts() public {
         setServiceOperator(testServiceId, operator1, true);
         vm.prank(operator1);
-        vm.expectRevert(
-            abi.encodeWithSelector(AgentSandboxBlueprint.NotProvisioned.selector, testServiceId, operator1)
-        );
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.NotProvisioned.selector, testServiceId, operator1));
         instance.reportDeprovisioned(testServiceId);
     }
 
@@ -406,13 +397,13 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         });
 
         uint64 createCallId = 2100;
-        simulateJobCall(testServiceId, instance.JOB_WORKFLOW_CREATE(), createCallId, abi.encode(req));
+        simulateJobCall(testServiceId, instance.JOB_WORKFLOW_CREATE(), createCallId, encodeWorkflowCreateInputs(req));
         simulateJobResult(
             testServiceId,
             instance.JOB_WORKFLOW_CREATE(),
             createCallId,
             operator1,
-            abi.encode(req),
+            encodeWorkflowCreateInputs(req),
             bytes("")
         );
 
@@ -420,31 +411,20 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(cfg.name, "instance-workflow");
         assertTrue(cfg.active);
 
-        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl = AgentSandboxBlueprint.WorkflowControlRequest({
-            workflow_id: createCallId
-        });
+        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl =
+            AgentSandboxBlueprint.WorkflowControlRequest({workflow_id: createCallId});
 
         uint64 triggerCallId = 2101;
         simulateJobCall(testServiceId, instance.JOB_WORKFLOW_TRIGGER(), triggerCallId, abi.encode(ctrl));
         simulateJobResult(
-            testServiceId,
-            instance.JOB_WORKFLOW_TRIGGER(),
-            triggerCallId,
-            operator1,
-            abi.encode(ctrl),
-            bytes("")
+            testServiceId, instance.JOB_WORKFLOW_TRIGGER(), triggerCallId, operator1, abi.encode(ctrl), bytes("")
         );
         assertEq(instance.getWorkflow(createCallId).last_triggered_at, uint64(block.timestamp));
 
         uint64 cancelCallId = 2102;
         simulateJobCall(testServiceId, instance.JOB_WORKFLOW_CANCEL(), cancelCallId, abi.encode(ctrl));
         simulateJobResult(
-            testServiceId,
-            instance.JOB_WORKFLOW_CANCEL(),
-            cancelCallId,
-            operator1,
-            abi.encode(ctrl),
-            bytes("")
+            testServiceId, instance.JOB_WORKFLOW_CANCEL(), cancelCallId, operator1, abi.encode(ctrl), bytes("")
         );
         assertFalse(instance.getWorkflow(createCallId).active);
     }
@@ -604,17 +584,11 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertEq(instance.totalProvisionedOperators(), 1);
 
         // Force instanceOperatorCount[testServiceId] to 0
-        stdstore
-            .target(address(instance))
-            .sig("instanceOperatorCount(uint64)")
-            .with_key(uint256(testServiceId))
+        stdstore.target(address(instance)).sig("instanceOperatorCount(uint64)").with_key(uint256(testServiceId))
             .checked_write(uint256(0));
 
         // Force totalProvisionedOperators to 0
-        stdstore
-            .target(address(instance))
-            .sig("totalProvisionedOperators()")
-            .checked_write(uint256(0));
+        stdstore.target(address(instance)).sig("totalProvisionedOperators()").checked_write(uint256(0));
 
         // Verify forced to 0
         assertEq(instance.getOperatorCount(testServiceId), 0);

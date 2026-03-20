@@ -80,20 +80,13 @@ contract BlueprintTestSetup is Test {
     /// @dev Register an operator in the mock delegation and on the blueprint.
     function registerOperator(address operator, uint32 capacity) internal {
         mockDelegation.addOperator(operator, testBlueprintId);
-        bytes memory registrationInputs = capacity > 0
-            ? abi.encode(capacity)
-            : bytes("");
+        bytes memory registrationInputs = capacity > 0 ? abi.encode(capacity) : bytes("");
         vm.prank(tangleCore);
         blueprint.onRegister(operator, registrationInputs);
     }
 
     /// @dev Simulate onJobCall as tangleCore.
-    function simulateJobCall(
-        uint64 serviceId,
-        uint8 jobIndex,
-        uint64 callId,
-        bytes memory inputs
-    ) internal {
+    function simulateJobCall(uint64 serviceId, uint8 jobIndex, uint64 callId, bytes memory inputs) internal {
         vm.prank(tangleCore);
         blueprint.onJobCall(serviceId, jobIndex, callId, inputs);
     }
@@ -117,10 +110,11 @@ contract BlueprintTestSetup is Test {
     }
 
     /// @dev Encode sandbox create outputs: (SandboxCreateOutput).
-    function encodeSandboxCreateOutputs(
-        string memory sandboxId,
-        string memory json
-    ) internal pure returns (bytes memory) {
+    function encodeSandboxCreateOutputs(string memory sandboxId, string memory json)
+        internal
+        pure
+        returns (bytes memory)
+    {
         return abi.encode(SandboxCreateOutput({sandboxId: sandboxId, json: json}));
     }
 
@@ -132,5 +126,20 @@ contract BlueprintTestSetup is Test {
     /// @dev Encode generic JSON outputs for non-create jobs: (string json).
     function encodeJsonOutputs(string memory json) internal pure returns (bytes memory) {
         return abi.encode(json);
+    }
+
+    /// @dev Encode workflow create inputs in the same flat ABI shape the UI/operator submit.
+    function encodeWorkflowCreateInputs(AgentSandboxBlueprint.WorkflowCreateRequest memory request)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(
+            request.name,
+            request.workflow_json,
+            request.trigger_type,
+            request.trigger_config,
+            request.sandbox_config_json
+        );
     }
 }

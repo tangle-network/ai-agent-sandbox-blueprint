@@ -250,7 +250,7 @@ pub async fn bootstrap_workflows_from_chain(
         return Ok(());
     };
 
-    let abi = blueprint_sdk::alloy::json_abi::JsonAbi::parse([WORKFLOW_REGISTRY_ABI])
+    let abi: blueprint_sdk::alloy::json_abi::JsonAbi = serde_json::from_str(WORKFLOW_REGISTRY_ABI)
         .map_err(|err| format!("Invalid workflow ABI: {err}"))?;
     let interface = blueprint_sdk::alloy::contract::Interface::new(abi);
     let contract = blueprint_sdk::alloy::contract::ContractInstance::new(
@@ -380,3 +380,13 @@ fn dyn_u64(value: &blueprint_sdk::alloy::dyn_abi::DynSolValue) -> Result<u64, St
 }
 
 const WORKFLOW_REGISTRY_ABI: &str = r#"[{"type":"function","name":"getWorkflowIds","inputs":[{"name":"activeOnly","type":"bool"}],"outputs":[{"name":"","type":"uint64[]"}],"stateMutability":"view"},{"type":"function","name":"getWorkflow","inputs":[{"name":"workflowId","type":"uint64"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"name","type":"string"},{"name":"workflowJson","type":"string"},{"name":"triggerType","type":"string"},{"name":"triggerConfig","type":"string"},{"name":"sandboxConfigJson","type":"string"},{"name":"active","type":"bool"},{"name":"createdAt","type":"uint64"},{"name":"updatedAt","type":"uint64"},{"name":"lastTriggeredAt","type":"uint64"}]}],"stateMutability":"view"}]"#;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn workflow_registry_abi_parses() {
+        let _: blueprint_sdk::alloy::json_abi::JsonAbi =
+            serde_json::from_str(super::WORKFLOW_REGISTRY_ABI)
+                .expect("workflow registry ABI should parse");
+    }
+}

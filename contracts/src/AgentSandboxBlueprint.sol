@@ -269,10 +269,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @notice Registers an operator. In cloud mode, sets capacity from registrationInputs.
     /// @param operator The operator address being registered.
     /// @param registrationInputs ABI-encoded uint32 capacity (0 = use default).
-    function onRegister(
-        address operator,
-        bytes calldata registrationInputs
-    ) external payable override onlyFromTangle {
+    function onRegister(address operator, bytes calldata registrationInputs) external payable override onlyFromTangle {
         if (!instanceMode) {
             uint32 capacity = defaultMaxCapacity;
             if (registrationInputs.length >= 32) {
@@ -292,9 +289,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
     /// @notice Prevents operators from unregistering while they hold active resources.
     /// @param operator The operator address being unregistered.
-    function onUnregister(
-        address operator
-    ) external virtual override onlyFromTangle {
+    function onUnregister(address operator) external virtual override onlyFromTangle {
         if (operatorActiveSandboxes[operator] != 0) revert CannotLeaveWithActiveResources();
         // Note: We cannot iterate all services here since the base interface
         // only provides the operator address. Instance-mode provisions are
@@ -304,10 +299,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @notice Prevents operators from leaving a service while they have active provisions.
     /// @param serviceId The service the operator is leaving.
     /// @param operator The departing operator address.
-    function onOperatorLeft(
-        uint64 serviceId,
-        address operator
-    ) external virtual override onlyFromTangle {
+    function onOperatorLeft(uint64 serviceId, address operator) external virtual override onlyFromTangle {
         if (operatorActiveSandboxes[operator] != 0) revert CannotLeaveWithActiveResources();
         if (operatorProvisioned[serviceId][operator]) revert CannotLeaveWithActiveResources();
     }
@@ -315,10 +307,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @notice Pre-check: denies departure if operator has active provisions for this service.
     /// @param serviceId The service to check against.
     /// @param operator The operator requesting to leave.
-    function canLeave(
-        uint64 serviceId,
-        address operator
-    ) external view virtual override returns (bool) {
+    function canLeave(uint64 serviceId, address operator) external view virtual override returns (bool) {
         if (operatorActiveSandboxes[operator] > 0) return false;
         if (operatorProvisioned[serviceId][operator]) return false;
         return true;
@@ -369,13 +358,17 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @notice Called when the service is initialized. In instance mode, stores the service
     ///         owner and moves pending config to persistent storage keyed by serviceId.
     function onServiceInitialized(
-        uint64,              // blueprintId
+        uint64, // blueprintId
         uint64 requestId,
         uint64 serviceId,
         address owner,
-        address[] calldata,  // permittedCallers
-        uint64               // ttl
-    ) external override onlyFromTangle {
+        address[] calldata, // permittedCallers
+        uint64 // ttl
+    )
+        external
+        override
+        onlyFromTangle
+    {
         if (instanceMode) {
             if (serviceOwner[serviceId] != address(0)) revert ServiceAlreadyInitialized(serviceId);
             serviceOwner[serviceId] = owner;
@@ -391,10 +384,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @notice Called when the service owner terminates the service.
     /// @param serviceId The service being terminated.
     /// @param owner The service owner who initiated termination.
-    function onServiceTermination(
-        uint64 serviceId,
-        address owner
-    ) external override onlyFromTangle {
+    function onServiceTermination(uint64 serviceId, address owner) external override onlyFromTangle {
         emit ServiceTerminationReceived(serviceId, owner);
     }
 
@@ -408,12 +398,12 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @param job The job ID being called.
     /// @param jobCallId Unique identifier for this job call.
     /// @param inputs ABI-encoded job inputs.
-    function onJobCall(
-        uint64 serviceId,
-        uint8 job,
-        uint64 jobCallId,
-        bytes calldata inputs
-    ) external payable override onlyFromTangle {
+    function onJobCall(uint64 serviceId, uint8 job, uint64 jobCallId, bytes calldata inputs)
+        external
+        payable
+        override
+        onlyFromTangle
+    {
         if (job == JOB_SANDBOX_CREATE) {
             if (instanceMode) revert CloudModeOnly();
             address selected = _selectByCapacity(serviceId);
@@ -461,14 +451,20 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             if (instanceMode) revert CloudModeOnly();
             _handleDeleteResult(operator, inputs);
         } else if (job == JOB_WORKFLOW_CREATE) {
-            WorkflowCreateRequest memory request = abi.decode(inputs, (WorkflowCreateRequest));
-            _upsertWorkflow(jobCallId, request);
+            (
+                string memory name,
+                string memory workflowJson,
+                string memory triggerType,
+                string memory triggerConfig,
+                string memory sandboxConfigJson
+            ) = abi.decode(inputs, (string, string, string, string, string));
+            _upsertWorkflow(jobCallId, name, workflowJson, triggerType, triggerConfig, sandboxConfigJson);
         } else if (job == JOB_WORKFLOW_TRIGGER) {
-            WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
-            _markTriggered(request.workflow_id);
+            (uint64 workflowId) = abi.decode(inputs, (uint64));
+            _markTriggered(workflowId);
         } else if (job == JOB_WORKFLOW_CANCEL) {
-            WorkflowControlRequest memory request = abi.decode(inputs, (WorkflowControlRequest));
-            _cancelWorkflow(request.workflow_id);
+            (uint64 workflowId) = abi.decode(inputs, (uint64));
+            _cancelWorkflow(workflowId);
         } else {
             revert UnknownJobId(job);
         }
@@ -691,31 +687,39 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             jobIndexes = new uint8[](3);
             rates = new uint256[](3);
 
-            jobIndexes[0] = JOB_WORKFLOW_CREATE;   rates[0] = baseRate * PRICE_MULT_WORKFLOW_CREATE;
-            jobIndexes[1] = JOB_WORKFLOW_TRIGGER;  rates[1] = baseRate * PRICE_MULT_WORKFLOW_TRIGGER;
-            jobIndexes[2] = JOB_WORKFLOW_CANCEL;   rates[2] = baseRate * PRICE_MULT_WORKFLOW_CANCEL;
+            jobIndexes[0] = JOB_WORKFLOW_CREATE;
+            rates[0] = baseRate * PRICE_MULT_WORKFLOW_CREATE;
+            jobIndexes[1] = JOB_WORKFLOW_TRIGGER;
+            rates[1] = baseRate * PRICE_MULT_WORKFLOW_TRIGGER;
+            jobIndexes[2] = JOB_WORKFLOW_CANCEL;
+            rates[2] = baseRate * PRICE_MULT_WORKFLOW_CANCEL;
             return (jobIndexes, rates);
         }
 
         jobIndexes = new uint8[](5);
         rates = new uint256[](5);
 
-        jobIndexes[0] = JOB_SANDBOX_CREATE;    rates[0] = baseRate * PRICE_MULT_SANDBOX_CREATE;
-        jobIndexes[1] = JOB_SANDBOX_DELETE;    rates[1] = baseRate * PRICE_MULT_SANDBOX_DELETE;
-        jobIndexes[2] = JOB_WORKFLOW_CREATE;   rates[2] = baseRate * PRICE_MULT_WORKFLOW_CREATE;
-        jobIndexes[3] = JOB_WORKFLOW_TRIGGER;  rates[3] = baseRate * PRICE_MULT_WORKFLOW_TRIGGER;
-        jobIndexes[4] = JOB_WORKFLOW_CANCEL;   rates[4] = baseRate * PRICE_MULT_WORKFLOW_CANCEL;
+        jobIndexes[0] = JOB_SANDBOX_CREATE;
+        rates[0] = baseRate * PRICE_MULT_SANDBOX_CREATE;
+        jobIndexes[1] = JOB_SANDBOX_DELETE;
+        rates[1] = baseRate * PRICE_MULT_SANDBOX_DELETE;
+        jobIndexes[2] = JOB_WORKFLOW_CREATE;
+        rates[2] = baseRate * PRICE_MULT_WORKFLOW_CREATE;
+        jobIndexes[3] = JOB_WORKFLOW_TRIGGER;
+        rates[3] = baseRate * PRICE_MULT_WORKFLOW_TRIGGER;
+        jobIndexes[4] = JOB_WORKFLOW_CANCEL;
+        rates[4] = baseRate * PRICE_MULT_WORKFLOW_CANCEL;
     }
 
     /// @notice Returns the price multiplier for a given job ID (0 if unknown).
     /// @param jobId The job ID to look up.
     function getJobPriceMultiplier(uint8 jobId) external view returns (uint256) {
         if (instanceMode && jobId < JOB_WORKFLOW_CREATE) return 0;
-        if (jobId == JOB_SANDBOX_CREATE)    return PRICE_MULT_SANDBOX_CREATE;
-        if (jobId == JOB_SANDBOX_DELETE)    return PRICE_MULT_SANDBOX_DELETE;
-        if (jobId == JOB_WORKFLOW_CREATE)   return PRICE_MULT_WORKFLOW_CREATE;
-        if (jobId == JOB_WORKFLOW_TRIGGER)  return PRICE_MULT_WORKFLOW_TRIGGER;
-        if (jobId == JOB_WORKFLOW_CANCEL)   return PRICE_MULT_WORKFLOW_CANCEL;
+        if (jobId == JOB_SANDBOX_CREATE) return PRICE_MULT_SANDBOX_CREATE;
+        if (jobId == JOB_SANDBOX_DELETE) return PRICE_MULT_SANDBOX_DELETE;
+        if (jobId == JOB_WORKFLOW_CREATE) return PRICE_MULT_WORKFLOW_CREATE;
+        if (jobId == JOB_WORKFLOW_TRIGGER) return PRICE_MULT_WORKFLOW_TRIGGER;
+        if (jobId == JOB_WORKFLOW_CANCEL) return PRICE_MULT_WORKFLOW_CANCEL;
         return 0;
     }
 
@@ -778,12 +782,9 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @param jobCallId The job call ID used to look up the pre-assigned operator.
     /// @param operator The operator that submitted the result.
     /// @param outputs ABI-encoded (sandboxId, jsonMetadata).
-    function _handleCreateResult(
-        uint64 serviceId,
-        uint64 jobCallId,
-        address operator,
-        bytes calldata outputs
-    ) internal {
+    function _handleCreateResult(uint64 serviceId, uint64 jobCallId, address operator, bytes calldata outputs)
+        internal
+    {
         address assigned = _createAssignments[serviceId][jobCallId];
         if (assigned == address(0) || assigned != operator) revert OperatorMismatch(assigned, operator);
 
@@ -839,11 +840,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     /// @param serviceId The service being provisioned.
     /// @param operator The operator that provisioned.
     /// @param outputs ABI-encoded (sandboxId, sidecarUrl, port, teeAttestationJson).
-    function _handleProvisionResult(
-        uint64 serviceId,
-        address operator,
-        bytes memory outputs
-    ) internal {
+    function _handleProvisionResult(uint64 serviceId, address operator, bytes memory outputs) internal {
         if (operatorProvisioned[serviceId][operator]) revert AlreadyProvisioned(serviceId, operator);
 
         (string memory sandboxId, string memory sidecarUrl,, string memory teeAttestationJson) =
@@ -879,10 +876,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     ///         clears sidecar URL and attestation, decrements counters.
     /// @param serviceId The service being deprovisioned.
     /// @param operator The operator being removed.
-    function _handleDeprovisionResult(
-        uint64 serviceId,
-        address operator
-    ) internal {
+    function _handleDeprovisionResult(uint64 serviceId, address operator) internal {
         if (!operatorProvisioned[serviceId][operator]) revert NotProvisioned(serviceId, operator);
 
         operatorProvisioned[serviceId][operator] = false;
@@ -918,8 +912,14 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
     /// @notice Creates or updates a workflow config in storage.
     /// @param workflowId The workflow ID (derived from jobCallId).
-    /// @param request The workflow creation parameters.
-    function _upsertWorkflow(uint64 workflowId, WorkflowCreateRequest memory request) internal {
+    function _upsertWorkflow(
+        uint64 workflowId,
+        string memory name,
+        string memory workflowJson,
+        string memory triggerType,
+        string memory triggerConfig,
+        string memory sandboxConfigJson
+    ) internal {
         WorkflowConfig storage config = workflows[workflowId];
         if (workflow_index[workflowId] == 0) {
             if (workflow_ids.length >= MAX_WORKFLOWS) revert MaxWorkflowsReached(0);
@@ -928,15 +928,15 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             config.created_at = uint64(block.timestamp);
         }
 
-        config.name = request.name;
-        config.workflow_json = request.workflow_json;
-        config.trigger_type = request.trigger_type;
-        config.trigger_config = request.trigger_config;
-        config.sandbox_config_json = request.sandbox_config_json;
+        config.name = name;
+        config.workflow_json = workflowJson;
+        config.trigger_type = triggerType;
+        config.trigger_config = triggerConfig;
+        config.sandbox_config_json = sandboxConfigJson;
         config.active = true;
         config.updated_at = uint64(block.timestamp);
 
-        emit WorkflowStored(workflowId, request.trigger_type, request.trigger_config);
+        emit WorkflowStored(workflowId, triggerType, triggerConfig);
     }
 
     /// @notice Records a workflow trigger timestamp and emits WorkflowTriggered.
@@ -965,7 +965,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         if (tangleCore != address(0)) {
             try ITangleServiceOperatorView(tangleCore).isServiceOperator(serviceId, operator) returns (bool active) {
                 allowed = active;
-            } catch { }
+            } catch {}
         }
         if (!allowed) revert OperatorNotInService(serviceId, operator);
     }
