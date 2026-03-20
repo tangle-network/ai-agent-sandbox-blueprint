@@ -29,10 +29,31 @@ interface WorkflowConfig {
   last_triggered_at: bigint;
 }
 
+export interface WorkflowView {
+  name: string;
+  workflow_json: string;
+  trigger_type: string;
+  trigger_config: string;
+  sandbox_config_json: string;
+  active: boolean;
+  created_at: number;
+  updated_at: number;
+  last_triggered_at: number;
+}
+
 type WorkflowBatchResult = {
   status: 'success';
-  result: WorkflowConfig;
+  result: WorkflowView;
 };
+
+export function normalizeWorkflowConfig(workflow: WorkflowConfig): WorkflowView {
+  return {
+    ...workflow,
+    created_at: Number(workflow.created_at),
+    updated_at: Number(workflow.updated_at),
+    last_triggered_at: Number(workflow.last_triggered_at),
+  };
+}
 
 function useSandboxContractRead<TData>({
   functionName,
@@ -181,9 +202,10 @@ export function useDefaultJobRates(baseRate: bigint) {
  */
 export function useWorkflowBatch(workflowIds: bigint[]) {
   const { address, chainId } = useSandboxReadDeps();
+  const workflowIdKeys = workflowIds.map((id) => id.toString());
 
   return useQuery<WorkflowBatchResult[], Error>({
-    queryKey: ['sandbox-workflow-batch', chainId, address, workflowIds],
+    queryKey: ['sandbox-workflow-batch', chainId, address, workflowIdKeys],
     queryFn: async () =>
       Promise.all(
         workflowIds.map(async (id) => {
@@ -194,7 +216,10 @@ export function useWorkflowBatch(workflowIds: bigint[]) {
             args: [id] as any,
           });
 
-          return { status: 'success' as const, result: result as unknown as WorkflowConfig };
+          return {
+            status: 'success' as const,
+            result: normalizeWorkflowConfig(result as unknown as WorkflowConfig),
+          };
         }),
       ),
     enabled: workflowIds.length > 0 && !!address,

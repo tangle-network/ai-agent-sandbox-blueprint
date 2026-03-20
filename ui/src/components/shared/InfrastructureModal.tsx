@@ -39,7 +39,12 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
   const { validate, isValidating, serviceInfo, error: validationError, reset: resetValidation } = useServiceValidation();
 
   // Operator discovery for "Create New"
-  const { operators, isLoading: operatorsLoading, operatorCount } = useOperators(BigInt(blueprintId || '0'));
+  const {
+    operators,
+    isLoading: operatorsLoading,
+    operatorCount,
+    error: operatorsError,
+  } = useOperators(BigInt(blueprintId || '0'));
   const [selectedOperators, setSelectedOperators] = useState<Address[]>([]);
   const [manualAddr, setManualAddr] = useState('');
 
@@ -332,6 +337,17 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
                   </label>
                   {operatorsLoading ? (
                     <p className="text-xs text-cloud-elements-textTertiary animate-pulse">Discovering operators...</p>
+                  ) : operatorsError ? (
+                    <div className="space-y-1.5">
+                      <p className="text-xs text-amber-400">
+                        {operatorCount > 0n
+                          ? `Found ${operatorCount.toString()} registered operator${operatorCount === 1n ? '' : 's'} on-chain, but verification failed`
+                          : 'Operator lookup failed for this blueprint'}
+                      </p>
+                      <p className="text-[11px] text-cloud-elements-textTertiary">
+                        You can still add an operator address manually below.
+                      </p>
+                    </div>
                   ) : operators.length > 0 ? (
                     <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
                       {operators.map((op) => (

@@ -1,18 +1,26 @@
 import { useState, useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle-network/blueprint-ui/components';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
 import { Input } from '@tangle-network/blueprint-ui/components';
 import { Select } from '@tangle-network/blueprint-ui/components';
-import { useWorkflowIds, useWorkflowBatch } from '~/lib/hooks/useSandboxReads';
-import { useSubmitJob } from '@tangle-network/blueprint-ui';
+import {
+  useWorkflowIds,
+  useWorkflowBatch,
+  type WorkflowView,
+} from '~/lib/hooks/useSandboxReads';
+import { getAddresses, publicClient, tangleJobsAbi, useSubmitJob } from '@tangle-network/blueprint-ui';
 import { encodeJobArgs } from '@tangle-network/blueprint-ui';
 import { getJobById } from '@tangle-network/blueprint-ui';
 import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
+import { agentSandboxBlueprintAbi } from '~/lib/contracts/abi';
 import { cn } from '@tangle-network/blueprint-ui';
+import { decodeEventLog } from 'viem';
 
 export default function Workflows() {
+  const queryClient = useQueryClient();
   const { data: workflowIds, isLoading } = useWorkflowIds(false);
   const { data: workflowData } = useWorkflowBatch(
     (workflowIds ?? []) as bigint[],
@@ -26,27 +34,98 @@ export default function Workflows() {
   const [workflowJson, setWorkflowJson] = useState('{}');
   const [sandboxConfigJson, setSandboxConfigJson] = useState('{}');
   const [serviceId, setServiceId] = useState('1');
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [isVerifyingCreate, setIsVerifyingCreate] = useState(false);
 
   /** Compute job value from pricing tier (base rate = 0.001 TNT = 1e15 wei) */
   const jobValue = (jobId: number): bigint =>
     BigInt(PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
 
+  const waitForWorkflowOnChain = useCallback(async (workflowId: bigint) => {
+    const addrs = getAddresses();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await publicClient.readContract({
+        address: addrs.sandboxBlueprint,
+        abi: agentSandboxBlueprintAbi,
+        functionName: 'getWorkflow',
+        args: [workflowId],
+      }) as { name?: string };
+
+      if (result.name?.trim()) {
+        return true;
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    }
+
+    return false;
+  }, []);
+
   const handleCreate = useCallback(async () => {
     if (!name) return;
     const job = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.WORKFLOW_CREATE);
     if (!job) return;
-    await submitJob({
-      serviceId: BigInt(serviceId),
-      jobId: JOB_IDS.WORKFLOW_CREATE,
-      args: encodeJobArgs(job, { name, workflowJson, triggerType, triggerConfig, sandboxConfigJson }),
-      label: `Create Workflow: ${name}`,
-      value: jobValue(JOB_IDS.WORKFLOW_CREATE),
-    });
-    setShowCreate(false);
-    setName('');
-    setTriggerConfig('');
-    setWorkflowJson('{}');
-  }, [name, workflowJson, triggerType, triggerConfig, sandboxConfigJson, serviceId, submitJob]);
+    setCreateError(null);
+    setIsVerifyingCreate(true);
+
+    try {
+      const hash = await submitJob({
+        serviceId: BigInt(serviceId),
+        jobId: JOB_IDS.WORKFLOW_CREATE,
+        args: encodeJobArgs(job, { name, workflowJson, triggerType, triggerConfig, sandboxConfigJson }),
+        label: `Create Workflow: ${name}`,
+        value: jobValue(JOB_IDS.WORKFLOW_CREATE),
+      });
+
+      if (!hash) {
+        return;
+      }
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      let workflowCallId: bigint | null = null;
+
+      for (const log of receipt.logs) {
+        try {
+          const decoded = decodeEventLog({
+            abi: tangleJobsAbi,
+            data: log.data,
+            topics: log.topics,
+          });
+          if (decoded.eventName === 'JobCalled' && 'callId' in decoded.args) {
+            workflowCallId = decoded.args.callId as bigint;
+            break;
+          }
+        } catch {
+          // Ignore unrelated logs.
+        }
+      }
+
+      if (workflowCallId === null) {
+        throw new Error('Transaction confirmed, but the workflow call ID could not be found.');
+      }
+
+      const visible = await waitForWorkflowOnChain(workflowCallId);
+      if (!visible) {
+        throw new Error('Transaction confirmed, but the workflow was not readable from the chain.');
+      }
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['sandbox-contract-read'] }),
+        queryClient.invalidateQueries({ queryKey: ['sandbox-workflow-batch'] }),
+      ]);
+
+      setShowCreate(false);
+      setName('');
+      setTriggerConfig('');
+      setWorkflowJson('{}');
+      setSandboxConfigJson('{}');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Workflow creation failed';
+      setCreateError(message);
+    } finally {
+      setIsVerifyingCreate(false);
+    }
+  }, [name, workflowJson, triggerType, triggerConfig, sandboxConfigJson, serviceId, submitJob, waitForWorkflowOnChain, queryClient]);
 
   const handleTrigger = useCallback(async (wfId: bigint) => {
     const job = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.WORKFLOW_TRIGGER);
@@ -58,7 +137,11 @@ export default function Workflows() {
       label: `Trigger Workflow #${wfId}`,
       value: jobValue(JOB_IDS.WORKFLOW_TRIGGER),
     });
-  }, [serviceId, submitJob]);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['sandbox-contract-read'] }),
+      queryClient.invalidateQueries({ queryKey: ['sandbox-workflow-batch'] }),
+    ]);
+  }, [queryClient, serviceId, submitJob]);
 
   const handleCancel = useCallback(async (wfId: bigint) => {
     const job = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.WORKFLOW_CANCEL);
@@ -70,7 +153,11 @@ export default function Workflows() {
       label: `Cancel Workflow #${wfId}`,
       value: jobValue(JOB_IDS.WORKFLOW_CANCEL),
     });
-  }, [serviceId, submitJob]);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['sandbox-contract-read'] }),
+      queryClient.invalidateQueries({ queryKey: ['sandbox-workflow-batch'] }),
+    ]);
+  }, [queryClient, serviceId, submitJob]);
 
   const workflows = (workflowIds ?? []).map((id, i) => {
     const data = workflowData?.[i];
@@ -154,11 +241,14 @@ export default function Workflows() {
               />
             </div>
             <div className="flex justify-end">
-              <Button onClick={handleCreate} disabled={!name || txStatus === 'pending'}>
+              <Button onClick={handleCreate} disabled={!name || txStatus === 'pending' || isVerifyingCreate}>
                 <div className="i-ph:flow-arrow text-sm" />
-                Create Workflow
+                {isVerifyingCreate ? 'Verifying Workflow...' : 'Create Workflow'}
               </Button>
             </div>
+            {createError ? (
+              <p className="text-sm text-rose-400">{createError}</p>
+            ) : null}
           </CardContent>
         </Card>
       )}
@@ -197,18 +287,6 @@ export default function Workflows() {
   );
 }
 
-interface WorkflowData {
-  name: string;
-  workflow_json: string;
-  trigger_type: string;
-  trigger_config: string;
-  sandbox_config_json: string;
-  active: boolean;
-  created_at: bigint;
-  updated_at: bigint;
-  last_triggered_at: bigint;
-}
-
 function WorkflowCard({
   id,
   data,
@@ -217,7 +295,7 @@ function WorkflowCard({
   txPending,
 }: {
   id: bigint;
-  data: WorkflowData | null | undefined;
+  data: WorkflowView | null | undefined;
   onTrigger: () => void;
   onCancel: () => void;
   txPending: boolean;
@@ -270,10 +348,10 @@ function WorkflowCard({
                 {data.trigger_config && (
                   <span className="font-data">{data.trigger_config}</span>
                 )}
-                {data.last_triggered_at > 0n && (
+                {data.last_triggered_at > 0 && (
                   <>
                     <span className="text-cloud-elements-dividerColor">·</span>
-                    <span>Last: {new Date(Number(data.last_triggered_at) * 1000).toLocaleString()}</span>
+                    <span>Last: {new Date(data.last_triggered_at * 1000).toLocaleString()}</span>
                   </>
                 )}
               </div>

@@ -238,6 +238,7 @@ export default function CreatePage() {
 
   const isSandbox = deploy.mode === 'sandbox';
   const entityLabel = isSandbox ? 'Sandbox' : 'Instance';
+  const entityLabelPlural = isSandbox ? 'Sandboxes' : 'Instances';
   const currentIdx = STEPS.findIndex((s) => s.key === step);
 
   // Per-job RFQ pricing
@@ -674,6 +675,7 @@ function DeployStep({
   const isSandbox = !isInstanceMode;
   const isActive = status !== 'idle';
   const isComplete = status === 'confirmed' || status === 'ready';
+  const entityLabelPlural = entityLabel === 'Sandbox' ? 'Sandboxes' : `${entityLabel}s`;
 
   useEffect(() => {
     setProvisionError(null);
@@ -907,7 +909,7 @@ function DeployStep({
         {isComplete ? (
           <Button variant="success" onClick={onViewList}>
             <div className="i-ph:check-bold text-sm" />
-            View {entityLabel}s
+            View {entityLabelPlural}
           </Button>
         ) : (
           <DeployButton
