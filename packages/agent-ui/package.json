@@ -1,7 +1,8 @@
 {
   "name": "@tangle-network/agent-ui",
   "version": "0.2.0",
-  "description": "Shared agent UI components and sidecar integration hooks for Tangle blueprints",
+  "description": "DEPRECATED: Use @tangle-network/sandbox-ui for general components and @tangle-network/blueprint-ui for web3/wagmi components",
+  "deprecated": "Use @tangle-network/sandbox-ui (general UI) and @tangle-network/blueprint-ui (web3/wagmi hooks)",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
