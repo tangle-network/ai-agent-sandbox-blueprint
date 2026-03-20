@@ -24,8 +24,79 @@ export interface LocalInstance {
   errorMessage?: string;
 }
 
+const INSTANCE_STORE_KEY_PREFIX = 'sandbox_cloud_instances';
+
+type InstanceFingerprintEnv = Record<string, string | undefined>;
+
+function normalizeFingerprintPart(value: string | undefined): string {
+  return (value || '').trim().toLowerCase();
+}
+
+export function buildInstanceDeploymentFingerprint(env: InstanceFingerprintEnv = import.meta.env): string {
+  const explicit = normalizeFingerprintPart(env.VITE_DEPLOYMENT_FINGERPRINT);
+  if (explicit) return explicit;
+
+  const fallback = [
+    env.VITE_CHAIN_ID,
+    env.VITE_TANGLE_CONTRACT,
+    env.VITE_SANDBOX_BSM,
+    env.VITE_INSTANCE_BSM,
+    env.VITE_OPERATOR_API_URL,
+    env.VITE_INSTANCE_OPERATOR_API_URL,
+  ]
+    .map(normalizeFingerprintPart)
+    .filter(Boolean)
+    .join('::');
+
+  return fallback || 'default';
+}
+
+export function getInstanceStoreKey(fingerprint = buildInstanceDeploymentFingerprint()): string {
+  return `${INSTANCE_STORE_KEY_PREFIX}::${fingerprint}`;
+}
+
+export function migrateLegacyInstanceCacheKey(
+  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
+  currentKey: string,
+) {
+  if (currentKey === INSTANCE_STORE_KEY_PREFIX) return;
+
+  const currentValue = storage.getItem(currentKey);
+  const legacyValue = storage.getItem(INSTANCE_STORE_KEY_PREFIX);
+  if (legacyValue == null) return;
+
+  if (currentValue == null) {
+    storage.setItem(currentKey, legacyValue);
+  }
+
+  storage.removeItem(INSTANCE_STORE_KEY_PREFIX);
+}
+
+export function pruneInstanceCacheKeys(storage: Pick<Storage, 'length' | 'key' | 'removeItem'>, currentKey: string) {
+  const keys: string[] = [];
+  for (let i = 0; i < storage.length; i += 1) {
+    const key = storage.key(i);
+    if (!key) continue;
+    if (key === INSTANCE_STORE_KEY_PREFIX || key.startsWith(`${INSTANCE_STORE_KEY_PREFIX}::`)) {
+      keys.push(key);
+    }
+  }
+
+  keys
+    .filter((key) => key !== currentKey)
+    .forEach((key) => storage.removeItem(key));
+}
+
+const instanceDeploymentFingerprint = buildInstanceDeploymentFingerprint();
+const instanceStoreKey = getInstanceStoreKey(instanceDeploymentFingerprint);
+
+if (typeof window !== 'undefined' && window.localStorage) {
+  migrateLegacyInstanceCacheKey(window.localStorage, instanceStoreKey);
+  pruneInstanceCacheKeys(window.localStorage, instanceStoreKey);
+}
+
 export const instanceListStore = persistedAtom<LocalInstance[]>({
-  key: 'sandbox_cloud_instances',
+  key: instanceStoreKey,
   initial: [],
 });
 

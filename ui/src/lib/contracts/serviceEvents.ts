@@ -8,8 +8,8 @@ interface EventLogLike {
 
 // The current service manager emits ServiceRequested as:
 //   ServiceRequested(uint64 requestId, uint64 blueprintId, address requester)
-// while the shared ABI still expects requester first. Fall back to topic
-// parsing so instance drafts can still recover requestId locally.
+// Keep a raw-topic fallback so recovery still works even if a linked package
+// build is temporarily out of sync with the chain ABI.
 export const SERVICE_REQUESTED_TOPIC =
   '0xbd1fdda393b679e6c4f873e233b34e2c4ea8283a3f76345dbc143b86ea047679';
 

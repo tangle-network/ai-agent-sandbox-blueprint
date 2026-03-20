@@ -8,6 +8,10 @@ import {
   getInstance,
   runningInstances,
   activeInstances,
+  buildInstanceDeploymentFingerprint,
+  getInstanceStoreKey,
+  migrateLegacyInstanceCacheKey,
+  pruneInstanceCacheKeys,
   type LocalInstance,
 } from './instances';
 
@@ -28,7 +32,47 @@ function makeInstance(overrides: Partial<LocalInstance> = {}): LocalInstance {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   instanceListStore.set([]);
+});
+
+describe('instance cache versioning', () => {
+  it('prefers the explicit deployment fingerprint when provided', () => {
+    expect(buildInstanceDeploymentFingerprint({
+      VITE_DEPLOYMENT_FINGERPRINT: 'local-abc-123',
+      VITE_CHAIN_ID: '31337',
+    })).toBe('local-abc-123');
+  });
+
+  it('falls back to environment details when no explicit fingerprint is set', () => {
+    expect(buildInstanceDeploymentFingerprint({
+      VITE_CHAIN_ID: '31337',
+      VITE_TANGLE_CONTRACT: '0xabc',
+      VITE_SANDBOX_BSM: '0xdef',
+      VITE_OPERATOR_API_URL: 'http://127.0.0.1:9102',
+    })).toBe('31337::0xabc::0xdef::http://127.0.0.1:9102');
+  });
+
+  it('migrates the legacy global key into the active deployment key', () => {
+    const currentKey = getInstanceStoreKey('deploy-new');
+    window.localStorage.setItem('sandbox_cloud_instances', JSON.stringify([{ id: 'legacy-inst' }]));
+
+    migrateLegacyInstanceCacheKey(window.localStorage, currentKey);
+
+    expect(window.localStorage.getItem('sandbox_cloud_instances')).toBeNull();
+    expect(window.localStorage.getItem(currentKey)).toBe(JSON.stringify([{ id: 'legacy-inst' }]));
+  });
+
+  it('prunes stale cache keys while keeping the active deployment key', () => {
+    const currentKey = getInstanceStoreKey('deploy-new');
+    window.localStorage.setItem(getInstanceStoreKey('deploy-old'), JSON.stringify([{ id: 'old' }]));
+    window.localStorage.setItem(currentKey, JSON.stringify([{ id: 'current' }]));
+
+    pruneInstanceCacheKeys(window.localStorage, currentKey);
+
+    expect(window.localStorage.getItem(getInstanceStoreKey('deploy-old'))).toBeNull();
+    expect(window.localStorage.getItem(currentKey)).toBe(JSON.stringify([{ id: 'current' }]));
+  });
 });
 
 describe('addInstance', () => {

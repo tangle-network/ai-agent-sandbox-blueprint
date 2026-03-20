@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { extractServiceRequestId, SERVICE_REQUESTED_TOPIC } from './serviceEvents';
 
 describe('extractServiceRequestId', () => {
-  it('falls back to the on-chain ServiceRequested topic layout', () => {
+  it('extracts requestId from the on-chain ServiceRequested topic layout', () => {
     const requestId = extractServiceRequestId({
       data: '0x',
       topics: [

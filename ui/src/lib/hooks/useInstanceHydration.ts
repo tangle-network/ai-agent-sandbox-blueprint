@@ -39,7 +39,7 @@ function getRequestIdFromReceiptLogs(
   return null;
 }
 
-async function recoverDraftFromReceipt(
+export async function recoverDraftFromReceipt(
   instance: LocalInstance,
   signal: AbortSignal,
 ): Promise<LocalInstance> {
