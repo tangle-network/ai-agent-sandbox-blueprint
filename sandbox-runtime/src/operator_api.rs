@@ -780,6 +780,63 @@ struct SecretsResponse {
     sandbox_id: String,
 }
 
+async fn instance_inject_secrets(
+    SessionAuth(address): SessionAuth,
+    Json(body): Json<InjectSecretsRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = crate::api_types::validate_secrets_map(&body.env_json) {
+        return api_error(StatusCode::BAD_REQUEST, e).into_response();
+    }
+
+    let record = match resolve_instance(&address) {
+        Ok(record) => record,
+        Err(err) => return err.into_response(),
+    };
+    if let Err(err) = reject_instance_tee_secrets(&record) {
+        return err.into_response();
+    }
+
+    match secret_provisioning::inject_secrets(&record.id, body.env_json, None).await {
+        Ok(updated) => {
+            sync_instance_record(&updated.id);
+            (
+                StatusCode::OK,
+                Json(SecretsResponse {
+                    status: "secrets_configured".to_string(),
+                    sandbox_id: updated.id,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn instance_wipe_secrets(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    let record = match resolve_instance(&address) {
+        Ok(record) => record,
+        Err(err) => return err.into_response(),
+    };
+    if let Err(err) = reject_instance_tee_secrets(&record) {
+        return err.into_response();
+    }
+
+    match secret_provisioning::wipe_secrets(&record.id, None).await {
+        Ok(updated) => {
+            sync_instance_record(&updated.id);
+            (
+                StatusCode::OK,
+                Json(SecretsResponse {
+                    status: "secrets_wiped".to_string(),
+                    sandbox_id: updated.id,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 async fn inject_secrets(
     SessionAuth(address): SessionAuth,
     Path(sandbox_id): Path<String>,
@@ -823,6 +880,23 @@ async fn wipe_secrets(
         )
             .into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+fn reject_instance_tee_secrets(record: &SandboxRecord) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if record.tee_config.is_some() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "TEE instances do not support plain secrets injection. Use sealed secrets instead.",
+        ));
+    }
+
+    Ok(())
+}
+
+fn sync_instance_record(id: &str) {
+    if let Ok(Some(updated)) = sandboxes().and_then(|s| s.get(id)) {
+        let _ = runtime::instance_store().and_then(|s| s.insert("instance".to_string(), updated));
     }
 }
 
@@ -2783,6 +2857,10 @@ pub fn operator_api_router_with_tee(
             axum::routing::delete(sandbox_chat_session_delete_handler),
         )
         .route(
+            "/api/sandbox/secrets",
+            post(instance_inject_secrets).delete(instance_wipe_secrets),
+        )
+        .route(
             "/api/sandbox/live/terminal/sessions",
             post(instance_terminal_session_create_handler),
         )
@@ -3641,6 +3719,28 @@ mod tests {
         insert_instance_sandbox_with_url(id, owner, "http://localhost:9999");
     }
 
+    fn insert_instance_tee_sandbox(id: &str, deployment_id: &str, owner: &str) {
+        insert_instance_sandbox(id, owner);
+        use crate::runtime::seal_record;
+        let mut record = sandboxes()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .expect("sandbox exists");
+        record.tee_deployment_id = Some(deployment_id.to_string());
+        record.tee_metadata_json = Some(r#"{"backend":"mock"}"#.into());
+        record.tee_config = Some(crate::tee::TeeConfig {
+            required: true,
+            tee_type: crate::tee::TeeType::Tdx,
+        });
+        seal_record(&mut record).unwrap();
+        sandboxes().unwrap().insert(id.to_string(), record.clone()).unwrap();
+        runtime::instance_store()
+            .unwrap()
+            .insert("instance".to_string(), record)
+            .unwrap();
+    }
+
     /// Enable SSH on an already-inserted sandbox by setting `ssh_port`.
     fn enable_ssh_port(id: &str, port: u16) {
         use crate::runtime::{sandboxes, seal_record};
@@ -3886,6 +3986,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_instance_secrets_empty_env_rejected() {
+        insert_instance_sandbox("inst-sec-empty-1", OP_TEST_OWNER);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "env_json": {} });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/secrets")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_instance_secrets_wrong_owner_forbidden() {
+        insert_instance_sandbox("inst-sec-owner-1", OP_TEST_OWNER);
+        let other_auth = format!(
+            "Bearer {}",
+            session_auth::create_test_token("0xOTHER0000000000000000000000000000000014")
+        );
+        let body = serde_json::json!({ "env_json": { "API_KEY": "secret-value" } });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/secrets")
+                    .header("authorization", &other_auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_instance_secrets_reject_tee_instances() {
+        insert_instance_tee_sandbox("inst-tee-sec-1", "deploy-tee-sec-1", OP_TEST_OWNER);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "env_json": { "API_KEY": "secret-value" } });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/secrets")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn test_sandbox_snapshot_empty_destination() {
         insert_plain_sandbox("snap-test-1", OP_TEST_OWNER);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
@@ -3934,6 +4103,7 @@ mod tests {
             "/api/sandbox/exec",
             "/api/sandbox/prompt",
             "/api/sandbox/task",
+            "/api/sandbox/secrets",
             "/api/sandbox/stop",
             "/api/sandbox/resume",
             "/api/sandbox/snapshot",

@@ -1,9 +1,10 @@
 import { useParams, Link } from 'react-router';
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
-import { Card, CardContent, CardHeader, CardTitle } from '@tangle-network/blueprint-ui/components';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
+import { Textarea } from '@tangle-network/blueprint-ui/components';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
 import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
 import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
@@ -17,10 +18,12 @@ import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
 import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
 import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
+import { useInstanceHydration } from '~/lib/hooks/useInstanceHydration';
 import { createProxiedInstanceClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { cn } from '@tangle-network/blueprint-ui';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
+import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { useAccount } from 'wagmi';
 import {
   getInstanceSandboxDisplayValue,
@@ -28,7 +31,21 @@ import {
   getInstanceStatusLabel,
 } from '~/lib/instances/display';
 
-type ActionTab = 'overview' | 'terminal' | 'chat' | 'attestation';
+type ActionTab = 'overview' | 'terminal' | 'chat' | 'secrets' | 'attestation';
+
+/** Extract human-readable error from operator API Error messages. */
+function parseApiError(err: Error): string {
+  const idx = err.message.indexOf('): ');
+  if (idx === -1) return err.message;
+  const body = err.message.slice(idx + 3);
+  try {
+    const parsed = JSON.parse(body) as { error?: string };
+    if (typeof parsed.error === 'string') return parsed.error;
+  } catch {
+    // ignore non-JSON error bodies
+  }
+  return err.message;
+}
 
 export default function InstanceDetail() {
   const { id } = useParams<{ id: string }>();
@@ -39,6 +56,17 @@ export default function InstanceDetail() {
 
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [secretsJson, setSecretsJson] = useState('{\n  \n}');
+  const [secretsBusy, setSecretsBusy] = useState(false);
+  const [secretsError, setSecretsError] = useState<string | null>(null);
+  const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    description: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  } | null>(null);
+  const timeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   const serviceId = inst?.serviceId ? BigInt(inst.serviceId) : null;
   const bpId = inst?.teeEnabled ? 'ai-agent-tee-instance-blueprint' : 'ai-agent-instance-blueprint';
@@ -59,6 +87,23 @@ export default function InstanceDetail() {
       });
     }
   }, [instanceProvision, decodedId]);
+
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of timeoutsRef.current) {
+        clearTimeout(timeoutId);
+      }
+      timeoutsRef.current.clear();
+    };
+  }, []);
+
+  const scheduleDismiss = useCallback((fn: () => void, ms: number) => {
+    const timeoutId = setTimeout(() => {
+      timeoutsRef.current.delete(timeoutId);
+      fn();
+    }, ms);
+    timeoutsRef.current.add(timeoutId);
+  }, []);
 
   // Operator API auth for browser access to interactive features and attestation.
   const operatorUrl = INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL;
@@ -81,6 +126,7 @@ export default function InstanceDetail() {
   }, [getOperatorToken]);
 
   const ports = useExposedPorts(inst?.status, operatorApiCall);
+  const { refresh: refreshInstances } = useInstanceHydration();
 
   const {
     attestation,
@@ -88,6 +134,51 @@ export default function InstanceDetail() {
     error: attestationError,
     fetchAttestation: handleFetchAttestation,
   } = useTeeAttestation(operatorApiCall);
+
+  const handleInjectSecrets = useCallback(async () => {
+    setSecretsBusy(true);
+    setSecretsError(null);
+    setSecretsSuccess(null);
+    try {
+      const parsed = JSON.parse(secretsJson);
+      if (typeof parsed !== 'object' || parsed == null || Array.isArray(parsed)) {
+        throw new Error('Secrets must be a JSON object');
+      }
+      await operatorApiCall('secrets', { env_json: parsed });
+      await refreshInstances({ interactive: true });
+      setSecretsSuccess('Secrets injected');
+      scheduleDismiss(() => setSecretsSuccess(null), 3000);
+    } catch (e) {
+      setSecretsError(e instanceof Error ? parseApiError(e) : 'Failed to inject secrets');
+    } finally {
+      setSecretsBusy(false);
+    }
+  }, [operatorApiCall, refreshInstances, scheduleDismiss, secretsJson]);
+
+  const handleWipeSecrets = useCallback(() => {
+    setConfirmAction({
+      title: 'Wipe Secrets',
+      description: 'This will remove all injected secrets and restart the instance without them.',
+      confirmLabel: 'Wipe',
+      onConfirm: () => {
+        void (async () => {
+          setSecretsBusy(true);
+          setSecretsError(null);
+          setSecretsSuccess(null);
+          try {
+            await operatorApiCall('secrets', undefined, { method: 'DELETE' });
+            await refreshInstances({ interactive: true });
+            setSecretsSuccess('Secrets wiped');
+            scheduleDismiss(() => setSecretsSuccess(null), 3000);
+          } catch (e) {
+            setSecretsError(e instanceof Error ? parseApiError(e) : 'Failed to wipe secrets');
+          } finally {
+            setSecretsBusy(false);
+          }
+        })();
+      },
+    });
+  }, [operatorApiCall, refreshInstances, scheduleDismiss]);
 
   if (!inst) {
     return (
@@ -111,6 +202,7 @@ export default function InstanceDetail() {
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal' },
     { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', hidden: !hasAgent },
+    { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', hidden: !!inst.teeEnabled },
     ...(inst.teeEnabled ? [{ key: 'attestation' as const, label: 'Attestation', icon: 'i-ph:shield-check' }] : []),
   ];
 
@@ -275,6 +367,66 @@ export default function InstanceDetail() {
         </Card>
       )}
 
+      {/* Secrets */}
+      {tab === 'secrets' && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Environment Secrets</CardTitle>
+              <CardDescription>Inject environment variables as secrets into the instance</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {isOperatorAuthed ? (
+                <>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-cloud-elements-textSecondary" htmlFor="instance-secrets-json">
+                      Secrets (JSON object)
+                    </label>
+                    <Textarea
+                      id="instance-secrets-json"
+                      value={secretsJson}
+                      onChange={(e) => setSecretsJson(e.target.value)}
+                      placeholder='{"API_KEY": "sk-...", "DB_URL": "postgres://..."}'
+                      className="font-data text-xs min-h-[120px] resize-y"
+                    />
+                    <p className="text-[11px] text-cloud-elements-textTertiary">
+                      Key-value pairs injected as environment variables. Values are stored securely and not readable after injection.
+                    </p>
+                  </div>
+                  {secretsError && (
+                    <p className="text-xs text-red-400">{secretsError}</p>
+                  )}
+                  {secretsSuccess && (
+                    <p className="text-xs text-teal-400">{secretsSuccess}</p>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" onClick={handleInjectSecrets} disabled={secretsBusy}>
+                      {secretsBusy ? 'Injecting...' : 'Inject Secrets'}
+                    </Button>
+                    <Button variant="destructive" size="sm" onClick={handleWipeSecrets} disabled={secretsBusy}>
+                      Wipe All Secrets
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <div className="p-2 text-center">
+                  <p className="text-sm text-cloud-elements-textSecondary mb-3">
+                    Authenticate with the operator to manage instance secrets
+                  </p>
+                  <p className="text-xs text-cloud-elements-textTertiary mb-4">
+                    Secret updates are proxied through the operator API and may restart the instance sidecar to apply changes.
+                  </p>
+                  {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
+                  <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
+                    {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* Attestation Tab — TEE attestation verification */}
       {tab === 'attestation' && (
         <div className="space-y-4">
@@ -287,6 +439,20 @@ export default function InstanceDetail() {
           />
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!confirmAction}
+        onOpenChange={(open) => {
+          if (!open) setConfirmAction(null);
+        }}
+        title={confirmAction?.title ?? 'Confirm'}
+        description={confirmAction?.description ?? ''}
+        confirmLabel={confirmAction?.confirmLabel}
+        onConfirm={() => {
+          confirmAction?.onConfirm();
+        }}
+        variant="danger"
+      />
     </AnimatedPage>
   );
 }
