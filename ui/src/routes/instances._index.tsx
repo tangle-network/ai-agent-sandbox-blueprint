@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react';
 import { ProvisionedResourceListCard } from '~/components/shared/ProvisionedResourceListCard';
 import { ProvisionedResourceIndexPage } from '~/components/shared/ProvisionedResourceIndexPage';
 import { instanceListStore, activeInstances } from '~/lib/stores/instances';
+import { getInstanceStatusLabel } from '~/lib/instances/display';
 
 export default function InstanceList() {
   const allInstances = useStore(instanceListStore);
@@ -24,6 +25,7 @@ export default function InstanceList() {
           to={`/instances/${encodeURIComponent(inst.id)}`}
           name={inst.name}
           status={inst.status}
+          statusLabel={getInstanceStatusLabel(inst)}
           teeEnabled={inst.teeEnabled}
           image={inst.image}
           specs={`${inst.cpuCores} CPU · ${inst.memoryMb}MB`}

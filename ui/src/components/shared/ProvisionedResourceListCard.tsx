@@ -7,6 +7,7 @@ interface ProvisionedResourceListCardProps {
   to: string;
   name: string;
   status: string;
+  statusLabel?: string;
   teeEnabled?: boolean;
   image: string;
   specs: string;
@@ -21,6 +22,7 @@ export function ProvisionedResourceListCard({
   to,
   name,
   status,
+  statusLabel,
   teeEnabled,
   image,
   specs,
@@ -46,6 +48,7 @@ export function ProvisionedResourceListCard({
               <ResourceIdentity
                 name={name}
                 status={status}
+                statusLabel={statusLabel}
                 teeEnabled={teeEnabled}
                 image={image}
                 specs={specs}

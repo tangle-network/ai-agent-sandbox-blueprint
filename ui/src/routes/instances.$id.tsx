@@ -22,6 +22,11 @@ import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { cn } from '@tangle-network/blueprint-ui';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { useAccount } from 'wagmi';
+import {
+  getInstanceSandboxDisplayValue,
+  getInstanceServiceDisplayValue,
+  getInstanceStatusLabel,
+} from '~/lib/instances/display';
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'attestation';
 
@@ -133,6 +138,7 @@ export default function InstanceDetail() {
           <ResourceIdentity
             name={inst.name}
             status={inst.status}
+            statusLabel={getInstanceStatusLabel(inst)}
             teeEnabled={inst.teeEnabled}
             image={inst.image}
             specs={`${inst.cpuCores} CPU · ${inst.memoryMb}MB · ${inst.diskGb}GB`}
@@ -163,7 +169,7 @@ export default function InstanceDetail() {
               <LabeledValueRow label="ID" value={inst.id} mono copyable />
               <LabeledValueRow
                 label="Sandbox"
-                value={inst.sandboxId || 'Pending operator provision'}
+                value={getInstanceSandboxDisplayValue(inst)}
                 mono={!!inst.sandboxId}
                 copyable={!!inst.sandboxId}
                 copyValue={inst.sandboxId ?? undefined}
@@ -174,7 +180,7 @@ export default function InstanceDetail() {
               <LabeledValueRow label="Disk" value={`${inst.diskGb} GB`} />
               <LabeledValueRow label="Created" value={new Date(inst.createdAt).toLocaleString()} />
               <LabeledValueRow label="Blueprint" value={getBlueprint(bpId)?.name ?? bpId} />
-              <LabeledValueRow label="Service" value={inst.serviceId ? `#${inst.serviceId}` : 'Pending activation'} />
+              <LabeledValueRow label="Service" value={getInstanceServiceDisplayValue(inst)} />
             </CardContent>
           </Card>
           <Card>

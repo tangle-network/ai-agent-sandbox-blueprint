@@ -11,12 +11,12 @@ const statusConfig: Record<SandboxStatus, { label: string; variant: 'running' | 
   error: { label: 'Error', variant: 'destructive', dot: 'status-error' },
 };
 
-export function StatusBadge({ status }: { status: SandboxStatus }) {
+export function StatusBadge({ status, labelOverride }: { status: SandboxStatus; labelOverride?: string }) {
   const config = statusConfig[status];
   return (
     <Badge variant={config.variant}>
       <span className={`status-dot ${config.dot}`} />
-      {config.label}
+      {labelOverride ?? config.label}
     </Badge>
   );
 }
