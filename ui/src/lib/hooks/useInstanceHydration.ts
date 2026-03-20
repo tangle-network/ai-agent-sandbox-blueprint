@@ -8,6 +8,7 @@ import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { reconcileInstances } from './instanceHydrationLogic';
 import { fetchSandboxes, type ApiSandbox } from './sandboxHydrationLogic';
 import type { SandboxAddresses } from '~/lib/contracts/chains';
+import { extractServiceRequestId } from '~/lib/contracts/serviceEvents';
 
 const DRAFT_TX_GRACE_MS = 15 * 60 * 1000;
 
@@ -31,18 +32,8 @@ function getRequestIdFromReceiptLogs(
   logs: Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>,
 ): number | null {
   for (const log of logs) {
-    try {
-      const decoded = decodeEventLog({
-        abi: tangleServicesAbi,
-        data: log.data,
-        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
-      });
-      if (decoded.eventName === 'ServiceRequested' && 'requestId' in decoded.args) {
-        return Number(decoded.args.requestId);
-      }
-    } catch {
-      // Ignore unrelated logs while scanning the receipt.
-    }
+    const requestId = extractServiceRequestId(log);
+    if (requestId != null) return requestId;
   }
 
   return null;
@@ -56,7 +47,7 @@ async function recoverDraftFromReceipt(
     signal.aborted
     || instance.requestId != null
     || !instance.txHash
-    || instance.status !== 'creating'
+    || !['creating', 'error'].includes(instance.status)
   ) {
     return instance;
   }
@@ -81,7 +72,9 @@ async function recoverDraftFromReceipt(
     if (requestId != null) {
       return {
         ...instance,
+        status: instance.sandboxId ? instance.status : 'creating',
         requestId,
+        errorMessage: undefined,
       };
     }
 

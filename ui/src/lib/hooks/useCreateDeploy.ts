@@ -36,6 +36,7 @@ import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chain
 import type { InfraConfig } from '@tangle-network/blueprint-ui';
 import type { Address } from 'viem';
 import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
+import { extractServiceRequestId } from '~/lib/contracts/serviceEvents';
 
 // Re-export types from logic module for external consumers
 export type { DeployMode, DeployStatus, JobSubmitStatus } from './createDeployLogic';
@@ -78,18 +79,8 @@ function getRequestIdFromServiceReceiptLogs(
   logs: Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>,
 ): number | null {
   for (const log of logs) {
-    try {
-      const decoded = decodeEventLog({
-        abi: tangleServicesAbi,
-        data: log.data,
-        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
-      });
-      if (decoded.eventName === 'ServiceRequested' && 'requestId' in decoded.args) {
-        return Number(decoded.args.requestId);
-      }
-    } catch {
-      // Ignore unrelated logs while scanning the receipt.
-    }
+    const requestId = extractServiceRequestId(log);
+    if (requestId != null) return requestId;
   }
 
   return null;
