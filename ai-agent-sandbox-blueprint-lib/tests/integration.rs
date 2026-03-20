@@ -23,7 +23,8 @@ use ai_agent_sandbox_blueprint_lib::runtime::{
 use ai_agent_sandbox_blueprint_lib::util::build_snapshot_command;
 use ai_agent_sandbox_blueprint_lib::util::now_ts;
 use ai_agent_sandbox_blueprint_lib::workflows::{
-    WorkflowEntry, run_workflow, workflow_key, workflow_tick, workflows,
+    WorkflowEntry, run_workflow, validate_workflow_execution_ready, workflow_key, workflow_tick,
+    workflows,
 };
 use ai_agent_sandbox_blueprint_lib::*;
 use blueprint_sdk::alloy::sol_types::SolValue;
@@ -97,6 +98,7 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 disk_gb: 0,
                 stack: String::new(),
                 owner: String::new(),
+                service_id: None,
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
                 ssh_login_user: None,
@@ -146,6 +148,7 @@ fn insert_sandbox_with_owner(url: &str, token: &str, owner: &str) -> String {
                 disk_gb: 0,
                 stack: String::new(),
                 owner: owner.to_string(),
+                service_id: None,
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
                 ssh_login_user: None,
@@ -828,6 +831,7 @@ mod ssh_jobs {
 
 mod workflow_jobs {
     use super::*;
+    use serial_test::serial;
 
     fn wf(id: u64, url: &str, token: &str) -> WorkflowEntry {
         WorkflowEntry {
@@ -846,9 +850,18 @@ mod workflow_jobs {
         }
     }
 
-    #[test]
-    fn create_read_update_delete() {
+    fn reset_workflows() {
         init();
+        workflows()
+            .unwrap()
+            .replace(std::collections::HashMap::new())
+            .unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn create_read_update_delete() {
+        reset_workflows();
         let key = workflow_key(90001);
         workflows()
             .unwrap()
@@ -875,7 +888,9 @@ mod workflow_jobs {
     }
 
     #[tokio::test]
+    #[serial]
     async fn trigger_executes_and_updates() {
+        reset_workflows();
         let srv = MockServer::start().await;
         let sid = insert_sandbox(&srv.uri(), "wf-tok");
         Mock::given(method("POST"))
@@ -894,7 +909,9 @@ mod workflow_jobs {
     }
 
     #[tokio::test]
+    #[serial]
     async fn tick_runs_due_workflows() {
+        reset_workflows();
         let srv = MockServer::start().await;
         let sid = insert_sandbox(&srv.uri(), "tick-tok");
         Mock::given(method("POST"))
@@ -918,8 +935,9 @@ mod workflow_jobs {
     }
 
     #[test]
+    #[serial]
     fn cancel_workflow() {
-        init();
+        reset_workflows();
         let key = workflow_key(90005);
         workflows()
             .unwrap()
@@ -949,8 +967,9 @@ mod workflow_jobs {
     // covers the actual scheduling logic.
 
     #[test]
+    #[serial]
     fn inactive_workflow_flag_persists() {
-        init();
+        reset_workflows();
         let key = workflow_key(90013);
         let mut entry = wf(90013, "http://unused", "t");
         entry.active = false;
@@ -963,7 +982,9 @@ mod workflow_jobs {
     }
 
     #[tokio::test]
+    #[serial]
     async fn run_workflow_uses_record_token() {
+        reset_workflows();
         let srv = MockServer::start().await;
         // Record has token "real-tok"
         let sid = insert_sandbox(&srv.uri(), "real-tok");
@@ -999,8 +1020,23 @@ mod workflow_jobs {
         rm(&sid);
     }
 
+    #[test]
+    #[serial]
+    fn workflow_create_requires_real_credentials() {
+        reset_workflows();
+        let sid = insert_sandbox("http://missing-creds", "tok");
+        let err = validate_workflow_execution_ready(
+            r#"{"sidecar_url":"http://missing-creds","prompt":"run"}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("valid AI credentials in the sandbox environment"));
+        rm(&sid);
+    }
+
     #[tokio::test]
+    #[serial]
     async fn concurrent_tick_skips_already_running() {
+        reset_workflows();
         let srv = MockServer::start().await;
         let sid = insert_sandbox(&srv.uri(), "conc-tok");
         Mock::given(method("POST"))
@@ -1033,7 +1069,9 @@ mod workflow_jobs {
     }
 
     #[tokio::test]
+    #[serial]
     async fn session_per_tick_produces_unique_ids() {
+        reset_workflows();
         let srv = MockServer::start().await;
         let sid = insert_sandbox(&srv.uri(), "sess-tok");
         Mock::given(method("POST"))
