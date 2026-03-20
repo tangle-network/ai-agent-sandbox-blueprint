@@ -76,6 +76,7 @@ vi.mock('@tangle-network/blueprint-ui', () => ({
   }),
   encodeJobArgs: vi.fn(),
   getJobById: vi.fn(),
+  getBlueprint: () => ({ name: 'AI Agent Sandbox' }),
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
 }));
 
@@ -315,11 +316,23 @@ describe('SandboxDetail snapshot flow', () => {
     });
   });
 
-  it('hides raw sidecar access details from the overview', () => {
+  it('shows runtime-only metadata in the overview', () => {
     renderSubject();
 
     expect(screen.queryByText('Sidecar: http://127.0.0.1:8080')).not.toBeInTheDocument();
-    expect(screen.getByText('Access: Operator API')).toBeInTheDocument();
+    expect(screen.getByText('Blueprint: AI Agent Sandbox')).toBeInTheDocument();
+    expect(screen.getByText('Service ID: #1')).toBeInTheDocument();
+    expect(screen.queryByText('Active: Yes')).not.toBeInTheDocument();
+    expect(screen.queryByText('Access: Operator API')).not.toBeInTheDocument();
+    expect(screen.queryByText('Authenticated: No')).not.toBeInTheDocument();
+  });
+
+  it('shows Not linked when the sandbox has no persisted service link', () => {
+    sandboxesRef.current = [makeSandbox({ serviceId: '' })];
+
+    renderSubject();
+
+    expect(screen.getByText('Service ID: Not linked')).toBeInTheDocument();
   });
 
   it('prompts for operator auth on the terminal tab', async () => {

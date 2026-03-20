@@ -103,6 +103,7 @@ impl SandboxProvider for DockerSandboxProvider {
             memory_mb: req.memory_mb,
             disk_gb: req.disk_gb,
             owner: req.owner,
+            service_id: None,
             tee_config: req.tee,
             user_env_json: "{}".to_string(),
             port_mappings: Vec::new(),

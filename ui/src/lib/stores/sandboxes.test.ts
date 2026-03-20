@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   sandboxListStore,
+  normalizeSandbox,
+  normalizeSandboxBlueprintId,
   addSandbox,
   updateSandboxStatus,
   removeSandbox,
@@ -64,6 +66,29 @@ describe('sandbox cache versioning', () => {
     expect(window.localStorage.getItem('sandbox_cloud_sandboxes')).toBeNull();
     expect(window.localStorage.getItem(getSandboxStoreKey('deploy-old'))).toBeNull();
     expect(window.localStorage.getItem(currentKey)).toBe(JSON.stringify([{ localId: 'current' }]));
+  });
+});
+
+describe('normalizeSandboxBlueprintId', () => {
+  it('maps the legacy numeric sandbox blueprint ID to the canonical slug', () => {
+    expect(normalizeSandboxBlueprintId('1')).toBe('ai-agent-sandbox-blueprint');
+  });
+
+  it('leaves non-sandbox blueprint IDs unchanged', () => {
+    expect(normalizeSandboxBlueprintId('ai-agent-instance-blueprint')).toBe('ai-agent-instance-blueprint');
+  });
+});
+
+describe('normalizeSandbox', () => {
+  it('rewrites legacy persisted sandbox blueprint IDs during store normalization', () => {
+    const sandbox = normalizeSandbox({
+      localId: 'legacy:sb-1',
+      name: 'test',
+      blueprintId: '1',
+      serviceId: '1',
+    });
+
+    expect(sandbox.blueprintId).toBe('ai-agent-sandbox-blueprint');
   });
 });
 

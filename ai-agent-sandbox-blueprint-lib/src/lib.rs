@@ -281,6 +281,7 @@ impl From<&SandboxCreateRequest> for CreateSandboxParams {
             memory_mb: r.memory_mb,
             disk_gb: r.disk_gb,
             owner: String::new(), // Set by the job handler from Caller extractor
+            service_id: None,
             tee_config,
             user_env_json: String::new(),
             port_mappings: Vec::new(), // Parsed from metadata_json at runtime

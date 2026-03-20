@@ -90,6 +90,7 @@ async fn docker_ssh_supports_commands_and_interactive_shell() {
         memory_mb: 2048,
         disk_gb: 10,
         owner: "0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc".to_string(),
+        service_id: None,
         tee_config: None,
         user_env_json: String::new(),
         port_mappings: Vec::new(),

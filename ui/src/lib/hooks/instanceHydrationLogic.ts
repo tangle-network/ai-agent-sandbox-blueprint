@@ -49,6 +49,7 @@ function instanceFromApi(api: ApiSandbox): LocalInstance {
     createdAt: api.created_at * 1000,
     blueprintId: '',
     serviceId: api.service_id != null ? String(api.service_id) : '',
+    operator: api.managing_operator || undefined,
     sidecarUrl: api.sidecar_url,
     agentIdentifier: api.agent_identifier || undefined,
     teeEnabled: !!api.tee_deployment_id,
@@ -84,6 +85,7 @@ export function reconcileInstances(
       reconciled.push({
         ...next,
         sandboxId: api.id,
+        operator: api.managing_operator || next.operator,
         sidecarUrl: api.sidecar_url || next.sidecarUrl,
         image: api.image || next.image,
         agentIdentifier: api.agent_identifier || next.agentIdentifier,
@@ -102,6 +104,7 @@ export function reconcileInstances(
         reconciled.push({
           ...next,
           sandboxId: inferredApi.id,
+          operator: inferredApi.managing_operator || next.operator,
           sidecarUrl: inferredApi.sidecar_url || next.sidecarUrl,
           image: inferredApi.image || next.image,
           agentIdentifier: inferredApi.agent_identifier || next.agentIdentifier,

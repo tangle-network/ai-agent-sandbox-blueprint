@@ -32,6 +32,7 @@ function makeApiSandbox(overrides: Partial<ApiSandbox> = {}): ApiSandbox {
     created_at: Math.floor(Date.now() / 1000),
     last_activity_at: Math.floor(Date.now() / 1000),
     service_id: 3,
+    managing_operator: '0x123400000000000000000000000000000000abcd',
     ...overrides,
   };
 }
@@ -66,6 +67,7 @@ describe('reconcileInstances', () => {
     expect(reconciled[0].id).toBe('my-instance');
     expect(reconciled[0].sandboxId).toBe('sandbox-live-1');
     expect(reconciled[0].serviceId).toBe('3');
+    expect(reconciled[0].operator).toBe('0x123400000000000000000000000000000000abcd');
     expect(reconciled[0].status).toBe('running');
   });
 
@@ -76,5 +78,6 @@ describe('reconcileInstances', () => {
     expect(reconciled[0].id).toBe('sandbox-live-1');
     expect(reconciled[0].sandboxId).toBe('sandbox-live-1');
     expect(reconciled[0].serviceId).toBe('3');
+    expect(reconciled[0].operator).toBe('0x123400000000000000000000000000000000abcd');
   });
 });

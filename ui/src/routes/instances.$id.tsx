@@ -22,6 +22,7 @@ import { useInstanceHydration } from '~/lib/hooks/useInstanceHydration';
 import { createProxiedInstanceClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { cn } from '@tangle-network/blueprint-ui';
+import { truncateAddress } from '@tangle-network/agent-ui/primitives';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { useAccount } from 'wagmi';
@@ -277,18 +278,24 @@ export default function InstanceDetail() {
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>Connection</CardTitle>
+              <CardTitle>Runtime Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <LabeledValueRow label="Access" value="Operator API" />
-              <LabeledValueRow label="Authenticated" value={isOperatorAuthed ? 'Yes' : 'No'} />
-              {operatorAuthError && (
-                <p className="text-xs text-crimson-500">{operatorAuthError}</p>
-              )}
-              {!isOperatorAuthed && (
-                <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
-                  {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
-                </Button>
+              <LabeledValueRow
+                label="Operator"
+                value={inst.operator ? truncateAddress(inst.operator) : 'Unknown'}
+                mono
+                copyable={!!inst.operator}
+                copyValue={inst.operator}
+              />
+              {inst.txHash && (
+                <LabeledValueRow
+                  label="TX Hash"
+                  value={truncateAddress(inst.txHash)}
+                  mono
+                  copyable
+                  copyValue={inst.txHash}
+                />
               )}
             </CardContent>
           </Card>

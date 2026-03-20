@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tang
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { Input } from '@tangle-network/blueprint-ui/components';
 import { Textarea } from '@tangle-network/blueprint-ui/components';
+import { getBlueprint } from '@tangle-network/blueprint-ui';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
 import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
@@ -20,7 +21,6 @@ import {
   getSandboxRouteKey,
   updateSandboxStatus,
 } from '~/lib/stores/sandboxes';
-import { useSandboxActive, useSandboxOperator } from '~/lib/hooks/useSandboxReads';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
 import { useSubmitJob } from '@tangle-network/blueprint-ui';
 import { encodeJobArgs } from '@tangle-network/blueprint-ui';
@@ -67,6 +67,18 @@ function parseApiError(err: Error): string {
   return err.message;
 }
 
+function formatBlueprintLabel(blueprintId: string): string {
+  const id = blueprintId.trim() || 'ai-agent-sandbox-blueprint';
+  return getBlueprint(id)?.name ?? id;
+}
+
+function formatServiceId(serviceId: string): string {
+  const trimmed = serviceId.trim();
+  if (!trimmed) return 'Not linked';
+  if (trimmed.startsWith('#')) return trimmed;
+  return /^\d+$/.test(trimmed) ? `#${trimmed}` : trimmed;
+}
+
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -85,8 +97,6 @@ export default function SandboxDetail() {
     }
   }, [sb?.sidecarUrl]);
 
-  const { data: isActive } = useSandboxActive(canonicalSandboxId);
-  const { data: operator } = useSandboxOperator(canonicalSandboxId);
   const { submitJob } = useSubmitJob();
   const { address } = useAccount();
 
@@ -659,39 +669,25 @@ export default function SandboxDetail() {
               <LabeledValueRow label="Memory" value={`${sb.memoryMb} MB`} alignRight />
               <LabeledValueRow label="Disk" value={`${sb.diskGb} GB`} alignRight />
               <LabeledValueRow label="Created" value={new Date(sb.createdAt).toLocaleString()} alignRight />
-              <LabeledValueRow label="Blueprint" value={sb.blueprintId} mono alignRight />
-              <LabeledValueRow label="Service ID" value={sb.serviceId} alignRight />
+              <LabeledValueRow label="Blueprint" value={formatBlueprintLabel(sb.blueprintId)} alignRight />
+              <LabeledValueRow label="Service ID" value={formatServiceId(sb.serviceId)} alignRight />
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">On-Chain Status</CardTitle>
+              <CardTitle className="text-sm">Runtime Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2.5">
-              <LabeledValueRow label="Active" value={isActive !== undefined ? (isActive ? 'Yes' : 'No') : 'Loading...'} alignRight />
               <LabeledValueRow
                 label="Operator"
-                value={operator && operator !== '0x0000000000000000000000000000000000000000' ? truncateAddress(operator) : 'Unassigned'}
+                value={sb.operator ? truncateAddress(sb.operator) : 'Unknown'}
                 mono
-                copyable={!!operator && operator !== '0x0000000000000000000000000000000000000000'}
-                copyValue={operator ?? undefined}
+                copyable={!!sb.operator}
+                copyValue={sb.operator}
                 alignRight
               />
               {sb.txHash && <LabeledValueRow label="TX Hash" value={truncateAddress(sb.txHash)} mono copyable copyValue={sb.txHash} alignRight />}
-              <LabeledValueRow label="Access" value="Operator API" alignRight />
-              <LabeledValueRow label="Authenticated" value={isOperatorAuthed ? 'Yes' : 'No'} alignRight />
-              {!isOperatorAuthed && sb.status === 'creating' ? (
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-cloud-elements-textSecondary">Access</span>
-                  <span className="flex items-center gap-2 text-xs font-data text-violet-400">
-                    <div className="i-ph:circle-fill text-[8px] animate-pulse" />
-                    Provisioning...
-                  </span>
-                </div>
-              ) : operatorAuthError ? (
-                <p className="text-xs text-crimson-500">{operatorAuthError}</p>
-              ) : null}
             </CardContent>
           </Card>
 

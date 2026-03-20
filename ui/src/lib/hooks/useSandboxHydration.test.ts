@@ -274,6 +274,37 @@ describe('sandbox hydration merge logic', () => {
     expect(merged[0].name).toBe('abcdef12');
   });
 
+  it('hydrates runtime blueprint, service link, and managing operator from the API', () => {
+    const apiResults = [makeApiSandbox({
+      id: 'sandbox-live-7',
+      service_id: 7,
+      managing_operator: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8',
+    })];
+
+    const merged = mergeApiResults(apiResults, []);
+
+    expect(merged[0].blueprintId).toBe('ai-agent-sandbox-blueprint');
+    expect(merged[0].serviceId).toBe('7');
+    expect(merged[0].operator).toBe('0x70997970c51812dc3a010c7d01b50e0d17dc79c8');
+  });
+
+  it('preserves an existing service link when the API omits one for a legacy record', () => {
+    const existing = [
+      makeLocalSandbox({
+        id: 'sb-legacy',
+        sandboxId: 'sb-legacy',
+        blueprintId: '',
+        serviceId: '9',
+      }),
+    ];
+    const apiResults = [makeApiSandbox({ id: 'sb-legacy', service_id: undefined })];
+
+    const merged = mergeApiResults(apiResults, existing);
+
+    expect(merged[0].blueprintId).toBe('ai-agent-sandbox-blueprint');
+    expect(merged[0].serviceId).toBe('9');
+  });
+
   it('attaches a canonical sandboxId to a pending draft when provision becomes ready', () => {
     const existing = [
       makeLocalSandbox({ id: 'draft:abc', status: 'creating', sandboxId: undefined, sidecarUrl: '' }),

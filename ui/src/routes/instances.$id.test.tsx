@@ -51,6 +51,13 @@ vi.mock('@tangle-network/blueprint-ui', () => ({
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
 }));
 
+vi.mock('@tangle-network/agent-ui/primitives', () => ({
+  truncateAddress: (value: string) => {
+    if (!value || value.length <= 12) return value;
+    return `${value.slice(0, 6)}...${value.slice(-4)}`;
+  },
+}));
+
 vi.mock('~/lib/stores/instances', () => ({
   instanceListStore: {},
   getInstance: (key: string) =>
@@ -206,6 +213,43 @@ function makeInstance(overrides: Partial<Record<string, unknown>> = {}) {
 function renderSubject() {
   return render(<InstanceDetail />);
 }
+
+describe('InstanceDetail overview card', () => {
+  beforeEach(() => {
+    instancesRef.current = [makeInstance({
+      operator: '0x123400000000000000000000000000000000abcd',
+      txHash: '0xabc1234567890def1234567890abcdef1234567890abcdef1234567890abcdef',
+    })];
+    mockOperatorApiCall.mockReset();
+    mockGetOperatorToken.mockReset();
+    mockRefreshInstances.mockReset();
+    mockUpdateInstanceStatus.mockReset();
+    operatorAuthState.isAuthenticated = false;
+    operatorAuthState.isAuthenticating = false;
+    operatorAuthState.error = null;
+    operatorAuthState.cachedToken = null;
+  });
+
+  it('renders sandbox-matching runtime details', () => {
+    renderSubject();
+
+    expect(screen.getByText('Runtime Details')).toBeInTheDocument();
+    expect(screen.getByText('Operator: 0x1234...abcd')).toBeInTheDocument();
+    expect(screen.getByText('TX Hash: 0xabc1...cdef')).toBeInTheDocument();
+    expect(screen.queryByText('Connection')).not.toBeInTheDocument();
+    expect(screen.queryByText('Access: Operator API')).not.toBeInTheDocument();
+    expect(screen.queryByText('Authenticated: No')).not.toBeInTheDocument();
+  });
+
+  it('shows Unknown when operator is unavailable', () => {
+    instancesRef.current = [makeInstance({ operator: undefined, txHash: undefined })];
+
+    renderSubject();
+
+    expect(screen.getByText('Operator: Unknown')).toBeInTheDocument();
+    expect(screen.queryByText(/TX Hash:/)).not.toBeInTheDocument();
+  });
+});
 
 describe('InstanceDetail secrets tab', () => {
   beforeEach(() => {

@@ -89,6 +89,8 @@ function operatorSandbox(id = 'sandbox-live-1') {
     disk_gb: 10,
     created_at: 1700000000,
     last_activity_at: 1700000100,
+    service_id: 7,
+    managing_operator: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8',
   };
 }
 
@@ -129,6 +131,9 @@ describe('useSandboxHydration hook', () => {
       expect(sandboxListStore.get()[0].name).toBe('sb1');
     });
 
+    expect(sandboxListStore.get()[0].blueprintId).toBe('ai-agent-sandbox-blueprint');
+    expect(sandboxListStore.get()[0].serviceId).toBe('7');
+    expect(sandboxListStore.get()[0].operator).toBe('0x70997970c51812dc3a010c7d01b50e0d17dc79c8');
     expect(result.current.authRequired).toBe(false);
     expect(sandboxAuth.getToken).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledWith('http://operator:9100/api/sandboxes', {
@@ -184,6 +189,7 @@ describe('useSandboxHydration hook', () => {
     expect(sandboxListStore.get()).toHaveLength(1);
     expect(sandboxListStore.get()[0].name).toBe('sb1');
     expect(sandboxListStore.get()[0].sandboxId).toBe('sandbox-live-1');
+    expect(sandboxListStore.get()[0].serviceId).toBe('7');
   });
 
   it('interactive refresh keeps unmatched tx-backed drafts alongside canonical operator sandboxes', async () => {

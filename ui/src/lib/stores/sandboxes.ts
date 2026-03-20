@@ -41,6 +41,7 @@ const DRAFT_PREFIX = 'draft:';
 const LEGACY_PREFIX = 'legacy:';
 const CANONICAL_PREFIX = 'canonical:';
 const SANDBOX_STORE_KEY_PREFIX = 'sandbox_cloud_sandboxes';
+export const SANDBOX_BLUEPRINT_ID = 'ai-agent-sandbox-blueprint';
 
 type SandboxFingerprintEnv = Record<string, string | undefined>;
 
@@ -121,6 +122,22 @@ export function matchesSandboxKey(sandbox: LocalSandbox, key: string): boolean {
   return sandbox.localId === key || sandbox.sandboxId === key;
 }
 
+export function normalizeSandboxBlueprintId(
+  blueprintId: string | undefined,
+  env: SandboxFingerprintEnv = import.meta.env,
+): string {
+  const trimmed = (blueprintId || '').trim();
+  if (!trimmed) return '';
+  if (trimmed === SANDBOX_BLUEPRINT_ID) return SANDBOX_BLUEPRINT_ID;
+
+  const legacyIds = new Set([
+    env.VITE_SANDBOX_BLUEPRINT_ID,
+    '1',
+  ].filter((value): value is string => !!value && value.trim().length > 0));
+
+  return legacyIds.has(trimmed) ? SANDBOX_BLUEPRINT_ID : trimmed;
+}
+
 export function normalizeSandbox(record: LegacySandboxRecord): LocalSandbox {
   const canonicalId = record.sandboxId
     || (shouldPromoteLegacyId(record) ? record.id : undefined);
@@ -138,7 +155,7 @@ export function normalizeSandbox(record: LegacySandboxRecord): LocalSandbox {
     memoryMb: record.memoryMb ?? 2048,
     diskGb: record.diskGb ?? 10,
     createdAt: record.createdAt ?? Date.now(),
-    blueprintId: record.blueprintId || '',
+    blueprintId: normalizeSandboxBlueprintId(record.blueprintId),
     serviceId: record.serviceId || '',
     operator: record.operator,
     sidecarUrl: record.sidecarUrl,

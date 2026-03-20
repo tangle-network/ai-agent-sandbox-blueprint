@@ -293,14 +293,16 @@ struct SandboxSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     service_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    managing_operator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tee_deployment_id: Option<String>,
     /// Extra user-exposed ports: container_port → host_port.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     extra_ports: std::collections::HashMap<u16, u16>,
 }
 
-impl From<&SandboxRecord> for SandboxSummary {
-    fn from(r: &SandboxRecord) -> Self {
+impl SandboxSummary {
+    fn from_record(r: &SandboxRecord, managing_operator: Option<&str>) -> Self {
         Self {
             id: r.id.clone(),
             name: r.name.clone(),
@@ -318,19 +320,122 @@ impl From<&SandboxRecord> for SandboxSummary {
             last_activity_at: r.last_activity_at,
             ssh_port: r.ssh_port,
             service_id: r.service_id,
+            managing_operator: managing_operator.map(str::to_string),
             tee_deployment_id: r.tee_deployment_id.clone(),
             extra_ports: r.extra_ports.clone(),
         }
     }
 }
 
+fn normalize_operator_address(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.len() != 42 || !trimmed.starts_with("0x") {
+        return None;
+    }
+    if trimmed.as_bytes()[2..]
+        .iter()
+        .all(|byte| byte.is_ascii_hexdigit())
+    {
+        Some(trimmed.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn keccak256(data: &[u8]) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+    let mut hasher = Keccak::v256();
+    let mut output = [0u8; 32];
+    hasher.update(data);
+    hasher.finalize(&mut output);
+    output
+}
+
+fn derive_operator_address_from_secret(secret: &[u8]) -> std::result::Result<String, String> {
+    use k256::ecdsa::SigningKey;
+
+    let key_bytes: [u8; 32] = secret
+        .try_into()
+        .map_err(|_| "operator key must be exactly 32 bytes".to_string())?;
+    let signing_key = SigningKey::from_bytes((&key_bytes).into())
+        .map_err(|err| format!("invalid operator key bytes: {err}"))?;
+    let verifying_key = signing_key.verifying_key();
+    let pubkey_bytes = verifying_key.to_encoded_point(false);
+    let pubkey_uncompressed = &pubkey_bytes.as_bytes()[1..];
+    let hash = keccak256(pubkey_uncompressed);
+    Ok(format!("0x{}", hex::encode(&hash[12..])))
+}
+
+fn derive_operator_address_from_keystore_uri(
+    keystore_uri: &str,
+) -> std::result::Result<String, String> {
+    use std::fs;
+    use std::path::Path;
+
+    let keystore_path = keystore_uri.strip_prefix("file://").unwrap_or(keystore_uri);
+    let ecdsa_dir = Path::new(keystore_path).join("Ecdsa");
+    let mut entries = fs::read_dir(&ecdsa_dir)
+        .map_err(|err| format!("failed to read {}: {err}", ecdsa_dir.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|err| format!("failed to enumerate {}: {err}", ecdsa_dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        let components: Vec<Vec<u8>> = serde_json::from_str(&raw)
+            .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+        if let Some(secret) = components.iter().rev().find(|part| part.len() == 32) {
+            return derive_operator_address_from_secret(secret);
+        }
+    }
+
+    Err(format!(
+        "no usable ECDSA secret found under {}",
+        ecdsa_dir.display()
+    ))
+}
+
+fn current_managing_operator() -> Option<String> {
+    for key in ["MANAGING_OPERATOR_ADDRESS", "OPERATOR_ADDRESS"] {
+        if let Ok(value) = std::env::var(key) {
+            if let Some(address) = normalize_operator_address(&value) {
+                return Some(address);
+            }
+        }
+    }
+
+    let keystore_uri = std::env::var("KEYSTORE_URI").ok()?;
+    match derive_operator_address_from_keystore_uri(&keystore_uri) {
+        Ok(address) => Some(address),
+        Err(err) => {
+            tracing::warn!(error = %err, "Failed to derive managing operator address from keystore");
+            None
+        }
+    }
+}
+
 async fn list_sandboxes(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    if let Ok(repaired) = runtime::repair_sandbox_service_links_from_provisions() {
+        if repaired > 0 {
+            tracing::info!(
+                repaired,
+                "Repaired missing sandbox service links from provision metadata"
+            );
+        }
+    }
+
+    let managing_operator = current_managing_operator();
     match sandboxes().and_then(|s| s.values()) {
         Ok(records) => {
             let summaries: Vec<SandboxSummary> = records
                 .iter()
                 .filter(|r| !r.owner.is_empty() && r.owner.eq_ignore_ascii_case(&address))
-                .map(SandboxSummary::from)
+                .map(|record| SandboxSummary::from_record(record, managing_operator.as_deref()))
                 .collect();
             (
                 StatusCode::OK,
@@ -3734,7 +3839,10 @@ mod tests {
             tee_type: crate::tee::TeeType::Tdx,
         });
         seal_record(&mut record).unwrap();
-        sandboxes().unwrap().insert(id.to_string(), record.clone()).unwrap();
+        sandboxes()
+            .unwrap()
+            .insert(id.to_string(), record.clone())
+            .unwrap();
         runtime::instance_store()
             .unwrap()
             .insert("instance".to_string(), record)
@@ -4503,6 +4611,7 @@ mod tests {
             memory_mb: 256,
             disk_gb: 1,
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             user_env_json: String::new(),
             port_mappings: Vec::new(),
@@ -4786,6 +4895,16 @@ mod tests {
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
+    fn insert_sandbox_for_listing(id: &str, owner: &str, service_id: Option<u64>) {
+        insert_sandbox_with_ports(id, owner, std::collections::HashMap::new());
+        sandboxes()
+            .unwrap()
+            .update(id, |record| {
+                record.service_id = service_id;
+            })
+            .unwrap();
+    }
+
     // =====================================================================
     // Phase 1A: Port Proxy Handler Tests
     // =====================================================================
@@ -4803,6 +4922,66 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_list_sandboxes_repairs_service_links_and_exposes_managing_operator() {
+        init();
+        let sandbox_id = "sandbox-service-backfill";
+        let call_id = 880_001;
+        let keystore_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/data/operator1/keystore");
+        unsafe {
+            std::env::set_var("KEYSTORE_URI", format!("file://{}", keystore_dir.display()));
+        }
+
+        insert_sandbox_for_listing(
+            sandbox_id,
+            "0x1234567890abcdef1234567890abcdef12345678",
+            None,
+        );
+        provision_progress::start_provision(call_id).unwrap();
+        provision_progress::update_provision(
+            call_id,
+            provision_progress::ProvisionPhase::Ready,
+            Some("Ready".into()),
+            Some(sandbox_id.to_string()),
+            Some("http://localhost:9999".into()),
+        )
+        .unwrap();
+        provision_progress::update_provision_metadata(call_id, json!({ "service_id": 42 }))
+            .unwrap();
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes")
+                    .header("authorization", test_auth_header())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = body_json(response.into_body()).await;
+        let listed_sandboxes = payload["sandboxes"].as_array().expect("sandbox list");
+        let sandbox = listed_sandboxes
+            .iter()
+            .find(|entry| entry["id"] == sandbox_id)
+            .expect("sandbox entry present");
+        assert_eq!(sandbox["service_id"], 42);
+        assert_eq!(
+            sandbox["managing_operator"],
+            "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+        );
+
+        let stored = sandboxes()
+            .unwrap()
+            .get(sandbox_id)
+            .unwrap()
+            .expect("stored sandbox");
+        assert_eq!(stored.service_id, Some(42));
     }
 
     #[tokio::test]

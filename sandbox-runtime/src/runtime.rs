@@ -49,6 +49,9 @@ pub struct CreateSandboxParams {
     /// On-chain caller address (hex string, e.g. "0x1234..."). Set by the job
     /// handler from the `Caller` extractor so that ownership can be enforced.
     pub owner: String,
+    /// Service ID that owns the on-chain job used to create this sandbox.
+    /// Optional for local-only or legacy sandboxes that were not linked.
+    pub service_id: Option<u64>,
     /// Optional TEE configuration. When set with `required: true`, the runtime
     /// must provision the sandbox inside a trusted execution environment.
     pub tee_config: Option<crate::tee::TeeConfig>,
@@ -362,6 +365,62 @@ pub fn sandboxes() -> Result<&'static PersistentStore<SandboxRecord>> {
             PersistentStore::open(path)
         })
         .map_err(|err: SandboxError| err)
+}
+
+/// Best-effort repair for legacy cloud sandbox records that were persisted
+/// without their `service_id`.
+///
+/// We only backfill when the provision tracker can prove the relationship via
+/// `metadata.service_id` for the same `sandbox_id`. If no lineage is present,
+/// the record is left unchanged.
+pub fn repair_sandbox_service_links_from_provisions() -> Result<usize> {
+    let provisions = crate::provision_progress::list_all_provisions()?;
+    if provisions.is_empty() {
+        return Ok(0);
+    }
+
+    let mut service_by_sandbox_id = HashMap::<String, u64>::new();
+    for provision in provisions {
+        let Some(sandbox_id) = provision.sandbox_id else {
+            continue;
+        };
+        let Some(service_id) = provision
+            .metadata
+            .get("service_id")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            continue;
+        };
+        service_by_sandbox_id
+            .entry(sandbox_id)
+            .or_insert(service_id);
+    }
+
+    if service_by_sandbox_id.is_empty() {
+        return Ok(0);
+    }
+
+    let store = sandboxes()?;
+    let records = store.values()?;
+    let mut repaired = 0usize;
+
+    for record in records {
+        if record.service_id.is_some() {
+            continue;
+        }
+        let Some(service_id) = service_by_sandbox_id.get(&record.id).copied() else {
+            continue;
+        };
+        if store.update(&record.id, |entry| {
+            if entry.service_id.is_none() {
+                entry.service_id = Some(service_id);
+            }
+        })? {
+            repaired += 1;
+        }
+    }
+
+    Ok(repaired)
 }
 
 /// Access the instance-mode singleton sandbox store (`instance.json`).
@@ -1013,7 +1072,7 @@ async fn create_sidecar_tee(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
-        service_id: None,
+        service_id: request.service_id,
         tee_config: request.tee_config.clone(),
         extra_ports: deployment.extra_ports,
         ssh_login_user: None,
@@ -1860,7 +1919,7 @@ async fn create_sidecar_firecracker(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
-        service_id: None,
+        service_id: request.service_id,
         tee_config: None,
         extra_ports: HashMap::new(),
         ssh_login_user: None,
@@ -2213,7 +2272,7 @@ async fn create_sidecar_docker(
             disk_gb: request.disk_gb,
             stack: request.stack.clone(),
             owner: request.owner.clone(),
-            service_id: None,
+            service_id: request.service_id,
             tee_config: None,
             extra_ports: extra_port_map,
             ssh_login_user: None,
@@ -2606,6 +2665,7 @@ pub async fn recreate_sidecar_with_env(
         memory_mb: old.memory_mb,
         disk_gb: if old.disk_gb > 0 { old.disk_gb } else { 10 },
         owner: old.owner.clone(),
+        service_id: old.service_id,
         tee_config: old.tee_config.clone(),
         port_mappings: old.extra_ports.keys().copied().collect(),
     };

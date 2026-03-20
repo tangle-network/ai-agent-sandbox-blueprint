@@ -29,7 +29,12 @@ import {
   type JobSubmitStatus,
 } from './createDeployLogic';
 import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
-import { addSandbox, createSandboxDraftId, updateSandboxStatus } from '~/lib/stores/sandboxes';
+import {
+  SANDBOX_BLUEPRINT_ID,
+  addSandbox,
+  createSandboxDraftId,
+  updateSandboxStatus,
+} from '~/lib/stores/sandboxes';
 import { addInstance, updateInstance, updateInstanceStatus, type LocalInstance } from '~/lib/stores/instances';
 import type { BlueprintDefinition, JobDefinition } from '@tangle-network/blueprint-ui';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
@@ -462,7 +467,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
           memoryMb: Number(values.memoryMb) || 2048,
           diskGb: Number(values.diskGb) || 10,
           createdAt: Date.now(),
-          blueprintId: infra.blueprintId,
+          blueprintId: SANDBOX_BLUEPRINT_ID,
           serviceId: infra.serviceId,
           status: 'creating',
           txHash: submittedJobTxHash,

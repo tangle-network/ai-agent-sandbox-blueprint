@@ -6,6 +6,7 @@
  */
 
 import {
+  SANDBOX_BLUEPRINT_ID,
   type LocalSandbox,
   getSandboxRouteKey,
   normalizeSandbox,
@@ -14,7 +15,6 @@ import {
 const DRAFT_TX_GRACE_MS = 15 * 60 * 1000;
 const DRAFT_MATCH_WINDOW_MS = 10 * 60 * 1000;
 const CANONICAL_MISSING_GRACE_MS = 15_000;
-
 export interface ApiSandbox {
   id: string;
   name?: string;
@@ -29,6 +29,7 @@ export interface ApiSandbox {
   last_activity_at: number;
   ssh_port?: number;
   service_id?: number;
+  managing_operator?: string;
   tee_deployment_id?: string;
 }
 
@@ -99,8 +100,9 @@ function sandboxFromApi(api: ApiSandbox): LocalSandbox {
     memoryMb: api.memory_mb,
     diskGb: api.disk_gb || 0,
     createdAt: api.created_at * 1000,
-    blueprintId: '',
-    serviceId: '',
+    blueprintId: SANDBOX_BLUEPRINT_ID,
+    serviceId: api.service_id != null ? String(api.service_id) : '',
+    operator: api.managing_operator || undefined,
     sidecarUrl: api.sidecar_url,
     agentIdentifier: api.agent_identifier || undefined,
     teeEnabled: !!api.tee_deployment_id,
@@ -191,6 +193,9 @@ export function reconcileSandboxes(
         sidecarUrl: api.sidecar_url || next.sidecarUrl,
         image: api.image || next.image,
         agentIdentifier: api.agent_identifier || next.agentIdentifier,
+        blueprintId: next.blueprintId || SANDBOX_BLUEPRINT_ID,
+        serviceId: api.service_id != null ? String(api.service_id) : next.serviceId,
+        operator: api.managing_operator || next.operator,
         teeEnabled: next.teeEnabled || !!api.tee_deployment_id,
         sshPort: api.ssh_port || next.sshPort,
         status: statusFromApi(api.state),
@@ -221,6 +226,9 @@ export function reconcileSandboxes(
           sidecarUrl: inferredApi.sidecar_url || next.sidecarUrl,
           image: inferredApi.image || next.image,
           agentIdentifier: inferredApi.agent_identifier || next.agentIdentifier,
+          blueprintId: next.blueprintId || SANDBOX_BLUEPRINT_ID,
+          serviceId: inferredApi.service_id != null ? String(inferredApi.service_id) : next.serviceId,
+          operator: inferredApi.managing_operator || next.operator,
           teeEnabled: next.teeEnabled || !!inferredApi.tee_deployment_id,
           sshPort: inferredApi.ssh_port || next.sshPort,
           status: statusFromApi(inferredApi.state),

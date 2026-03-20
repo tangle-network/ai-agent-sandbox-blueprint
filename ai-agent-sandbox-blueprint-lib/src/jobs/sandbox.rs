@@ -11,17 +11,24 @@ use crate::runtime::{
     create_sidecar, delete_sidecar, require_sandbox_owner, require_sandbox_owner_by_url,
     resume_sidecar, sandboxes, stop_sidecar,
 };
-use crate::tangle::extract::{CallId, Caller, TangleArg, TangleResult};
+use crate::tangle::extract::{CallId, Caller, ServiceId, TangleArg, TangleResult};
 use crate::util::build_snapshot_command;
 use sandbox_runtime::provision_progress::{self, ProvisionPhase};
 
 pub async fn sandbox_create(
     Caller(caller): Caller,
+    ServiceId(service_id): ServiceId,
     CallId(call_id): CallId,
     TangleArg(request): TangleArg<SandboxCreateRequest>,
 ) -> Result<TangleResult<SandboxCreateOutput>, String> {
     // Track provision progress for this call
     let _ = provision_progress::start_provision(call_id);
+    let _ = provision_progress::update_provision_metadata(
+        call_id,
+        json!({
+            "service_id": service_id,
+        }),
+    );
 
     let _ = provision_progress::update_provision(
         call_id,
@@ -33,6 +40,7 @@ pub async fn sandbox_create(
 
     let mut params = CreateSandboxParams::from(&request);
     params.owner = super::caller_hex(&caller);
+    params.service_id = Some(service_id);
 
     let _ = provision_progress::update_provision(
         call_id,
