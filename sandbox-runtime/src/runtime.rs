@@ -134,7 +134,10 @@ impl SidecarRuntimeConfig {
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(crate::DEFAULT_TIMEOUT_SECS);
-            let docker_host = env::var("DOCKER_HOST").ok();
+            let docker_host = env::var("DOCKER_HOST")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(detect_docker_host_fallback);
             let pull_image = env::var("SIDECAR_PULL_IMAGE")
                 .ok()
                 .and_then(|v| v.parse::<bool>().ok())
@@ -401,6 +404,19 @@ pub async fn docker_builder() -> Result<DockerBuilder> {
             .await
             .map_err(|err| SandboxError::Docker(format!("Failed to connect to Docker: {err}"))),
     }
+}
+
+fn detect_docker_host_fallback() -> Option<String> {
+    let default_socket = std::path::Path::new("/var/run/docker.sock");
+    if default_socket.exists() {
+        return None;
+    }
+
+    let home = env::var("HOME").ok()?;
+    let docker_desktop_socket = std::path::Path::new(&home).join(".docker/run/docker.sock");
+    docker_desktop_socket
+        .exists()
+        .then(|| format!("unix://{}", docker_desktop_socket.display()))
 }
 
 /// Default timeout for Docker operations (seconds).
@@ -1884,23 +1900,59 @@ pub fn merge_env_json(base: &str, user: &str) -> String {
     })
 }
 
+pub fn workflow_runtime_credentials_available(env_json: &str) -> Result<bool> {
+    let env_map = parse_json_object(env_json, "env_json")?;
+    let Some(Value::Object(map)) = env_map else {
+        return Ok(false);
+    };
+
+    let has_native_provider_key = map
+        .get("ANTHROPIC_API_KEY")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || map
+            .get("ZAI_API_KEY")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+
+    let has_explicit_opencode = map
+        .get("OPENCODE_MODEL_PROVIDER")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        && map
+            .get("OPENCODE_MODEL_NAME")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        && map
+            .get("OPENCODE_MODEL_API_KEY")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+
+    Ok(has_native_provider_key || has_explicit_opencode)
+}
+
 /// Build the `Vec<String>` of `KEY=VALUE` env vars for a Docker container.
 fn build_env_vars(env_json: &str, token: &str, container_port: u16) -> Result<Vec<String>> {
     let mut env_vars = vec![
         format!("SIDECAR_PORT={container_port}"),
         format!("SIDECAR_AUTH_TOKEN={token}"),
     ];
-    if !env_json.trim().is_empty() {
-        if let Some(Value::Object(map)) = parse_json_object(env_json, "env_json")? {
-            for (key, value) in map {
-                let val = match value {
-                    Value::String(v) => v,
-                    Value::Number(v) => v.to_string(),
-                    Value::Bool(v) => v.to_string(),
-                    _ => continue,
-                };
-                env_vars.push(format!("{key}={val}"));
-            }
+
+    let env_map = parse_json_object(env_json, "env_json")?;
+    if let Some(Value::Object(map)) = env_map.as_ref() {
+        for (key, value) in map {
+            let val = match value {
+                Value::String(v) => v.clone(),
+                Value::Number(v) => v.to_string(),
+                Value::Bool(v) => v.to_string(),
+                _ => continue,
+            };
+            env_vars.push(format!("{key}={val}"));
         }
     }
     Ok(env_vars)
@@ -3631,6 +3683,41 @@ mod core_logic_tests {
     fn env_vars_invalid_json() {
         let result = build_env_vars("not-json", "tok", 3000);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn env_vars_preserve_explicit_ai_env() {
+        let vars = build_env_vars(r#"{"ZAI_API_KEY":"user-key"}"#, "tok", 8080).unwrap();
+        assert!(vars.contains(&"ZAI_API_KEY=user-key".to_string()));
+        assert!(!vars.contains(&"OPENCODE_MODEL_API_KEY=user-key".to_string()));
+    }
+
+    #[test]
+    fn workflow_runtime_credentials_available_requires_sandbox_env() {
+        assert!(!workflow_runtime_credentials_available("{}").unwrap());
+    }
+
+    #[test]
+    fn workflow_runtime_credentials_available_rejects_incomplete_explicit_ai_env() {
+        let old = std::env::var("ZAI_API_KEY").ok();
+        // SAFETY: test scopes environment mutation and restores the prior value.
+        unsafe {
+            std::env::set_var("ZAI_API_KEY", "operator-key");
+        }
+        assert!(
+            !workflow_runtime_credentials_available(
+                r#"{"OPENCODE_MODEL_PROVIDER":"zai-coding-plan"}"#
+            )
+            .unwrap()
+        );
+
+        // SAFETY: restore previous process environment for the next test.
+        unsafe {
+            match old {
+                Some(value) => std::env::set_var("ZAI_API_KEY", value),
+                None => std::env::remove_var("ZAI_API_KEY"),
+            }
+        }
     }
 
     // ── extract_host_port ───────────────────────────────────────────────

@@ -5,8 +5,8 @@ use crate::WorkflowControlRequest;
 use crate::WorkflowCreateRequest;
 use crate::tangle::extract::{CallId, Caller, TangleArg, TangleResult};
 use crate::workflows::{
-    WorkflowEntry, apply_workflow_execution, resolve_next_run, run_workflow, workflow_key,
-    workflow_tick, workflows,
+    WorkflowEntry, apply_workflow_execution, resolve_next_run, run_workflow,
+    validate_workflow_execution_ready, workflow_key, workflow_tick, workflows,
 };
 
 pub async fn workflow_create(
@@ -14,9 +14,7 @@ pub async fn workflow_create(
     CallId(call_id): CallId,
     TangleArg(request): TangleArg<WorkflowCreateRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
-    if request.workflow_json.trim().is_empty() {
-        return Err("workflow_json is required".to_string());
-    }
+    validate_workflow_execution_ready(request.workflow_json.as_str())?;
 
     let trigger_type = request.trigger_type.to_string();
     let trigger_config = request.trigger_config.to_string();

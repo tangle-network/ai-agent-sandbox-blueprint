@@ -174,7 +174,8 @@ fn sync_runtime_service_binding(record: &crate::SandboxRecord) -> Result<(), Str
 
         let mut sealed = record.clone();
         crate::runtime::seal_record(&mut sealed).map_err(|e| e.to_string())?;
-        store.insert(record.id.clone(), sealed)
+        store
+            .insert(record.id.clone(), sealed)
             .map_err(|e| e.to_string())?;
     }
 

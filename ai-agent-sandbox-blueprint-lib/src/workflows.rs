@@ -110,13 +110,34 @@ fn compute_next_run(cron_expr: &str, from_ts: u64) -> Result<u64, String> {
         .ok_or_else(|| "Cron expression has no future run times".to_string())
 }
 
-pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, String> {
-    if entry.workflow_json.trim().is_empty() {
+pub fn parse_workflow_task_spec(workflow_json: &str) -> Result<WorkflowTaskSpec, String> {
+    if workflow_json.trim().is_empty() {
         return Err("workflow_json is required".to_string());
     }
 
-    let spec: WorkflowTaskSpec = serde_json::from_str(entry.workflow_json.as_str())
-        .map_err(|err| format!("workflow_json must be valid task JSON: {err}"))?;
+    serde_json::from_str(workflow_json)
+        .map_err(|err| format!("workflow_json must be valid task JSON: {err}"))
+}
+
+pub fn validate_workflow_execution_ready(workflow_json: &str) -> Result<WorkflowTaskSpec, String> {
+    let spec = parse_workflow_task_spec(workflow_json)?;
+    let record =
+        crate::runtime::get_sandbox_by_url(&spec.sidecar_url).map_err(|err| err.to_string())?;
+    let effective_env = record.effective_env_json();
+    let has_credentials = crate::runtime::workflow_runtime_credentials_available(&effective_env)
+        .map_err(|err| err.to_string())?;
+    if !has_credentials {
+        return Err(
+            "Workflow execution requires valid AI credentials in the sandbox environment."
+                .to_string(),
+        );
+    }
+
+    Ok(spec)
+}
+
+pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, String> {
+    let spec = parse_workflow_task_spec(entry.workflow_json.as_str())?;
 
     // Look up token from sandbox record. Falls back to spec.sidecar_token for
     // backward compat with workflows created before 2-phase provisioning.
@@ -292,7 +313,7 @@ pub async fn bootstrap_workflows_from_chain(
         return Ok(());
     };
 
-    let abi = blueprint_sdk::alloy::json_abi::JsonAbi::parse([WORKFLOW_REGISTRY_ABI])
+    let abi: blueprint_sdk::alloy::json_abi::JsonAbi = serde_json::from_str(WORKFLOW_REGISTRY_ABI)
         .map_err(|err| format!("Invalid workflow ABI: {err}"))?;
     let interface = blueprint_sdk::alloy::contract::Interface::new(abi);
     let contract = blueprint_sdk::alloy::contract::ContractInstance::new(
@@ -457,6 +478,13 @@ mod tests {
     fn dyn_u64_extracts() {
         let val = DynSolValue::Uint(U256::from(42u64), 64);
         assert_eq!(dyn_u64(&val).unwrap(), 42);
+    }
+
+    #[test]
+    fn workflow_registry_abi_parses() {
+        let _: blueprint_sdk::alloy::json_abi::JsonAbi =
+            serde_json::from_str(WORKFLOW_REGISTRY_ABI)
+                .expect("workflow registry ABI should parse");
     }
 
     #[test]
