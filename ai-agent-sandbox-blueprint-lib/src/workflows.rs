@@ -131,12 +131,10 @@ pub fn parse_workflow_task_spec(workflow_json: &str) -> Result<WorkflowTaskSpec,
 
 pub fn validate_workflow_execution_ready(workflow_json: &str) -> Result<WorkflowTaskSpec, String> {
     let spec = parse_workflow_task_spec(workflow_json)?;
-    let sidecar_url = spec
-        .sidecar_url
-        .as_deref()
-        .ok_or_else(|| "workflow_json must include sidecar_url when no sandbox target is provided".to_string())?;
-    let record =
-        crate::runtime::get_sandbox_by_url(sidecar_url).map_err(|err| err.to_string())?;
+    let sidecar_url = spec.sidecar_url.as_deref().ok_or_else(|| {
+        "workflow_json must include sidecar_url when no sandbox target is provided".to_string()
+    })?;
+    let record = crate::runtime::get_sandbox_by_url(sidecar_url).map_err(|err| err.to_string())?;
     let effective_env = record.effective_env_json();
     let has_credentials = crate::runtime::workflow_runtime_credentials_available(&effective_env)
         .map_err(|err| err.to_string())?;
@@ -181,10 +179,9 @@ fn resolve_workflow_sandbox(entry: &WorkflowEntry) -> Result<crate::SandboxRecor
     }
 
     let spec = parse_workflow_task_spec(entry.workflow_json.as_str())?;
-    let sidecar_url = spec
-        .sidecar_url
-        .as_deref()
-        .ok_or_else(|| "workflow_json must include sidecar_url when no sandbox target is provided".to_string())?;
+    let sidecar_url = spec.sidecar_url.as_deref().ok_or_else(|| {
+        "workflow_json must include sidecar_url when no sandbox target is provided".to_string()
+    })?;
     crate::runtime::get_sandbox_by_url(sidecar_url).map_err(|err| err.to_string())
 }
 
