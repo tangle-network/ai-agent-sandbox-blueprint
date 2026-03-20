@@ -1,13 +1,25 @@
 //! Blueprint runner for ai-agent-sandbox-blueprint.
 
-use ai_agent_sandbox_blueprint_lib::{JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, router};
+use ai_agent_sandbox_blueprint_lib::workflows::{WorkflowEntry, workflow_key, workflows};
+use ai_agent_sandbox_blueprint_lib::{
+    JOB_WORKFLOW_TICK, JsonResponse, SandboxCreateOutput, bootstrap_workflows_from_chain, router,
+};
 use blueprint_producers_extra::cron::CronJob;
-use blueprint_sdk::contexts::tangle::TangleClientContext;
+use blueprint_sdk::alloy::sol_types::SolValue;
+use blueprint_sdk::contexts::tangle::{TangleClient, TangleClientContext};
+use blueprint_sdk::core::error::BoxError;
 use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
 use blueprint_sdk::runner::tangle::config::TangleConfig;
-use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
+use blueprint_sdk::tangle::TangleProducer;
+use blueprint_sdk::tangle::extract::{CallId, ServiceId};
 use blueprint_sdk::{error, info, warn};
+use futures_util::Sink;
+use serde_json::Value;
+use std::collections::VecDeque;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 #[cfg(feature = "qos")]
 use blueprint_qos::QoSServiceBuilder;
@@ -404,7 +416,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
     // Create producer (listens for JobSubmitted events) and consumer (submits results)
     let tangle_producer = TangleProducer::new(tangle_client.clone(), service_id);
-    let tangle_consumer = TangleConsumer::new(tangle_client);
+    let tangle_consumer = ReconciledTangleConsumer::new(tangle_client);
 
     // Encode operator max capacity as registration inputs for the blueprint contract.
     // The contract's onRegister decodes abi.encode(uint32 capacity) from these inputs.
@@ -522,4 +534,355 @@ fn setup_log() {
         .try_init()
         .is_err()
     {}
+}
+
+struct DerivedJobResult {
+    service_id: u64,
+    call_id: u64,
+    output: blueprint_sdk::alloy::primitives::Bytes,
+}
+
+enum ConsumerState {
+    WaitingForResult,
+    ProcessingSubmission(
+        Pin<Box<dyn std::future::Future<Output = Result<(), ReconciledConsumerError>> + Send>>,
+    ),
+}
+
+impl ConsumerState {
+    fn is_waiting(&self) -> bool {
+        matches!(self, Self::WaitingForResult)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ReconciledConsumerError {
+    #[error("Invalid metadata: {0}")]
+    InvalidMetadata(&'static str),
+    #[error("Transaction error: {0}")]
+    Transaction(String),
+}
+
+struct ReconciledTangleConsumer {
+    client: Arc<TangleClient>,
+    buffer: Mutex<VecDeque<DerivedJobResult>>,
+    state: Mutex<ConsumerState>,
+}
+
+impl ReconciledTangleConsumer {
+    fn new(client: TangleClient) -> Self {
+        Self {
+            client: Arc::new(client),
+            buffer: Mutex::new(VecDeque::new()),
+            state: Mutex::new(ConsumerState::WaitingForResult),
+        }
+    }
+}
+
+impl Sink<blueprint_sdk::JobResult> for ReconciledTangleConsumer {
+    type Error = BoxError;
+
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: blueprint_sdk::JobResult) -> Result<(), Self::Error> {
+        let blueprint_sdk::JobResult::Ok { head, body } = &item else {
+            blueprint_sdk::trace!(target: "tangle-consumer", "Discarding job result with error");
+            return Ok(());
+        };
+
+        let (Some(call_id_raw), Some(service_id_raw)) = (
+            head.metadata.get(CallId::METADATA_KEY),
+            head.metadata.get(ServiceId::METADATA_KEY),
+        ) else {
+            blueprint_sdk::trace!(
+                target: "tangle-consumer",
+                "Discarding job result with missing metadata"
+            );
+            return Ok(());
+        };
+
+        let call_id: u64 = call_id_raw
+            .try_into()
+            .map_err(|_| ReconciledConsumerError::InvalidMetadata("call_id"))?;
+        let service_id: u64 = service_id_raw
+            .try_into()
+            .map_err(|_| ReconciledConsumerError::InvalidMetadata("service_id"))?;
+
+        self.get_mut()
+            .buffer
+            .lock()
+            .unwrap()
+            .push_back(DerivedJobResult {
+                service_id,
+                call_id,
+                output: blueprint_sdk::alloy::primitives::Bytes::copy_from_slice(body),
+            });
+        Ok(())
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let consumer = self.get_mut();
+        let mut state = consumer.state.lock().unwrap();
+
+        {
+            let buffer = consumer.buffer.lock().unwrap();
+            if buffer.is_empty() && state.is_waiting() {
+                return Poll::Ready(Ok(()));
+            }
+        }
+
+        loop {
+            match &mut *state {
+                ConsumerState::WaitingForResult => {
+                    let next = {
+                        let mut buffer = consumer.buffer.lock().unwrap();
+                        buffer.pop_front()
+                    };
+
+                    let Some(DerivedJobResult {
+                        service_id,
+                        call_id,
+                        output,
+                    }) = next
+                    else {
+                        return Poll::Ready(Ok(()));
+                    };
+
+                    let client = Arc::clone(&consumer.client);
+                    let fut = Box::pin(async move {
+                        submit_result_and_reconcile(client, service_id, call_id, output).await
+                    });
+                    *state = ConsumerState::ProcessingSubmission(fut);
+                }
+                ConsumerState::ProcessingSubmission(future) => match future.as_mut().poll(cx) {
+                    Poll::Ready(Ok(())) => {
+                        *state = ConsumerState::WaitingForResult;
+                    }
+                    Poll::Ready(Err(err)) => {
+                        *state = ConsumerState::WaitingForResult;
+                        return Poll::Ready(Err(err.into()));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+            }
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let buffer = self.buffer.lock().unwrap();
+        if buffer.is_empty() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+async fn submit_result_and_reconcile(
+    client: Arc<TangleClient>,
+    service_id: u64,
+    call_id: u64,
+    output: blueprint_sdk::alloy::primitives::Bytes,
+) -> Result<(), ReconciledConsumerError> {
+    if client.config.dry_run {
+        info!(
+            "Dry run enabled; skipping on-chain result submission for service {service_id} call {call_id}"
+        );
+        return Ok(());
+    }
+
+    match client
+        .submit_result(service_id, call_id, output.clone())
+        .await
+    {
+        Ok(result) if result.success => {
+            reconcile_workflows(&client, service_id).await;
+            Ok(())
+        }
+        Ok(result) => Err(ReconciledConsumerError::Transaction(format!(
+            "Transaction reverted for service {service_id} call {call_id}: tx_hash={:?}",
+            result.tx_hash
+        ))),
+        Err(err) if is_job_already_completed(&err.to_string()) => {
+            warn!(
+                "Result for service {service_id} call {call_id} was already completed; treating replay as idempotent"
+            );
+            reconcile_workflows(&client, service_id).await;
+            Ok(())
+        }
+        Err(err)
+            if replay_error_is_already_materialized(
+                &client,
+                service_id,
+                call_id,
+                &output,
+                &err.to_string(),
+            )
+            .await =>
+        {
+            warn!(
+                "Result for service {service_id} call {call_id} is already reflected on-chain; treating replay as idempotent"
+            );
+            reconcile_workflows(&client, service_id).await;
+            Ok(())
+        }
+        Err(err) => Err(ReconciledConsumerError::Transaction(format!(
+            "Failed to submit result for service {service_id} call {call_id}: {err}"
+        ))),
+    }
+}
+
+async fn reconcile_workflows(client: &TangleClient, service_id: u64) {
+    if let Err(err) = bootstrap_workflows_from_chain(client, service_id).await {
+        warn!("Failed to reconcile workflows from chain for service {service_id}: {err}");
+    }
+}
+
+fn is_job_already_completed(error: &str) -> bool {
+    error.contains("JobAlreadyCompleted") || error.contains("already completed")
+}
+
+async fn replay_error_is_already_materialized(
+    client: &TangleClient,
+    service_id: u64,
+    call_id: u64,
+    output: &blueprint_sdk::alloy::primitives::Bytes,
+    error: &str,
+) -> bool {
+    if !error.contains("execution reverted") {
+        return false;
+    }
+
+    if bootstrap_workflows_from_chain(client, service_id)
+        .await
+        .is_err()
+    {
+        return false;
+    }
+
+    let workflow_for_call_id = workflows()
+        .ok()
+        .and_then(|store| store.get(&workflow_key(call_id)).ok())
+        .flatten();
+
+    let payload = JsonResponse::abi_decode(output.as_ref())
+        .ok()
+        .and_then(|response| serde_json::from_str::<Value>(&response.json).ok());
+
+    if let Some(payload) = payload.as_ref() {
+        let Some(workflow_id) = payload.get("workflowId").and_then(Value::as_u64) else {
+            return false;
+        };
+
+        let workflow = workflows()
+            .ok()
+            .and_then(|store| store.get(&workflow_key(workflow_id)).ok())
+            .flatten();
+
+        if workflow_replay_matches_store(call_id, payload, workflow.as_ref()) {
+            return true;
+        }
+    }
+
+    if let Ok(create_output) = SandboxCreateOutput::abi_decode(output.as_ref()) {
+        if ai_agent_sandbox_blueprint_lib::runtime::get_sandbox_by_id(&create_output.sandboxId)
+            .is_ok()
+        {
+            return true;
+        }
+    }
+
+    // Workflow IDs are derived from the create call ID. If a replayed
+    // `workflow_create` result arrives before we can decode its body cleanly,
+    // an active workflow keyed by the same call ID is still enough evidence
+    // that the original result has already been materialized on-chain.
+    workflow_for_call_id
+        .as_ref()
+        .is_some_and(|entry| entry.active)
+}
+
+fn workflow_replay_matches_store(
+    call_id: u64,
+    payload: &Value,
+    workflow: Option<&WorkflowEntry>,
+) -> bool {
+    let Some(workflow_id) = payload.get("workflowId").and_then(Value::as_u64) else {
+        return false;
+    };
+
+    match payload.get("status").and_then(Value::as_str) {
+        Some("canceled") => workflow.is_none(),
+        Some("active") => workflow.as_ref().is_some(),
+        _ if payload.get("task").is_some() => workflow.as_ref().is_some(),
+        _ => workflow_id == call_id && workflow.as_ref().is_some(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WorkflowEntry, workflow_replay_matches_store};
+    use serde_json::json;
+
+    fn active_workflow(id: u64) -> WorkflowEntry {
+        WorkflowEntry {
+            id,
+            name: "workflow-qa".into(),
+            workflow_json: "{}".into(),
+            trigger_type: "cron".into(),
+            trigger_config: "0 * * * * *".into(),
+            sandbox_config_json: "{}".into(),
+            active: true,
+            next_run_at: None,
+            last_run_at: None,
+            owner: String::new(),
+        }
+    }
+
+    #[test]
+    fn create_replay_matches_existing_active_workflow() {
+        let payload = json!({
+            "status": "active",
+            "workflowId": 7
+        });
+
+        assert!(workflow_replay_matches_store(
+            7,
+            &payload,
+            Some(&active_workflow(7))
+        ));
+    }
+
+    #[test]
+    fn trigger_replay_matches_existing_workflow_even_if_inactive_bit_isnt_rechecked() {
+        let payload = json!({
+            "status": "active",
+            "workflowId": 9,
+            "task": {
+                "success": true
+            }
+        });
+
+        assert!(workflow_replay_matches_store(
+            12,
+            &payload,
+            Some(&active_workflow(9))
+        ));
+    }
+
+    #[test]
+    fn canceled_replay_only_matches_when_active_store_entry_is_absent() {
+        let payload = json!({
+            "status": "canceled",
+            "workflowId": 11
+        });
+
+        assert!(workflow_replay_matches_store(15, &payload, None));
+        assert!(!workflow_replay_matches_store(
+            15,
+            &payload,
+            Some(&active_workflow(11))
+        ));
+    }
 }
