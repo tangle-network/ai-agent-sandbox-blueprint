@@ -139,7 +139,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: tangle-network/blueprint-ui
-          ref: df2f81193b88a05b07ff6a816b7e672805129935
+          ref: main
           path: blueprint-ui
 
       - name: Link blueprint-ui at expected local path
