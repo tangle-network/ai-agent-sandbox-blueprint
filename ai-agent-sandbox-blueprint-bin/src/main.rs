@@ -1,9 +1,15 @@
 //! Blueprint runner for ai-agent-sandbox-blueprint.
 
-use ai_agent_sandbox_blueprint_lib::workflows::{WorkflowEntry, workflow_key, workflows};
+use ai_agent_sandbox_blueprint_lib::workflows::{
+    WorkflowEntry, WorkflowStatusError, workflow_key, workflow_runtime_status_for_owner, workflows,
+};
 use ai_agent_sandbox_blueprint_lib::{
     JOB_WORKFLOW_TICK, JsonResponse, SandboxCreateOutput, bootstrap_workflows_from_chain, router,
 };
+use axum::extract::Path;
+use axum::http::StatusCode;
+use axum::routing::get;
+use axum::{Json, Router as HttpRouter};
 use blueprint_producers_extra::cron::CronJob;
 use blueprint_sdk::alloy::sol_types::SolValue;
 use blueprint_sdk::contexts::tangle::{TangleClient, TangleClientContext};
@@ -29,6 +35,105 @@ use blueprint_qos::heartbeat::{HeartbeatConfig, HeartbeatConsumer};
 use blueprint_qos::metrics::MetricsConfig;
 #[cfg(feature = "qos")]
 use std::sync::Arc;
+
+fn workflow_status_error(error: WorkflowStatusError) -> (StatusCode, Json<serde_json::Value>) {
+    let status = match &error {
+        WorkflowStatusError::NotFound(_) => StatusCode::NOT_FOUND,
+        WorkflowStatusError::Forbidden(_) => StatusCode::FORBIDDEN,
+        WorkflowStatusError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
+    (
+        status,
+        Json(serde_json::json!({
+            "error": error.message(),
+        })),
+    )
+}
+
+async fn workflow_status_handler(
+    sandbox_runtime::session_auth::SessionAuth(caller): sandbox_runtime::session_auth::SessionAuth,
+    Path(workflow_id): Path<u64>,
+) -> Result<
+    Json<ai_agent_sandbox_blueprint_lib::workflows::WorkflowRuntimeStatus>,
+    (StatusCode, Json<serde_json::Value>),
+> {
+    workflow_runtime_status_for_owner(workflow_id, caller.as_str())
+        .map(Json)
+        .map_err(workflow_status_error)
+}
+
+async fn workflow_list_handler(
+    sandbox_runtime::session_auth::SessionAuth(caller): sandbox_runtime::session_auth::SessionAuth,
+) -> Result<
+    Json<serde_json::Value>,
+    (StatusCode, Json<serde_json::Value>),
+> {
+    ai_agent_sandbox_blueprint_lib::workflows::list_workflows_for_owner(caller.as_str())
+        .map(|workflows| {
+            Json(serde_json::json!({
+                "workflows": workflows
+                    .into_iter()
+                    .map(|workflow| serde_json::json!({
+                        "scope": "sandbox",
+                        "workflowId": workflow.workflow_id,
+                        "name": workflow.name,
+                        "triggerType": workflow.trigger_type,
+                        "triggerConfig": workflow.trigger_config,
+                        "targetKind": workflow.target_kind,
+                        "targetSandboxId": workflow.target_sandbox_id,
+                        "targetServiceId": workflow.target_service_id,
+                        "active": workflow.active,
+                        "running": workflow.running,
+                        "lastRunAt": workflow.last_run_at,
+                        "nextRunAt": workflow.next_run_at,
+                        "latestExecution": workflow.latest_execution,
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+        })
+        .map_err(workflow_status_error)
+}
+
+async fn workflow_detail_handler(
+    sandbox_runtime::session_auth::SessionAuth(caller): sandbox_runtime::session_auth::SessionAuth,
+    Path(workflow_id): Path<u64>,
+) -> Result<
+    Json<serde_json::Value>,
+    (StatusCode, Json<serde_json::Value>),
+> {
+    ai_agent_sandbox_blueprint_lib::workflows::workflow_detail_for_owner(
+        workflow_id,
+        caller.as_str(),
+    )
+    .map(|workflow| {
+        Json(serde_json::json!({
+            "scope": "sandbox",
+            "workflowId": workflow.workflow_id,
+            "name": workflow.name,
+            "workflowJson": workflow.workflow_json,
+            "triggerType": workflow.trigger_type,
+            "triggerConfig": workflow.trigger_config,
+            "sandboxConfigJson": workflow.sandbox_config_json,
+            "targetKind": workflow.target_kind,
+            "targetSandboxId": workflow.target_sandbox_id,
+            "targetServiceId": workflow.target_service_id,
+            "active": workflow.active,
+            "running": workflow.running,
+            "lastRunAt": workflow.last_run_at,
+            "nextRunAt": workflow.next_run_at,
+            "latestExecution": workflow.latest_execution,
+        }))
+    })
+    .map_err(workflow_status_error)
+}
+
+fn workflow_status_router() -> HttpRouter {
+    HttpRouter::new()
+        .route("/api/workflows", get(workflow_list_handler))
+        .route("/api/workflows/{workflow_id}", get(workflow_status_handler))
+        .route("/api/workflows/{workflow_id}/detail", get(workflow_detail_handler))
+}
 
 /// Logging heartbeat consumer that records heartbeat submissions.
 ///
@@ -282,7 +387,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     let api_shutdown = tokio::sync::watch::channel(());
     let api_shutdown_tx = api_shutdown.0;
     let api_handle = {
-        let router = sandbox_runtime::operator_api::operator_api_router_with_tee(tee_backend);
+        let router = sandbox_runtime::operator_api::operator_api_router_with_tee_and_routes(
+            tee_backend,
+            workflow_status_router(),
+        );
         let addr = std::net::SocketAddr::from((bind_addr, api_port));
         info!("Starting operator API on {addr}");
 
@@ -833,6 +941,9 @@ mod tests {
             trigger_type: "cron".into(),
             trigger_config: "0 * * * * *".into(),
             sandbox_config_json: "{}".into(),
+            target_kind: 0,
+            target_sandbox_id: String::new(),
+            target_service_id: 0,
             active: true,
             next_run_at: None,
             last_run_at: None,
