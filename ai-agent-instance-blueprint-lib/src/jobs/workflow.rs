@@ -197,4 +197,26 @@ mod tests {
         let err = validate_instance_workflow_target(1, "", 7, 42).unwrap_err();
         assert!(err.contains("current service 42"));
     }
+
+    #[test]
+    fn instance_workflow_rejects_completely_invalid_target_kind() {
+        let err = validate_instance_workflow_target(2, "", 0, 42).unwrap_err();
+        assert!(err.contains("target an instance resource"));
+        let err = validate_instance_workflow_target(255, "", 0, 42).unwrap_err();
+        assert!(err.contains("target an instance resource"));
+    }
+
+    #[test]
+    fn instance_workflow_accepts_matching_service_id() {
+        let resolved = validate_instance_workflow_target(1, "", 42, 42).unwrap();
+        assert_eq!(resolved, 42);
+    }
+
+    /// Whitespace-only sandbox_id passes Rust validation (trim().is_empty() == true),
+    /// but would fail on-chain where Solidity checks bytes(...).length != 0.
+    #[test]
+    fn instance_workflow_accepts_whitespace_only_sandbox_id() {
+        let resolved = validate_instance_workflow_target(1, "   ", 0, 42).unwrap();
+        assert_eq!(resolved, 42);
+    }
 }

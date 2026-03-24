@@ -201,4 +201,18 @@ mod tests {
         let err = validate_sandbox_workflow_target(0, "sb-1", 7, 42).unwrap_err();
         assert!(err.contains("current service 42"));
     }
+
+    #[test]
+    fn sandbox_workflow_rejects_completely_invalid_target_kind() {
+        let err = validate_sandbox_workflow_target(2, "sb-1", 0, 42).unwrap_err();
+        assert!(err.contains("target a sandbox resource"));
+        let err = validate_sandbox_workflow_target(255, "sb-1", 0, 42).unwrap_err();
+        assert!(err.contains("target a sandbox resource"));
+    }
+
+    #[test]
+    fn sandbox_workflow_accepts_matching_service_id() {
+        let resolved = validate_sandbox_workflow_target(0, "sb-1", 42, 42).unwrap();
+        assert_eq!(resolved, 42);
+    }
 }
