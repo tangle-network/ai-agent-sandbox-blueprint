@@ -16,6 +16,7 @@ import {
 } from '@tangle-network/agent-ui/primitives';
 import { toast } from 'sonner';
 import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
+import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 
 /**
  * Build RPC URLs suitable for wallet_addEthereumChain.
@@ -71,6 +72,7 @@ export function WalletButton() {
   const { address, chainId, isConnected, status } = useAccount();
   const isReconnecting = status === 'reconnecting';
   const { disconnect } = useDisconnect();
+  const { revokeSession } = useOperatorAuth();
   const selectedChainId = useStore(selectedChainIdStore);
   const selectedNetwork = networks[selectedChainId];
   const { balance: ethBalance } = useWalletEthBalance({
@@ -231,7 +233,7 @@ export function WalletButton() {
                       <div className="i-ph:copy text-base text-cloud-elements-textTertiary" />
                       <span className="text-sm font-display text-cloud-elements-textSecondary">Copy Address</span>
                     </button>
-                    <button onClick={() => { disconnect(); clearWagmiStorage(); close(); }} className="flex items-center gap-2.5 w-full px-3 py-2.5 rounded-lg hover:bg-crimson-500/10 transition-colors text-left">
+                    <button onClick={() => { revokeSession(); disconnect(); clearWagmiStorage(); close(); }} className="flex items-center gap-2.5 w-full px-3 py-2.5 rounded-lg hover:bg-crimson-500/10 transition-colors text-left">
                       <div className="i-ph:sign-out text-base text-crimson-600 dark:text-crimson-400" />
                       <span className="text-sm font-display text-crimson-600 dark:text-crimson-400">Disconnect</span>
                     </button>

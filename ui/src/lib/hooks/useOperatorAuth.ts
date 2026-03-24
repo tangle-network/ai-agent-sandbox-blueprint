@@ -286,11 +286,27 @@ export function useOperatorAuth(apiUrl?: string) {
     return promise;
   }, [address, baseUrl, cacheKey, signMessageAsync]);
 
+  const revokeSession = useCallback(() => {
+    const token = effectiveSession?.token;
+    if (cacheKey) {
+      setState(cacheKey, EMPTY_STATE);
+      clearPersistedSession(cacheKey);
+    }
+    if (token) {
+      fetch(`${baseUrl}/api/auth/session`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }
+  }, [baseUrl, cacheKey, effectiveSession?.token]);
+
   return {
     /** Get a valid cached PASETO token without triggering wallet signing. */
     getCachedToken,
     /** Get a valid PASETO token, authenticating if needed. */
     getToken,
+    /** Revoke the current session token server-side and clear local state. */
+    revokeSession,
     /** Whether we have a valid cached token. */
     isAuthenticated: effectiveSession !== null,
     /** Whether an auth request is in-flight. */
