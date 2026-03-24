@@ -503,7 +503,7 @@ export default function InstanceDetail() {
           {ports && ports.length > 0 && (
             <ExposedPortsCard
               ports={ports}
-              accessPath="/api/sandbox/port/{port}/"
+              proxyBaseUrl={`${operatorUrl}/api/sandbox/port/`}
               className="lg:col-span-2"
             />
           )}

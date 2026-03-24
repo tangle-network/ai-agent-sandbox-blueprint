@@ -708,7 +708,7 @@ export default function SandboxDetail() {
           {ports && ports.length > 0 && (
             <ExposedPortsCard
               ports={ports}
-              accessPath="/api/sandboxes/{id}/port/{port}/"
+              proxyBaseUrl={`${operatorUrl}/api/sandboxes/${sb.sandboxId}/port/`}
               className="md:col-span-2"
             />
           )}
