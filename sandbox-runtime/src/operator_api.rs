@@ -1483,7 +1483,8 @@ fn invalid_agent_identifier_error(
     )
 }
 
-fn translate_missing_agent_factory_error(
+async fn translate_missing_agent_factory_error(
+    record: &SandboxRecord,
     agent_identifier: &str,
     err: &(StatusCode, Json<ApiError>),
 ) -> Option<(StatusCode, Json<ApiError>)> {
@@ -1493,7 +1494,15 @@ fn translate_missing_agent_factory_error(
 
     let message = err.1.0.error.as_str();
     if message.contains("No factory registered for agent identifier") {
-        return Some(invalid_agent_identifier_error(agent_identifier, &[]));
+        // This is a semantic agent-selection error, not a transport failure.
+        // Clear the unhealthy mark so a best-effort /agents lookup can enrich
+        // the returned error without restoring hot-path prevalidation.
+        circuit_breaker::clear(&record.id);
+        let agents = match fetch_sidecar_agents(record).await {
+            Ok(Some(agents)) => agents,
+            Ok(None) | Err(_) => Vec::new(),
+        };
+        return Some(invalid_agent_identifier_error(agent_identifier, &agents));
     }
 
     None
@@ -1836,28 +1845,6 @@ async fn list_agents_on_sidecar(
     }
 }
 
-async fn validate_configured_agent(
-    record: &SandboxRecord,
-) -> Result<(), (StatusCode, Json<ApiError>)> {
-    let configured = record.agent_identifier.trim();
-    if configured.is_empty() {
-        return Ok(());
-    }
-
-    let Some(agents) = fetch_sidecar_agents(record).await? else {
-        return Ok(());
-    };
-
-    if agents
-        .iter()
-        .any(|agent| agent.identifier.trim() == configured)
-    {
-        return Ok(());
-    }
-
-    Err(invalid_agent_identifier_error(configured, &agents))
-}
-
 async fn exec_on_sidecar(
     record: &SandboxRecord,
     req: &ExecApiRequest,
@@ -1910,7 +1897,9 @@ async fn agent_on_sidecar(
     timeout_ms: u64,
     max_turns: Option<u64>,
 ) -> Result<AgentResponse, (StatusCode, Json<ApiError>)> {
-    validate_configured_agent(record).await?;
+    // Prompt/task calls are latency-sensitive, so avoid paying an extra
+    // discovery round-trip here. Let /agents/run stay authoritative and
+    // translate invalid configured identifiers on the error path instead.
     let payload = build_agent_payload(
         message,
         session_id,
@@ -1935,8 +1924,12 @@ async fn agent_on_sidecar(
         {
             Ok(parsed) => parsed,
             Err(err) => {
-                if let Some(translated) =
-                    translate_missing_agent_factory_error(&record.agent_identifier, &err)
+                if let Some(translated) = translate_missing_agent_factory_error(
+                    record,
+                    &record.agent_identifier,
+                    &err,
+                )
+                .await
                 {
                     return Err(translated);
                 }
@@ -3215,6 +3208,7 @@ mod tests {
         agents_response: Arc<Mutex<Value>>,
         remaining_agent_warmup_failures: Arc<AtomicU64>,
         agent_invocations: Arc<AtomicU64>,
+        agent_list_invocations: Arc<AtomicU64>,
     }
 
     async fn mock_sidecar_exec(
@@ -3236,6 +3230,41 @@ mod tests {
     ) -> impl IntoResponse {
         *state.last_agent_payload.lock().expect("agent lock") = Some(payload.clone());
         state.agent_invocations.fetch_add(1, Ordering::Relaxed);
+        let identifier = payload
+            .get("identifier")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let known_identifier = state
+            .agents_response
+            .lock()
+            .expect("agents response lock")
+            .get("agents")
+            .and_then(Value::as_array)
+            .map(|agents| {
+                agents.iter().any(|agent| {
+                    agent
+                        .get("identifier")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        == identifier
+                })
+            })
+            .unwrap_or(false);
+        if !known_identifier {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "AGENT_EXECUTION_FAILED",
+                        "message": format!(
+                            "No factory registered for agent identifier {identifier}"
+                        )
+                    }
+                })),
+            )
+                .into_response();
+        }
         let remaining = state
             .remaining_agent_warmup_failures
             .load(Ordering::Relaxed);
@@ -3276,6 +3305,7 @@ mod tests {
     }
 
     async fn mock_sidecar_agents(State(state): State<MockSidecarState>) -> Json<Value> {
+        state.agent_list_invocations.fetch_add(1, Ordering::Relaxed);
         let response = state
             .agents_response
             .lock()
@@ -5803,6 +5833,36 @@ mod tests {
             payload["error"],
             "Unknown agent identifier \"a1\". Available agents: default, batch"
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_skips_agent_listing_for_valid_configured_agent() {
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("good-agent-1", OP_TEST_OWNER, &sidecar_url);
+        set_agent_identifier("good-agent-1", "default");
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "hello" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/good-agent-1/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            sidecar_state.agent_list_invocations.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(sidecar_state.agent_invocations.load(Ordering::Relaxed), 1);
         server.abort();
     }
 
