@@ -59,3 +59,7 @@ ui/e2e-results/
 node_modules/
 packages/*/node_modules/
 packages/*/dist/
+
+# AI
+.agent-memory
+agent-results
