@@ -4,7 +4,7 @@ import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
-import { Textarea } from '@tangle-network/blueprint-ui/components';
+import { Input, Textarea } from '@tangle-network/blueprint-ui/components';
 import { SessionSidebar } from '~/components/shared/SessionSidebar';
 import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
 import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
@@ -32,7 +32,12 @@ import {
   getInstanceStatusLabel,
 } from '~/lib/instances/display';
 
-type ActionTab = 'overview' | 'terminal' | 'chat' | 'secrets' | 'attestation';
+interface SshKey {
+  username: string;
+  publicKey: string;
+}
+
+type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation';
 
 /** Extract human-readable error from operator API Error messages. */
 function parseApiError(err: Error): string {
@@ -54,6 +59,16 @@ export default function InstanceDetail() {
   const instances = useStore(instanceListStore);
   const inst = getInstance(decodedId) ?? instances.find((s) => s.id === decodedId);
   const { address } = useAccount();
+  const isRunning = inst?.status === 'running';
+
+  const sshHost = useMemo(() => {
+    if (!inst?.sidecarUrl) return '';
+    try {
+      return new URL(inst.sidecarUrl).hostname;
+    } catch {
+      return '';
+    }
+  }, [inst?.sidecarUrl]);
 
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -61,6 +76,18 @@ export default function InstanceDetail() {
   const [secretsBusy, setSecretsBusy] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
   const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
+  // SSH state
+  const [sshPublicKey, setSshPublicKey] = useState('');
+  const [sshUsername, setSshUsername] = useState('');
+  const [sshKeys, setSshKeys] = useState<SshKey[]>([]);
+  const [sshBusy, setSshBusy] = useState(false);
+  const [sshError, setSshError] = useState<string | null>(null);
+  const [sshSuccess, setSshSuccess] = useState<string | null>(null);
+  const [sshUserDetecting, setSshUserDetecting] = useState(false);
+  const [sshUserHint, setSshUserHint] = useState<string | null>(null);
+  const sshUsernameDirtyRef = useRef(false);
+  const sshUserDetectionKeyRef = useRef<string | null>(null);
+
   const [confirmAction, setConfirmAction] = useState<{
     title: string;
     description: string;
@@ -122,9 +149,70 @@ export default function InstanceDetail() {
   }, [getOperatorToken, operatorUrl]);
   const operatorToken = getCachedOperatorToken();
   const hasWallet = !!address;
+
+  const sshDetectionKey = inst?.sandboxId ?? decodedId;
+  const sshConnectionCommand = useMemo(() => {
+    if (!inst?.sshPort || !sshHost) return '';
+    const user = sshUsername.trim() || 'sidecar';
+    return `ssh ${user}@${sshHost} -p ${inst.sshPort}`;
+  }, [inst?.sshPort, sshHost, sshUsername]);
   const handleOperatorAuthenticate = useCallback(() => {
     void getOperatorToken();
   }, [getOperatorToken]);
+
+  // Reset SSH username state when switching between instances
+  useEffect(() => {
+    sshUsernameDirtyRef.current = false;
+    sshUserDetectionKeyRef.current = null;
+    setSshUsername('');
+    setSshUserHint(null);
+    setSshUserDetecting(false);
+  }, [sshDetectionKey]);
+
+  // Auto-detect SSH username when SSH tab opens
+  useEffect(() => {
+    if (tab !== 'ssh' || !sshDetectionKey) return;
+    if (!isRunning) return;
+    if (!isOperatorAuthed && !operatorToken) return;
+    if (sshUserDetectionKeyRef.current === sshDetectionKey) return;
+
+    let cancelled = false;
+    sshUserDetectionKeyRef.current = sshDetectionKey;
+    setSshUserDetecting(true);
+    setSshUserHint(null);
+
+    void operatorApiCall('ssh/user', undefined, { method: 'GET' })
+      .then(async (response) => {
+        const body = await response.json() as { username?: string };
+        const detectedUsername = typeof body.username === 'string' ? body.username.trim() : '';
+        if (cancelled) return;
+        if (detectedUsername) {
+          if (!sshUsernameDirtyRef.current) {
+            setSshUsername(detectedUsername);
+          }
+          setSshUserHint(`Detected sandbox user: ${detectedUsername}`);
+        } else {
+          setSshUserHint('Could not detect the sandbox user. You can enter one manually.');
+        }
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setSshUserHint(
+          e instanceof Error
+            ? `Could not detect the sandbox user: ${parseApiError(e)}`
+            : 'Could not detect the sandbox user. You can enter one manually.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSshUserDetecting(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, sshDetectionKey, isRunning, isOperatorAuthed, operatorToken, operatorApiCall]);
 
   const ports = useExposedPorts(inst?.status, operatorApiCall);
   const { refresh: refreshInstances } = useInstanceHydration();
@@ -181,6 +269,86 @@ export default function InstanceDetail() {
     });
   }, [operatorApiCall, refreshInstances, scheduleDismiss]);
 
+  const handleSshProvision = useCallback(async () => {
+    const key = sshPublicKey.trim();
+    if (!key) return;
+
+    const requestedUsername = sshUsername.trim();
+
+    if (requestedUsername && requestedUsername.length > 32) {
+      setSshError('Username must be 32 characters or fewer');
+      return;
+    }
+    if (requestedUsername && !/^[a-zA-Z0-9\-_.]+$/.test(requestedUsername)) {
+      setSshError('Username may only contain letters, numbers, dashes, underscores, and dots');
+      return;
+    }
+
+    const validPrefixes = ['ssh-rsa ', 'ssh-ed25519 ', 'ssh-dss ', 'ecdsa-sha2-'];
+    if (!validPrefixes.some((p) => key.startsWith(p))) {
+      setSshError('Invalid SSH key format. Must start with ssh-rsa, ssh-ed25519, or ecdsa-sha2-*');
+      return;
+    }
+    setSshBusy(true);
+    setSshError(null);
+    setSshSuccess(null);
+    try {
+      const payload: Record<string, unknown> = { public_key: key };
+      if (requestedUsername) {
+        payload.username = requestedUsername;
+      }
+      const response = await operatorApiCall('ssh', payload);
+      const body = await response.json() as { username?: string };
+      const effectiveUsername = typeof body.username === 'string' && body.username.trim()
+        ? body.username.trim()
+        : requestedUsername;
+      setSshKeys((prev) => {
+        const exists = prev.some((k) => k.publicKey === key);
+        if (exists) {
+          return prev.map((k) => k.publicKey === key ? { ...k, username: effectiveUsername } : k);
+        }
+        return [...prev, { username: effectiveUsername, publicKey: key }];
+      });
+      sshUsernameDirtyRef.current = false;
+      setSshUsername(effectiveUsername);
+      setSshUserHint(`Detected sandbox user: ${effectiveUsername}`);
+      setSshPublicKey('');
+      setSshSuccess('SSH key provisioned');
+      scheduleDismiss(() => setSshSuccess(null), 3000);
+    } catch (e) {
+      setSshError(e instanceof Error ? parseApiError(e) : 'Failed to provision SSH key');
+    } finally {
+      setSshBusy(false);
+    }
+  }, [sshUsername, sshPublicKey, operatorApiCall, scheduleDismiss]);
+
+  const handleSshRevoke = useCallback(async (key: SshKey) => {
+    setSshBusy(true);
+    setSshError(null);
+    setSshSuccess(null);
+    try {
+      const response = await operatorApiCall(
+        'ssh',
+        { username: key.username, public_key: key.publicKey },
+        { method: 'DELETE' },
+      );
+      const body = await response.json() as { username?: string };
+      const effectiveUsername = typeof body.username === 'string' && body.username.trim()
+        ? body.username.trim()
+        : key.username;
+      setSshKeys((prev) => prev.filter((k) => k.publicKey !== key.publicKey));
+      sshUsernameDirtyRef.current = false;
+      setSshUsername(effectiveUsername);
+      setSshUserHint(`Detected sandbox user: ${effectiveUsername}`);
+      setSshSuccess('SSH key revoked');
+      scheduleDismiss(() => setSshSuccess(null), 3000);
+    } catch (e) {
+      setSshError(e instanceof Error ? parseApiError(e) : 'Failed to revoke SSH key');
+    } finally {
+      setSshBusy(false);
+    }
+  }, [operatorApiCall, scheduleDismiss]);
+
   if (!inst) {
     return (
       <AnimatedPage className="mx-auto max-w-3xl px-4 sm:px-6 py-8">
@@ -203,6 +371,7 @@ export default function InstanceDetail() {
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal' },
     { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', hidden: !hasAgent },
+    { key: 'ssh' as const, label: 'SSH', icon: 'i-ph:key', hidden: !inst.sshPort },
     { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', hidden: !!inst.teeEnabled },
     ...(inst.teeEnabled ? [{ key: 'attestation' as const, label: 'Attestation', icon: 'i-ph:shield-check' }] : []),
   ];
@@ -392,6 +561,106 @@ export default function InstanceDetail() {
             </CardContent>
           )}
         </Card>
+      )}
+
+      {/* SSH Tab — provision and revoke SSH keys */}
+      {tab === 'ssh' && (
+        <div className="space-y-4">
+          {sshConnectionCommand && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">SSH Connection</CardTitle>
+                <CardDescription>
+                  Connect to this instance via SSH using the command below.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <p className="text-xs font-data rounded-lg bg-cloud-elements-background-depth-2 px-3 py-2 break-all">
+                  {sshConnectionCommand}
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Add SSH Key</CardTitle>
+              <CardDescription>Provision an SSH public key for remote access</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-cloud-elements-textSecondary">Username</label>
+                <Input
+                  aria-label="SSH username"
+                  value={sshUsername}
+                  onChange={(e) => {
+                    sshUsernameDirtyRef.current = true;
+                    setSshUsername(e.target.value);
+                  }}
+                  placeholder={sshUserDetecting ? 'Detecting sandbox user...' : 'Auto-detected from sandbox'}
+                  className="font-data text-sm"
+                />
+                {sshUserHint && (
+                  <p className="text-xs text-cloud-elements-textSecondary">{sshUserHint}</p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-cloud-elements-textSecondary">Public Key</label>
+                <Textarea
+                  aria-label="SSH public key"
+                  value={sshPublicKey}
+                  onChange={(e) => setSshPublicKey(e.target.value)}
+                  placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
+                  className="font-data text-xs min-h-[80px] resize-none"
+                />
+              </div>
+              {sshError && (
+                <p className="text-xs text-red-400">{sshError}</p>
+              )}
+              {sshSuccess && (
+                <p className="text-xs text-teal-400">{sshSuccess}</p>
+              )}
+              <Button
+                size="sm"
+                onClick={handleSshProvision}
+                disabled={sshBusy || !sshPublicKey.trim()}
+              >
+                {sshBusy ? 'Provisioning...' : 'Add Key'}
+              </Button>
+            </CardContent>
+          </Card>
+
+          {sshKeys.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Active Keys</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {sshKeys.map((key) => (
+                  <div
+                    key={key.publicKey}
+                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-cloud-elements-background-depth-2"
+                  >
+                    <div className="min-w-0">
+                      <span className="text-xs font-data text-cloud-elements-textSecondary">{key.username}@</span>
+                      <span className="text-xs font-data text-cloud-elements-textTertiary truncate block">
+                        {key.publicKey.length > 60 ? `${key.publicKey.slice(0, 60)}...` : key.publicKey}
+                      </span>
+                    </div>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => handleSshRevoke(key)}
+                      disabled={sshBusy}
+                    >
+                      Revoke
+                    </Button>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </div>
       )}
 
       {/* Secrets */}

@@ -20,6 +20,7 @@ export interface LocalInstance {
   agentIdentifier?: string;
   /** Whether the instance has AI credentials configured (e.g. ANTHROPIC_API_KEY). */
   credentialsAvailable?: boolean;
+  sshPort?: number;
   status: 'creating' | 'running' | 'stopped' | 'gone' | 'error';
   txHash?: string;
   callId?: number;

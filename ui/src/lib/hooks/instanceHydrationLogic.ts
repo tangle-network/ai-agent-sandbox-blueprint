@@ -54,6 +54,7 @@ function instanceFromApi(api: ApiSandbox): LocalInstance {
     agentIdentifier: api.agent_identifier || undefined,
     teeEnabled: !!api.tee_deployment_id,
     credentialsAvailable: api.credentials_available ?? undefined,
+    sshPort: api.ssh_port || undefined,
     status: statusFromApi(api.state),
   };
 }
@@ -92,6 +93,7 @@ export function reconcileInstances(
         agentIdentifier: api.agent_identifier || next.agentIdentifier,
         teeEnabled: next.teeEnabled || !!api.tee_deployment_id,
         credentialsAvailable: api.credentials_available ?? next.credentialsAvailable,
+        sshPort: api.ssh_port || next.sshPort,
         serviceId: api.service_id != null ? String(api.service_id) : next.serviceId,
         status: statusFromApi(api.state),
         errorMessage: undefined,
@@ -112,6 +114,7 @@ export function reconcileInstances(
           agentIdentifier: inferredApi.agent_identifier || next.agentIdentifier,
           teeEnabled: next.teeEnabled || !!inferredApi.tee_deployment_id,
           credentialsAvailable: inferredApi.credentials_available ?? next.credentialsAvailable,
+          sshPort: inferredApi.ssh_port || next.sshPort,
           serviceId: inferredApi.service_id != null ? String(inferredApi.service_id) : next.serviceId,
           status: statusFromApi(inferredApi.state),
           errorMessage: undefined,

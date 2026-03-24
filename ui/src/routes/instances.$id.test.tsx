@@ -43,6 +43,7 @@ vi.mock('@tangle-network/blueprint-ui/components', () => ({
   CardTitle: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
   CardDescription: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
   Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
+  Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
   Textarea: (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => <textarea {...props} />,
 }));
 
@@ -340,5 +341,77 @@ describe('InstanceDetail secrets tab', () => {
     });
     expect(mockRefreshInstances).toHaveBeenCalledWith({ interactive: true });
     expect(await screen.findByText('Secrets wiped')).toBeInTheDocument();
+  });
+});
+
+describe('InstanceDetail SSH tab', () => {
+  beforeEach(() => {
+    instancesRef.current = [makeInstance({ sshPort: 2222 })];
+    mockOperatorApiCall.mockReset();
+    mockGetOperatorToken.mockReset();
+    mockRefreshInstances.mockReset();
+    mockUpdateInstanceStatus.mockReset();
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.isAuthenticating = false;
+    operatorAuthState.error = null;
+    operatorAuthState.cachedToken = 'operator-token';
+    mockGetOperatorToken.mockResolvedValue('operator-token');
+    mockOperatorApiCall.mockResolvedValue(
+      new Response(JSON.stringify({ username: 'sidecar' }), { status: 200 }),
+    );
+  });
+
+  it('hides SSH tab when sshPort is absent', () => {
+    instancesRef.current = [makeInstance()];
+
+    renderSubject();
+
+    expect(screen.queryByRole('button', { name: 'SSH' })).not.toBeInTheDocument();
+  });
+
+  it('shows SSH tab when sshPort is present', () => {
+    renderSubject();
+
+    expect(screen.getByRole('button', { name: 'SSH' })).toBeInTheDocument();
+  });
+
+  it('auto-detects the SSH username when SSH tab opens', async () => {
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
+
+    await waitFor(() => {
+      expect(mockOperatorApiCall).toHaveBeenCalledWith('ssh/user', undefined, { method: 'GET' });
+    });
+    expect(await screen.findByText(/Detected sandbox user: sidecar/)).toBeInTheDocument();
+  });
+
+  it('stores backend-returned SSH username after provision', async () => {
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
+
+    // Wait for detection to complete first
+    await waitFor(() => {
+      expect(mockOperatorApiCall).toHaveBeenCalledWith('ssh/user', undefined, { method: 'GET' });
+    });
+
+    // Reset mock to track provision call
+    mockOperatorApiCall.mockResolvedValue(
+      new Response(JSON.stringify({ username: 'sidecar' }), { status: 200 }),
+    );
+
+    const keyInput = screen.getByLabelText('SSH public key');
+    fireEvent.change(keyInput, { target: { value: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Key' }));
+
+    await waitFor(() => {
+      // Username is auto-detected as 'sidecar', so it's included in the provision payload
+      expect(mockOperatorApiCall).toHaveBeenCalledWith('ssh', {
+        public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest',
+        username: 'sidecar',
+      });
+    });
+    expect(await screen.findByText('SSH key provisioned')).toBeInTheDocument();
   });
 });
