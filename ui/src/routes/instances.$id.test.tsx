@@ -45,6 +45,11 @@ vi.mock('@tangle-network/blueprint-ui/components', () => ({
   Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
   Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
   Textarea: (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => <textarea {...props} />,
+  Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) => (open ? <div>{children}</div> : null),
+  DialogContent: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
+  DialogHeader: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
+  DialogTitle: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
+  DialogDescription: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
 }));
 
 vi.mock('@tangle-network/blueprint-ui', () => ({
