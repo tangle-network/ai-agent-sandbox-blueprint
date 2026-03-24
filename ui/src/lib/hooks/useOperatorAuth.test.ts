@@ -443,10 +443,41 @@ describe('useOperatorAuth', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const second = renderHook(() => useOperatorAuth('http://test:9090'));
+    expect(second.result.current.isAuthenticated).toBe(true);
     expect(second.result.current.getCachedToken()).toBe('v4.public.persisted');
-    second.rerender();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockSignMessageAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a persisted session on the first render after refresh', async () => {
+    const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
+    mockFetchResponses(
+      { message: 'Sign this', nonce: 'abc' },
+      { token: 'v4.public.first-render', expires_at: futureExpiry },
+    );
+    mockSignMessageAsync.mockResolvedValue('0xsig');
+
+    const first = renderHook(() => useOperatorAuth('http://test:9090'));
+    await act(async () => {
+      await first.result.current.getToken();
+    });
+    first.unmount();
+
+    const storageKey = `tangle.operator_auth.${mockAddress.toLowerCase()}::http://test:9090`;
+    const persisted = window.sessionStorage.getItem(storageKey);
+    resetOperatorAuthStoreForTests();
+    if (persisted) {
+      window.sessionStorage.setItem(storageKey, persisted);
+    }
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const second = renderHook(() => useOperatorAuth('http://test:9090'));
 
     expect(second.result.current.isAuthenticated).toBe(true);
+    expect(second.result.current.getCachedToken()).toBe('v4.public.first-render');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mockSignMessageAsync).toHaveBeenCalledTimes(1);
   });

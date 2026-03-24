@@ -10,12 +10,14 @@ export function expectedLocalRpcUrl(): string {
 }
 
 /**
- * Detect the "same chain ID, different local RPC" case by comparing the latest
- * block hash reported by the wallet provider and the app's configured public client.
+ * Detect the "same chain ID, different local RPC" case by comparing a fixed
+ * block height reported by both the wallet provider and the app's configured
+ * public client.
  *
  * Returns:
  * - `true` when both point at the same local chain
- * - `false` when both report the local chain ID but different block hashes
+ * - `false` when both report the local chain ID but different hashes at the
+ *   same shared block height
  * - `null` when the check is not applicable or could not be completed
  */
 export async function walletRpcMatchesAppRpc(expectedChainId: number): Promise<boolean | null> {
@@ -26,17 +28,27 @@ export async function walletRpcMatchesAppRpc(expectedChainId: number): Promise<b
   if (expectedChainId !== localChainId()) return null;
 
   try {
-    const [walletChainHex, walletBlock, appBlock] = await Promise.all([
+    const [walletChainHex, walletBlockNumberHex, appBlockNumber] = await Promise.all([
       provider.request({ method: 'eth_chainId', params: [] }) as Promise<string>,
-      provider.request({
-        method: 'eth_getBlockByNumber',
-        params: ['latest', false],
-      }) as Promise<{ hash?: string } | null>,
-      publicClient.getBlock(),
+      provider.request({ method: 'eth_blockNumber', params: [] }) as Promise<string>,
+      publicClient.getBlockNumber(),
     ]);
 
     const walletChainId = Number(walletChainHex);
     if (walletChainId !== expectedChainId) return null;
+    const walletBlockNumber = BigInt(walletBlockNumberHex);
+    const comparisonBlockNumber = walletBlockNumber < appBlockNumber
+      ? walletBlockNumber
+      : appBlockNumber;
+    const comparisonBlockHex = `0x${comparisonBlockNumber.toString(16)}`;
+
+    const [walletBlock, appBlock] = await Promise.all([
+      provider.request({
+        method: 'eth_getBlockByNumber',
+        params: [comparisonBlockHex, false],
+      }) as Promise<{ hash?: string } | null>,
+      publicClient.getBlock({ blockNumber: comparisonBlockNumber }),
+    ]);
 
     const walletHash = walletBlock?.hash?.toLowerCase();
     const appHash = appBlock.hash.toLowerCase();

@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { useAccount, useSignMessage } from 'wagmi';
 import { OPERATOR_API_URL } from '~/lib/config';
 
@@ -37,27 +37,42 @@ function getPersistedSessionKey(key: string): string {
   return `${SESSION_STORAGE_PREFIX}${key}`;
 }
 
-function readPersistedSession(key: string): OperatorSession | null {
-  if (typeof window === 'undefined' || !window.sessionStorage) return null;
+function clearPersistedSession(key: string) {
+  if (typeof window === 'undefined' || !window.sessionStorage) return;
+
+  try {
+    window.sessionStorage.removeItem(getPersistedSessionKey(key));
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+function inspectPersistedSession(key: string): { session: OperatorSession | null; needsCleanup: boolean } {
+  if (typeof window === 'undefined' || !window.sessionStorage) {
+    return { session: null, needsCleanup: false };
+  }
 
   try {
     const raw = window.sessionStorage.getItem(getPersistedSessionKey(key));
-    if (!raw) return null;
+    if (!raw) return { session: null, needsCleanup: false };
     const parsed = JSON.parse(raw) as Partial<OperatorSession>;
     if (typeof parsed?.token !== 'string' || typeof parsed?.expiresAt !== 'number') {
-      window.sessionStorage.removeItem(getPersistedSessionKey(key));
-      return null;
+      return { session: null, needsCleanup: true };
     }
     const session: OperatorSession = { token: parsed.token, expiresAt: parsed.expiresAt };
     if (!isSessionValid(session)) {
-      window.sessionStorage.removeItem(getPersistedSessionKey(key));
-      return null;
+      return { session: null, needsCleanup: true };
     }
-    return session;
+    return { session, needsCleanup: false };
   } catch {
-    window.sessionStorage.removeItem(getPersistedSessionKey(key));
-    return null;
+    return { session: null, needsCleanup: true };
   }
+}
+
+function readPersistedSession(key: string): OperatorSession | null {
+  const persisted = inspectPersistedSession(key);
+  if (persisted.needsCleanup) clearPersistedSession(key);
+  return persisted.session;
 }
 
 function persistSession(key: string, session: OperatorSession | null) {
@@ -104,6 +119,14 @@ function isSessionValid(session: OperatorSession | null): session is OperatorSes
   return session.expiresAt * 1000 > Date.now() + 60_000;
 }
 
+function resolveEffectiveSession(
+  state: OperatorAuthState,
+  persistedSession: OperatorSession | null,
+): OperatorSession | null {
+  if (isSessionValid(state.session)) return state.session;
+  return persistedSession;
+}
+
 /**
  * Test-only helper to clear the shared auth registry between unit tests.
  */
@@ -141,37 +164,47 @@ export function useOperatorAuth(apiUrl?: string) {
   }, [cacheKey]);
   const getSnapshot = useCallback(() => {
     if (!cacheKey) return EMPTY_STATE;
-    const current = getState(cacheKey);
-    if (isSessionValid(current.session)) return current;
-    const persisted = readPersistedSession(cacheKey);
-    if (!persisted) return current;
-    const restored = {
-      ...current,
-      session: persisted,
-      error: null,
-    };
-    authRegistry.set(cacheKey, restored);
-    return restored;
+    return getState(cacheKey);
   }, [cacheKey]);
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const persistedSessionInfo = cacheKey
+    ? inspectPersistedSession(cacheKey)
+    : { session: null, needsCleanup: false };
+  const persistedSession = persistedSessionInfo.session;
+  const persistedSessionToken = persistedSession?.token ?? null;
+  const persistedSessionExpiresAt = persistedSession?.expiresAt ?? null;
+  const effectiveSession = resolveEffectiveSession(state, persistedSession);
 
-  const getCachedToken = useCallback((): string | null => {
-    if (!cacheKey) return null;
+  useEffect(() => {
+    if (!cacheKey) return;
+    if (persistedSessionInfo.needsCleanup) {
+      clearPersistedSession(cacheKey);
+    }
+    if (!persistedSessionToken || persistedSessionExpiresAt == null) return;
+
     const current = getState(cacheKey);
-    if (isSessionValid(current.session)) return current.session.token;
-
-    const persisted = readPersistedSession(cacheKey);
-    if (!persisted) return null;
+    if (isSessionValid(current.session) || current.inflight || current.isAuthenticating) {
+      return;
+    }
 
     setState(cacheKey, {
       ...current,
-      session: persisted,
-      inflight: null,
-      isAuthenticating: false,
+      session: {
+        token: persistedSessionToken,
+        expiresAt: persistedSessionExpiresAt,
+      },
       error: null,
     });
-    return persisted.token;
-  }, [cacheKey]);
+  }, [
+    cacheKey,
+    persistedSessionExpiresAt,
+    persistedSessionToken,
+    persistedSessionInfo.needsCleanup,
+  ]);
+
+  const getCachedToken = useCallback((): string | null => {
+    return effectiveSession?.token ?? null;
+  }, [effectiveSession?.token]);
 
   const getToken = useCallback(async (forceRefresh = false): Promise<string | null> => {
     if (!address || !cacheKey) return null;
@@ -259,7 +292,7 @@ export function useOperatorAuth(apiUrl?: string) {
     /** Get a valid PASETO token, authenticating if needed. */
     getToken,
     /** Whether we have a valid cached token. */
-    isAuthenticated: isSessionValid(state.session),
+    isAuthenticated: effectiveSession !== null,
     /** Whether an auth request is in-flight. */
     isAuthenticating: state.isAuthenticating,
     /** Last error message, if any. */
