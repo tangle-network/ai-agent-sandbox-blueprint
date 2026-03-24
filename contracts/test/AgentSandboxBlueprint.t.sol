@@ -420,6 +420,146 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertEq(config.target_service_id, 1);
     }
 
+    function test_workflowCreateNormalizesZeroServiceId() public {
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "zero-service",
+            workflow_json: "{}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: "sb-zero",
+            target_service_id: 0
+        });
+
+        simulateJobResult(
+            1, blueprint.JOB_WORKFLOW_CREATE(), 501, operator1, encodeWorkflowCreateInputs(req), encodeJsonOutputs("{}")
+        );
+
+        AgentSandboxBlueprint.WorkflowConfig memory config = blueprint.getWorkflow(501);
+        assertEq(config.target_service_id, 1);
+        assertEq(config.target_sandbox_id, "sb-zero");
+    }
+
+    function test_workflowCreateRevertsOnMismatchedServiceId() public {
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "bad-service",
+            workflow_json: "{}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: "sb-bad",
+            target_service_id: 2
+        });
+
+        uint8 workflowJobId = blueprint.JOB_WORKFLOW_CREATE();
+        simulateJobCall(1, workflowJobId, 503, encodeWorkflowCreateInputs(req));
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(0)));
+        blueprint.onJobResult(1, workflowJobId, 503, operator1, encodeWorkflowCreateInputs(req), bytes(""));
+    }
+
+    function test_workflowCreateRevertsOnInstanceTargetKindInCloudMode() public {
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "wrong-kind",
+            workflow_json: "{}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 1,
+            target_sandbox_id: "sb-wrong",
+            target_service_id: 1
+        });
+
+        uint8 workflowJobId = blueprint.JOB_WORKFLOW_CREATE();
+        simulateJobCall(1, workflowJobId, 504, encodeWorkflowCreateInputs(req));
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(1)));
+        blueprint.onJobResult(1, workflowJobId, 504, operator1, encodeWorkflowCreateInputs(req), bytes(""));
+    }
+
+    function test_workflowCreateRevertsOnInvalidTargetKind() public {
+        uint8 workflowJobId = blueprint.JOB_WORKFLOW_CREATE();
+
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req2 = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "bad-kind-2",
+            workflow_json: "{}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 2,
+            target_sandbox_id: "sb-bad-kind",
+            target_service_id: 1
+        });
+
+        simulateJobCall(1, workflowJobId, 505, encodeWorkflowCreateInputs(req2));
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(2)));
+        blueprint.onJobResult(1, workflowJobId, 505, operator1, encodeWorkflowCreateInputs(req2), bytes(""));
+
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req255 = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "bad-kind-255",
+            workflow_json: "{}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 255,
+            target_sandbox_id: "sb-bad-kind",
+            target_service_id: 1
+        });
+
+        simulateJobCall(1, workflowJobId, 506, encodeWorkflowCreateInputs(req255));
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(255)));
+        blueprint.onJobResult(1, workflowJobId, 506, operator1, encodeWorkflowCreateInputs(req255), bytes(""));
+    }
+
+    function test_workflowCreateRevertsOnEmptySandboxId() public {
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "empty-sandbox",
+            workflow_json: "{}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: "",
+            target_service_id: 1
+        });
+
+        uint8 workflowJobId = blueprint.JOB_WORKFLOW_CREATE();
+        simulateJobCall(1, workflowJobId, 507, encodeWorkflowCreateInputs(req));
+
+        vm.prank(tangleCore);
+        vm.expectRevert(AgentSandboxBlueprint.EmptySandboxId.selector);
+        blueprint.onJobResult(1, workflowJobId, 507, operator1, encodeWorkflowCreateInputs(req), bytes(""));
+    }
+
+    function test_workflowCreateRevertsOnSandboxIdTooLong() public {
+        bytes memory longId = new bytes(256);
+        for (uint256 i = 0; i < 256; i++) longId[i] = "a";
+
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "long-sandbox",
+            workflow_json: "{}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: string(longId),
+            target_service_id: 1
+        });
+
+        uint8 workflowJobId = blueprint.JOB_WORKFLOW_CREATE();
+        simulateJobCall(1, workflowJobId, 508, encodeWorkflowCreateInputs(req));
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.SandboxIdTooLong.selector, uint256(256)));
+        blueprint.onJobResult(1, workflowJobId, 508, operator1, encodeWorkflowCreateInputs(req), bytes(""));
+    }
+
     function test_workflowCreateStoresRealisticJsonPayload() public {
         AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
             name: "workflow-qa",

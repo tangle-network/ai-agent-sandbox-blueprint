@@ -3,29 +3,48 @@ use serde_json::json;
 use crate::JsonResponse;
 use crate::WorkflowControlRequest;
 use crate::WorkflowCreateRequest;
-use crate::tangle::extract::{CallId, Caller, TangleArg, TangleResult};
+use crate::tangle::extract::{CallId, Caller, ServiceId, TangleArg, TangleResult};
 use crate::workflows::{
     WorkflowEntry, acquire_workflow_run, apply_workflow_execution, resolve_next_run, run_workflow,
     store_failed_execution, store_latest_execution, workflow_key, workflow_tick, workflows,
 };
 
+fn validate_instance_workflow_target(
+    target_kind: u8,
+    target_sandbox_id: &str,
+    target_service_id: u64,
+    service_id: u64,
+) -> Result<u64, String> {
+    if target_kind != crate::workflows::WORKFLOW_TARGET_INSTANCE {
+        return Err("instance workflows must target an instance resource".to_string());
+    }
+    if !target_sandbox_id.trim().is_empty() {
+        return Err("instance workflows must not set target_sandbox_id".to_string());
+    }
+    if target_service_id != 0 && target_service_id != service_id {
+        return Err(format!(
+            "instance workflows must target current service {service_id}"
+        ));
+    }
+
+    Ok(service_id)
+}
+
 pub async fn workflow_create(
     Caller(caller): Caller,
+    ServiceId(service_id): ServiceId,
     CallId(call_id): CallId,
     TangleArg(request): TangleArg<WorkflowCreateRequest>,
 ) -> Result<TangleResult<JsonResponse>, String> {
     if request.workflow_json.trim().is_empty() {
         return Err("workflow_json is required".to_string());
     }
-    if request.target_kind != crate::workflows::WORKFLOW_TARGET_INSTANCE {
-        return Err("instance workflows must target an instance resource".to_string());
-    }
-    if !request.target_sandbox_id.trim().is_empty() {
-        return Err("instance workflows must not set target_sandbox_id".to_string());
-    }
-    if request.target_service_id == 0 {
-        return Err("instance workflows require target_service_id".to_string());
-    }
+    let target_service_id = validate_instance_workflow_target(
+        request.target_kind,
+        request.target_sandbox_id.as_str(),
+        request.target_service_id,
+        service_id,
+    )?;
 
     let trigger_type = request.trigger_type.to_string();
     let trigger_config = request.trigger_config.to_string();
@@ -40,7 +59,7 @@ pub async fn workflow_create(
         sandbox_config_json: request.sandbox_config_json.to_string(),
         target_kind: request.target_kind,
         target_sandbox_id: request.target_sandbox_id.to_string(),
-        target_service_id: request.target_service_id,
+        target_service_id,
         active: true,
         next_run_at,
         last_run_at: None,
@@ -149,4 +168,33 @@ pub async fn workflow_tick_job() -> Result<TangleResult<JsonResponse>, String> {
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_instance_workflow_target;
+
+    #[test]
+    fn instance_workflow_accepts_zero_service_id_and_normalizes() {
+        let resolved = validate_instance_workflow_target(1, "", 0, 42).unwrap();
+        assert_eq!(resolved, 42);
+    }
+
+    #[test]
+    fn instance_workflow_rejects_non_empty_sandbox_id() {
+        let err = validate_instance_workflow_target(1, "sb-1", 0, 42).unwrap_err();
+        assert!(err.contains("must not set target_sandbox_id"));
+    }
+
+    #[test]
+    fn instance_workflow_rejects_non_instance_target_kind() {
+        let err = validate_instance_workflow_target(0, "", 0, 42).unwrap_err();
+        assert!(err.contains("target an instance resource"));
+    }
+
+    #[test]
+    fn instance_workflow_rejects_mismatched_service_id() {
+        let err = validate_instance_workflow_target(1, "", 7, 42).unwrap_err();
+        assert!(err.contains("current service 42"));
+    }
 }

@@ -927,7 +927,9 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         uint64 targetServiceId
     ) internal {
         if (instanceMode) {
-            if (targetKind != WORKFLOW_TARGET_INSTANCE) revert InvalidWorkflowTarget(targetKind);
+            if (targetKind != WORKFLOW_TARGET_INSTANCE) {
+                revert InvalidWorkflowTarget(targetKind);
+            }
             if (bytes(targetSandboxId).length != 0) revert InvalidWorkflowTarget(targetKind);
         } else {
             if (targetKind != WORKFLOW_TARGET_SANDBOX) revert InvalidWorkflowTarget(targetKind);

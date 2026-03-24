@@ -369,7 +369,7 @@ mod ownership_enforcement {
             trigger_config: String::new(),
             sandbox_config_json: "{}".into(),
             target_kind: 0,
-            target_sandbox_id: String::new(),
+            target_sandbox_id: "sandbox-own".into(),
             target_service_id: 1,
             active: true,
             next_run_at: None,
@@ -389,7 +389,7 @@ mod ownership_enforcement {
             trigger_config: String::new(),
             sandbox_config_json: "{}".into(),
             target_kind: 0,
-            target_sandbox_id: String::new(),
+            target_sandbox_id: "sandbox-case".into(),
             target_service_id: 1,
             active: true,
             next_run_at: None,
@@ -895,7 +895,7 @@ mod workflow_jobs {
     use super::*;
     use serial_test::serial;
 
-    fn wf(id: u64, url: &str, token: &str) -> WorkflowEntry {
+    fn wf(id: u64, sandbox_id: &str, url: &str, token: &str) -> WorkflowEntry {
         WorkflowEntry {
             id,
             name: format!("wf-{id}"),
@@ -906,7 +906,7 @@ mod workflow_jobs {
             trigger_config: "0 * * * * *".to_string(),
             sandbox_config_json: "{}".to_string(),
             target_kind: 0,
-            target_sandbox_id: String::new(),
+            target_sandbox_id: sandbox_id.to_string(),
             target_service_id: 1,
             active: true,
             next_run_at: Some(1),
@@ -930,7 +930,7 @@ mod workflow_jobs {
         let key = workflow_key(90001);
         workflows()
             .unwrap()
-            .insert(key.clone(), wf(90001, "http://x", "t"))
+            .insert(key.clone(), wf(90001, "sandbox-90001", "http://x", "t"))
             .unwrap();
 
         let r = workflows().unwrap().get(&key).unwrap().unwrap();
@@ -964,7 +964,7 @@ mod workflow_jobs {
             .mount(&srv)
             .await;
 
-        let entry = wf(90002, &srv.uri(), "wf-tok");
+        let entry = wf(90002, &sid, &srv.uri(), "wf-tok");
         let exec = run_workflow(&entry).await.unwrap();
         assert!(exec.response["task"]["success"].as_bool().unwrap());
         assert!(exec.last_run_at > 0);
@@ -986,7 +986,7 @@ mod workflow_jobs {
             .await;
 
         let key = workflow_key(90003);
-        let entry = wf(90003, &srv.uri(), "tick-tok");
+        let entry = wf(90003, &sid, &srv.uri(), "tick-tok");
         workflows().unwrap().insert(key.clone(), entry).unwrap();
 
         let result = workflow_tick().await.unwrap();
@@ -1006,7 +1006,10 @@ mod workflow_jobs {
         let key = workflow_key(90005);
         workflows()
             .unwrap()
-            .insert(key.clone(), wf(90005, "http://unused", "t"))
+            .insert(
+                key.clone(),
+                wf(90005, "sandbox-90005", "http://unused", "t"),
+            )
             .unwrap();
 
         let w = workflows().unwrap().get(&key).unwrap().unwrap();
@@ -1036,7 +1039,7 @@ mod workflow_jobs {
     fn inactive_workflow_flag_persists() {
         reset_workflows();
         let key = workflow_key(90013);
-        let mut entry = wf(90013, "http://unused", "t");
+        let mut entry = wf(90013, "sandbox-90013", "http://unused", "t");
         entry.active = false;
         workflows().unwrap().insert(key.clone(), entry).unwrap();
 
@@ -1088,6 +1091,28 @@ mod workflow_jobs {
         rm(&sid);
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn legacy_workflow_without_target_sandbox_id_resolves_by_sidecar_url() {
+        reset_workflows();
+        let srv = MockServer::start().await;
+        let sid = insert_sandbox(&srv.uri(), "legacy-tok");
+
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .respond_with(mock_agent_ok("legacy-ok"))
+            .mount(&srv)
+            .await;
+
+        let mut entry = wf(90014, &sid, &srv.uri(), "legacy-tok");
+        entry.target_sandbox_id.clear();
+
+        let exec = run_workflow(&entry).await.unwrap();
+        assert!(exec.response["task"]["success"].as_bool().unwrap());
+
+        rm(&sid);
+    }
+
     #[test]
     #[serial]
     fn workflow_create_requires_real_credentials() {
@@ -1115,7 +1140,7 @@ mod workflow_jobs {
             .await;
 
         let key = workflow_key(90010);
-        let entry = wf(90010, &srv.uri(), "conc-tok");
+        let entry = wf(90010, &sid, &srv.uri(), "conc-tok");
         workflows().unwrap().insert(key.clone(), entry).unwrap();
 
         // Spawn first tick (will be slow due to 1s delay mock)
@@ -1681,7 +1706,7 @@ mod errors {
             trigger_config: String::new(),
             sandbox_config_json: "{}".into(),
             target_kind: 0,
-            target_sandbox_id: String::new(),
+            target_sandbox_id: "legacy-sidecar-url".into(),
             target_service_id: 1,
             active: true,
             next_run_at: None,

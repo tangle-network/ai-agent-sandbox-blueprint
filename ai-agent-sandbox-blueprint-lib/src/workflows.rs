@@ -395,6 +395,9 @@ pub fn validate_workflow_execution_ready_with_target(
     workflow_json: &str,
     target_sandbox_id: &str,
 ) -> Result<WorkflowTaskSpec, String> {
+    // New workflow creation paths validate target_kind / target_sandbox_id
+    // before calling this helper. The empty-target fallback remains here so
+    // older stored workflows that only reference sidecar_url still run.
     if target_sandbox_id.trim().is_empty() {
         return validate_workflow_execution_ready(workflow_json);
     }

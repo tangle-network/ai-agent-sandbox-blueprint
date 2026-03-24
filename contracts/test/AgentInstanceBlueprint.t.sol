@@ -434,6 +434,145 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertFalse(instance.getWorkflow(createCallId).active);
     }
 
+    function test_instanceModeNormalizesZeroWorkflowServiceId() public {
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "instance-workflow-zero",
+            workflow_json: "{\"prompt\":\"hello\"}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 1,
+            target_sandbox_id: "",
+            target_service_id: 0
+        });
+
+        uint64 createCallId = 2110;
+        simulateJobCall(testServiceId, instance.JOB_WORKFLOW_CREATE(), createCallId, encodeWorkflowCreateInputs(req));
+        simulateJobResult(
+            testServiceId,
+            instance.JOB_WORKFLOW_CREATE(),
+            createCallId,
+            operator1,
+            encodeWorkflowCreateInputs(req),
+            bytes("")
+        );
+
+        AgentSandboxBlueprint.WorkflowConfig memory cfg = instance.getWorkflow(createCallId);
+        assertEq(cfg.target_service_id, testServiceId);
+        assertEq(cfg.target_kind, 1);
+    }
+
+    function test_instanceModeRejectsMismatchedWorkflowServiceId() public {
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "instance-workflow-bad-service",
+            workflow_json: "{\"prompt\":\"hello\"}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 1,
+            target_sandbox_id: "",
+            target_service_id: testServiceId + 1
+        });
+
+        uint64 createCallId = 2111;
+        uint8 workflowJobId = instance.JOB_WORKFLOW_CREATE();
+        simulateJobCall(testServiceId, workflowJobId, createCallId, encodeWorkflowCreateInputs(req));
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(1)));
+        instance.onJobResult(
+            testServiceId, workflowJobId, createCallId, operator1, encodeWorkflowCreateInputs(req), bytes("")
+        );
+    }
+
+    function test_instanceModeRejectsSandboxTargetKind() public {
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "instance-sandbox-kind",
+            workflow_json: "{\"prompt\":\"hello\"}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 0,
+            target_sandbox_id: "",
+            target_service_id: testServiceId
+        });
+
+        uint64 createCallId = 2120;
+        uint8 workflowJobId = instance.JOB_WORKFLOW_CREATE();
+        simulateJobCall(testServiceId, workflowJobId, createCallId, encodeWorkflowCreateInputs(req));
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(0)));
+        instance.onJobResult(
+            testServiceId, workflowJobId, createCallId, operator1, encodeWorkflowCreateInputs(req), bytes("")
+        );
+    }
+
+    function test_instanceModeRejectsInvalidTargetKind() public {
+        uint8 workflowJobId = instance.JOB_WORKFLOW_CREATE();
+
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req2 = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "instance-bad-kind-2",
+            workflow_json: "{\"prompt\":\"hello\"}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 2,
+            target_sandbox_id: "",
+            target_service_id: testServiceId
+        });
+
+        uint64 callId2 = 2121;
+        simulateJobCall(testServiceId, workflowJobId, callId2, encodeWorkflowCreateInputs(req2));
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(2)));
+        instance.onJobResult(
+            testServiceId, workflowJobId, callId2, operator1, encodeWorkflowCreateInputs(req2), bytes("")
+        );
+
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req255 = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "instance-bad-kind-255",
+            workflow_json: "{\"prompt\":\"hello\"}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 255,
+            target_sandbox_id: "",
+            target_service_id: testServiceId
+        });
+
+        uint64 callId255 = 2122;
+        simulateJobCall(testServiceId, workflowJobId, callId255, encodeWorkflowCreateInputs(req255));
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(255)));
+        instance.onJobResult(
+            testServiceId, workflowJobId, callId255, operator1, encodeWorkflowCreateInputs(req255), bytes("")
+        );
+    }
+
+    function test_instanceModeRejectsNonEmptySandboxId() public {
+        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+            name: "instance-nonempty-sandbox",
+            workflow_json: "{\"prompt\":\"hello\"}",
+            trigger_type: "cron",
+            trigger_config: "0 * * * * *",
+            sandbox_config_json: "{}",
+            target_kind: 1,
+            target_sandbox_id: "should-be-empty",
+            target_service_id: testServiceId
+        });
+
+        uint64 createCallId = 2123;
+        uint8 workflowJobId = instance.JOB_WORKFLOW_CREATE();
+        simulateJobCall(testServiceId, workflowJobId, createCallId, encodeWorkflowCreateInputs(req));
+
+        vm.prank(tangleCore);
+        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(1)));
+        instance.onJobResult(
+            testServiceId, workflowJobId, createCallId, operator1, encodeWorkflowCreateInputs(req), bytes("")
+        );
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // UNKNOWN JOB ID REVERTS (INSTANCE MODE)
     // ═══════════════════════════════════════════════════════════════════════════

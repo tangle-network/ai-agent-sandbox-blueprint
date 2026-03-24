@@ -811,8 +811,45 @@ async fn workflow_create_and_cancel() -> Result<()> {
             return Ok(());
         };
 
-        // ─── Step 2: Create workflow via Tangle ──────────────────────────
-        e2e_step!(2, "Submitting JOB_WORKFLOW_CREATE...");
+        // ─── Step 2: Provision sandbox via Tangle ────────────────────────
+        e2e_step!(2, "Submitting JOB_SANDBOX_CREATE for workflow target...");
+        let sandbox_payload = SandboxCreateRequest {
+            name: "workflow-target".to_string(),
+            image: "agent-dev".to_string(),
+            stack: "default".to_string(),
+            agent_identifier: "default-agent".to_string(),
+            env_json: "{}".to_string(),
+            metadata_json: "{}".to_string(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 3600,
+            idle_timeout_seconds: 900,
+            cpu_cores: 2,
+            memory_mb: 4096,
+            disk_gb: 20,
+            tee_required: false,
+            tee_type: 0,
+        }
+        .abi_encode();
+
+        let sandbox_sub = harness
+            .submit_job(JOB_SANDBOX_CREATE, Bytes::from(sandbox_payload))
+            .await?;
+        let sandbox_output = harness
+            .wait_for_job_result_with_deadline(sandbox_sub, JOB_RESULT_TIMEOUT)
+            .await
+            .context("workflow target sandbox result not received")?;
+        let sandbox_receipt = SandboxCreateOutput::abi_decode(&sandbox_output)
+            .context("failed to decode workflow target sandbox result")?;
+        let sandbox_id = sandbox_receipt.sandboxId.clone();
+        assert!(
+            !sandbox_id.is_empty(),
+            "workflow target sandbox_id should not be empty"
+        );
+
+        // ─── Step 3: Create workflow via Tangle ──────────────────────────
+        e2e_step!(3, "Submitting JOB_WORKFLOW_CREATE...");
         let create_payload = WorkflowCreateRequest {
             name: "e2e-test-workflow".to_string(),
             workflow_json: serde_json::to_string(&json!({
@@ -824,7 +861,7 @@ async fn workflow_create_and_cancel() -> Result<()> {
             trigger_config: String::new(),
             sandbox_config_json: "{}".to_string(),
             target_kind: 0,
-            target_sandbox_id: String::new(),
+            target_sandbox_id: sandbox_id.clone(),
             target_service_id: 1,
         }
         .abi_encode();
@@ -849,8 +886,8 @@ async fn workflow_create_and_cancel() -> Result<()> {
             .context("missing workflowId")?;
         eprintln!("  Workflow created: id={workflow_id}, status=active");
 
-        // ─── Step 3: Cancel workflow via Tangle ──────────────────────────
-        e2e_step!(3, "Submitting JOB_WORKFLOW_CANCEL...");
+        // ─── Step 4: Cancel workflow via Tangle ──────────────────────────
+        e2e_step!(4, "Submitting JOB_WORKFLOW_CANCEL...");
         let cancel_payload = WorkflowControlRequest { workflow_id }.abi_encode();
 
         let cancel_sub = harness
@@ -870,10 +907,10 @@ async fn workflow_create_and_cancel() -> Result<()> {
         );
         eprintln!("  Workflow canceled: {cancel_json}");
 
-        // ─── Step 4: Shutdown ────────────────────────────────────────────
-        e2e_step!(4, "Shutting down...");
+        // ─── Step 5: Shutdown ────────────────────────────────────────────
+        e2e_step!(5, "Shutting down...");
         harness.shutdown().await;
-        eprintln!("\n=== Workflow E2E tests passed (4 steps) ===");
+        eprintln!("\n=== Workflow E2E tests passed (5 steps) ===");
         Ok(())
     })
     .await
