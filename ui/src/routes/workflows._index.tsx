@@ -1,18 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { useStore } from '@nanostores/react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useAccount } from 'wagmi';
 import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle-network/blueprint-ui/components';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
 import { Input } from '@tangle-network/blueprint-ui/components';
 import { Select } from '@tangle-network/blueprint-ui/components';
-import {
-  useWorkflowIdsForAddress,
-  useWorkflowBatchForAddress,
-  type WorkflowView,
-} from '~/lib/hooks/useSandboxReads';
+import { useWorkflowSummaries, type WorkflowOperatorSummary } from '~/lib/hooks/useWorkflowRuntimeStatus';
 import { getAddresses, publicClient, tangleJobsAbi, useSubmitJob } from '@tangle-network/blueprint-ui';
 import { encodeJobArgs } from '@tangle-network/blueprint-ui';
 import { getJobById } from '@tangle-network/blueprint-ui';
@@ -20,13 +17,18 @@ import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
 import { cn } from '@tangle-network/blueprint-ui';
 import { decodeEventLog, type Address } from 'viem';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
-import { sandboxListStore, type LocalSandbox } from '~/lib/stores/sandboxes';
-import { instanceListStore, type LocalInstance } from '~/lib/stores/instances';
-
-type WorkflowBlueprintId =
-  | 'ai-agent-sandbox-blueprint'
-  | 'ai-agent-instance-blueprint'
-  | 'ai-agent-tee-instance-blueprint';
+import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
+import { sandboxListStore } from '~/lib/stores/sandboxes';
+import { instanceListStore } from '~/lib/stores/instances';
+import {
+  WORKFLOW_TARGET_INSTANCE,
+  WORKFLOW_TARGET_SANDBOX,
+  buildWorkflowDetailPath,
+  getWorkflowBlueprintIdForScope,
+  resolveWorkflowTargetLabelFromValues,
+  type WorkflowBlueprintId,
+  type WorkflowScope,
+} from '~/lib/workflows';
 
 type WorkflowTarget = {
   key: string;
@@ -43,54 +45,46 @@ type WorkflowTarget = {
 
 type WorkflowRecord = {
   id: bigint;
+  scope: WorkflowScope;
   blueprintId: WorkflowBlueprintId;
-  contractAddress: Address;
-  data: WorkflowView | null;
+  data: WorkflowOperatorSummary;
   targetLabel: string;
   kindLabel: string;
 };
-
-type WorkflowSource = {
-  blueprintId: WorkflowBlueprintId;
-  contractAddress: Address;
-};
-
-const WORKFLOW_TARGET_SANDBOX = 0;
-const WORKFLOW_TARGET_INSTANCE = 1;
 
 function getWorkflowContractAddress(address: Address): Address | undefined {
   return isContractDeployed(address) ? address : undefined;
 }
 
+function getWorkflowContractAddressForScope(
+  addrs: SandboxAddresses,
+  scope: WorkflowScope,
+): Address | undefined {
+  switch (scope) {
+    case 'sandbox':
+      return getWorkflowContractAddress(addrs.sandboxBlueprint);
+    case 'instance':
+      return getWorkflowContractAddress(addrs.instanceBlueprint);
+    case 'tee':
+      return getWorkflowContractAddress(addrs.teeInstanceBlueprint);
+  }
+}
+
 export default function Workflows() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
+  const { address } = useAccount();
   const sandboxes = useStore(sandboxListStore);
   const instances = useStore(instanceListStore);
   const { submitJob, status: txStatus } = useSubmitJob();
   const addrs = getAddresses<SandboxAddresses>();
-
-  const sources = useMemo<WorkflowSource[]>(() => ([
-    { blueprintId: 'ai-agent-sandbox-blueprint', contractAddress: addrs.sandboxBlueprint },
-    { blueprintId: 'ai-agent-instance-blueprint', contractAddress: addrs.instanceBlueprint },
-    { blueprintId: 'ai-agent-tee-instance-blueprint', contractAddress: addrs.teeInstanceBlueprint },
-  ]), [addrs.instanceBlueprint, addrs.sandboxBlueprint, addrs.teeInstanceBlueprint]);
-
-  const sandboxWorkflowIds = useWorkflowIdsForAddress(getWorkflowContractAddress(addrs.sandboxBlueprint), false);
-  const instanceWorkflowIds = useWorkflowIdsForAddress(getWorkflowContractAddress(addrs.instanceBlueprint), false);
-  const teeWorkflowIds = useWorkflowIdsForAddress(getWorkflowContractAddress(addrs.teeInstanceBlueprint), false);
-
-  const sandboxWorkflowData = useWorkflowBatchForAddress(
-    getWorkflowContractAddress(addrs.sandboxBlueprint),
-    (sandboxWorkflowIds.data ?? []) as bigint[],
-  );
-  const instanceWorkflowData = useWorkflowBatchForAddress(
-    getWorkflowContractAddress(addrs.instanceBlueprint),
-    (instanceWorkflowIds.data ?? []) as bigint[],
-  );
-  const teeWorkflowData = useWorkflowBatchForAddress(
-    getWorkflowContractAddress(addrs.teeInstanceBlueprint),
-    (teeWorkflowIds.data ?? []) as bigint[],
+  const sandboxOperatorUrl = OPERATOR_API_URL;
+  const instanceOperatorUrl = INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL;
+  const hasDedicatedInstanceOperator = instanceOperatorUrl !== sandboxOperatorUrl;
+  const sandboxWorkflowSummaries = useWorkflowSummaries(sandboxOperatorUrl);
+  const instanceWorkflowSummaries = useWorkflowSummaries(
+    instanceOperatorUrl,
+    hasDedicatedInstanceOperator,
   );
 
   const [showCreate, setShowCreate] = useState(false);
@@ -168,69 +162,113 @@ export default function Workflows() {
   );
 
   const workflows = useMemo<WorkflowRecord[]>(() => {
-    const groups = [
-      {
-        blueprintId: sources[0].blueprintId,
-        contractAddress: sources[0].contractAddress,
-        ids: sandboxWorkflowIds.data ?? [],
-        data: sandboxWorkflowData.data ?? [],
-      },
-      {
-        blueprintId: sources[1].blueprintId,
-        contractAddress: sources[1].contractAddress,
-        ids: instanceWorkflowIds.data ?? [],
-        data: instanceWorkflowData.data ?? [],
-      },
-      {
-        blueprintId: sources[2].blueprintId,
-        contractAddress: sources[2].contractAddress,
-        ids: teeWorkflowIds.data ?? [],
-        data: teeWorkflowData.data ?? [],
-      },
+    const summaryEntries = [
+      ...(sandboxWorkflowSummaries.data ?? []).map((workflow) => ({
+        workflow,
+        operatorUrl: sandboxOperatorUrl,
+      })),
+      ...(hasDedicatedInstanceOperator
+        ? (instanceWorkflowSummaries.data ?? []).map((workflow) => ({
+          workflow,
+          operatorUrl: instanceOperatorUrl,
+        }))
+        : []),
     ];
 
-    return groups
-      .flatMap((group) =>
-        group.ids.map((id, index) => {
-          const batchResult = group.data[index];
-          const data = batchResult?.status === 'success' ? batchResult.result : null;
-          const resolvedTarget = resolveWorkflowTargetLabel(
-            data,
-            group.blueprintId,
-            sandboxes,
-            instances,
-          );
-          return {
-            id: id as bigint,
-            blueprintId: group.blueprintId,
-            contractAddress: group.contractAddress,
-            data,
-            targetLabel: resolvedTarget.label,
-            kindLabel: resolvedTarget.kindLabel,
-          };
-        }),
-      )
+    const deduped = new Map<string, { workflow: WorkflowOperatorSummary; operatorUrl: string }>();
+    for (const entry of summaryEntries) {
+      deduped.set(`${entry.workflow.scope}:${entry.workflow.workflowId}`, entry);
+    }
+
+    return Array.from(deduped.values())
+      .map(({ workflow }) => {
+        const blueprintId = getWorkflowBlueprintIdForScope(workflow.scope);
+        const contractAddress = getWorkflowContractAddressForScope(addrs, workflow.scope);
+        if (!contractAddress) return null;
+
+        const resolvedTarget = resolveWorkflowTargetLabelFromValues(
+          workflow.targetKind,
+          workflow.targetSandboxId,
+          workflow.targetServiceId,
+          blueprintId,
+          sandboxes,
+          instances,
+        );
+
+        return {
+          id: BigInt(workflow.workflowId),
+          scope: workflow.scope,
+          blueprintId,
+          data: workflow,
+          targetLabel: resolvedTarget.label,
+          kindLabel: resolvedTarget.kindLabel,
+        };
+      })
+      .filter((workflow): workflow is WorkflowRecord => workflow !== null)
       .sort((left, right) => {
-        const leftUpdated = left.data?.updated_at ?? 0;
-        const rightUpdated = right.data?.updated_at ?? 0;
-        return rightUpdated - leftUpdated;
+        const leftUpdated = left.data.lastRunAt
+          ?? left.data.latestExecution?.executedAt
+          ?? left.data.nextRunAt
+          ?? 0;
+        const rightUpdated = right.data.lastRunAt
+          ?? right.data.latestExecution?.executedAt
+          ?? right.data.nextRunAt
+          ?? 0;
+        return rightUpdated - leftUpdated || Number(right.id - left.id);
       });
   }, [
-    instanceWorkflowData.data,
-    instanceWorkflowIds.data,
+    addrs,
+    hasDedicatedInstanceOperator,
     instances,
-    sandboxWorkflowData.data,
-    sandboxWorkflowIds.data,
     sandboxes,
-    sources,
-    teeWorkflowData.data,
-    teeWorkflowIds.data,
+    sandboxOperatorUrl,
+    sandboxWorkflowSummaries.data,
+    instanceOperatorUrl,
+    instanceWorkflowSummaries.data,
   ]);
 
-  const isLoading =
-    sandboxWorkflowIds.isLoading
-    || instanceWorkflowIds.isLoading
-    || teeWorkflowIds.isLoading;
+  const isLoading = !!address && (
+    sandboxWorkflowSummaries.isLoading
+    || (hasDedicatedInstanceOperator && instanceWorkflowSummaries.isLoading)
+  );
+  const operatorAuthPrompts = useMemo(() => {
+    const prompts = [{
+      key: sandboxOperatorUrl,
+      label: 'Sandbox operator',
+      query: sandboxWorkflowSummaries,
+    }];
+
+    if (hasDedicatedInstanceOperator) {
+      prompts.push({
+        key: instanceOperatorUrl,
+        label: 'Instance operator',
+        query: instanceWorkflowSummaries,
+      });
+    }
+
+    return prompts.filter((entry) => entry.query.authRequired || entry.query.authError);
+  }, [
+    hasDedicatedInstanceOperator,
+    sandboxOperatorUrl,
+    sandboxWorkflowSummaries,
+    instanceOperatorUrl,
+    instanceWorkflowSummaries,
+  ]);
+  const operatorErrors = useMemo(
+    () => [
+      sandboxWorkflowSummaries.error ? { key: `error:${sandboxOperatorUrl}`, label: 'Sandbox operator', message: sandboxWorkflowSummaries.error.message } : null,
+      hasDedicatedInstanceOperator && instanceWorkflowSummaries.error
+        ? { key: `error:${instanceOperatorUrl}`, label: 'Instance operator', message: instanceWorkflowSummaries.error.message }
+        : null,
+    ].filter((entry): entry is { key: string; label: string; message: string } => entry !== null),
+    [
+      hasDedicatedInstanceOperator,
+      sandboxOperatorUrl,
+      sandboxWorkflowSummaries.error,
+      instanceOperatorUrl,
+      instanceWorkflowSummaries.error,
+    ],
+  );
 
   const jobValue = (jobId: number): bigint =>
     BigInt(PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
@@ -283,6 +321,9 @@ export default function Workflows() {
 
   const invalidateWorkflowQueries = useCallback(async () => {
     await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['workflow-summaries'] }),
+      queryClient.invalidateQueries({ queryKey: ['workflow-operator-detail'] }),
+      queryClient.invalidateQueries({ queryKey: ['workflow-runtime-status'] }),
       queryClient.invalidateQueries({ queryKey: ['workflow-contract-read'] }),
       queryClient.invalidateQueries({ queryKey: ['workflow-batch'] }),
       queryClient.invalidateQueries({ queryKey: ['sandbox-contract-read'] }),
@@ -376,13 +417,13 @@ export default function Workflows() {
     workflow: WorkflowRecord,
     action: 'trigger' | 'cancel',
   ) => {
-    if (!workflow.data || !workflow.data.target_service_id) return;
+    if (!workflow.data.targetServiceId) return;
     const jobId = action === 'trigger' ? JOB_IDS.WORKFLOW_TRIGGER : JOB_IDS.WORKFLOW_CANCEL;
     const job = getJobById(workflow.blueprintId, jobId);
     if (!job) return;
 
     await submitJob({
-      serviceId: BigInt(workflow.data.target_service_id),
+      serviceId: BigInt(workflow.data.targetServiceId),
       jobId,
       args: encodeJobArgs(job, { workflowId: workflow.id }),
       label: `${action === 'trigger' ? 'Trigger' : 'Cancel'} Workflow #${workflow.id}`,
@@ -404,14 +445,69 @@ export default function Workflows() {
         <div>
           <h1 className="text-2xl font-display font-bold text-cloud-elements-textPrimary">Workflows</h1>
           <p className="text-sm text-cloud-elements-textSecondary mt-1">
-            {workflows.length > 0 ? `${workflows.length} workflow${workflows.length > 1 ? 's' : ''}` : 'Automation across your sandboxes and instances'}
+            {!address
+              ? 'Connect your wallet to view workflows you own'
+              : workflows.length > 0
+                ? `${workflows.length} workflow${workflows.length > 1 ? 's' : ''}`
+                : 'Automation across your sandboxes and instances'}
           </p>
         </div>
-        <Button onClick={() => setShowCreate((current) => !current)} disabled={availableTargets.length === 0}>
+        <Button onClick={() => setShowCreate((current) => !current)} disabled={!address || availableTargets.length === 0}>
           <div className={showCreate ? 'i-ph:x text-base' : 'i-ph:plus text-base'} />
           {showCreate ? 'Cancel' : 'New Workflow'}
         </Button>
       </div>
+
+      {address && operatorAuthPrompts.length > 0 ? (
+        <div className="space-y-3 mb-6">
+          {operatorAuthPrompts.map(({ key, label, query }) => (
+            <Card key={key}>
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between gap-4 flex-wrap">
+                  <div>
+                    <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+                      Connect {label}
+                    </p>
+                    <p className="text-xs text-cloud-elements-textTertiary mt-1">
+                      Sign once to load the workflows this wallet can access on that operator.
+                    </p>
+                    {query.authError ? (
+                      <p className="text-xs text-rose-300 mt-2">{query.authError}</p>
+                    ) : null}
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={query.isAuthenticating}
+                    onClick={() => {
+                      void query.authenticate().then((token) => {
+                        if (token) void query.refetch();
+                      });
+                    }}
+                  >
+                    {query.isAuthenticating ? 'Signing...' : `Connect ${label}`}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
+      {operatorErrors.length > 0 ? (
+        <div className="space-y-3 mb-6">
+          {operatorErrors.map((entry) => (
+            <Card key={entry.key}>
+              <CardContent className="p-5">
+                <p className="text-sm font-display font-medium text-rose-300">
+                  {entry.label} error
+                </p>
+                <p className="text-xs text-rose-200 mt-1">{entry.message}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
 
       {availableTargets.length === 0 && (
         <Card className="mb-6">
@@ -548,10 +644,20 @@ export default function Workflows() {
             <div className="py-16 text-center">
               <div className="i-ph:flow-arrow text-4xl text-cloud-elements-textTertiary mb-3 mx-auto" />
               <p className="text-cloud-elements-textSecondary font-display">
-                {isLoading ? 'Loading workflows...' : 'No workflows configured'}
+                {!address
+                  ? 'Connect your wallet to view workflows'
+                  : isLoading
+                    ? 'Loading workflows...'
+                    : operatorAuthPrompts.length > 0
+                      ? 'Authenticate with your operator to load workflows'
+                      : 'No workflows configured'}
               </p>
               <p className="text-sm text-cloud-elements-textTertiary mt-1">
-                Create a workflow from a running sandbox or instance to automate recurring tasks
+                {!address
+                  ? 'Workflow visibility is owner-scoped, so the list stays empty until you connect the owner wallet'
+                  : operatorAuthPrompts.length > 0
+                    ? 'Owned workflows now come from the operator API, so you need an operator session before the list can load'
+                    : 'Create a workflow from a running sandbox or instance to automate recurring tasks'}
               </p>
             </div>
           </CardContent>
@@ -574,27 +680,14 @@ function WorkflowCard({
 }) {
   const { id, data, targetLabel, kindLabel } = workflow;
 
-  if (!data) {
-    return (
-      <Card>
-        <CardContent className="p-5">
-          <div className="flex items-center gap-3">
-            <div className="i-ph:flow-arrow text-lg text-cloud-elements-textTertiary" />
-            <span className="text-sm font-data text-cloud-elements-textSecondary">Workflow #{String(id)}</span>
-            <Badge variant="secondary">Loading...</Badge>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
   const triggerLabel: Record<string, string> = {
     cron: 'Cron',
     webhook: 'Webhook',
     manual: 'Manual',
   };
 
-  const canRunActions = data.active && data.target_service_id !== '0';
+  const canRunActions = data.active && data.targetServiceId !== 0;
+  const detailPath = buildWorkflowDetailPath(workflow.scope, id);
 
   return (
     <Card>
@@ -612,33 +705,43 @@ function WorkflowCard({
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-sm font-display font-semibold text-cloud-elements-textPrimary">{data.name || `Workflow #${String(id)}`}</h3>
+                <Link
+                  to={detailPath}
+                  className="text-sm font-display font-semibold text-cloud-elements-textPrimary hover:text-violet-400 transition-colors"
+                >
+                  {data.name || `Workflow #${String(id)}`}
+                </Link>
                 <Badge variant={data.active ? 'running' : 'secondary'}>
                   {data.active ? 'Active' : 'Inactive'}
                 </Badge>
                 <Badge variant="accent">
-                  {triggerLabel[data.trigger_type] ?? data.trigger_type}
+                  {triggerLabel[data.triggerType] ?? data.triggerType}
                 </Badge>
                 <Badge variant="secondary">{kindLabel}</Badge>
               </div>
               <div className="flex items-center gap-3 mt-1 text-xs text-cloud-elements-textTertiary flex-wrap">
                 <span>Runs on {targetLabel}</span>
-                {data.trigger_config && (
+                {data.triggerConfig && (
                   <>
                     <span className="text-cloud-elements-dividerColor">·</span>
-                    <span className="font-data">{data.trigger_config}</span>
+                    <span className="font-data">{data.triggerConfig}</span>
                   </>
                 )}
-                {data.last_triggered_at > 0 && (
+                {data.lastRunAt && data.lastRunAt > 0 && (
                   <>
                     <span className="text-cloud-elements-dividerColor">·</span>
-                    <span>Last: {new Date(data.last_triggered_at * 1000).toLocaleString()}</span>
+                    <span>Last: {new Date(data.lastRunAt * 1000).toLocaleString()}</span>
                   </>
                 )}
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Link to={detailPath}>
+              <Button variant="outline" size="sm">
+                View Details
+              </Button>
+            </Link>
             {canRunActions && (
               <>
                 <Button variant="success" size="sm" onClick={onTrigger} disabled={txPending}>
@@ -656,35 +759,4 @@ function WorkflowCard({
       </CardContent>
     </Card>
   );
-}
-
-function resolveWorkflowTargetLabel(
-  workflow: WorkflowView | null,
-  blueprintId: WorkflowBlueprintId,
-  sandboxes: LocalSandbox[],
-  instances: LocalInstance[],
-) {
-  if (!workflow) {
-    return { label: 'Resolving target...', kindLabel: 'Workflow' };
-  }
-
-  if (workflow.target_kind === WORKFLOW_TARGET_SANDBOX) {
-    const sandbox = sandboxes.find((record) => record.sandboxId === workflow.target_sandbox_id);
-    return {
-      label: sandbox?.name ?? workflow.target_sandbox_id ?? 'Unknown sandbox',
-      kindLabel: 'Sandbox',
-    };
-  }
-
-  const instance = instances.find((record) => {
-    if (record.serviceId !== workflow.target_service_id) return false;
-    if (blueprintId === 'ai-agent-tee-instance-blueprint') return !!record.teeEnabled;
-    if (blueprintId === 'ai-agent-instance-blueprint') return !record.teeEnabled;
-    return true;
-  });
-
-  return {
-    label: instance?.name ?? `Service #${workflow.target_service_id}`,
-    kindLabel: blueprintId === 'ai-agent-tee-instance-blueprint' ? 'TEE Instance' : 'Instance',
-  };
 }
