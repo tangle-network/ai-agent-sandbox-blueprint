@@ -56,6 +56,9 @@ function instanceFromApi(api: ApiSandbox): LocalInstance {
     credentialsAvailable: api.credentials_available ?? undefined,
     sshPort: api.ssh_port || undefined,
     status: statusFromApi(api.state),
+    circuitBreakerActive: api.circuit_breaker_active ?? undefined,
+    circuitBreakerRemainingSecs: api.circuit_breaker_remaining_secs ?? undefined,
+    circuitBreakerProbing: api.circuit_breaker_probing ?? undefined,
   };
 }
 
@@ -97,6 +100,9 @@ export function reconcileInstances(
         serviceId: api.service_id != null ? String(api.service_id) : next.serviceId,
         status: statusFromApi(api.state),
         errorMessage: undefined,
+        circuitBreakerActive: api.circuit_breaker_active ?? undefined,
+        circuitBreakerRemainingSecs: api.circuit_breaker_remaining_secs ?? undefined,
+        circuitBreakerProbing: api.circuit_breaker_probing ?? undefined,
       });
       continue;
     }
@@ -118,6 +124,9 @@ export function reconcileInstances(
           serviceId: inferredApi.service_id != null ? String(inferredApi.service_id) : next.serviceId,
           status: statusFromApi(inferredApi.state),
           errorMessage: undefined,
+          circuitBreakerActive: inferredApi.circuit_breaker_active ?? undefined,
+          circuitBreakerRemainingSecs: inferredApi.circuit_breaker_remaining_secs ?? undefined,
+          circuitBreakerProbing: inferredApi.circuit_breaker_probing ?? undefined,
         });
         continue;
       }

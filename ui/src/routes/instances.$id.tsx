@@ -25,6 +25,7 @@ import { cn } from '@tangle-network/blueprint-ui';
 import { truncateAddress } from '@tangle-network/agent-ui/primitives';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
+import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
 import { useAccount } from 'wagmi';
 import {
   getInstanceSandboxDisplayValue,
@@ -88,6 +89,7 @@ export default function InstanceDetail() {
   const sshUsernameDirtyRef = useRef(false);
   const sshUserDetectionKeyRef = useRef<string | null>(null);
 
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<{
     title: string;
     description: string;
@@ -149,6 +151,13 @@ export default function InstanceDetail() {
   }, [getOperatorToken, operatorUrl]);
   const operatorToken = getCachedOperatorToken();
   const hasWallet = !!address;
+
+  const handleSnapshot = useCallback(
+    async (params: { destination: string; include_workspace: boolean; include_state: boolean }) => {
+      await operatorApiCall('snapshot', params);
+    },
+    [operatorApiCall],
+  );
 
   const sshDetectionKey = inst?.sandboxId ?? decodedId;
   const sshConnectionCommand = useMemo(() => {
@@ -408,15 +417,36 @@ export default function InstanceDetail() {
             teeStyle="pill"
           />
         </div>
-        {inst.status === 'running' && inst.serviceId && (
-          <Link to={`/workflows?target=${encodeURIComponent(`instance:${inst.id}`)}`} className="ml-auto">
-            <Button variant="secondary" size="sm">
-              <div className="i-ph:flow-arrow text-sm" />
-              Create Workflow
+        {inst.status === 'running' && (
+          <div className="ml-auto flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setSnapshotOpen(true)}>
+              <div className="i-ph:camera text-sm" />
+              Snapshot
             </Button>
-          </Link>
+            {inst.serviceId && (
+              <Link to={`/workflows?target=${encodeURIComponent(`instance:${inst.id}`)}`}>
+                <Button variant="secondary" size="sm">
+                  <div className="i-ph:flow-arrow text-sm" />
+                  Create Workflow
+                </Button>
+              </Link>
+            )}
+          </div>
         )}
       </div>
+
+      {inst.circuitBreakerActive && (
+        <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+          <p className="text-sm font-display font-medium text-amber-300">
+            Sidecar unreachable — circuit breaker active
+          </p>
+          <p className="mt-1 text-xs text-amber-200/90">
+            {inst.circuitBreakerProbing
+              ? 'Recovery probe in progress\u2026'
+              : `Cooldown active — retrying in ~${inst.circuitBreakerRemainingSecs ?? '?'}s`}
+          </p>
+        </div>
+      )}
 
       <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-6" />
 
@@ -736,6 +766,11 @@ export default function InstanceDetail() {
         </div>
       )}
 
+      <SnapshotDialog
+        open={snapshotOpen}
+        onOpenChange={setSnapshotOpen}
+        onConfirm={handleSnapshot}
+      />
       <ConfirmDialog
         open={!!confirmAction}
         onOpenChange={(open) => {

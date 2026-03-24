@@ -25,6 +25,9 @@ export interface LocalInstance {
   txHash?: string;
   callId?: number;
   errorMessage?: string;
+  circuitBreakerActive?: boolean;
+  circuitBreakerRemainingSecs?: number;
+  circuitBreakerProbing?: boolean;
 }
 
 const INSTANCE_STORE_KEY_PREFIX = 'sandbox_cloud_instances';

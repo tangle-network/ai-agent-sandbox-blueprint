@@ -174,6 +174,29 @@ pub(crate) fn api_error_with_details(
     )
 }
 
+/// Convert a `SandboxError` from `circuit_breaker::check_health` into a
+/// structured 503 response with the `CIRCUIT_BREAKER` error code.
+fn circuit_breaker_api_error(err: SandboxError) -> (StatusCode, Json<ApiError>) {
+    match err {
+        SandboxError::CircuitBreaker {
+            remaining_secs,
+            probing,
+        } => api_error_with_details(
+            StatusCode::SERVICE_UNAVAILABLE,
+            if probing {
+                "Sidecar recovery probe in progress. Please retry shortly.".to_string()
+            } else {
+                format!(
+                    "Sidecar is in circuit-breaker cooldown ({remaining_secs}s remaining)."
+                )
+            },
+            Some("CIRCUIT_BREAKER"),
+            Some(remaining_secs * 1000),
+        ),
+        other => api_error(StatusCode::SERVICE_UNAVAILABLE, other.to_string()),
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct CreateLiveChatSessionRequest {
     #[serde(default)]
@@ -303,10 +326,18 @@ struct SandboxSummary {
     extra_ports: std::collections::HashMap<u16, u16>,
     /// Whether the sandbox has AI credentials configured (e.g. ANTHROPIC_API_KEY).
     credentials_available: bool,
+    /// Whether the circuit breaker is currently active for this sandbox's sidecar.
+    circuit_breaker_active: bool,
+    /// Seconds remaining in the circuit breaker cooldown (if active).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    circuit_breaker_remaining_secs: Option<u64>,
+    /// Whether a recovery probe is in flight.
+    circuit_breaker_probing: bool,
 }
 
 impl SandboxSummary {
     fn from_record(r: &SandboxRecord, managing_operator: Option<&str>) -> Self {
+        let breaker = circuit_breaker::query_status(&r.id);
         Self {
             id: r.id.clone(),
             name: r.name.clone(),
@@ -327,10 +358,11 @@ impl SandboxSummary {
             managing_operator: managing_operator.map(str::to_string),
             tee_deployment_id: r.tee_deployment_id.clone(),
             extra_ports: r.extra_ports.clone(),
-            credentials_available: workflow_runtime_credentials_available(
-                &r.effective_env_json(),
-            )
-            .unwrap_or(false),
+            credentials_available: workflow_runtime_credentials_available(&r.effective_env_json())
+                .unwrap_or(false),
+            circuit_breaker_active: breaker.active,
+            circuit_breaker_remaining_secs: breaker.remaining_secs,
+            circuit_breaker_probing: breaker.probing,
         }
     }
 }
@@ -1710,8 +1742,7 @@ async fn sidecar_call(
     op_name: &str,
 ) -> Result<Value, (StatusCode, Json<ApiError>)> {
     require_running(record)?;
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
 
     match run_sidecar_json_attempt(record, path, &payload, timeout).await {
         Err(SidecarAttemptFailure::Timeout) => {
@@ -1763,8 +1794,7 @@ async fn sidecar_get_call(
     op_name: &str,
 ) -> Result<Value, (StatusCode, Json<ApiError>)> {
     require_running(record)?;
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
 
     match run_sidecar_get_json_attempt(record, path, timeout).await {
         Err(SidecarAttemptFailure::Timeout) => {
@@ -2630,8 +2660,7 @@ async fn run_port_proxy(
         ));
     }
 
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
 
     tracing::debug!(
         sandbox_id = %record.id,

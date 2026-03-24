@@ -33,6 +33,9 @@ export interface LocalSandbox {
   errorMessage?: string;
   /** Timestamp when the sandbox first went missing from authoritative operator hydration. */
   missingSince?: number;
+  circuitBreakerActive?: boolean;
+  circuitBreakerRemainingSecs?: number;
+  circuitBreakerProbing?: boolean;
 }
 
 interface LegacySandboxRecord extends Partial<LocalSandbox> {

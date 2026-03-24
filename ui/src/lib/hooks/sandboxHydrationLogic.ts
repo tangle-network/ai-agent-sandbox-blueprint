@@ -32,6 +32,9 @@ export interface ApiSandbox {
   managing_operator?: string;
   tee_deployment_id?: string;
   credentials_available?: boolean;
+  circuit_breaker_active?: boolean;
+  circuit_breaker_remaining_secs?: number;
+  circuit_breaker_probing?: boolean;
 }
 
 export interface ApiProvision {
@@ -111,6 +114,9 @@ function sandboxFromApi(api: ApiSandbox): LocalSandbox {
     credentialsAvailable: api.credentials_available ?? undefined,
     status: statusFromApi(api.state),
     missingSince: undefined,
+    circuitBreakerActive: api.circuit_breaker_active ?? undefined,
+    circuitBreakerRemainingSecs: api.circuit_breaker_remaining_secs ?? undefined,
+    circuitBreakerProbing: api.circuit_breaker_probing ?? undefined,
   });
 }
 
@@ -204,6 +210,9 @@ export function reconcileSandboxes(
         status: statusFromApi(api.state),
         errorMessage: undefined,
         missingSince: undefined,
+        circuitBreakerActive: api.circuit_breaker_active ?? undefined,
+        circuitBreakerRemainingSecs: api.circuit_breaker_remaining_secs ?? undefined,
+        circuitBreakerProbing: api.circuit_breaker_probing ?? undefined,
       }));
       continue;
     }
@@ -237,6 +246,9 @@ export function reconcileSandboxes(
           credentialsAvailable: inferredApi.credentials_available ?? next.credentialsAvailable,
           status: statusFromApi(inferredApi.state),
           errorMessage: undefined,
+          circuitBreakerActive: inferredApi.circuit_breaker_active ?? undefined,
+          circuitBreakerRemainingSecs: inferredApi.circuit_breaker_remaining_secs ?? undefined,
+          circuitBreakerProbing: inferredApi.circuit_breaker_probing ?? undefined,
         }));
         continue;
       }

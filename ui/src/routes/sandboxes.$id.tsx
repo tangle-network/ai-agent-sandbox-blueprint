@@ -634,6 +634,19 @@ export default function SandboxDetail() {
         </div>
       )}
 
+      {sb.circuitBreakerActive && (
+        <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+          <p className="text-sm font-display font-medium text-amber-300">
+            Sidecar unreachable — circuit breaker active
+          </p>
+          <p className="mt-1 text-xs text-amber-200/90">
+            {sb.circuitBreakerProbing
+              ? 'Recovery probe in progress\u2026'
+              : `Cooldown active — retrying in ~${sb.circuitBreakerRemainingSecs ?? '?'}s`}
+          </p>
+        </div>
+      )}
+
       <div className="flex justify-end mb-4">
         {isRunning && sb.sandboxId && (
           <Link to={`/workflows?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`}>

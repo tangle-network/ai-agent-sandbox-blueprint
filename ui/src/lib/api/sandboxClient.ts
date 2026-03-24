@@ -111,6 +111,15 @@ export class SandboxClient {
           `${operation} failed (${status}): ${parsed.error ?? 'Sandbox agent is still starting up.'}${retryHint}`,
         );
       }
+      if (parsed.code === 'CIRCUIT_BREAKER') {
+        const retryMs = typeof parsed.retry_after_ms === 'number' ? parsed.retry_after_ms : null;
+        const retryHint = retryMs && retryMs > 0
+          ? ` Retrying in ~${Math.ceil(retryMs / 1000)}s.`
+          : '';
+        return new Error(
+          `${operation} failed: Sidecar is temporarily unreachable (circuit breaker active).${retryHint}`,
+        );
+      }
     } catch {
       // Fall back to the raw response body for non-JSON errors.
     }
