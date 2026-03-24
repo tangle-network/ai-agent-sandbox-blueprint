@@ -101,6 +101,56 @@ fn insert_sandbox(url: &str, token: &str) -> String {
     id
 }
 
+fn insert_ssh_sandbox(url: &str, token: &str) -> String {
+    init();
+    let id = uid();
+    runtime::sandboxes()
+        .unwrap()
+        .insert(
+            id.clone(),
+            SandboxRecord {
+                id: id.clone(),
+                container_id: format!("ctr-{id}"),
+                sidecar_url: url.to_string(),
+                sidecar_port: 0,
+                ssh_port: Some(22),
+                token: token.to_string(),
+                created_at: util::now_ts(),
+                cpu_cores: 2,
+                memory_mb: 4096,
+                state: Default::default(),
+                idle_timeout_seconds: 0,
+                max_lifetime_seconds: 0,
+                last_activity_at: util::now_ts(),
+                stopped_at: None,
+                snapshot_image_id: None,
+                snapshot_s3_url: None,
+                container_removed_at: None,
+                image_removed_at: None,
+                original_image: String::new(),
+                base_env_json: String::new(),
+                user_env_json: String::new(),
+                snapshot_destination: None,
+                tee_deployment_id: None,
+                tee_metadata_json: None,
+                tee_attestation_json: None,
+                name: String::new(),
+                agent_identifier: String::new(),
+                metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
+                disk_gb: 0,
+                stack: String::new(),
+                owner: String::new(),
+                service_id: None,
+                tee_config: None,
+                extra_ports: std::collections::HashMap::new(),
+                ssh_login_user: None,
+                ssh_authorized_keys: Vec::new(),
+            },
+        )
+        .unwrap();
+    id
+}
+
 fn rm(id: &str) {
     let _ = runtime::sandboxes().unwrap().remove(id);
 }
@@ -488,6 +538,7 @@ mod ssh_tests {
             .mount(&server)
             .await;
 
+        let id = insert_ssh_sandbox(&server.uri(), "tok");
         let result = provision_key(
             &server.uri(),
             "root",
@@ -496,6 +547,7 @@ mod ssh_tests {
         )
         .await;
 
+        rm(&id);
         assert!(result.is_ok());
     }
 
@@ -509,6 +561,7 @@ mod ssh_tests {
             .mount(&server)
             .await;
 
+        let id = insert_ssh_sandbox(&server.uri(), "tok");
         let result = revoke_key(
             &server.uri(),
             "root",
@@ -517,13 +570,15 @@ mod ssh_tests {
         )
         .await;
 
+        rm(&id);
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn ssh_provision_rejects_invalid_username() {
         let server = MockServer::start().await;
-        // No mock needed — should fail before HTTP call.
+        let id = insert_ssh_sandbox(&server.uri(), "tok");
+        // No mock needed — should fail before any sidecar call.
         let result = provision_key(
             &server.uri(),
             "root; rm -rf /",
@@ -532,6 +587,7 @@ mod ssh_tests {
         )
         .await;
 
+        rm(&id);
         assert!(result.is_err());
     }
 }
