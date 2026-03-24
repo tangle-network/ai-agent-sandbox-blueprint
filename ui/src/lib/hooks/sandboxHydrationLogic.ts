@@ -31,6 +31,7 @@ export interface ApiSandbox {
   service_id?: number;
   managing_operator?: string;
   tee_deployment_id?: string;
+  credentials_available?: boolean;
 }
 
 export interface ApiProvision {
@@ -107,6 +108,7 @@ function sandboxFromApi(api: ApiSandbox): LocalSandbox {
     agentIdentifier: api.agent_identifier || undefined,
     teeEnabled: !!api.tee_deployment_id,
     sshPort: api.ssh_port || undefined,
+    credentialsAvailable: api.credentials_available ?? undefined,
     status: statusFromApi(api.state),
     missingSince: undefined,
   });
@@ -198,6 +200,7 @@ export function reconcileSandboxes(
         operator: api.managing_operator || next.operator,
         teeEnabled: next.teeEnabled || !!api.tee_deployment_id,
         sshPort: api.ssh_port || next.sshPort,
+        credentialsAvailable: api.credentials_available ?? next.credentialsAvailable,
         status: statusFromApi(api.state),
         errorMessage: undefined,
         missingSince: undefined,
@@ -231,6 +234,7 @@ export function reconcileSandboxes(
           operator: inferredApi.managing_operator || next.operator,
           teeEnabled: next.teeEnabled || !!inferredApi.tee_deployment_id,
           sshPort: inferredApi.ssh_port || next.sshPort,
+          credentialsAvailable: inferredApi.credentials_available ?? next.credentialsAvailable,
           status: statusFromApi(inferredApi.state),
           errorMessage: undefined,
         }));

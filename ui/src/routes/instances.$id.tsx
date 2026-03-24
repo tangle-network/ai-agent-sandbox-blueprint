@@ -346,17 +346,8 @@ export default function InstanceDetail() {
       {/* Chat */}
       {tab === 'chat' && (
         <Card className="overflow-hidden">
-          <CardContent className="p-0">
-            {isOperatorAuthed ? (
-              <div className="h-[min(600px,65vh)]">
-                <SessionSidebar
-                  sandboxId={inst.sandboxId ?? decodedId}
-                  client={client}
-                  systemPrompt={systemPrompt}
-                  onSystemPromptChange={setSystemPrompt}
-                />
-              </div>
-            ) : (
+          {!isOperatorAuthed ? (
+            <CardContent className="p-0">
               <div className="p-6 text-center">
                 <p className="text-sm text-cloud-elements-textSecondary mb-3">
                   Authenticate with the operator to chat with the instance agent
@@ -369,8 +360,37 @@ export default function InstanceDetail() {
                   {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
                 </Button>
               </div>
-            )}
-          </CardContent>
+            </CardContent>
+          ) : inst.credentialsAvailable === false ? (
+            <CardContent className="py-16 text-center">
+              <div className="i-ph:key text-3xl text-amber-400 mb-3 mx-auto" />
+              <p className="text-sm text-cloud-elements-textSecondary mb-2">
+                AI credentials are not configured
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mb-3">
+                Add one of the following in the Secrets tab:
+              </p>
+              <ul className="text-xs text-cloud-elements-textTertiary space-y-1 mb-4">
+                <li><code className="font-data">ANTHROPIC_API_KEY</code></li>
+                <li><code className="font-data">ZAI_API_KEY</code></li>
+                <li><code className="font-data">OPENCODE_MODEL_PROVIDER</code> + <code className="font-data">OPENCODE_MODEL_NAME</code> + <code className="font-data">OPENCODE_MODEL_API_KEY</code></li>
+              </ul>
+              <Button size="sm" variant="outline" onClick={() => setTab('secrets')}>
+                Go to Secrets
+              </Button>
+            </CardContent>
+          ) : (
+            <CardContent className="p-0">
+              <div className="h-[min(600px,65vh)]">
+                <SessionSidebar
+                  sandboxId={inst.sandboxId ?? decodedId}
+                  client={client}
+                  systemPrompt={systemPrompt}
+                  onSystemPromptChange={setSystemPrompt}
+                />
+              </div>
+            </CardContent>
+          )}
         </Card>
       )}
 

@@ -53,6 +53,7 @@ function instanceFromApi(api: ApiSandbox): LocalInstance {
     sidecarUrl: api.sidecar_url,
     agentIdentifier: api.agent_identifier || undefined,
     teeEnabled: !!api.tee_deployment_id,
+    credentialsAvailable: api.credentials_available ?? undefined,
     status: statusFromApi(api.state),
   };
 }
@@ -90,6 +91,7 @@ export function reconcileInstances(
         image: api.image || next.image,
         agentIdentifier: api.agent_identifier || next.agentIdentifier,
         teeEnabled: next.teeEnabled || !!api.tee_deployment_id,
+        credentialsAvailable: api.credentials_available ?? next.credentialsAvailable,
         serviceId: api.service_id != null ? String(api.service_id) : next.serviceId,
         status: statusFromApi(api.state),
         errorMessage: undefined,
@@ -109,6 +111,7 @@ export function reconcileInstances(
           image: inferredApi.image || next.image,
           agentIdentifier: inferredApi.agent_identifier || next.agentIdentifier,
           teeEnabled: next.teeEnabled || !!inferredApi.tee_deployment_id,
+          credentialsAvailable: inferredApi.credentials_available ?? next.credentialsAvailable,
           serviceId: inferredApi.service_id != null ? String(inferredApi.service_id) : next.serviceId,
           status: statusFromApi(inferredApi.state),
           errorMessage: undefined,

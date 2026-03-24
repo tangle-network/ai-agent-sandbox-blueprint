@@ -18,6 +18,8 @@ export interface LocalInstance {
   teeEnabled?: boolean;
   /** Agent identifier configured for the sidecar image. Must match a registered agent inside that image. */
   agentIdentifier?: string;
+  /** Whether the instance has AI credentials configured (e.g. ANTHROPIC_API_KEY). */
+  credentialsAvailable?: boolean;
   status: 'creating' | 'running' | 'stopped' | 'gone' | 'error';
   txHash?: string;
   callId?: number;

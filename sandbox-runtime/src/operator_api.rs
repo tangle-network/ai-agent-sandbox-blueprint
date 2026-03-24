@@ -34,7 +34,9 @@ use crate::live_operator_sessions::{
 use crate::metrics;
 use crate::provision_progress;
 use crate::rate_limit;
-use crate::runtime::{self, SandboxRecord, SandboxState, sandboxes};
+use crate::runtime::{
+    self, SandboxRecord, SandboxState, sandboxes, workflow_runtime_credentials_available,
+};
 use crate::secret_provisioning;
 use crate::session_auth::{self, SessionAuth};
 
@@ -299,6 +301,8 @@ struct SandboxSummary {
     /// Extra user-exposed ports: container_port → host_port.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     extra_ports: std::collections::HashMap<u16, u16>,
+    /// Whether the sandbox has AI credentials configured (e.g. ANTHROPIC_API_KEY).
+    credentials_available: bool,
 }
 
 impl SandboxSummary {
@@ -323,6 +327,10 @@ impl SandboxSummary {
             managing_operator: managing_operator.map(str::to_string),
             tee_deployment_id: r.tee_deployment_id.clone(),
             extra_ports: r.extra_ports.clone(),
+            credentials_available: workflow_runtime_credentials_available(
+                &r.effective_env_json(),
+            )
+            .unwrap_or(false),
         }
     }
 }
@@ -883,6 +891,8 @@ struct InjectSecretsRequest {
 struct SecretsResponse {
     status: String,
     sandbox_id: String,
+    /// Whether AI credentials are available after this operation.
+    credentials_available: bool,
 }
 
 async fn instance_inject_secrets(
@@ -904,11 +914,14 @@ async fn instance_inject_secrets(
     match secret_provisioning::inject_secrets(&record.id, body.env_json, None).await {
         Ok(updated) => {
             sync_instance_record(&updated.id);
+            let creds = workflow_runtime_credentials_available(&updated.effective_env_json())
+                .unwrap_or(false);
             (
                 StatusCode::OK,
                 Json(SecretsResponse {
                     status: "secrets_configured".to_string(),
                     sandbox_id: updated.id,
+                    credentials_available: creds,
                 }),
             )
                 .into_response()
@@ -929,11 +942,14 @@ async fn instance_wipe_secrets(SessionAuth(address): SessionAuth) -> impl IntoRe
     match secret_provisioning::wipe_secrets(&record.id, None).await {
         Ok(updated) => {
             sync_instance_record(&updated.id);
+            let creds = workflow_runtime_credentials_available(&updated.effective_env_json())
+                .unwrap_or(false);
             (
                 StatusCode::OK,
                 Json(SecretsResponse {
                     status: "secrets_wiped".to_string(),
                     sandbox_id: updated.id,
+                    credentials_available: creds,
                 }),
             )
                 .into_response()
@@ -955,14 +971,19 @@ async fn inject_secrets(
     }
 
     match secret_provisioning::inject_secrets(&sandbox_id, body.env_json, None).await {
-        Ok(record) => (
-            StatusCode::OK,
-            Json(SecretsResponse {
-                status: "secrets_configured".to_string(),
-                sandbox_id: record.id,
-            }),
-        )
-            .into_response(),
+        Ok(record) => {
+            let creds = workflow_runtime_credentials_available(&record.effective_env_json())
+                .unwrap_or(false);
+            (
+                StatusCode::OK,
+                Json(SecretsResponse {
+                    status: "secrets_configured".to_string(),
+                    sandbox_id: record.id,
+                    credentials_available: creds,
+                }),
+            )
+                .into_response()
+        }
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -976,14 +997,19 @@ async fn wipe_secrets(
     }
 
     match secret_provisioning::wipe_secrets(&sandbox_id, None).await {
-        Ok(record) => (
-            StatusCode::OK,
-            Json(SecretsResponse {
-                status: "secrets_wiped".to_string(),
-                sandbox_id: record.id,
-            }),
-        )
-            .into_response(),
+        Ok(record) => {
+            let creds = workflow_runtime_credentials_available(&record.effective_env_json())
+                .unwrap_or(false);
+            (
+                StatusCode::OK,
+                Json(SecretsResponse {
+                    status: "secrets_wiped".to_string(),
+                    sandbox_id: record.id,
+                    credentials_available: creds,
+                }),
+            )
+                .into_response()
+        }
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

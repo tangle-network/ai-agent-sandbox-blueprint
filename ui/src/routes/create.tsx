@@ -351,6 +351,14 @@ export default function CreatePage() {
                 />
               )}
 
+              {configuredAgentIdentifier && (
+                <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                  <p className="text-xs text-amber-300">
+                    This agent needs AI credentials to chat. You can add them now in Environment Variables below, or inject them later in the Secrets tab.
+                  </p>
+                </div>
+              )}
+
               <BlueprintJobForm
                 job={createJob}
                 values={values}

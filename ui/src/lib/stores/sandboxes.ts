@@ -24,6 +24,8 @@ export interface LocalSandbox {
   sshPort?: number;
   /** Agent identifier configured for the sidecar image. Must match a registered agent inside that image. */
   agentIdentifier?: string;
+  /** Whether the sandbox has AI credentials configured (e.g. ANTHROPIC_API_KEY). */
+  credentialsAvailable?: boolean;
   /** Local status (hydrated from contract + events) */
   status: 'creating' | 'running' | 'stopped' | 'warm' | 'cold' | 'gone' | 'error';
   txHash?: string;
@@ -162,6 +164,7 @@ export function normalizeSandbox(record: LegacySandboxRecord): LocalSandbox {
     teeEnabled: record.teeEnabled,
     sshPort: record.sshPort,
     agentIdentifier: record.agentIdentifier,
+    credentialsAvailable: record.credentialsAvailable,
     status: record.status ?? 'creating',
     txHash: record.txHash,
     callId: record.callId,
