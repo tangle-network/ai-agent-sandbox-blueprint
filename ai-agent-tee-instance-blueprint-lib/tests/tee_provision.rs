@@ -49,7 +49,6 @@ fn tee_provision_request() -> ProvisionRequest {
         cpu_cores: 1,
         memory_mb: 512,
         disk_gb: 10,
-        sidecar_token: String::new(),
         tee_required: true,
         tee_type: 1, // Tdx
     }

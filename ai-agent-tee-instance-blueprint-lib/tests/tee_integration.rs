@@ -74,6 +74,7 @@ fn tee_provision_idempotent_returns_stored_attestation() {
         disk_gb: 10,
         stack: String::new(),
         owner: "0xdeadbeef00000000000000000000000000000001".into(),
+        service_id: None,
         tee_config: Some(TeeConfig {
             required: true,
             tee_type: TeeType::Tdx,
@@ -165,6 +166,7 @@ fn tee_deprovision_clears_instance_sandbox() {
         disk_gb: 10,
         stack: String::new(),
         owner: "0xdeadbeef".into(),
+        service_id: None,
         tee_config: None,
         extra_ports: std::collections::HashMap::new(),
         ssh_login_user: None,
