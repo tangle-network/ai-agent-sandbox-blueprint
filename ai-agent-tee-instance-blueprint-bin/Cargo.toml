@@ -20,5 +20,6 @@ blueprint-producers-extra = { git = "https://github.com/tangle-network/blueprint
 sandbox-runtime = { path = "../sandbox-runtime", features = ["tee-all"] }
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tangle"] }
 blueprint-tangle-extra = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", features = ["keepers"], optional = true }
+serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

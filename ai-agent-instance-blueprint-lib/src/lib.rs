@@ -49,7 +49,11 @@ pub use reporting::{
     report_local_provision, retry_pending_provision_report_once,
     spawn_pending_provision_report_worker, try_report_local_deprovision,
 };
-pub use workflows::bootstrap_workflows_from_chain;
+pub use workflows::{
+    WorkflowDetail, WorkflowRuntimeStatus, WorkflowStatusError, WorkflowSummary,
+    bootstrap_workflows_from_chain, list_workflows_for_owner, workflow_detail_for_owner,
+    workflow_runtime_status_for_owner,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Job IDs — must match the sequential indices in RegisterBlueprint.s.sol.

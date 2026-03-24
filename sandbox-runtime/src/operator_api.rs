@@ -2868,7 +2868,7 @@ async fn http_metrics_middleware(
 ///
 /// For TEE-enabled operators, use [`operator_api_router_with_tee`] instead.
 pub fn operator_api_router() -> Router {
-    operator_api_router_with_tee(None)
+    operator_api_router_with_tee_and_routes(None, Router::new())
 }
 
 /// Build the operator API router with optional TEE sealed secrets endpoints.
@@ -2881,6 +2881,17 @@ pub fn operator_api_router() -> Router {
 /// behaves identically to [`operator_api_router`].
 pub fn operator_api_router_with_tee(
     tee: Option<std::sync::Arc<dyn crate::tee::TeeBackend>>,
+) -> Router {
+    operator_api_router_with_tee_and_routes(tee, Router::new())
+}
+
+/// Build the operator API router and merge additional routes before applying
+/// shared middleware such as CORS, request IDs, rate limits, and security
+/// headers. This is important for blueprint-specific routes like
+/// `/api/workflows/{workflow_id}` so browser preflight requests reach them too.
+pub fn operator_api_router_with_tee_and_routes(
+    tee: Option<std::sync::Arc<dyn crate::tee::TeeBackend>>,
+    extra_routes: Router,
 ) -> Router {
     let cors = build_cors_layer();
 
@@ -3101,6 +3112,7 @@ pub fn operator_api_router_with_tee(
     }
 
     router
+        .merge(extra_routes)
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1 MB max request body
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn(http_metrics_middleware))
@@ -3658,6 +3670,38 @@ mod tests {
                     .uri("/api/sandboxes")
                     .header("origin", "http://127.0.0.1:1338")
                     .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .contains_key("access-control-allow-origin")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cors_preflight_for_extra_routes() {
+        let app = operator_api_router_with_tee_and_routes(
+            None,
+            Router::new().route(
+                "/api/workflows/{workflow_id}",
+                get(|| async { StatusCode::OK }),
+            ),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/workflows/1")
+                    .header("origin", "http://127.0.0.1:1338")
+                    .header("access-control-request-method", "GET")
+                    .header("access-control-request-headers", "authorization")
                     .body(Body::empty())
                     .unwrap(),
             )

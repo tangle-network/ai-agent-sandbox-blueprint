@@ -1,16 +1,16 @@
 use std::fs;
 use std::process::Command;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use tempfile::TempDir;
+use tokio::sync::Mutex;
 
 use sandbox_runtime::runtime::{
     CreateSandboxParams, create_sidecar, delete_sidecar, provision_ssh_key,
 };
 
 // These tests mutate process env and rely on global OnceCell state.
-static TEST_LOCK: Mutex<()> = Mutex::new(());
+static TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn setup_env(state_dir: &TempDir) {
     unsafe {
@@ -68,7 +68,7 @@ fn ssh_command(private_key: &str, port: u16, remote: Option<&str>) -> Command {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn docker_ssh_supports_commands_and_interactive_shell() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().await;
     let state_dir = TempDir::new().expect("temp state dir");
     let key_dir = TempDir::new().expect("temp key dir");
     setup_env(&state_dir);
@@ -135,8 +135,7 @@ async fn docker_ssh_supports_commands_and_interactive_shell() {
         let interactive = Command::new("sh")
             .arg("-lc")
             .arg(format!(
-                "printf 'whoami\\npwd\\nexit\\n' | ssh -tt -i '{}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p {} sidecar@127.0.0.1",
-                private_key, port
+                "printf 'whoami\\npwd\\nexit\\n' | ssh -tt -i '{private_key}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p {port} sidecar@127.0.0.1"
             ))
             .output()
             .expect("interactive ssh should run");

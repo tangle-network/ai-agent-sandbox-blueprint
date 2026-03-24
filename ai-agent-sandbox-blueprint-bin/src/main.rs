@@ -33,8 +33,6 @@ use blueprint_qos::QoSServiceBuilder;
 use blueprint_qos::heartbeat::{HeartbeatConfig, HeartbeatConsumer};
 #[cfg(feature = "qos")]
 use blueprint_qos::metrics::MetricsConfig;
-#[cfg(feature = "qos")]
-use std::sync::Arc;
 
 fn workflow_status_error(error: WorkflowStatusError) -> (StatusCode, Json<serde_json::Value>) {
     let status = match &error {
@@ -65,10 +63,7 @@ async fn workflow_status_handler(
 
 async fn workflow_list_handler(
     sandbox_runtime::session_auth::SessionAuth(caller): sandbox_runtime::session_auth::SessionAuth,
-) -> Result<
-    Json<serde_json::Value>,
-    (StatusCode, Json<serde_json::Value>),
-> {
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     ai_agent_sandbox_blueprint_lib::workflows::list_workflows_for_owner(caller.as_str())
         .map(|workflows| {
             Json(serde_json::json!({
@@ -98,10 +93,7 @@ async fn workflow_list_handler(
 async fn workflow_detail_handler(
     sandbox_runtime::session_auth::SessionAuth(caller): sandbox_runtime::session_auth::SessionAuth,
     Path(workflow_id): Path<u64>,
-) -> Result<
-    Json<serde_json::Value>,
-    (StatusCode, Json<serde_json::Value>),
-> {
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     ai_agent_sandbox_blueprint_lib::workflows::workflow_detail_for_owner(
         workflow_id,
         caller.as_str(),
@@ -132,7 +124,10 @@ fn workflow_status_router() -> HttpRouter {
     HttpRouter::new()
         .route("/api/workflows", get(workflow_list_handler))
         .route("/api/workflows/{workflow_id}", get(workflow_status_handler))
-        .route("/api/workflows/{workflow_id}/detail", get(workflow_detail_handler))
+        .route(
+            "/api/workflows/{workflow_id}/detail",
+            get(workflow_detail_handler),
+        )
 }
 
 /// Logging heartbeat consumer that records heartbeat submissions.

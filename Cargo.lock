@@ -84,6 +84,7 @@ dependencies = [
  "blueprint-sdk",
  "blueprint-tangle-extra",
  "sandbox-runtime",
+ "serde_json",
  "tokio",
  "tracing-subscriber 0.3.22",
 ]
@@ -174,6 +175,7 @@ dependencies = [
  "blueprint-sdk",
  "blueprint-tangle-extra",
  "sandbox-runtime",
+ "serde_json",
  "tokio",
  "tracing-subscriber 0.3.22",
 ]

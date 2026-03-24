@@ -5,8 +5,8 @@ use crate::WorkflowControlRequest;
 use crate::WorkflowCreateRequest;
 use crate::tangle::extract::{CallId, Caller, TangleArg, TangleResult};
 use crate::workflows::{
-    WorkflowEntry, apply_workflow_execution, resolve_next_run, run_workflow, workflow_key,
-    workflow_tick, workflows,
+    WorkflowEntry, acquire_workflow_run, apply_workflow_execution, resolve_next_run, run_workflow,
+    store_failed_execution, store_latest_execution, workflow_key, workflow_tick, workflows,
 };
 
 pub async fn workflow_create(
@@ -83,10 +83,18 @@ pub async fn workflow_trigger(
         return Err("Workflow is not active".to_string());
     }
 
-    let execution = run_workflow(&entry).await?;
+    let _run_guard = acquire_workflow_run(request.workflow_id)?;
+    let execution = match run_workflow(&entry).await {
+        Ok(execution) => execution,
+        Err(err) => {
+            store_failed_execution(request.workflow_id, err.clone())?;
+            return Err(err);
+        }
+    };
 
     let last_run_at = execution.last_run_at;
     let next_run_at = execution.next_run_at;
+    store_latest_execution(request.workflow_id, execution.latest_execution.clone())?;
     let _ = workflows()?.update(&key, |e| {
         apply_workflow_execution(e, last_run_at, next_run_at);
     });
