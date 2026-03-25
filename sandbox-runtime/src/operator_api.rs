@@ -5215,11 +5215,17 @@ mod tests {
 
     #[test]
     fn test_derive_operator_address_from_keystore_uri() {
-        let keystore_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../scripts/data/operator1/keystore");
+        let keystore_dir = tempfile::tempdir().expect("temp keystore dir");
+        let ecdsa_dir = keystore_dir.path().join("Ecdsa");
+        std::fs::create_dir_all(&ecdsa_dir).expect("create Ecdsa dir");
+        std::fs::write(
+            ecdsa_dir.join("operator-key.json"),
+            r#"[[2,186,87,52,216,247,9,23,25,71,30,127,126,214,185,223,23,13,199,12,198,97,202,5,230,136,96,26,217,132,240,104,176],[89,198,153,94,153,143,151,165,160,4,73,102,240,148,83,137,220,158,134,218,232,140,122,132,18,244,96,59,107,120,105,13]]"#,
+        )
+        .expect("write keystore file");
         let derived = derive_operator_address_from_keystore_uri(&format!(
             "file://{}",
-            keystore_dir.display()
+            keystore_dir.path().display()
         ))
         .expect("keystore should derive operator address");
 
