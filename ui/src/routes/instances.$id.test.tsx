@@ -256,7 +256,7 @@ describe('InstanceDetail overview card', () => {
     expect(screen.queryByText(/TX Hash:/)).not.toBeInTheDocument();
   });
 
-  it('lazy-mounts the terminal and keeps it mounted across tab switches', async () => {
+  it('shows terminal when terminal tab is selected and hides it on switch', async () => {
     operatorAuthState.isAuthenticated = true;
     operatorAuthState.cachedToken = 'operator-token';
 
@@ -265,15 +265,10 @@ describe('InstanceDetail overview card', () => {
     expect(screen.queryByTestId('operator-terminal')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
-    const terminalNode = await screen.findByTestId('operator-terminal');
+    await screen.findByTestId('operator-terminal');
 
     fireEvent.click(screen.getByRole('button', { name: 'Overview' }));
-
-    expect(screen.getByTestId('operator-terminal')).toBe(terminalNode);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
-
-    expect(screen.getByTestId('operator-terminal')).toBe(terminalNode);
+    expect(screen.queryByTestId('operator-terminal')).not.toBeInTheDocument();
   });
 });
 

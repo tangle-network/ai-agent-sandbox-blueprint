@@ -11,13 +11,19 @@ export interface UseOperatorTerminalSessionOptions {
 export interface UseOperatorTerminalSessionReturn {
   isConnected: boolean;
   error: string | null;
+  sessionId: string | null;
   sendCommand: (command: string) => Promise<void>;
   reconnect: () => void;
+  newSession: () => void;
 }
 
 interface TerminalSessionResponse {
   session_id?: string;
   sessionId?: string;
+}
+
+interface TerminalSessionListResponse {
+  sessions?: Array<{ session_id?: string; sessionId?: string; title?: string }>;
 }
 
 interface ExecResponse {
@@ -67,6 +73,7 @@ export function useOperatorTerminalSession({
 }: UseOperatorTerminalSessionOptions): UseOperatorTerminalSessionReturn {
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
@@ -82,6 +89,10 @@ export function useOperatorTerminalSession({
 
   const terminalSessionBaseUrl = `${apiUrl}${resourcePath}/live/terminal/sessions`;
   const execUrl = `${apiUrl}${resourcePath}/exec`;
+
+  // ---------------------------------------------------------------------------
+  // Command timer helpers (unchanged)
+  // ---------------------------------------------------------------------------
 
   const clearCommandTimer = useCallback((timer?: ReturnType<typeof setTimeout>) => {
     if (timer) {
@@ -138,6 +149,10 @@ export function useOperatorTerminalSession({
     onOutputRef.current(data);
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // SSE stream message handler (unchanged)
+  // ---------------------------------------------------------------------------
+
   const handleStreamMessage = useCallback((message: string) => {
     if (!message || message === KEEP_ALIVE_MESSAGE) {
       return;
@@ -162,7 +177,11 @@ export function useOperatorTerminalSession({
     }, STREAM_SETTLE_MS);
   }, [clearCommandTimer, emitOutput, finishPendingCommand, shouldSuppressLateStreamChunk]);
 
-  const cleanup = useCallback(() => {
+  // ---------------------------------------------------------------------------
+  // Stream-only cleanup (no session DELETE)
+  // ---------------------------------------------------------------------------
+
+  const cleanupStream = useCallback(() => {
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = undefined;
@@ -174,98 +193,179 @@ export function useOperatorTerminalSession({
     clearPendingCommand(pendingCommandRef.current);
     pendingCommandRef.current = null;
     recentFallbackChunksRef.current.clear();
-    if (sessionIdRef.current) {
-      const sessionId = sessionIdRef.current;
-      sessionIdRef.current = null;
-      fetch(`${terminalSessionBaseUrl}/${encodeURIComponent(sessionId)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      }).catch(() => {});
-    }
     setIsConnected(false);
+  }, [clearPendingCommand]);
+
+  // ---------------------------------------------------------------------------
+  // Connect to an existing session's SSE stream
+  // ---------------------------------------------------------------------------
+
+  const connectToStream = useCallback(async (targetSessionId: string) => {
+    sessionIdRef.current = targetSessionId;
+    if (mountedRef.current) {
+      setSessionId(targetSessionId);
+    }
+
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+
+    const streamRes = await fetch(
+      `${terminalSessionBaseUrl}/${encodeURIComponent(targetSessionId)}/stream`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      },
+    );
+
+    if (!streamRes.ok) {
+      const text = await streamRes.text();
+      throw new Error(text || `Terminal stream failed: ${streamRes.status}`);
+    }
+
+    if (!streamRes.body) throw new Error('Terminal stream is unavailable');
+
+    if (mountedRef.current) {
+      setIsConnected(true);
+      setError(null);
+    }
+
+    const reader = streamRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() ?? '';
+
+      for (const frame of frames) {
+        if (!frame.trim()) continue;
+        for (const message of parseSseFrames(frame)) {
+          handleStreamMessage(message);
+        }
+      }
+    }
+  }, [handleStreamMessage, terminalSessionBaseUrl, token]);
+
+  // ---------------------------------------------------------------------------
+  // Create a new session on the server and return its ID
+  // ---------------------------------------------------------------------------
+
+  const createSession = useCallback(async (): Promise<string> => {
+    const createRes = await fetch(terminalSessionBaseUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+
+    if (!createRes.ok) {
+      const text = await createRes.text();
+      throw new Error(text || `Failed to create terminal session: ${createRes.status}`);
+    }
+
+    const body = await createRes.json() as TerminalSessionResponse;
+    const id = body.session_id ?? body.sessionId;
+    if (!id) throw new Error('Missing terminal session id');
+    return id;
   }, [terminalSessionBaseUrl, token]);
 
-  const connect = useCallback(async () => {
-    cleanup();
+  // ---------------------------------------------------------------------------
+  // List existing sessions, try reconnecting, else create new
+  // ---------------------------------------------------------------------------
+
+  const resolveAndConnect = useCallback(async () => {
+    cleanupStream();
     setError(null);
 
     try {
-      const createRes = await fetch(terminalSessionBaseUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({}),
-      });
-
-      if (!createRes.ok) {
-        const text = await createRes.text();
-        throw new Error(text || `Failed to create terminal session: ${createRes.status}`);
-      }
-
-      const body = await createRes.json() as TerminalSessionResponse;
-      const sessionId = body.session_id ?? body.sessionId;
-      if (!sessionId) throw new Error('Missing terminal session id');
-      if (!mountedRef.current) return;
-
-      sessionIdRef.current = sessionId;
-
-      const controller = new AbortController();
-      streamAbortRef.current = controller;
-
-      const streamRes = await fetch(
-        `${terminalSessionBaseUrl}/${encodeURIComponent(sessionId)}/stream`,
-        {
+      // Try to list existing sessions and reconnect
+      try {
+        const listRes = await fetch(terminalSessionBaseUrl, {
           headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        },
-      );
+        });
 
-      if (!streamRes.ok) {
-        const text = await streamRes.text();
-        throw new Error(text || `Terminal stream failed: ${streamRes.status}`);
-      }
+        if (listRes.ok) {
+          const body = await listRes.json() as TerminalSessionListResponse;
+          const sessions = body.sessions ?? [];
 
-      if (!streamRes.body) throw new Error('Terminal stream is unavailable');
+          if (sessions.length > 0) {
+            const last = sessions[sessions.length - 1];
+            const existingId = last.session_id ?? last.sessionId;
 
-      setIsConnected(true);
-      setError(null);
-
-      const reader = streamRes.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-
-        for (const frame of frames) {
-          if (!frame.trim()) continue;
-          for (const message of parseSseFrames(frame)) {
-            handleStreamMessage(message);
+            if (existingId) {
+              try {
+                await connectToStream(existingId);
+                return; // reconnected successfully
+              } catch (streamErr) {
+                if ((streamErr as Error).name === 'AbortError' || !mountedRef.current) return;
+                // Stale session — delete it and fall through to create
+                fetch(`${terminalSessionBaseUrl}/${encodeURIComponent(existingId)}`, {
+                  method: 'DELETE',
+                  headers: { Authorization: `Bearer ${token}` },
+                }).catch(() => {});
+              }
+            }
           }
         }
+      } catch {
+        // List failed — fall through to create
       }
+
+      if (!mountedRef.current) return;
+
+      // No existing session or reconnect failed — create new
+      const newId = await createSession();
+      if (!mountedRef.current) return;
+      await connectToStream(newId);
     } catch (err) {
       if ((err as Error).name === 'AbortError' || !mountedRef.current) return;
       setIsConnected(false);
       setError(err instanceof Error ? err.message : 'Terminal connection failed');
       retryTimerRef.current = setTimeout(() => {
         if (mountedRef.current) {
-          void connect();
+          void resolveAndConnect();
         }
       }, 3000);
     }
-  }, [cleanup, handleStreamMessage, terminalSessionBaseUrl, token]);
+  }, [cleanupStream, connectToStream, createSession, terminalSessionBaseUrl, token]);
+
+  // ---------------------------------------------------------------------------
+  // Force-create a fresh session (exposed as newSession)
+  // ---------------------------------------------------------------------------
+
+  const forceNewSession = useCallback(async () => {
+    cleanupStream();
+    setError(null);
+
+    try {
+      const newId = await createSession();
+      if (!mountedRef.current) return;
+      await connectToStream(newId);
+    } catch (err) {
+      if ((err as Error).name === 'AbortError' || !mountedRef.current) return;
+      setIsConnected(false);
+      setError(err instanceof Error ? err.message : 'Terminal connection failed');
+      retryTimerRef.current = setTimeout(() => {
+        if (mountedRef.current) {
+          void forceNewSession();
+        }
+      }, 3000);
+    }
+  }, [cleanupStream, connectToStream, createSession]);
+
+  // ---------------------------------------------------------------------------
+  // Send a command (unchanged logic)
+  // ---------------------------------------------------------------------------
 
   const sendCommand = useCallback(async (command: string) => {
-    const sessionId = sessionIdRef.current;
-    if (!sessionId) throw new Error('Terminal session is not connected');
+    const sid = sessionIdRef.current;
+    if (!sid) throw new Error('Terminal session is not connected');
 
     clearPendingCommand(pendingCommandRef.current);
     const commandId = nextCommandIdRef.current++;
@@ -283,7 +383,7 @@ export function useOperatorTerminalSession({
         },
         body: JSON.stringify({
           command,
-          session_id: sessionId,
+          session_id: sid,
         }),
       });
 
@@ -332,21 +432,29 @@ export function useOperatorTerminalSession({
     }
   }, [clearPendingCommand, emitOutput, execUrl, finishPendingCommand, rememberFallbackChunk, token]);
 
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
   useEffect(() => {
     mountedRef.current = true;
-    void connect();
+    void resolveAndConnect();
     return () => {
       mountedRef.current = false;
-      cleanup();
+      cleanupStream();
     };
-  }, [cleanup, connect]);
+  }, [cleanupStream, resolveAndConnect]);
 
   return {
     isConnected,
     error,
+    sessionId,
     sendCommand,
     reconnect: () => {
-      void connect();
+      void resolveAndConnect();
+    },
+    newSession: () => {
+      void forceNewSession();
     },
   };
 }

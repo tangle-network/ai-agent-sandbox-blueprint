@@ -51,6 +51,18 @@ export function OperatorTerminalView({
   const termRef = useRef<Terminal | null>(null);
   const lineBufferRef = useRef('');
 
+  const writeBanner = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const padTitle = title.padEnd(37);
+    const padSubtitle = subtitle.padEnd(37);
+    term.writeln(`\x1b[38;5;48m\u256d${'─'.repeat(41)}\u256e\x1b[0m`);
+    term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  \x1b[1m${padTitle}\x1b[0m\x1b[38;5;48m\u2502\x1b[0m`);
+    term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${padSubtitle}\x1b[38;5;48m\u2502\x1b[0m`);
+    term.writeln(`\x1b[38;5;48m\u2570${'─'.repeat(41)}\u256f\x1b[0m`);
+    term.write(prompt);
+  }, [title, subtitle]);
+
   const writePrompt = useCallback(() => {
     termRef.current?.write(prompt);
   }, []);
@@ -73,13 +85,23 @@ export function OperatorTerminalView({
     termRef.current?.write(prompt);
   }, []);
 
-  const { isConnected, error, sendCommand, reconnect } = useOperatorTerminalSession({
+  const { isConnected, error, sendCommand, reconnect, newSession } = useOperatorTerminalSession({
     apiUrl,
     resourcePath,
     token,
     onOutput: handleOutput,
     onCommandComplete: handleCommandComplete,
   });
+
+  const handleNewSession = useCallback(() => {
+    const term = termRef.current;
+    if (term) {
+      lineBufferRef.current = '';
+      term.clear();
+      writeBanner();
+    }
+    newSession();
+  }, [newSession, writeBanner]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -108,14 +130,7 @@ export function OperatorTerminalView({
     });
 
     termRef.current = term;
-
-    const padTitle = title.padEnd(37);
-    const padSubtitle = subtitle.padEnd(37);
-    term.writeln(`\x1b[38;5;48m\u256d${'─'.repeat(41)}\u256e\x1b[0m`);
-    term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  \x1b[1m${padTitle}\x1b[0m\x1b[38;5;48m\u2502\x1b[0m`);
-    term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${padSubtitle}\x1b[38;5;48m\u2502\x1b[0m`);
-    term.writeln(`\x1b[38;5;48m\u2570${'─'.repeat(41)}\u256f\x1b[0m`);
-    writePrompt();
+    writeBanner();
 
     term.onData((data) => {
       const code = data.charCodeAt(0);
@@ -164,15 +179,29 @@ export function OperatorTerminalView({
       term.dispose();
       termRef.current = null;
     };
-  }, [sendCommand, subtitle, title, writePrompt, writePromptOnNewLine]);
+  }, [sendCommand, writeBanner, writePromptOnNewLine]);
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full group">
       <div
         ref={containerRef}
         className="h-full w-full overflow-hidden rounded-lg"
         style={{ backgroundColor: theme.background }}
       />
+
+      {/* New Session button — top-right, visible on hover */}
+      {isConnected && (
+        <button
+          onClick={handleNewSession}
+          className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-md text-xs
+            bg-neutral-800/80 text-neutral-400 opacity-0 group-hover:opacity-100
+            hover:bg-neutral-700 hover:text-neutral-200 transition-all cursor-pointer"
+          title="New terminal session"
+        >
+          <span className="i-ph:plus text-xs" />
+          New Session
+        </button>
+      )}
 
       {(!isConnected || error) && (
         <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/60">
