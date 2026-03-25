@@ -4020,6 +4020,23 @@ mod tests {
         insert_plain_sandbox_with_url(id, owner, "http://localhost:9999");
     }
 
+    /// Insert a mock-sidecar sandbox that should always take the non-Docker SSH path.
+    fn insert_mock_sidecar_ssh_sandbox(id: &str, owner: &str, sidecar_url: &str, ssh_port: u16) {
+        use crate::runtime::{sandboxes, seal_record};
+
+        insert_plain_sandbox_with_url(id, owner, sidecar_url);
+
+        let mut record = sandboxes()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .expect("sandbox must exist to configure mock ssh");
+        record.metadata_json = r#"{"runtime_backend":"firecracker"}"#.into();
+        record.ssh_port = Some(ssh_port);
+        seal_record(&mut record).unwrap();
+        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
+    }
+
     fn set_agent_identifier(id: &str, agent_identifier: &str) {
         use crate::runtime::{sandboxes, seal_record};
         let mut record = sandboxes()
@@ -4073,19 +4090,6 @@ mod tests {
             .unwrap()
             .insert("instance".to_string(), record)
             .unwrap();
-    }
-
-    /// Enable SSH on an already-inserted sandbox by setting `ssh_port`.
-    fn enable_ssh_port(id: &str, port: u16) {
-        use crate::runtime::{sandboxes, seal_record};
-        let mut record = sandboxes()
-            .unwrap()
-            .get(id)
-            .unwrap()
-            .expect("sandbox must exist to enable ssh");
-        record.ssh_port = Some(port);
-        seal_record(&mut record).unwrap();
-        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
     // Use a distinct owner for TEE tests so sandbox inserts don't pollute
@@ -6055,8 +6059,7 @@ mod tests {
                 "stderr": ""
             }
         });
-        insert_plain_sandbox_with_url("ssh-user-1", OP_TEST_OWNER, &sidecar_url);
-        enable_ssh_port("ssh-user-1", 2222);
+        insert_mock_sidecar_ssh_sandbox("ssh-user-1", OP_TEST_OWNER, &sidecar_url, 2222);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
 
         let response = app()
@@ -6111,8 +6114,7 @@ mod tests {
                 "stderr": "User agent does not exist"
             }
         });
-        insert_plain_sandbox_with_url("ssh-fail-1", OP_TEST_OWNER, &sidecar_url);
-        enable_ssh_port("ssh-fail-1", 2222);
+        insert_mock_sidecar_ssh_sandbox("ssh-fail-1", OP_TEST_OWNER, &sidecar_url, 2222);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
         let body = serde_json::json!({
             "username": "agent",
