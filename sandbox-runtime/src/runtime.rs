@@ -1,10 +1,10 @@
+use docktopus::DockerBuilder;
 use docktopus::bollard::container::{Config as BollardConfig, LogOutput, RemoveContainerOptions};
 use docktopus::bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use docktopus::bollard::models::{HostConfig, PortBinding, PortMap};
 use docktopus::container::Container;
-use docktopus::DockerBuilder;
 use once_cell::sync::OnceCell;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
@@ -744,8 +744,8 @@ static SEAL_KEY: once_cell::sync::Lazy<[u8; 32]> = once_cell::sync::Lazy::new(||
 fn seal_field(plaintext: &str) -> Result<String> {
     use base64::Engine;
     use chacha20poly1305::{
-        aead::{Aead, OsRng},
         AeadCore, ChaCha20Poly1305, KeyInit,
+        aead::{Aead, OsRng},
     };
 
     if plaintext.is_empty() {
@@ -772,7 +772,7 @@ fn seal_field(plaintext: &str) -> Result<String> {
 /// (transparent migration from plaintext).
 fn unseal_field(stored: &str) -> Result<String> {
     use base64::Engine;
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+    use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
 
     if stored.is_empty() {
         return Ok(stored.to_string());
@@ -3427,10 +3427,12 @@ mod tee_tests {
 
         let result = create_sidecar(&params, Some(&mock)).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Mock deploy failure"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Mock deploy failure")
+        );
     }
 
     #[tokio::test]
@@ -3775,10 +3777,12 @@ mod core_logic_tests {
         unsafe {
             std::env::set_var("ZAI_API_KEY", "operator-key");
         }
-        assert!(!workflow_runtime_credentials_available(
-            r#"{"OPENCODE_MODEL_PROVIDER":"zai-coding-plan"}"#
-        )
-        .unwrap());
+        assert!(
+            !workflow_runtime_credentials_available(
+                r#"{"OPENCODE_MODEL_PROVIDER":"zai-coding-plan"}"#
+            )
+            .unwrap()
+        );
 
         // SAFETY: restore previous process environment for the next test.
         unsafe {

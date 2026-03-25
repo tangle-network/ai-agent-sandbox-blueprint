@@ -9,14 +9,14 @@
 use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::{
+    Json, Router,
     extract::Path,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{any, get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use once_cell::sync::Lazy;
@@ -28,14 +28,14 @@ use crate::circuit_breaker;
 use crate::error::SandboxError;
 use crate::http::{sidecar_get_json, sidecar_post_json};
 use crate::live_operator_sessions::{
-    sse_from_json_events, sse_from_terminal_output, LiveChatSession, LiveJsonEvent,
-    LiveSessionStore, LiveTerminalSession,
+    LiveChatSession, LiveJsonEvent, LiveSessionStore, LiveTerminalSession, sse_from_json_events,
+    sse_from_terminal_output,
 };
 use crate::metrics;
 use crate::provision_progress;
 use crate::rate_limit;
 use crate::runtime::{
-    self, sandboxes, workflow_runtime_credentials_available, SandboxRecord, SandboxState,
+    self, SandboxRecord, SandboxState, sandboxes, workflow_runtime_credentials_available,
 };
 use crate::secret_provisioning;
 use crate::session_auth::{self, SessionAuth};
@@ -1599,7 +1599,7 @@ async fn translate_missing_agent_factory_error(
         return None;
     }
 
-    let message = err.1 .0.error.as_str();
+    let message = err.1.0.error.as_str();
     if message.contains("No factory registered for agent identifier") {
         // This is a semantic agent-selection error, not a transport failure.
         // Clear the unhealthy mark so a best-effort /agents lookup can enrich
@@ -1616,7 +1616,7 @@ async fn translate_missing_agent_factory_error(
 }
 
 fn agent_warmup_retryable(err: &(StatusCode, Json<ApiError>)) -> bool {
-    let message = err.1 .0.error.as_str();
+    let message = err.1.0.error.as_str();
     message.contains("OpenCode server is not responding")
         || message.contains("Failed to create OpenCode session")
 }
@@ -1626,7 +1626,7 @@ fn request_id_for_logs() -> Option<String> {
 }
 
 fn agents_endpoint_unsupported(err: &(StatusCode, Json<ApiError>)) -> bool {
-    let message = err.1 .0.error.as_str();
+    let message = err.1.0.error.as_str();
     message.contains("HTTP 404") || message.contains("HTTP 405") || message.contains("HTTP 501")
 }
 
@@ -2889,7 +2889,7 @@ pub fn extract_session_from_headers(
 /// - `"*"` → allow any origin (development mode only, must be explicit).
 /// - Unset → localhost-only with warning (safe default for production).
 pub fn build_cors_layer() -> CorsLayer {
-    use axum::http::{header, Method};
+    use axum::http::{Method, header};
 
     let allowed_methods = vec![
         Method::GET,
@@ -3890,9 +3890,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(response
-            .headers()
-            .contains_key("access-control-allow-origin"));
+        assert!(
+            response
+                .headers()
+                .contains_key("access-control-allow-origin")
+        );
     }
 
     #[tokio::test]
@@ -3920,9 +3922,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(response
-            .headers()
-            .contains_key("access-control-allow-origin"));
+        assert!(
+            response
+                .headers()
+                .contains_key("access-control-allow-origin")
+        );
     }
 
     // ── TEE sealed secrets API tests ──────────────────────────────────────
@@ -3937,7 +3941,7 @@ mod tests {
     /// Insert a sandbox record with TEE fields into the store.
     fn insert_tee_sandbox(id: &str, deployment_id: &str, owner: &str) {
         init();
-        use crate::runtime::{sandboxes, seal_record, SandboxRecord, SandboxState};
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
         let mut record = SandboxRecord {
             id: id.to_string(),
             container_id: format!("tee-{deployment_id}"),
@@ -3991,7 +3995,7 @@ mod tests {
         state: crate::runtime::SandboxState,
     ) {
         init();
-        use crate::runtime::{sandboxes, seal_record, SandboxRecord, SandboxState};
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
         let stopped_at = (state != SandboxState::Running).then_some(1_700_000_001);
         let mut record = SandboxRecord {
             id: id.to_string(),
@@ -5112,7 +5116,7 @@ mod tests {
         ports: std::collections::HashMap<u16, u16>,
     ) {
         init();
-        use crate::runtime::{sandboxes, seal_record, SandboxRecord, SandboxState};
+        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
         let mut record = SandboxRecord {
             id: id.to_string(),
             container_id: format!("ctr-{id}"),

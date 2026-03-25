@@ -8,8 +8,8 @@ use std::time::Duration;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use serde_json::Value;
 use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 
 /// Default keep-alive interval for SSE streams.
 const SSE_KEEP_ALIVE_SECS: u64 = 15;
