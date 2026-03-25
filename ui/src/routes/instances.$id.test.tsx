@@ -323,7 +323,11 @@ describe('InstanceDetail secrets tab', () => {
     renderSubject();
 
     fireEvent.click(screen.getByRole('button', { name: 'Secrets' }));
-    fireEvent.change(await screen.findByLabelText('Secrets (JSON object)'), {
+    // Wait for initial secrets fetch to complete
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Inject Secrets' })).toBeEnabled();
+    });
+    fireEvent.change(screen.getByLabelText('Secrets (JSON object)'), {
       target: { value: '{"API_KEY":"sk-test"}' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Inject Secrets' }));
@@ -342,7 +346,12 @@ describe('InstanceDetail secrets tab', () => {
     renderSubject();
 
     fireEvent.click(screen.getByRole('button', { name: 'Secrets' }));
-    fireEvent.change(await screen.findByLabelText('Secrets (JSON object)'), {
+    // Wait for initial secrets fetch to complete
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Inject Secrets' })).toBeEnabled();
+    });
+    mockOperatorApiCall.mockClear();
+    fireEvent.change(screen.getByLabelText('Secrets (JSON object)'), {
       target: { value: 'nope' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Inject Secrets' }));
@@ -358,6 +367,10 @@ describe('InstanceDetail secrets tab', () => {
     renderSubject();
 
     fireEvent.click(screen.getByRole('button', { name: 'Secrets' }));
+    // Wait for initial secrets fetch to complete
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Wipe All Secrets' })).toBeEnabled();
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Wipe All Secrets' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Wipe' }));
 

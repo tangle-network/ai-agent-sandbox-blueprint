@@ -925,6 +925,43 @@ struct SecretsResponse {
     credentials_available: bool,
 }
 
+#[derive(Serialize)]
+struct GetSecretsResponse {
+    sandbox_id: String,
+    env_json: serde_json::Map<String, serde_json::Value>,
+    credentials_available: bool,
+}
+
+async fn instance_get_secrets(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    let record = match resolve_instance(&address) {
+        Ok(record) => record,
+        Err(err) => return err.into_response(),
+    };
+    if let Err(err) = reject_instance_tee_secrets(&record) {
+        return err.into_response();
+    }
+
+    let env_map: serde_json::Map<String, serde_json::Value> =
+        if record.user_env_json.trim().is_empty() {
+            serde_json::Map::new()
+        } else {
+            serde_json::from_str(&record.user_env_json).unwrap_or_default()
+        };
+
+    let creds =
+        workflow_runtime_credentials_available(&record.effective_env_json()).unwrap_or(false);
+
+    (
+        StatusCode::OK,
+        Json(GetSecretsResponse {
+            sandbox_id: record.id,
+            env_json: env_map,
+            credentials_available: creds,
+        }),
+    )
+        .into_response()
+}
+
 async fn instance_inject_secrets(
     SessionAuth(address): SessionAuth,
     Json(body): Json<InjectSecretsRequest>,
@@ -986,6 +1023,40 @@ async fn instance_wipe_secrets(SessionAuth(address): SessionAuth) -> impl IntoRe
         }
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+async fn get_secrets(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = secret_provisioning::validate_secret_access(&sandbox_id, &address) {
+        return api_error(StatusCode::FORBIDDEN, e.to_string()).into_response();
+    }
+
+    let record = match runtime::get_sandbox_by_id(&sandbox_id) {
+        Ok(r) => r,
+        Err(e) => return api_error(StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    };
+
+    let env_map: serde_json::Map<String, serde_json::Value> =
+        if record.user_env_json.trim().is_empty() {
+            serde_json::Map::new()
+        } else {
+            serde_json::from_str(&record.user_env_json).unwrap_or_default()
+        };
+
+    let creds =
+        workflow_runtime_credentials_available(&record.effective_env_json()).unwrap_or(false);
+
+    (
+        StatusCode::OK,
+        Json(GetSecretsResponse {
+            sandbox_id: record.id,
+            env_json: env_map,
+            credentials_available: creds,
+        }),
+    )
+        .into_response()
 }
 
 async fn inject_secrets(
@@ -2997,7 +3068,9 @@ pub fn operator_api_router_with_tee_and_routes(
     let write_routes = Router::new()
         .route(
             "/api/sandboxes/{sandbox_id}/secrets",
-            post(inject_secrets).delete(wipe_secrets),
+            get(get_secrets)
+                .post(inject_secrets)
+                .delete(wipe_secrets),
         )
         .route(
             "/api/sandboxes/{sandbox_id}/live/terminal/sessions",
@@ -3017,7 +3090,9 @@ pub fn operator_api_router_with_tee_and_routes(
         )
         .route(
             "/api/sandbox/secrets",
-            post(instance_inject_secrets).delete(instance_wipe_secrets),
+            get(instance_get_secrets)
+                .post(instance_inject_secrets)
+                .delete(instance_wipe_secrets),
         )
         .route(
             "/api/sandbox/live/terminal/sessions",

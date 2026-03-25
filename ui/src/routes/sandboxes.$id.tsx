@@ -122,6 +122,8 @@ export default function SandboxDetail() {
   const [secretsBusy, setSecretsBusy] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
   const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
+  const [secretsLoading, setSecretsLoading] = useState(false);
+  const secretsFetchedRef = useRef(false);
 
   // Confirm dialog state
   const [confirmAction, setConfirmAction] = useState<{ title: string; description: string; confirmLabel: string; onConfirm: () => void } | null>(null);
@@ -312,6 +314,37 @@ export default function SandboxDetail() {
     };
   }, [tab, sshDetectionKey, isRunning, isOperatorAuthed, operatorToken, operatorApiCall]);
 
+  // Fetch existing secrets when secrets tab becomes active
+  useEffect(() => {
+    if (tab !== 'secrets') return;
+    if (!isRunning) return;
+    if (!isOperatorAuthed && !operatorToken) return;
+    if (secretsFetchedRef.current) return;
+
+    let cancelled = false;
+    secretsFetchedRef.current = true;
+    setSecretsLoading(true);
+
+    void operatorApiCall('secrets', undefined, { method: 'GET' })
+      .then(async (response) => {
+        const body = (await response.json()) as { env_json?: Record<string, unknown> };
+        if (cancelled) return;
+        if (body.env_json && Object.keys(body.env_json).length > 0) {
+          setSecretsJson(JSON.stringify(body.env_json, null, 2));
+        }
+      })
+      .catch(() => {
+        // Non-fatal: user sees empty editor as fallback
+      })
+      .finally(() => {
+        if (!cancelled) setSecretsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, isRunning, isOperatorAuthed, operatorToken, operatorApiCall]);
+
   const bpId = 'ai-agent-sandbox-blueprint';
 
   /** Compute job value from pricing tier (base rate = 0.001 TNT = 1e15 wei) */
@@ -494,6 +527,8 @@ export default function SandboxDetail() {
         try {
           await operatorApiCall('secrets', undefined, { method: 'DELETE' });
           await refreshSandboxState({ interactive: true });
+          setSecretsJson('{\n  \n}');
+          secretsFetchedRef.current = false;
           setSecretsSuccess('Secrets wiped');
           scheduleDismiss(() => setSecretsSuccess(null), 3000);
         } catch (e) {
@@ -968,14 +1003,18 @@ export default function SandboxDetail() {
                 <label className="text-xs font-medium text-cloud-elements-textSecondary">
                   Secrets (JSON object)
                 </label>
+                {secretsLoading && (
+                  <p className="text-xs text-cloud-elements-textTertiary">Loading existing secrets...</p>
+                )}
                 <Textarea
                   value={secretsJson}
                   onChange={(e) => setSecretsJson(e.target.value)}
                   placeholder='{"API_KEY": "sk-...", "DB_URL": "postgres://..."}'
                   className="font-data text-xs min-h-[120px] resize-y"
+                  disabled={secretsLoading}
                 />
                 <p className="text-[11px] text-cloud-elements-textTertiary">
-                  Key-value pairs injected as environment variables. Values are stored securely and not readable after injection.
+                  Key-value pairs injected as environment variables. Injecting replaces all existing secrets. Values are encrypted at rest.
                 </p>
               </div>
               {secretsError && (
@@ -988,7 +1027,7 @@ export default function SandboxDetail() {
                 <Button
                   size="sm"
                   onClick={handleInjectSecrets}
-                  disabled={secretsBusy}
+                  disabled={secretsBusy || secretsLoading}
                 >
                   {secretsBusy ? 'Injecting...' : 'Inject Secrets'}
                 </Button>
@@ -996,7 +1035,7 @@ export default function SandboxDetail() {
                   variant="destructive"
                   size="sm"
                   onClick={handleWipeSecrets}
-                  disabled={secretsBusy}
+                  disabled={secretsBusy || secretsLoading}
                 >
                   Wipe All Secrets
                 </Button>
