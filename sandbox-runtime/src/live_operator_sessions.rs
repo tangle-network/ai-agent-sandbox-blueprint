@@ -8,8 +8,8 @@ use std::time::Duration;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use serde_json::Value;
 use tokio::sync::broadcast;
-use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 
 /// Default keep-alive interval for SSE streams.
 const SSE_KEEP_ALIVE_SECS: u64 = 15;
@@ -183,6 +183,19 @@ where
             return Ok(None);
         };
         Ok(Some(f(chat)))
+    }
+
+    #[cfg(test)]
+    pub fn clear_all_for_testing(&self) -> Result<(), String> {
+        self.terminals
+            .lock()
+            .map_err(|e| format!("terminal session lock poisoned: {e}"))?
+            .clear();
+        self.chats
+            .lock()
+            .map_err(|e| format!("chat session lock poisoned: {e}"))?
+            .clear();
+        Ok(())
     }
 }
 

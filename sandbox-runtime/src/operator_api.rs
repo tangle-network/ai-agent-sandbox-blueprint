@@ -9,14 +9,14 @@
 use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::{
-    Json, Router,
     extract::Path,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{any, get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use once_cell::sync::Lazy;
@@ -28,14 +28,14 @@ use crate::circuit_breaker;
 use crate::error::SandboxError;
 use crate::http::{sidecar_get_json, sidecar_post_json};
 use crate::live_operator_sessions::{
-    LiveChatSession, LiveJsonEvent, LiveSessionStore, LiveTerminalSession, sse_from_json_events,
-    sse_from_terminal_output,
+    sse_from_json_events, sse_from_terminal_output, LiveChatSession, LiveJsonEvent,
+    LiveSessionStore, LiveTerminalSession,
 };
 use crate::metrics;
 use crate::provision_progress;
 use crate::rate_limit;
 use crate::runtime::{
-    self, SandboxRecord, SandboxState, sandboxes, workflow_runtime_credentials_available,
+    self, sandboxes, workflow_runtime_credentials_available, SandboxRecord, SandboxState,
 };
 use crate::secret_provisioning;
 use crate::session_auth::{self, SessionAuth};
@@ -1599,7 +1599,7 @@ async fn translate_missing_agent_factory_error(
         return None;
     }
 
-    let message = err.1.0.error.as_str();
+    let message = err.1 .0.error.as_str();
     if message.contains("No factory registered for agent identifier") {
         // This is a semantic agent-selection error, not a transport failure.
         // Clear the unhealthy mark so a best-effort /agents lookup can enrich
@@ -1616,7 +1616,7 @@ async fn translate_missing_agent_factory_error(
 }
 
 fn agent_warmup_retryable(err: &(StatusCode, Json<ApiError>)) -> bool {
-    let message = err.1.0.error.as_str();
+    let message = err.1 .0.error.as_str();
     message.contains("OpenCode server is not responding")
         || message.contains("Failed to create OpenCode session")
 }
@@ -1626,7 +1626,7 @@ fn request_id_for_logs() -> Option<String> {
 }
 
 fn agents_endpoint_unsupported(err: &(StatusCode, Json<ApiError>)) -> bool {
-    let message = err.1.0.error.as_str();
+    let message = err.1 .0.error.as_str();
     message.contains("HTTP 404") || message.contains("HTTP 405") || message.contains("HTTP 501")
 }
 
@@ -2889,7 +2889,7 @@ pub fn extract_session_from_headers(
 /// - `"*"` → allow any origin (development mode only, must be explicit).
 /// - Unset → localhost-only with warning (safe default for production).
 pub fn build_cors_layer() -> CorsLayer {
-    use axum::http::{Method, header};
+    use axum::http::{header, Method};
 
     let allowed_methods = vec![
         Method::GET,
@@ -3250,6 +3250,7 @@ pub fn operator_api_router_with_tee_and_routes(
 }
 
 #[cfg(test)]
+#[serial_test::serial]
 mod tests {
     use super::*;
     use axum::body::Body;
@@ -3272,6 +3273,26 @@ mod tests {
             std::fs::create_dir_all(&dir).ok();
             unsafe { std::env::set_var("BLUEPRINT_STATE_DIR", dir) };
         });
+    }
+
+    fn reset_test_state() {
+        crate::session_auth::clear_all_for_testing();
+        crate::circuit_breaker::clear_all_for_testing();
+        crate::provision_progress::clear_all_for_testing().expect("clear provision state");
+        LIVE_SESSIONS
+            .clear_all_for_testing()
+            .expect("clear live sessions");
+        sandboxes()
+            .unwrap()
+            .replace(std::collections::HashMap::new())
+            .expect("clear sandbox store");
+        runtime::instance_store()
+            .unwrap()
+            .replace(std::collections::HashMap::new())
+            .expect("clear instance store");
+        rate_limit::read_limiter().reset();
+        rate_limit::write_limiter().reset();
+        rate_limit::auth_limiter().reset();
     }
 
     struct EnvVarGuard {
@@ -3590,6 +3611,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_sandboxes_empty() {
         init();
+        reset_test_state();
 
         let response = app()
             .oneshot(
@@ -3625,6 +3647,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_provisions_empty() {
         init();
+        reset_test_state();
 
         let response = app()
             .oneshot(
@@ -3645,6 +3668,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_provision_not_found() {
         init();
+        reset_test_state();
 
         let response = app()
             .oneshot(
@@ -3663,6 +3687,7 @@ mod tests {
     #[tokio::test]
     async fn test_provision_lifecycle() {
         init();
+        reset_test_state();
 
         let auth = test_auth_header();
         // Start a provision
@@ -3865,11 +3890,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(
-            response
-                .headers()
-                .contains_key("access-control-allow-origin")
-        );
+        assert!(response
+            .headers()
+            .contains_key("access-control-allow-origin"));
     }
 
     #[tokio::test]
@@ -3897,11 +3920,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(
-            response
-                .headers()
-                .contains_key("access-control-allow-origin")
-        );
+        assert!(response
+            .headers()
+            .contains_key("access-control-allow-origin"));
     }
 
     // ── TEE sealed secrets API tests ──────────────────────────────────────
@@ -3916,7 +3937,7 @@ mod tests {
     /// Insert a sandbox record with TEE fields into the store.
     fn insert_tee_sandbox(id: &str, deployment_id: &str, owner: &str) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        use crate::runtime::{sandboxes, seal_record, SandboxRecord, SandboxState};
         let mut record = SandboxRecord {
             id: id.to_string(),
             container_id: format!("tee-{deployment_id}"),
@@ -3970,7 +3991,7 @@ mod tests {
         state: crate::runtime::SandboxState,
     ) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        use crate::runtime::{sandboxes, seal_record, SandboxRecord, SandboxState};
         let stopped_at = (state != SandboxState::Running).then_some(1_700_000_001);
         let mut record = SandboxRecord {
             id: id.to_string(),
@@ -4983,6 +5004,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_live_chat_prompt_updates_instance_stream_and_history() {
+        init();
+        reset_test_state();
+
         let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
         insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
@@ -5088,7 +5112,7 @@ mod tests {
         ports: std::collections::HashMap<u16, u16>,
     ) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        use crate::runtime::{sandboxes, seal_record, SandboxRecord, SandboxState};
         let mut record = SandboxRecord {
             id: id.to_string(),
             container_id: format!("ctr-{id}"),
@@ -5163,6 +5187,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_sandboxes_repairs_service_links_and_exposes_managing_operator() {
         init();
+        reset_test_state();
+
         let sandbox_id = "sandbox-service-backfill";
         let call_id = 880_001;
         let _managing_operator = EnvVarGuard::set(

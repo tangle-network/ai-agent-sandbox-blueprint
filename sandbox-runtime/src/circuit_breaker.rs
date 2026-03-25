@@ -140,6 +140,12 @@ pub fn clear(sandbox_id: &str) {
     mark_healthy(sandbox_id);
 }
 
+#[cfg(test)]
+pub fn clear_all_for_testing() {
+    UNHEALTHY.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *LAST_GC.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+}
+
 /// Read-only query of the breaker state for `sandbox_id`.
 ///
 /// Does **not** trigger GC, state transitions, or any side effects.

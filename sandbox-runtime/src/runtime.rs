@@ -1,10 +1,10 @@
-use docktopus::DockerBuilder;
 use docktopus::bollard::container::{Config as BollardConfig, LogOutput, RemoveContainerOptions};
 use docktopus::bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use docktopus::bollard::models::{HostConfig, PortBinding, PortMap};
 use docktopus::container::Container;
+use docktopus::DockerBuilder;
 use once_cell::sync::OnceCell;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
@@ -16,7 +16,8 @@ use crate::error::{Result, SandboxError};
 use crate::util::{merge_metadata, parse_json_object, shell_escape};
 use crate::{DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SSH_PORT};
 
-const PORT_MAPPING_RETRY_ATTEMPTS: usize = 20;
+// Match the 30s sidecar health-check window for slower CI/coverage runners.
+const PORT_MAPPING_RETRY_ATTEMPTS: usize = 60;
 const PORT_MAPPING_RETRY_DELAY_MS: u64 = 500;
 const SSH_DEFAULT_LOGIN_USER: &str = "sidecar";
 
@@ -743,8 +744,8 @@ static SEAL_KEY: once_cell::sync::Lazy<[u8; 32]> = once_cell::sync::Lazy::new(||
 fn seal_field(plaintext: &str) -> Result<String> {
     use base64::Engine;
     use chacha20poly1305::{
-        AeadCore, ChaCha20Poly1305, KeyInit,
         aead::{Aead, OsRng},
+        AeadCore, ChaCha20Poly1305, KeyInit,
     };
 
     if plaintext.is_empty() {
@@ -771,7 +772,7 @@ fn seal_field(plaintext: &str) -> Result<String> {
 /// (transparent migration from plaintext).
 fn unseal_field(stored: &str) -> Result<String> {
     use base64::Engine;
-    use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
+    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
 
     if stored.is_empty() {
         return Ok(stored.to_string());
@@ -2089,10 +2090,10 @@ fn build_docker_config(
                 "SYS_PTRACE".to_string(),
                 "SETGID".to_string(),
                 "SETUID".to_string(),
+                // Agent frameworks (e.g. opencode) chown workspace dirs on startup.
+                "CHOWN".to_string(),
             ];
             if ssh_enabled {
-                // PTY allocation chowns /dev/pts/* to the SSH login user.
-                caps.push("CHOWN".to_string());
                 // OpenSSH's pre-auth sandbox chroots into /var/empty.
                 caps.push("SYS_CHROOT".to_string());
                 caps.push("NET_BIND_SERVICE".to_string());
@@ -2510,32 +2511,44 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         };
         match try_start.await {
             Ok(()) => {
-                let refreshed = match refresh_docker_sandbox_endpoint(record).await {
-                    Ok(updated) => updated,
+                let (resumed_record, sidecar_ready) = match refresh_docker_sandbox_endpoint(record)
+                    .await
+                {
+                    Ok(updated) => (updated, false),
                     Err(err) => {
                         blueprint_sdk::info!(
                             "resume: could not refresh port mapping for sandbox {}: {err}",
                             record.id
                         );
-                        let _ =
-                            stop_started_container(builder.client(), effective_container_id).await;
-                        return Err(SandboxError::Unavailable(format!(
-                            "Resume failed: could not refresh sidecar URL for sandbox {}",
-                            record.id
-                        )));
+                        if wait_for_sidecar_health(&record.sidecar_url, 30).await {
+                            blueprint_sdk::info!(
+                                "resume: using stored sidecar URL for sandbox {} after refresh failure",
+                                record.id
+                            );
+                            (record.clone(), true)
+                        } else {
+                            let _ =
+                                stop_started_container(builder.client(), effective_container_id)
+                                    .await;
+                            return Err(SandboxError::Unavailable(format!(
+                                "Resume failed: could not refresh sidecar URL for sandbox {}",
+                                record.id
+                            )));
+                        }
                     }
                 };
 
-                if !wait_for_sidecar_health(&refreshed.sidecar_url, 30).await {
+                if !sidecar_ready && !wait_for_sidecar_health(&resumed_record.sidecar_url, 30).await
+                {
                     let _ = stop_started_container(builder.client(), effective_container_id).await;
                     return Err(SandboxError::Unavailable(format!(
                         "Resume failed: sidecar for sandbox {} did not become healthy at {}",
-                        record.id, refreshed.sidecar_url
+                        record.id, resumed_record.sidecar_url
                     )));
                 }
 
-                if refreshed.ssh_port.is_some() {
-                    let _ = restore_ssh_access(&refreshed).await?;
+                if resumed_record.ssh_port.is_some() {
+                    let _ = restore_ssh_access(&resumed_record).await?;
                 }
 
                 let now = crate::util::now_ts();
@@ -3414,12 +3427,10 @@ mod tee_tests {
 
         let result = create_sidecar(&params, Some(&mock)).await;
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Mock deploy failure")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Mock deploy failure"));
     }
 
     #[tokio::test]
@@ -3764,12 +3775,10 @@ mod core_logic_tests {
         unsafe {
             std::env::set_var("ZAI_API_KEY", "operator-key");
         }
-        assert!(
-            !workflow_runtime_credentials_available(
-                r#"{"OPENCODE_MODEL_PROVIDER":"zai-coding-plan"}"#
-            )
-            .unwrap()
-        );
+        assert!(!workflow_runtime_credentials_available(
+            r#"{"OPENCODE_MODEL_PROVIDER":"zai-coding-plan"}"#
+        )
+        .unwrap());
 
         // SAFETY: restore previous process environment for the next test.
         unsafe {

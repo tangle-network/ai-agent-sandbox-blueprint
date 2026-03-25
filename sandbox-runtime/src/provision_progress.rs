@@ -179,6 +179,11 @@ pub fn gc_provisions(max_age_secs: u64) -> Result<()> {
 }
 
 #[cfg(test)]
+pub fn clear_all_for_testing() -> Result<()> {
+    provisions()?.replace(std::collections::HashMap::new())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Once;
