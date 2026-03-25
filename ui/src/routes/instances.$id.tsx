@@ -33,6 +33,13 @@ import {
   getInstanceServiceDisplayValue,
   getInstanceStatusLabel,
 } from '~/lib/instances/display';
+import { normalizeAgentIdentifier } from '~/lib/agents';
+
+interface AgentDescriptor {
+  identifier: string;
+  displayName?: string;
+  description?: string;
+}
 
 interface SshKey {
   username: string;
@@ -91,6 +98,11 @@ export default function InstanceDetail() {
   const [sshUserHint, setSshUserHint] = useState<string | null>(null);
   const sshUsernameDirtyRef = useRef(false);
   const sshUserDetectionKeyRef = useRef<string | null>(null);
+
+  // Agent discovery state
+  const [availableAgents, setAvailableAgents] = useState<AgentDescriptor[] | null>(null);
+  const [agentDiscoveryLoading, setAgentDiscoveryLoading] = useState(false);
+  const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null);
 
   const [snapshotOpen, setSnapshotOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<{
@@ -155,12 +167,58 @@ export default function InstanceDetail() {
   const operatorToken = getCachedOperatorToken();
   const hasWallet = !!address;
 
+  const configuredAgentIdentifier = normalizeAgentIdentifier(inst?.agentIdentifier);
+  const agentConfigured = configuredAgentIdentifier.length > 0;
+
   const handleSnapshot = useCallback(
     async (params: { destination: string; include_workspace: boolean; include_state: boolean }) => {
       await operatorApiCall('snapshot', params);
     },
     [operatorApiCall],
   );
+
+  // Discover available agents when the instance is running and operator is authed
+  useEffect(() => {
+    if (!agentConfigured || !isRunning) {
+      setAvailableAgents(null);
+      setAgentDiscoveryLoading(false);
+      setAgentDiscoveryError(null);
+      return;
+    }
+    if (!isOperatorAuthed && !operatorToken) {
+      setAvailableAgents(null);
+      setAgentDiscoveryLoading(false);
+      setAgentDiscoveryError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setAgentDiscoveryLoading(true);
+    setAgentDiscoveryError(null);
+
+    void operatorApiCall('agents', undefined, { method: 'GET' })
+      .then(async (response) => {
+        const body = await response.json() as { agents?: AgentDescriptor[] };
+        if (cancelled) return;
+        setAvailableAgents(Array.isArray(body.agents) ? body.agents : []);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setAvailableAgents(null);
+        setAgentDiscoveryError(
+          e instanceof Error ? parseApiError(e) : 'Could not load available agents.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAgentDiscoveryLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agentConfigured, isOperatorAuthed, isRunning, operatorApiCall, operatorToken]);
 
   const sshDetectionKey = inst?.sandboxId ?? decodedId;
   const sshConnectionCommand = useMemo(() => {
@@ -410,7 +468,12 @@ export default function InstanceDetail() {
     );
   }
 
-  const hasAgent = !!inst.agentIdentifier;
+  const hasAgent = agentConfigured;
+  const agentIdentifiers = availableAgents?.map((a) => normalizeAgentIdentifier(a.identifier)) ?? [];
+  const agentIdentifierValid = !agentConfigured
+    || (availableAgents != null && agentIdentifiers.includes(configuredAgentIdentifier));
+  const hasAgentValidationResult = availableAgents != null;
+  const agentAvailableList = agentIdentifiers.length > 0 ? agentIdentifiers.join(', ') : 'none reported';
 
   const tabs: { key: ActionTab; label: string; icon: string; hidden?: boolean }[] = [
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
@@ -485,6 +548,17 @@ export default function InstanceDetail() {
       )}
 
       <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-6" />
+
+      {agentConfigured && hasAgentValidationResult && !agentIdentifierValid && (
+        <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+          <p className="text-sm font-display font-medium text-amber-300">
+            Configured agent not available in this image
+          </p>
+          <p className="mt-1 text-xs text-amber-200/90">
+            This instance is configured to use <span className="font-data">{configuredAgentIdentifier}</span>, but the running image only reports {agentAvailableList}.
+          </p>
+        </div>
+      )}
 
       {/* Overview */}
       {tab === 'overview' && (
@@ -596,6 +670,26 @@ export default function InstanceDetail() {
                 </Button>
               </div>
             </CardContent>
+          ) : agentConfigured && agentDiscoveryLoading && !hasAgentValidationResult ? (
+            <CardContent className="py-16 text-center">
+              <div className="i-ph:spinner-gap text-3xl text-cloud-elements-textTertiary mb-3 mx-auto animate-spin" />
+              <p className="text-sm text-cloud-elements-textSecondary">
+                Checking which agents this image exposes...
+              </p>
+            </CardContent>
+          ) : agentConfigured && hasAgentValidationResult && !agentIdentifierValid ? (
+            <CardContent className="py-16 text-center">
+              <div className="i-ph:warning-circle text-3xl text-amber-400 mb-3 mx-auto" />
+              <p className="text-sm text-cloud-elements-textSecondary mb-2">
+                The configured agent is not available in this instance image
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mb-2">
+                Configured agent: <span className="font-data">{configuredAgentIdentifier}</span>
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary">
+                Available agents: <span className="font-data">{agentAvailableList}</span>
+              </p>
+            </CardContent>
           ) : inst.credentialsAvailable === false ? (
             <CardContent className="py-16 text-center">
               <div className="i-ph:key text-3xl text-amber-400 mb-3 mx-auto" />
@@ -616,6 +710,11 @@ export default function InstanceDetail() {
             </CardContent>
           ) : (
             <CardContent className="p-0">
+              {agentDiscoveryError && (
+                <div className="border-b border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                  <p className="text-xs text-amber-300">{agentDiscoveryError}</p>
+                </div>
+              )}
               <div className="h-[min(600px,65vh)]">
                 <SessionSidebar
                   sandboxId={inst.sandboxId ?? decodedId}
