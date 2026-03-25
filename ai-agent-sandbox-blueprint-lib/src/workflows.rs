@@ -1,17 +1,17 @@
 use chrono::{TimeZone, Utc};
 use cron::Schedule;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use crate::SandboxTaskRequest;
 use crate::auth::require_sidecar_token;
 use crate::jobs::exec::run_task_request_with_profile;
 use crate::runtime::require_sidecar_auth;
 use crate::store::PersistentStore;
 use crate::util::now_ts;
+use crate::SandboxTaskRequest;
 
 // Sidecar token in WorkflowTaskSpec is stored in the workflow JSON config
 // (not on-chain ABI). It's validated against the stored sandbox record.
@@ -81,6 +81,8 @@ pub struct WorkflowRuntimeMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowRuntimeStatus {
     pub workflow_id: u64,
+    pub target_status: WorkflowTargetStatus,
+    pub runnable: bool,
     pub running: bool,
     pub last_run_at: Option<u64>,
     pub next_run_at: Option<u64>,
@@ -98,6 +100,8 @@ pub struct WorkflowSummary {
     pub target_sandbox_id: String,
     pub target_service_id: u64,
     pub active: bool,
+    pub target_status: WorkflowTargetStatus,
+    pub runnable: bool,
     pub running: bool,
     pub last_run_at: Option<u64>,
     pub next_run_at: Option<u64>,
@@ -117,10 +121,19 @@ pub struct WorkflowDetail {
     pub target_sandbox_id: String,
     pub target_service_id: u64,
     pub active: bool,
+    pub target_status: WorkflowTargetStatus,
+    pub runnable: bool,
     pub running: bool,
     pub last_run_at: Option<u64>,
     pub next_run_at: Option<u64>,
     pub latest_execution: Option<WorkflowLatestExecution>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkflowTargetStatus {
+    Available,
+    Missing,
 }
 
 pub struct WorkflowExecution {
@@ -145,6 +158,12 @@ impl WorkflowStatusError {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorkflowEffectiveState {
+    target_status: WorkflowTargetStatus,
+    runnable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,8 +313,23 @@ fn summarize_last_run_at(
     }
 }
 
+fn workflow_effective_state_from_target_status(
+    entry: &WorkflowEntry,
+    target_status: WorkflowTargetStatus,
+) -> WorkflowEffectiveState {
+    WorkflowEffectiveState {
+        target_status,
+        runnable: entry.active && matches!(target_status, WorkflowTargetStatus::Available),
+    }
+}
+
+fn owner_matches(entry: &WorkflowEntry, caller: &str) -> bool {
+    !entry.owner.is_empty() && entry.owner.eq_ignore_ascii_case(caller)
+}
+
 fn workflow_summary_from_entry(
     entry: &WorkflowEntry,
+    effective_state: WorkflowEffectiveState,
 ) -> Result<WorkflowSummary, WorkflowStatusError> {
     let latest_execution =
         latest_execution_for_workflow(entry.id).map_err(WorkflowStatusError::Internal)?;
@@ -308,17 +342,23 @@ fn workflow_summary_from_entry(
         target_sandbox_id: entry.target_sandbox_id.clone(),
         target_service_id: entry.target_service_id,
         active: entry.active,
-        running: is_workflow_running(entry.id),
+        target_status: effective_state.target_status,
+        runnable: effective_state.runnable,
+        running: effective_state.runnable && is_workflow_running(entry.id),
         last_run_at: summarize_last_run_at(entry, &latest_execution),
-        next_run_at: entry.next_run_at,
+        next_run_at: effective_state
+            .runnable
+            .then_some(entry.next_run_at)
+            .flatten(),
         latest_execution,
     })
 }
 
 fn workflow_detail_from_entry(
     entry: &WorkflowEntry,
+    effective_state: WorkflowEffectiveState,
 ) -> Result<WorkflowDetail, WorkflowStatusError> {
-    let summary = workflow_summary_from_entry(entry)?;
+    let summary = workflow_summary_from_entry(entry, effective_state)?;
     Ok(WorkflowDetail {
         workflow_id: summary.workflow_id,
         name: summary.name,
@@ -330,6 +370,8 @@ fn workflow_detail_from_entry(
         target_sandbox_id: summary.target_sandbox_id,
         target_service_id: summary.target_service_id,
         active: summary.active,
+        target_status: summary.target_status,
+        runnable: summary.runnable,
         running: summary.running,
         last_run_at: summary.last_run_at,
         next_run_at: summary.next_run_at,
@@ -431,17 +473,47 @@ fn resolve_workflow_sandbox(entry: &WorkflowEntry) -> Result<crate::SandboxRecor
     crate::runtime::get_sandbox_by_url(sidecar_url).map_err(|err| err.to_string())
 }
 
-fn resolve_workflow_sandbox_for_owner(
+fn resolve_workflow_target_status(entry: &WorkflowEntry) -> Result<WorkflowTargetStatus, String> {
+    if entry.target_kind == WORKFLOW_TARGET_SANDBOX && !entry.target_sandbox_id.trim().is_empty() {
+        return match crate::runtime::get_sandbox_by_id(entry.target_sandbox_id.as_str()) {
+            Ok(_) => Ok(WorkflowTargetStatus::Available),
+            Err(crate::SandboxError::NotFound(_)) => Ok(WorkflowTargetStatus::Missing),
+            Err(other) => Err(other.to_string()),
+        };
+    }
+
+    let spec = parse_workflow_task_spec(entry.workflow_json.as_str())?;
+    let sidecar_url = spec.sidecar_url.as_deref().ok_or_else(|| {
+        "workflow_json must include sidecar_url when no sandbox target is provided".to_string()
+    })?;
+
+    match crate::runtime::get_sandbox_by_url(sidecar_url) {
+        Ok(_) => Ok(WorkflowTargetStatus::Available),
+        Err(crate::SandboxError::NotFound(_)) => Ok(WorkflowTargetStatus::Missing),
+        Err(other) => Err(other.to_string()),
+    }
+}
+
+fn resolve_workflow_effective_state_for_owner(
     entry: &WorkflowEntry,
     caller: &str,
-) -> Result<crate::SandboxRecord, WorkflowStatusError> {
+) -> Result<WorkflowEffectiveState, WorkflowStatusError> {
     if entry.target_kind == WORKFLOW_TARGET_SANDBOX && !entry.target_sandbox_id.trim().is_empty() {
-        return crate::runtime::require_sandbox_owner(entry.target_sandbox_id.as_str(), caller)
-            .map_err(|err| match err {
-                crate::SandboxError::NotFound(message) => WorkflowStatusError::NotFound(message),
-                crate::SandboxError::Auth(message) => WorkflowStatusError::Forbidden(message),
-                other => WorkflowStatusError::Internal(other.to_string()),
-            });
+        return match crate::runtime::require_sandbox_owner(entry.target_sandbox_id.as_str(), caller)
+        {
+            Ok(_) => Ok(workflow_effective_state_from_target_status(
+                entry,
+                WorkflowTargetStatus::Available,
+            )),
+            Err(crate::SandboxError::NotFound(_)) if owner_matches(entry, caller) => Ok(
+                workflow_effective_state_from_target_status(entry, WorkflowTargetStatus::Missing),
+            ),
+            Err(crate::SandboxError::NotFound(message)) => {
+                Err(WorkflowStatusError::NotFound(message))
+            }
+            Err(crate::SandboxError::Auth(message)) => Err(WorkflowStatusError::Forbidden(message)),
+            Err(other) => Err(WorkflowStatusError::Internal(other.to_string())),
+        };
     }
 
     let spec = parse_workflow_task_spec(entry.workflow_json.as_str())
@@ -452,11 +524,57 @@ fn resolve_workflow_sandbox_for_owner(
         )
     })?;
 
-    crate::runtime::require_sandbox_owner_by_url(sidecar_url, caller).map_err(|err| match err {
-        crate::SandboxError::NotFound(message) => WorkflowStatusError::NotFound(message),
-        crate::SandboxError::Auth(message) => WorkflowStatusError::Forbidden(message),
-        other => WorkflowStatusError::Internal(other.to_string()),
-    })
+    match crate::runtime::require_sandbox_owner_by_url(sidecar_url, caller) {
+        Ok(_) => Ok(workflow_effective_state_from_target_status(
+            entry,
+            WorkflowTargetStatus::Available,
+        )),
+        Err(crate::SandboxError::NotFound(_)) if owner_matches(entry, caller) => Ok(
+            workflow_effective_state_from_target_status(entry, WorkflowTargetStatus::Missing),
+        ),
+        Err(crate::SandboxError::NotFound(message)) => Err(WorkflowStatusError::NotFound(message)),
+        Err(crate::SandboxError::Auth(message)) => Err(WorkflowStatusError::Forbidden(message)),
+        Err(other) => Err(WorkflowStatusError::Internal(other.to_string())),
+    }
+}
+
+fn resolve_workflow_owner(entry: &WorkflowEntry) -> Result<Option<String>, String> {
+    if entry.target_kind == WORKFLOW_TARGET_SANDBOX && !entry.target_sandbox_id.trim().is_empty() {
+        return match crate::runtime::get_sandbox_by_id(entry.target_sandbox_id.as_str()) {
+            Ok(record) if !record.owner.is_empty() => Ok(Some(record.owner)),
+            Ok(_) | Err(crate::SandboxError::NotFound(_)) => Ok(None),
+            Err(other) => Err(other.to_string()),
+        };
+    }
+
+    let spec = parse_workflow_task_spec(entry.workflow_json.as_str())?;
+    let sidecar_url = spec.sidecar_url.as_deref().ok_or_else(|| {
+        "workflow_json must include sidecar_url when no sandbox target is provided".to_string()
+    })?;
+
+    match crate::runtime::get_sandbox_by_url(sidecar_url) {
+        Ok(record) if !record.owner.is_empty() => Ok(Some(record.owner)),
+        Ok(_) | Err(crate::SandboxError::NotFound(_)) => Ok(None),
+        Err(other) => Err(other.to_string()),
+    }
+}
+
+fn merge_local_workflow_metadata(
+    entry: &mut WorkflowEntry,
+    existing: Option<&WorkflowEntry>,
+) -> Result<(), String> {
+    if let Some(existing) = existing.filter(|workflow| !workflow.owner.is_empty()) {
+        entry.owner = existing.owner.clone();
+        return Ok(());
+    }
+
+    if entry.owner.is_empty() {
+        if let Some(owner) = resolve_workflow_owner(entry)? {
+            entry.owner = owner;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn workflow_runtime_status_for_owner(
@@ -470,15 +588,20 @@ pub fn workflow_runtime_status_for_owner(
         .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
         .ok_or_else(|| WorkflowStatusError::NotFound("Workflow not found".to_string()))?;
 
-    let _record = resolve_workflow_sandbox_for_owner(&entry, caller)?;
+    let effective_state = resolve_workflow_effective_state_for_owner(&entry, caller)?;
     let latest_execution =
         latest_execution_for_workflow(workflow_id).map_err(WorkflowStatusError::Internal)?;
 
     Ok(WorkflowRuntimeStatus {
         workflow_id,
-        running: is_workflow_running(workflow_id),
+        target_status: effective_state.target_status,
+        runnable: effective_state.runnable,
+        running: effective_state.runnable && is_workflow_running(workflow_id),
         last_run_at: summarize_last_run_at(&entry, &latest_execution),
-        next_run_at: entry.next_run_at,
+        next_run_at: effective_state
+            .runnable
+            .then_some(entry.next_run_at)
+            .flatten(),
         latest_execution,
     })
 }
@@ -491,8 +614,10 @@ pub fn list_workflows_for_owner(caller: &str) -> Result<Vec<WorkflowSummary>, Wo
         .values()
         .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
     {
-        match resolve_workflow_sandbox_for_owner(&entry, caller) {
-            Ok(_) => visible.push(workflow_summary_from_entry(&entry)?),
+        match resolve_workflow_effective_state_for_owner(&entry, caller) {
+            Ok(effective_state) => {
+                visible.push(workflow_summary_from_entry(&entry, effective_state)?)
+            }
             Err(WorkflowStatusError::Forbidden(_)) | Err(WorkflowStatusError::NotFound(_)) => {}
             Err(WorkflowStatusError::Internal(err)) => {
                 return Err(WorkflowStatusError::Internal(err));
@@ -539,8 +664,8 @@ pub fn workflow_detail_for_owner(
         .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
         .ok_or_else(|| WorkflowStatusError::NotFound("Workflow not found".to_string()))?;
 
-    let _record = resolve_workflow_sandbox_for_owner(&entry, caller)?;
-    workflow_detail_from_entry(&entry)
+    let effective_state = resolve_workflow_effective_state_for_owner(&entry, caller)?;
+    workflow_detail_from_entry(&entry, effective_state)
 }
 
 pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, String> {
@@ -646,6 +771,12 @@ pub async fn workflow_tick() -> Result<Value, String> {
     let due: Vec<u64> = all
         .iter()
         .filter(|e| e.active && e.trigger_type == "cron")
+        .filter(|entry| {
+            !matches!(
+                resolve_workflow_target_status(entry),
+                Ok(WorkflowTargetStatus::Missing)
+            )
+        })
         .filter_map(|e| e.next_run_at.filter(|&t| t <= now).map(|_| e.id))
         .collect();
 
@@ -739,6 +870,12 @@ pub async fn bootstrap_workflows_from_chain(
         .map_err(|err| format!("Failed to read workflow IDs: {err}"))?;
 
     let ids = parse_workflow_ids(ids)?;
+    let existing_entries: HashMap<String, WorkflowEntry> = workflows()?
+        .values()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|entry| (workflow_key(entry.id), entry))
+        .collect();
     let mut entries: HashMap<String, WorkflowEntry> = HashMap::new();
     for workflow_id in ids {
         let output = contract
@@ -753,8 +890,10 @@ pub async fn bootstrap_workflows_from_chain(
             .call()
             .await
             .map_err(|err| format!("Failed to read workflow {workflow_id}: {err}"))?;
-        let entry = parse_workflow_config(workflow_id, output)?;
-        entries.insert(workflow_key(workflow_id), entry);
+        let mut entry = parse_workflow_config(workflow_id, output)?;
+        let key = workflow_key(workflow_id);
+        merge_local_workflow_metadata(&mut entry, existing_entries.get(&key))?;
+        entries.insert(key, entry);
     }
 
     workflows()?.replace(entries).map_err(|e| e.to_string())?;

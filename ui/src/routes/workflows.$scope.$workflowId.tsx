@@ -73,6 +73,34 @@ function formatJson(value: string) {
   }
 }
 
+function getWorkflowStatusPresentation(
+  workflow: { active: boolean; runnable: boolean; targetStatus: 'available' | 'missing' },
+) {
+  if (!workflow.runnable) {
+    return {
+      label: 'Not Runnable',
+      variant: 'stopped' as const,
+      description: workflow.targetStatus === 'missing'
+        ? 'This workflow cannot run because its target sandbox or instance is no longer available.'
+        : 'This workflow is currently blocked from execution.',
+    };
+  }
+
+  if (workflow.active) {
+    return {
+      label: 'Active',
+      variant: 'running' as const,
+      description: 'This workflow is enabled and can execute normally.',
+    };
+  }
+
+  return {
+    label: 'Inactive',
+    variant: 'secondary' as const,
+    description: 'This workflow is disabled until it is re-enabled.',
+  };
+}
+
 function JsonPanel({
   title,
   description,
@@ -235,6 +263,7 @@ export default function WorkflowDetail() {
   const workflow = workflowDetailQuery.data;
   const latestExecution = workflow.latestExecution ?? null;
   const lastRunAt = workflow.lastRunAt;
+  const status = getWorkflowStatusPresentation(workflow);
 
   return (
     <AnimatedPage className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
@@ -250,20 +279,42 @@ export default function WorkflowDetail() {
             <h1 className="text-2xl font-display font-bold text-cloud-elements-textPrimary">
               {workflow.name || `Workflow #${String(workflowId)}`}
             </h1>
-            <Badge variant={workflow.active ? 'running' : 'secondary'}>
-              {workflow.active ? 'Active' : 'Inactive'}
+            <Badge variant={status.variant}>
+              {status.label}
             </Badge>
             {workflow.running ? <Badge variant="accent">Running</Badge> : null}
             <Badge variant="secondary">{target?.kindLabel ?? 'Workflow'}</Badge>
           </div>
           <p className="text-sm text-cloud-elements-textSecondary mt-2">
-            {target ? `Runs on ${target.label}` : 'Resolving workflow target...'}
+            {workflow.targetStatus === 'missing'
+              ? `Configured for ${target?.label ?? 'this workflow target'}, but the target is no longer available.`
+              : target
+                ? `Runs on ${target.label}`
+                : 'Resolving workflow target...'}
           </p>
         </div>
         <Link to="/workflows">
           <Button variant="secondary" size="sm">Back to Workflows</Button>
         </Link>
       </div>
+
+      {!workflow.runnable ? (
+        <Card className="mb-6">
+          <CardContent className="p-5">
+            <div className="flex items-start gap-3">
+              <div className="i-ph:warning text-lg text-amber-400 mt-0.5" />
+              <div>
+                <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+                  {status.label}
+                </p>
+                <p className="text-sm text-cloud-elements-textSecondary mt-1">
+                  {status.description}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         <Card>
@@ -286,6 +337,10 @@ export default function WorkflowDetail() {
             <div className="flex items-center justify-between gap-4">
               <span className="text-cloud-elements-textTertiary">Scope</span>
               <span className="text-cloud-elements-textPrimary capitalize">{workflow.scope}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-cloud-elements-textTertiary">Status</span>
+              <span className="text-cloud-elements-textPrimary">{status.label}</span>
             </div>
             <div className="flex items-center justify-between gap-4">
               <span className="text-cloud-elements-textTertiary">Target Service</span>
@@ -326,7 +381,9 @@ export default function WorkflowDetail() {
                 </div>
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-cloud-elements-textTertiary">Next Scheduled Run</span>
-                  <span className="text-cloud-elements-textPrimary">{formatTimestamp(workflow.nextRunAt)}</span>
+                  <span className="text-cloud-elements-textPrimary">
+                    {workflow.runnable ? formatTimestamp(workflow.nextRunAt) : 'Not Runnable'}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-cloud-elements-textTertiary">Latest Result</span>

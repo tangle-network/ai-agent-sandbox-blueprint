@@ -5,8 +5,8 @@
 //! GCP Confidential Space, Azure SKR, and direct operator hardware.
 
 use ai_agent_tee_instance_blueprint_lib::{
-    JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, init_tee_backend,
-    spawn_pending_provision_report_worker, tee_router, workflow_runtime_status_for_owner,
+    bootstrap_workflows_from_chain, init_tee_backend, spawn_pending_provision_report_worker,
+    tee_router, workflow_runtime_status_for_owner, JOB_WORKFLOW_TICK,
 };
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -14,9 +14,9 @@ use axum::routing::get;
 use axum::{Json, Router as HttpRouter};
 use blueprint_producers_extra::cron::CronJob;
 use blueprint_sdk::contexts::tangle::TangleClientContext;
-use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
 use blueprint_sdk::runner::tangle::config::TangleConfig;
+use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 use blueprint_sdk::{error, info, warn};
 
@@ -73,6 +73,8 @@ async fn workflow_list_handler(
                         "targetSandboxId": workflow.target_sandbox_id,
                         "targetServiceId": workflow.target_service_id,
                         "active": workflow.active,
+                        "targetStatus": workflow.target_status,
+                        "runnable": workflow.runnable,
                         "running": workflow.running,
                         "lastRunAt": workflow.last_run_at,
                         "nextRunAt": workflow.next_run_at,
@@ -102,6 +104,8 @@ async fn workflow_detail_handler(
                 "targetSandboxId": workflow.target_sandbox_id,
                 "targetServiceId": workflow.target_service_id,
                 "active": workflow.active,
+                "targetStatus": workflow.target_status,
+                "runnable": workflow.runnable,
                 "running": workflow.running,
                 "lastRunAt": workflow.last_run_at,
                 "nextRunAt": workflow.next_run_at,
@@ -435,7 +439,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
 fn setup_log() {
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{EnvFilter, fmt};
+    use tracing_subscriber::{fmt, EnvFilter};
     if tracing_subscriber::registry()
         .with(fmt::layer())
         .with(EnvFilter::from_default_env())

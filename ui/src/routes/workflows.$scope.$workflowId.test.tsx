@@ -125,6 +125,8 @@ describe('WorkflowDetail access control', () => {
         targetSandboxId: 'sandbox-1',
         targetServiceId: 7,
         active: true,
+        targetStatus: 'available',
+        runnable: true,
         running: false,
         lastRunAt: 1710000000,
         nextRunAt: 1710000030,
@@ -148,6 +150,41 @@ describe('WorkflowDetail access control', () => {
     expect(
       screen.queryByText('Authenticate with the operator to load this workflow.'),
     ).not.toBeInTheDocument();
+  });
+
+  it('renders orphaned workflows as not runnable', () => {
+    accountRef.current = {
+      address: '0x123400000000000000000000000000000000abcd',
+    };
+    workflowDetailQueryRef.current = {
+      ...workflowDetailQueryRef.current,
+      data: {
+        scope: 'sandbox',
+        workflowId: 1,
+        name: 'Nightly Summary',
+        triggerType: 'cron',
+        triggerConfig: '*/30 * * * * *',
+        targetKind: 0,
+        targetSandboxId: 'sandbox-1',
+        targetServiceId: 7,
+        active: true,
+        targetStatus: 'missing',
+        runnable: false,
+        running: false,
+        lastRunAt: 1710000000,
+        nextRunAt: null,
+        latestExecution: null,
+        workflowJson: '{"prompt":"hello"}',
+        sandboxConfigJson: '{}',
+      },
+    };
+
+    render(<WorkflowDetail />);
+
+    expect(screen.getAllByText('Not Runnable').length).toBeGreaterThan(0);
+    expect(
+      screen.getByText('This workflow cannot run because its target sandbox or instance is no longer available.'),
+    ).toBeInTheDocument();
   });
 
   it('shows a not found message when the operator cannot load the workflow', () => {

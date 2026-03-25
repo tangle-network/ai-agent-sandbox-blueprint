@@ -12,14 +12,15 @@
 
 use ai_agent_instance_blueprint_lib::auto_provision::decode_provision_config;
 use ai_agent_instance_blueprint_lib::workflows::{
-    WorkflowEntry, apply_workflow_execution, resolve_next_run, run_workflow, workflow_key,
-    workflow_tick, workflows,
+    apply_workflow_execution, list_workflows_for_owner, resolve_next_run, run_workflow,
+    workflow_detail_for_owner, workflow_key, workflow_runtime_status_for_owner, workflow_tick,
+    workflows, WorkflowEntry, WorkflowTargetStatus,
 };
 use ai_agent_instance_blueprint_lib::*;
 use blueprint_sdk::alloy::sol_types::SolValue;
-use serde_json::{Value, json};
-use std::sync::Once;
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Once;
 use std::time::Duration;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1812,26 +1813,22 @@ mod provision_guard_tests {
 
         // Both stores have data.
         assert!(get_instance_sandbox().unwrap().is_some());
-        assert!(
-            runtime::sandboxes()
-                .unwrap()
-                .get(&sandbox_id)
-                .unwrap()
-                .is_some()
-        );
+        assert!(runtime::sandboxes()
+            .unwrap()
+            .get(&sandbox_id)
+            .unwrap()
+            .is_some());
 
         // Clear both.
         clear_instance_sandbox().unwrap();
         rm(&sandbox_id);
 
         assert!(get_instance_sandbox().unwrap().is_none());
-        assert!(
-            runtime::sandboxes()
-                .unwrap()
-                .get(&sandbox_id)
-                .unwrap()
-                .is_none()
-        );
+        assert!(runtime::sandboxes()
+            .unwrap()
+            .get(&sandbox_id)
+            .unwrap()
+            .is_none());
     }
 }
 
@@ -1841,7 +1838,7 @@ mod provision_guard_tests {
 
 /// Helper: create a SandboxRecord in the instance store pointing at wiremock.
 /// Must be called inside INSTANCE_LOCK scope.
-fn set_instance_for_test(url: &str, token: &str) -> String {
+fn set_instance_for_test_with_owner(url: &str, token: &str, owner: &str) -> String {
     init();
     let id = uid();
     // Also insert into runtime store (run_workflow → run_instance_task touches it).
@@ -1880,7 +1877,7 @@ fn set_instance_for_test(url: &str, token: &str) -> String {
                 metadata_json: String::new(),
                 disk_gb: 0,
                 stack: String::new(),
-                owner: String::new(),
+                owner: owner.to_string(),
                 service_id: Some(1),
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
@@ -1921,7 +1918,7 @@ fn set_instance_for_test(url: &str, token: &str) -> String {
         metadata_json: String::new(),
         disk_gb: 0,
         stack: String::new(),
-        owner: String::new(),
+        owner: owner.to_string(),
         service_id: Some(1),
         tee_config: None,
         extra_ports: std::collections::HashMap::new(),
@@ -1930,6 +1927,10 @@ fn set_instance_for_test(url: &str, token: &str) -> String {
     };
     set_instance_sandbox(record).unwrap();
     id
+}
+
+fn set_instance_for_test(url: &str, token: &str) -> String {
+    set_instance_for_test_with_owner(url, token, "")
 }
 
 fn clear_instance_for_test(sandbox_id: &str) {
@@ -2224,6 +2225,35 @@ mod workflow_tests {
         clear_instance_for_test(&sid);
     }
 
+    #[test]
+    fn orphaned_workflow_remains_visible_to_owner() {
+        let owner = "0x123400000000000000000000000000000000abcd";
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test_with_owner("http://instance-orphaned", "wf-tok", owner);
+        let key = workflow_key(80018);
+        let mut entry = wf(80018);
+        entry.owner = owner.to_string();
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+
+        clear_instance_for_test(&sid);
+
+        let summaries = list_workflows_for_owner(owner).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].target_status, WorkflowTargetStatus::Missing);
+        assert!(!summaries[0].runnable);
+        assert!(summaries[0].next_run_at.is_none());
+
+        let detail = workflow_detail_for_owner(80018, owner).unwrap();
+        assert_eq!(detail.target_status, WorkflowTargetStatus::Missing);
+        assert!(!detail.runnable);
+
+        let status = workflow_runtime_status_for_owner(80018, owner).unwrap();
+        assert_eq!(status.target_status, WorkflowTargetStatus::Missing);
+        assert!(!status.runnable);
+
+        workflows().unwrap().remove(&key).unwrap();
+    }
+
     #[tokio::test]
     async fn tick_skips_inactive_workflows() {
         let srv = MockServer::start().await;
@@ -2243,6 +2273,26 @@ mod workflow_tests {
 
         workflows().unwrap().remove(&key).unwrap();
         clear_instance_for_test(&sid);
+    }
+
+    #[tokio::test]
+    async fn tick_skips_missing_target_workflows() {
+        let owner = "0x123400000000000000000000000000000000abcd";
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test_with_owner("http://instance-missing", "skip-tok", owner);
+        let key = workflow_key(80019);
+        let mut entry = wf(80019);
+        entry.owner = owner.to_string();
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+        clear_instance_for_test(&sid);
+
+        let result = workflow_tick().await.unwrap();
+
+        assert_eq!(result["count"], 0);
+        let stored = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert!(stored.last_run_at.is_none());
+
+        workflows().unwrap().remove(&key).unwrap();
     }
 
     #[tokio::test]

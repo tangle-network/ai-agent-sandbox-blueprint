@@ -52,6 +52,32 @@ type WorkflowRecord = {
   kindLabel: string;
 };
 
+function getWorkflowStatusPresentation(workflow: WorkflowOperatorSummary) {
+  if (!workflow.runnable) {
+    return {
+      label: 'Not Runnable',
+      variant: 'stopped' as const,
+      detail: workflow.targetStatus === 'missing'
+        ? 'Target is no longer available'
+        : 'Workflow is currently blocked',
+    };
+  }
+
+  if (workflow.active) {
+    return {
+      label: 'Active',
+      variant: 'running' as const,
+      detail: 'Ready to execute on schedule',
+    };
+  }
+
+  return {
+    label: 'Inactive',
+    variant: 'secondary' as const,
+    detail: 'Disabled until re-enabled',
+  };
+}
+
 function getWorkflowContractAddress(address: Address): Address | undefined {
   return isContractDeployed(address) ? address : undefined;
 }
@@ -679,6 +705,7 @@ function WorkflowCard({
   txPending: boolean;
 }) {
   const { id, data, targetLabel, kindLabel } = workflow;
+  const status = getWorkflowStatusPresentation(data);
 
   const triggerLabel: Record<string, string> = {
     cron: 'Cron',
@@ -686,7 +713,8 @@ function WorkflowCard({
     manual: 'Manual',
   };
 
-  const canRunActions = data.active && data.targetServiceId !== 0;
+  const canTrigger = data.runnable && data.targetServiceId !== 0;
+  const canCancel = data.active && data.targetServiceId !== 0;
   const detailPath = buildWorkflowDetailPath(workflow.scope, id);
 
   return (
@@ -711,8 +739,8 @@ function WorkflowCard({
                 >
                   {data.name || `Workflow #${String(id)}`}
                 </Link>
-                <Badge variant={data.active ? 'running' : 'secondary'}>
-                  {data.active ? 'Active' : 'Inactive'}
+                <Badge variant={status.variant}>
+                  {status.label}
                 </Badge>
                 <Badge variant="accent">
                   {triggerLabel[data.triggerType] ?? data.triggerType}
@@ -720,13 +748,19 @@ function WorkflowCard({
                 <Badge variant="secondary">{kindLabel}</Badge>
               </div>
               <div className="flex items-center gap-3 mt-1 text-xs text-cloud-elements-textTertiary flex-wrap">
-                <span>Runs on {targetLabel}</span>
+                <span>
+                  {data.targetStatus === 'missing'
+                    ? `Target missing: ${targetLabel}`
+                    : `Runs on ${targetLabel}`}
+                </span>
                 {data.triggerConfig && (
                   <>
                     <span className="text-cloud-elements-dividerColor">·</span>
                     <span className="font-data">{data.triggerConfig}</span>
                   </>
                 )}
+                <span className="text-cloud-elements-dividerColor">·</span>
+                <span>{status.detail}</span>
                 {data.lastRunAt && data.lastRunAt > 0 && (
                   <>
                     <span className="text-cloud-elements-dividerColor">·</span>
@@ -742,18 +776,18 @@ function WorkflowCard({
                 View Details
               </Button>
             </Link>
-            {canRunActions && (
-              <>
-                <Button variant="success" size="sm" onClick={onTrigger} disabled={txPending}>
-                  <div className="i-ph:play text-xs" />
-                  Trigger
-                </Button>
-                <Button variant="secondary" size="sm" onClick={onCancel} disabled={txPending}>
-                  <div className="i-ph:stop text-xs" />
-                  Cancel
-                </Button>
-              </>
-            )}
+            {data.active && data.targetServiceId !== 0 ? (
+              <Button variant="success" size="sm" onClick={onTrigger} disabled={txPending || !canTrigger}>
+                <div className="i-ph:play text-xs" />
+                Trigger
+              </Button>
+            ) : null}
+            {canCancel ? (
+              <Button variant="secondary" size="sm" onClick={onCancel} disabled={txPending}>
+                <div className="i-ph:stop text-xs" />
+                Cancel
+              </Button>
+            ) : null}
           </div>
         </div>
       </CardContent>

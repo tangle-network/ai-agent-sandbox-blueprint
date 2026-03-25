@@ -18,6 +18,8 @@ export interface WorkflowLatestExecution {
 
 export interface WorkflowRuntimeStatus {
   workflowId: number;
+  targetStatus: 'available' | 'missing';
+  runnable: boolean;
   running: boolean;
   lastRunAt: number | null;
   nextRunAt: number | null;

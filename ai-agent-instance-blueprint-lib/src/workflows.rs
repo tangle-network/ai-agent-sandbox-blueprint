@@ -1,15 +1,15 @@
 use chrono::{TimeZone, Utc};
 use cron::Schedule;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use crate::InstanceTaskRequest;
 use crate::jobs::exec::run_instance_task;
 use crate::store::PersistentStore;
 use crate::util::now_ts;
+use crate::InstanceTaskRequest;
 
 pub const WORKFLOW_TARGET_SANDBOX: u8 = 0;
 pub const WORKFLOW_TARGET_INSTANCE: u8 = 1;
@@ -76,6 +76,8 @@ pub struct WorkflowRuntimeMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowRuntimeStatus {
     pub workflow_id: u64,
+    pub target_status: WorkflowTargetStatus,
+    pub runnable: bool,
     pub running: bool,
     pub last_run_at: Option<u64>,
     pub next_run_at: Option<u64>,
@@ -93,6 +95,8 @@ pub struct WorkflowSummary {
     pub target_sandbox_id: String,
     pub target_service_id: u64,
     pub active: bool,
+    pub target_status: WorkflowTargetStatus,
+    pub runnable: bool,
     pub running: bool,
     pub last_run_at: Option<u64>,
     pub next_run_at: Option<u64>,
@@ -112,10 +116,19 @@ pub struct WorkflowDetail {
     pub target_sandbox_id: String,
     pub target_service_id: u64,
     pub active: bool,
+    pub target_status: WorkflowTargetStatus,
+    pub runnable: bool,
     pub running: bool,
     pub last_run_at: Option<u64>,
     pub next_run_at: Option<u64>,
     pub latest_execution: Option<WorkflowLatestExecution>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkflowTargetStatus {
+    Available,
+    Missing,
 }
 
 pub struct WorkflowExecution {
@@ -140,6 +153,12 @@ impl WorkflowStatusError {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorkflowEffectiveState {
+    target_status: WorkflowTargetStatus,
+    runnable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,16 +296,60 @@ fn summarize_last_run_at(
     }
 }
 
-fn require_workflow_access(entry: &WorkflowEntry, caller: &str) -> Result<(), WorkflowStatusError> {
+fn workflow_effective_state_from_target_status(
+    entry: &WorkflowEntry,
+    target_status: WorkflowTargetStatus,
+) -> WorkflowEffectiveState {
+    WorkflowEffectiveState {
+        target_status,
+        runnable: entry.active && matches!(target_status, WorkflowTargetStatus::Available),
+    }
+}
+
+fn owner_matches(entry: &WorkflowEntry, caller: &str) -> bool {
+    !entry.owner.is_empty() && entry.owner.eq_ignore_ascii_case(caller)
+}
+
+fn resolve_workflow_target_status(entry: &WorkflowEntry) -> Result<WorkflowTargetStatus, String> {
+    if entry.target_kind != WORKFLOW_TARGET_INSTANCE {
+        return Ok(WorkflowTargetStatus::Missing);
+    }
+
+    match crate::get_instance_sandbox().map_err(|e| e.to_string())? {
+        Some(record) => match record.service_id {
+            Some(service_id) if service_id == entry.target_service_id => {
+                Ok(WorkflowTargetStatus::Available)
+            }
+            Some(_) => Ok(WorkflowTargetStatus::Missing),
+            None => Err("Local instance sandbox is missing service binding".to_string()),
+        },
+        None => Ok(WorkflowTargetStatus::Missing),
+    }
+}
+
+fn require_workflow_access(
+    entry: &WorkflowEntry,
+    caller: &str,
+) -> Result<WorkflowEffectiveState, WorkflowStatusError> {
     if entry.target_kind != WORKFLOW_TARGET_INSTANCE {
         return Err(WorkflowStatusError::NotFound(
             "Workflow target is not available on this operator".to_string(),
         ));
     }
 
-    let record = crate::get_instance_sandbox()
-        .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
-        .ok_or_else(|| WorkflowStatusError::NotFound("Instance not provisioned".to_string()))?;
+    let Some(record) =
+        crate::get_instance_sandbox().map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
+    else {
+        if owner_matches(entry, caller) {
+            return Ok(workflow_effective_state_from_target_status(
+                entry,
+                WorkflowTargetStatus::Missing,
+            ));
+        }
+        return Err(WorkflowStatusError::NotFound(
+            "Instance not provisioned".to_string(),
+        ));
+    };
 
     if record.owner.is_empty() {
         return Err(WorkflowStatusError::Forbidden(
@@ -300,9 +363,12 @@ fn require_workflow_access(entry: &WorkflowEntry, caller: &str) -> Result<(), Wo
     }
 
     match record.service_id {
-        Some(service_id) if service_id == entry.target_service_id => Ok(()),
-        Some(_) => Err(WorkflowStatusError::NotFound(
-            "Workflow target is not available on this operator".to_string(),
+        Some(service_id) if service_id == entry.target_service_id => Ok(
+            workflow_effective_state_from_target_status(entry, WorkflowTargetStatus::Available),
+        ),
+        Some(_) => Ok(workflow_effective_state_from_target_status(
+            entry,
+            WorkflowTargetStatus::Missing,
         )),
         None => Err(WorkflowStatusError::Internal(
             "Local instance sandbox is missing service binding".to_string(),
@@ -312,6 +378,7 @@ fn require_workflow_access(entry: &WorkflowEntry, caller: &str) -> Result<(), Wo
 
 fn workflow_summary_from_entry(
     entry: &WorkflowEntry,
+    effective_state: WorkflowEffectiveState,
 ) -> Result<WorkflowSummary, WorkflowStatusError> {
     let latest_execution =
         latest_execution_for_workflow(entry.id).map_err(WorkflowStatusError::Internal)?;
@@ -324,17 +391,23 @@ fn workflow_summary_from_entry(
         target_sandbox_id: entry.target_sandbox_id.clone(),
         target_service_id: entry.target_service_id,
         active: entry.active,
-        running: is_workflow_running(entry.id),
+        target_status: effective_state.target_status,
+        runnable: effective_state.runnable,
+        running: effective_state.runnable && is_workflow_running(entry.id),
         last_run_at: summarize_last_run_at(entry, &latest_execution),
-        next_run_at: entry.next_run_at,
+        next_run_at: effective_state
+            .runnable
+            .then_some(entry.next_run_at)
+            .flatten(),
         latest_execution,
     })
 }
 
 fn workflow_detail_from_entry(
     entry: &WorkflowEntry,
+    effective_state: WorkflowEffectiveState,
 ) -> Result<WorkflowDetail, WorkflowStatusError> {
-    let summary = workflow_summary_from_entry(entry)?;
+    let summary = workflow_summary_from_entry(entry, effective_state)?;
     Ok(WorkflowDetail {
         workflow_id: summary.workflow_id,
         name: summary.name,
@@ -346,11 +419,48 @@ fn workflow_detail_from_entry(
         target_sandbox_id: summary.target_sandbox_id,
         target_service_id: summary.target_service_id,
         active: summary.active,
+        target_status: summary.target_status,
+        runnable: summary.runnable,
         running: summary.running,
         last_run_at: summary.last_run_at,
         next_run_at: summary.next_run_at,
         latest_execution: summary.latest_execution,
     })
+}
+
+fn resolve_workflow_owner(entry: &WorkflowEntry) -> Result<Option<String>, String> {
+    if entry.target_kind != WORKFLOW_TARGET_INSTANCE {
+        return Ok(None);
+    }
+
+    let Some(record) = crate::get_instance_sandbox().map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+
+    match record.service_id {
+        Some(service_id) if service_id == entry.target_service_id && !record.owner.is_empty() => {
+            Ok(Some(record.owner))
+        }
+        Some(_) | None => Ok(None),
+    }
+}
+
+fn merge_local_workflow_metadata(
+    entry: &mut WorkflowEntry,
+    existing: Option<&WorkflowEntry>,
+) -> Result<(), String> {
+    if let Some(existing) = existing.filter(|workflow| !workflow.owner.is_empty()) {
+        entry.owner = existing.owner.clone();
+        return Ok(());
+    }
+
+    if entry.owner.is_empty() {
+        if let Some(owner) = resolve_workflow_owner(entry)? {
+            entry.owner = owner;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn resolve_next_run(
@@ -390,16 +500,21 @@ pub fn workflow_runtime_status_for_owner(
         .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
         .ok_or_else(|| WorkflowStatusError::NotFound("Workflow not found".to_string()))?;
 
-    require_workflow_access(&entry, caller)?;
+    let effective_state = require_workflow_access(&entry, caller)?;
 
     let latest_execution =
         latest_execution_for_workflow(workflow_id).map_err(WorkflowStatusError::Internal)?;
 
     Ok(WorkflowRuntimeStatus {
         workflow_id,
-        running: is_workflow_running(workflow_id),
+        target_status: effective_state.target_status,
+        runnable: effective_state.runnable,
+        running: effective_state.runnable && is_workflow_running(workflow_id),
         last_run_at: summarize_last_run_at(&entry, &latest_execution),
-        next_run_at: entry.next_run_at,
+        next_run_at: effective_state
+            .runnable
+            .then_some(entry.next_run_at)
+            .flatten(),
         latest_execution,
     })
 }
@@ -413,7 +528,9 @@ pub fn list_workflows_for_owner(caller: &str) -> Result<Vec<WorkflowSummary>, Wo
         .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
     {
         match require_workflow_access(&entry, caller) {
-            Ok(()) => visible.push(workflow_summary_from_entry(&entry)?),
+            Ok(effective_state) => {
+                visible.push(workflow_summary_from_entry(&entry, effective_state)?)
+            }
             Err(WorkflowStatusError::Forbidden(_)) | Err(WorkflowStatusError::NotFound(_)) => {}
             Err(WorkflowStatusError::Internal(err)) => {
                 return Err(WorkflowStatusError::Internal(err));
@@ -460,8 +577,8 @@ pub fn workflow_detail_for_owner(
         .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
         .ok_or_else(|| WorkflowStatusError::NotFound("Workflow not found".to_string()))?;
 
-    require_workflow_access(&entry, caller)?;
-    workflow_detail_from_entry(&entry)
+    let effective_state = require_workflow_access(&entry, caller)?;
+    workflow_detail_from_entry(&entry, effective_state)
 }
 
 pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, String> {
@@ -565,6 +682,12 @@ pub async fn workflow_tick() -> Result<Value, String> {
     let due: Vec<u64> = all
         .iter()
         .filter(|e| e.active && e.trigger_type == "cron")
+        .filter(|entry| {
+            !matches!(
+                resolve_workflow_target_status(entry),
+                Ok(WorkflowTargetStatus::Missing)
+            )
+        })
         .filter_map(|e| e.next_run_at.filter(|&t| t <= now).map(|_| e.id))
         .collect();
 
@@ -658,6 +781,12 @@ pub async fn bootstrap_workflows_from_chain(
         .map_err(|err| format!("Failed to read workflow IDs: {err}"))?;
 
     let ids = parse_workflow_ids(ids)?;
+    let existing_entries: HashMap<String, WorkflowEntry> = workflows()?
+        .values()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|entry| (workflow_key(entry.id), entry))
+        .collect();
     let mut entries: HashMap<String, WorkflowEntry> = HashMap::new();
     for workflow_id in ids {
         let output = contract
@@ -672,8 +801,10 @@ pub async fn bootstrap_workflows_from_chain(
             .call()
             .await
             .map_err(|err| format!("Failed to read workflow {workflow_id}: {err}"))?;
-        let entry = parse_workflow_config(workflow_id, output)?;
-        entries.insert(workflow_key(workflow_id), entry);
+        let mut entry = parse_workflow_config(workflow_id, output)?;
+        let key = workflow_key(workflow_id);
+        merge_local_workflow_metadata(&mut entry, existing_entries.get(&key))?;
+        entries.insert(key, entry);
     }
 
     workflows()?.replace(entries).map_err(|e| e.to_string())?;

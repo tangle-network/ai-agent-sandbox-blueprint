@@ -17,20 +17,21 @@ use ai_agent_sandbox_blueprint_lib::jobs::exec::{
 };
 use ai_agent_sandbox_blueprint_lib::jobs::ssh::{provision_key, revoke_key};
 use ai_agent_sandbox_blueprint_lib::runtime::{
-    SandboxRecord, get_sandbox_by_id, get_sandbox_by_url, require_sandbox_owner,
-    require_sandbox_owner_by_url, require_sidecar_auth, sandboxes,
+    get_sandbox_by_id, get_sandbox_by_url, require_sandbox_owner, require_sandbox_owner_by_url,
+    require_sidecar_auth, sandboxes, SandboxRecord,
 };
 use ai_agent_sandbox_blueprint_lib::util::build_snapshot_command;
 use ai_agent_sandbox_blueprint_lib::util::now_ts;
 use ai_agent_sandbox_blueprint_lib::workflows::{
-    WorkflowEntry, run_workflow, validate_workflow_execution_ready, workflow_key, workflow_tick,
-    workflows,
+    list_workflows_for_owner, run_workflow, validate_workflow_execution_ready,
+    workflow_detail_for_owner, workflow_key, workflow_runtime_status_for_owner, workflow_tick,
+    workflows, WorkflowEntry, WorkflowTargetStatus,
 };
 use ai_agent_sandbox_blueprint_lib::*;
 use blueprint_sdk::alloy::sol_types::SolValue;
-use serde_json::{Value, json};
-use std::sync::Once;
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Once;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -761,16 +762,12 @@ mod batch_jobs {
             .mount(&bad)
             .await;
 
-        assert!(
-            run_task_request(&task_req(&good.uri(), "go"), "t")
-                .await
-                .is_ok()
-        );
-        assert!(
-            run_task_request(&task_req(&bad.uri(), "go"), "t")
-                .await
-                .is_err()
-        );
+        assert!(run_task_request(&task_req(&good.uri(), "go"), "t")
+            .await
+            .is_ok());
+        assert!(run_task_request(&task_req(&bad.uri(), "go"), "t")
+            .await
+            .is_err());
     }
 
     #[test]
@@ -1001,6 +998,36 @@ mod workflow_jobs {
 
     #[test]
     #[serial]
+    fn orphaned_workflow_remains_visible_to_owner() {
+        reset_workflows();
+        let owner = "0x123400000000000000000000000000000000abcd";
+        let sid = insert_sandbox_with_owner("http://orphaned", "wf-tok", owner);
+        let key = workflow_key(90004);
+        let mut entry = wf(90004, &sid, "http://orphaned", "wf-tok");
+        entry.owner = owner.to_string();
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+
+        rm(&sid);
+
+        let summaries = list_workflows_for_owner(owner).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].target_status, WorkflowTargetStatus::Missing);
+        assert!(!summaries[0].runnable);
+        assert!(summaries[0].next_run_at.is_none());
+
+        let detail = workflow_detail_for_owner(90004, owner).unwrap();
+        assert_eq!(detail.target_status, WorkflowTargetStatus::Missing);
+        assert!(!detail.runnable);
+
+        let status = workflow_runtime_status_for_owner(90004, owner).unwrap();
+        assert_eq!(status.target_status, WorkflowTargetStatus::Missing);
+        assert!(!status.runnable);
+
+        workflows().unwrap().remove(&key).unwrap();
+    }
+
+    #[test]
+    #[serial]
     fn cancel_workflow() {
         reset_workflows();
         let key = workflow_key(90005);
@@ -1159,6 +1186,30 @@ mod workflow_jobs {
 
         workflows().unwrap().remove(&key).unwrap();
         rm(&sid);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn tick_skips_missing_target_workflows() {
+        reset_workflows();
+        let sid = insert_sandbox("http://missing-target", "skip-tok");
+        let key = workflow_key(90015);
+        workflows()
+            .unwrap()
+            .insert(
+                key.clone(),
+                wf(90015, &sid, "http://missing-target", "skip-tok"),
+            )
+            .unwrap();
+        rm(&sid);
+
+        let result = workflow_tick().await.unwrap();
+
+        assert_eq!(result["count"], 0);
+        let stored = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert!(stored.last_run_at.is_none());
+
+        workflows().unwrap().remove(&key).unwrap();
     }
 
     #[tokio::test]
@@ -1687,11 +1738,10 @@ mod errors {
             .mount(&srv)
             .await;
         let r = sidecar_post_json(&srv.uri(), "/terminals/commands", "t", json!({})).await;
-        assert!(
-            r.unwrap_err()
-                .to_string()
-                .contains("Invalid sidecar response JSON")
-        );
+        assert!(r
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid sidecar response JSON"));
     }
 
     #[tokio::test]
@@ -1746,11 +1796,9 @@ mod errors {
             .respond_with(ResponseTemplate::new(502).set_body_string("Bad Gateway"))
             .mount(&srv)
             .await;
-        assert!(
-            run_task_request(&task_req(&srv.uri(), "go"), "t")
-                .await
-                .is_err()
-        );
+        assert!(run_task_request(&task_req(&srv.uri(), "go"), "t")
+            .await
+            .is_err());
     }
 
     #[tokio::test]
