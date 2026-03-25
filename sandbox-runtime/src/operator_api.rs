@@ -3068,9 +3068,7 @@ pub fn operator_api_router_with_tee_and_routes(
     let write_routes = Router::new()
         .route(
             "/api/sandboxes/{sandbox_id}/secrets",
-            get(get_secrets)
-                .post(inject_secrets)
-                .delete(wipe_secrets),
+            get(get_secrets).post(inject_secrets).delete(wipe_secrets),
         )
         .route(
             "/api/sandboxes/{sandbox_id}/live/terminal/sessions",
