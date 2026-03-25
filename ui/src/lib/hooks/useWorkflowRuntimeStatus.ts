@@ -48,6 +48,7 @@ export function useWorkflowRuntimeStatus(
   const {
     getToken,
     getCachedToken,
+    authCacheKey,
     isAuthenticated,
     isAuthenticating,
     error: authError,
@@ -85,7 +86,12 @@ export function useWorkflowRuntimeStatus(
   }, [cachedToken, getToken, operatorUrl]);
 
   const query = useQuery<WorkflowRuntimeStatus | null, Error>({
-    queryKey: ['workflow-runtime-status', operatorUrl, workflowId, Boolean(cachedToken)],
+    queryKey: buildOwnerScopedWorkflowQueryKey(
+      'workflow-runtime-status',
+      operatorUrl,
+      authCacheKey,
+      workflowId,
+    ),
     enabled: workflowId !== null && !!cachedToken,
     refetchInterval: 15_000,
     queryFn: async () => fetchWithToken<WorkflowRuntimeStatus | null>(`/api/workflows/${workflowId}`),
@@ -114,6 +120,7 @@ export function useWorkflowSummaries(
   const {
     getToken,
     getCachedToken,
+    authCacheKey,
     isAuthenticated,
     isAuthenticating,
     error: authError,
@@ -121,7 +128,11 @@ export function useWorkflowSummaries(
   const cachedToken = getCachedToken();
 
   const query = useQuery<WorkflowOperatorSummary[], Error>({
-    queryKey: ['workflow-summaries', operatorUrl, Boolean(cachedToken)],
+    queryKey: buildOwnerScopedWorkflowQueryKey(
+      'workflow-summaries',
+      operatorUrl,
+      authCacheKey,
+    ),
     enabled: enabled && !!cachedToken,
     refetchInterval: 15_000,
     queryFn: async () => {
@@ -155,6 +166,7 @@ export function useWorkflowDetail(
   const {
     getToken,
     getCachedToken,
+    authCacheKey,
     isAuthenticated,
     isAuthenticating,
     error: authError,
@@ -162,7 +174,12 @@ export function useWorkflowDetail(
   const cachedToken = getCachedToken();
 
   const query = useQuery<WorkflowOperatorDetail | null, Error>({
-    queryKey: ['workflow-operator-detail', operatorUrl, workflowId, Boolean(cachedToken)],
+    queryKey: buildOwnerScopedWorkflowQueryKey(
+      'workflow-operator-detail',
+      operatorUrl,
+      authCacheKey,
+      workflowId,
+    ),
     enabled: workflowId !== null && !!cachedToken,
     refetchInterval: 15_000,
     queryFn: async () => {
@@ -195,6 +212,19 @@ export function useWorkflowDetail(
     authError,
     operatorUrl,
   };
+}
+
+function buildOwnerScopedWorkflowQueryKey(
+  prefix: 'workflow-runtime-status' | 'workflow-summaries' | 'workflow-operator-detail',
+  operatorUrl: string,
+  authCacheKey: string | null,
+  workflowId?: string | null,
+) {
+  if (workflowId === undefined) {
+    return [prefix, operatorUrl, authCacheKey] as const;
+  }
+
+  return [prefix, operatorUrl, workflowId, authCacheKey] as const;
 }
 
 async function fetchWithWorkflowToken(

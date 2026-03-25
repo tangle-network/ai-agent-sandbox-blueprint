@@ -301,6 +301,8 @@ export function useOperatorAuth(apiUrl?: string) {
   }, [baseUrl, cacheKey, effectiveSession?.token]);
 
   return {
+    /** Stable per-wallet/per-operator identity key for dependent query caches. */
+    authCacheKey: cacheKey,
     /** Get a valid cached PASETO token without triggering wallet signing. */
     getCachedToken,
     /** Get a valid PASETO token, authenticating if needed. */

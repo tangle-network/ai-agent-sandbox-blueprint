@@ -54,9 +54,38 @@ describe('useOperatorAuth', () => {
 
   it('starts unauthenticated with no cached session', () => {
     const { result } = renderHook(() => useOperatorAuth('http://test:9090'));
+    expect(result.current.authCacheKey).toBe(`${mockAddress.toLowerCase()}::http://test:9090`);
     expect(result.current.isAuthenticated).toBe(false);
     expect(result.current.isAuthenticating).toBe(false);
     expect(result.current.error).toBeNull();
+  });
+
+  it('returns a null authCacheKey when no wallet is connected', () => {
+    currentAddress = undefined;
+
+    const { result } = renderHook(() => useOperatorAuth('http://test:9090'));
+
+    expect(result.current.authCacheKey).toBeNull();
+  });
+
+  it('updates authCacheKey when the wallet address changes', () => {
+    const { result, rerender } = renderHook(() => useOperatorAuth('http://test:9090'));
+
+    expect(result.current.authCacheKey).toBe(`${mockAddress.toLowerCase()}::http://test:9090`);
+
+    currentAddress = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    rerender();
+
+    expect(result.current.authCacheKey).toBe('0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef::http://test:9090');
+  });
+
+  it('scopes authCacheKey by operator URL', () => {
+    const first = renderHook(() => useOperatorAuth('http://first:9090'));
+    const second = renderHook(() => useOperatorAuth('http://second:9090'));
+
+    expect(first.result.current.authCacheKey).toBe(`${mockAddress.toLowerCase()}::http://first:9090`);
+    expect(second.result.current.authCacheKey).toBe(`${mockAddress.toLowerCase()}::http://second:9090`);
+    expect(first.result.current.authCacheKey).not.toBe(second.result.current.authCacheKey);
   });
 
   // ── getToken success flow ──
