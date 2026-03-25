@@ -169,7 +169,7 @@ vi.mock('~/components/shared/ResourceTabs', () => ({
 }));
 
 vi.mock('~/components/shared/OperatorTerminalView', () => ({
-  OperatorTerminalView: () => <div>Operator Terminal</div>,
+  OperatorTerminalView: () => <div data-testid="operator-terminal">Operator Terminal</div>,
 }));
 
 vi.mock('~/components/shared/ConfirmDialog', () => ({
@@ -254,6 +254,26 @@ describe('InstanceDetail overview card', () => {
 
     expect(screen.getByText('Operator: Unknown')).toBeInTheDocument();
     expect(screen.queryByText(/TX Hash:/)).not.toBeInTheDocument();
+  });
+
+  it('lazy-mounts the terminal and keeps it mounted across tab switches', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+
+    renderSubject();
+
+    expect(screen.queryByTestId('operator-terminal')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+    const terminalNode = await screen.findByTestId('operator-terminal');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Overview' }));
+
+    expect(screen.getByTestId('operator-terminal')).toBe(terminalNode);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+
+    expect(screen.getByTestId('operator-terminal')).toBe(terminalNode);
   });
 });
 

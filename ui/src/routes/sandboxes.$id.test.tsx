@@ -192,7 +192,7 @@ vi.mock('~/components/shared/JobPriceBadge', () => ({
 }));
 
 vi.mock('~/components/shared/OperatorTerminalView', () => ({
-  OperatorTerminalView: () => <div>Operator Terminal</div>,
+  OperatorTerminalView: () => <div data-testid="operator-terminal">Operator Terminal</div>,
 }));
 
 function makeSandbox(overrides: Partial<Record<string, unknown>> = {}) {
@@ -361,6 +361,26 @@ describe('SandboxDetail snapshot flow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
 
     expect(await screen.findByText('Operator Terminal')).toBeInTheDocument();
+  });
+
+  it('lazy-mounts the terminal and keeps it mounted across tab switches', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+
+    renderSubject();
+
+    expect(screen.queryByTestId('operator-terminal')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+    const terminalNode = await screen.findByTestId('operator-terminal');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Overview' }));
+
+    expect(screen.getByTestId('operator-terminal')).toBe(terminalNode);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+
+    expect(screen.getByTestId('operator-terminal')).toBe(terminalNode);
   });
 
   it('blocks chat when the configured agent is not provided by the running image', async () => {

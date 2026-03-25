@@ -26,6 +26,7 @@ import { truncateAddress } from '@tangle-network/agent-ui/primitives';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
+import { PersistentTabPanel } from '~/components/shared/PersistentTabPanel';
 import { useAccount } from 'wagmi';
 import {
   getInstanceSandboxDisplayValue,
@@ -73,6 +74,7 @@ export default function InstanceDetail() {
 
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [terminalInitialized, setTerminalInitialized] = useState(false);
   const [secretsJson, setSecretsJson] = useState('{\n  \n}');
   const [secretsBusy, setSecretsBusy] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
@@ -177,6 +179,12 @@ export default function InstanceDetail() {
     setSshUserHint(null);
     setSshUserDetecting(false);
   }, [sshDetectionKey]);
+
+  useEffect(() => {
+    if (tab === 'terminal') {
+      setTerminalInitialized(true);
+    }
+  }, [tab]);
 
   // Auto-detect SSH username when SSH tab opens
   useEffect(() => {
@@ -511,36 +519,38 @@ export default function InstanceDetail() {
       )}
 
       {/* Terminal */}
-      {tab === 'terminal' && (
-        <Card className="overflow-hidden">
-          <CardContent className="p-0">
-            {isOperatorAuthed && operatorToken ? (
-              <div className="h-[min(500px,60vh)]">
-                <OperatorTerminalView
-                  apiUrl={operatorUrl}
-                  resourcePath="/api/sandbox"
-                  token={operatorToken}
-                  title="Instance Terminal"
-                  subtitle="Connected through the operator API"
-                />
-              </div>
-            ) : (
-              <div className="p-6 text-center">
-                <p className="text-sm text-cloud-elements-textSecondary mb-3">
-                  Authenticate with the operator to access the terminal
-                </p>
-                <p className="text-xs text-cloud-elements-textTertiary mb-4">
-                  Commands are relayed through the operator API and no longer connect directly to the sandbox container.
-                </p>
-                {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
-                <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
-                  {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      <PersistentTabPanel active={tab === 'terminal'}>
+        {terminalInitialized && (
+          <Card className="overflow-hidden">
+            <CardContent className="p-0">
+              {isOperatorAuthed && operatorToken ? (
+                <div className="h-[min(500px,60vh)]">
+                  <OperatorTerminalView
+                    apiUrl={operatorUrl}
+                    resourcePath="/api/sandbox"
+                    token={operatorToken}
+                    title="Instance Terminal"
+                    subtitle="Connected through the operator API"
+                  />
+                </div>
+              ) : (
+                <div className="p-6 text-center">
+                  <p className="text-sm text-cloud-elements-textSecondary mb-3">
+                    Authenticate with the operator to access the terminal
+                  </p>
+                  <p className="text-xs text-cloud-elements-textTertiary mb-4">
+                    Commands are relayed through the operator API and no longer connect directly to the sandbox container.
+                  </p>
+                  {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
+                  <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
+                    {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </PersistentTabPanel>
 
       {/* Chat */}
       {tab === 'chat' && (

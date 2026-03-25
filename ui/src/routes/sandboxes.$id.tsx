@@ -37,6 +37,7 @@ import { truncateAddress } from '@tangle-network/agent-ui/primitives';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
+import { PersistentTabPanel } from '~/components/shared/PersistentTabPanel';
 import { useAccount } from 'wagmi';
 import { normalizeAgentIdentifier } from '~/lib/agents';
 
@@ -102,6 +103,7 @@ export default function SandboxDetail() {
 
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [terminalInitialized, setTerminalInitialized] = useState(false);
 
   // SSH state
   const [sshPublicKey, setSshPublicKey] = useState('');
@@ -217,6 +219,12 @@ export default function SandboxDetail() {
     setSshUserHint(null);
     setSshUserDetecting(false);
   }, [sshDetectionKey]);
+
+  useEffect(() => {
+    if (tab === 'terminal') {
+      setTerminalInitialized(true);
+    }
+  }, [tab]);
 
   useEffect(() => {
     if (!agentConfigured || !isRunning || !canonicalSandboxId) {
@@ -716,48 +724,50 @@ export default function SandboxDetail() {
       )}
 
       {/* Terminal Tab — operator-backed terminal */}
-      {tab === 'terminal' && (
-        <Card className="overflow-hidden">
-          {!isOperatorAuthed || !operatorToken ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:terminal-window text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                Authenticate with the operator to access the sandbox terminal
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mb-4">
-                The browser talks only to the operator API, which verifies sandbox ownership before relaying commands.
-              </p>
-              {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleOperatorAuthenticate}
-                disabled={isOperatorAuthenticating || !hasWallet || !hasProvisionedSandbox}
-              >
-                {isOperatorAuthenticating
-                  ? 'Signing...'
-                  : !hasWallet
-                    ? 'Connect Wallet First'
-                    : !hasProvisionedSandbox
-                      ? 'Waiting for Sandbox...'
-                      : 'Connect Terminal'}
-              </Button>
-            </CardContent>
-          ) : (
-            <CardContent className="p-0">
-              <div className="h-[min(500px,60vh)]">
-                <OperatorTerminalView
-                  apiUrl={operatorUrl}
-                  resourcePath={operatorResourcePath}
-                  token={operatorToken}
-                  title="Sandbox Terminal"
-                  subtitle="Connected through the operator API"
-                />
-              </div>
-            </CardContent>
-          )}
-        </Card>
-      )}
+      <PersistentTabPanel active={tab === 'terminal'}>
+        {terminalInitialized && (
+          <Card className="overflow-hidden">
+            {!isOperatorAuthed || !operatorToken ? (
+              <CardContent className="py-16 text-center">
+                <div className="i-ph:terminal-window text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
+                <p className="text-sm text-cloud-elements-textSecondary mb-2">
+                  Authenticate with the operator to access the sandbox terminal
+                </p>
+                <p className="text-xs text-cloud-elements-textTertiary mb-4">
+                  The browser talks only to the operator API, which verifies sandbox ownership before relaying commands.
+                </p>
+                {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleOperatorAuthenticate}
+                  disabled={isOperatorAuthenticating || !hasWallet || !hasProvisionedSandbox}
+                >
+                  {isOperatorAuthenticating
+                    ? 'Signing...'
+                    : !hasWallet
+                      ? 'Connect Wallet First'
+                      : !hasProvisionedSandbox
+                        ? 'Waiting for Sandbox...'
+                        : 'Connect Terminal'}
+                </Button>
+              </CardContent>
+            ) : (
+              <CardContent className="p-0">
+                <div className="h-[min(500px,60vh)]">
+                  <OperatorTerminalView
+                    apiUrl={operatorUrl}
+                    resourcePath={operatorResourcePath}
+                    token={operatorToken}
+                    title="Sandbox Terminal"
+                    subtitle="Connected through the operator API"
+                  />
+                </div>
+              </CardContent>
+            )}
+          </Card>
+        )}
+      </PersistentTabPanel>
 
       {/* Chat Tab — multi-session agent chat */}
       {tab === 'chat' && (
