@@ -322,6 +322,10 @@ struct SandboxSummary {
     /// Extra user-exposed ports: container_port → host_port.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     extra_ports: std::collections::HashMap<u16, u16>,
+    /// Seconds of inactivity before the sandbox is automatically stopped.
+    idle_timeout_seconds: u64,
+    /// Maximum lifetime in seconds before the sandbox is hard-deleted.
+    max_lifetime_seconds: u64,
     /// Whether the sandbox has AI credentials configured (e.g. ANTHROPIC_API_KEY).
     credentials_available: bool,
     /// Whether the circuit breaker is currently active for this sandbox's sidecar.
@@ -356,6 +360,8 @@ impl SandboxSummary {
             managing_operator: managing_operator.map(str::to_string),
             tee_deployment_id: r.tee_deployment_id.clone(),
             extra_ports: r.extra_ports.clone(),
+            idle_timeout_seconds: r.idle_timeout_seconds,
+            max_lifetime_seconds: r.max_lifetime_seconds,
             credentials_available: workflow_runtime_credentials_available(&r.effective_env_json())
                 .unwrap_or(false),
             circuit_breaker_active: breaker.active,

@@ -36,6 +36,12 @@ export interface LocalSandbox {
   circuitBreakerActive?: boolean;
   circuitBreakerRemainingSecs?: number;
   circuitBreakerProbing?: boolean;
+  /** Seconds of inactivity before the sandbox is automatically stopped. */
+  idleTimeoutSeconds?: number;
+  /** Maximum lifetime in seconds before the sandbox is hard-deleted. */
+  maxLifetimeSeconds?: number;
+  /** Last activity timestamp in milliseconds. */
+  lastActivityAt?: number;
 }
 
 interface LegacySandboxRecord extends Partial<LocalSandbox> {
@@ -173,6 +179,9 @@ export function normalizeSandbox(record: LegacySandboxRecord): LocalSandbox {
     callId: record.callId,
     errorMessage: record.errorMessage,
     missingSince: record.missingSince,
+    idleTimeoutSeconds: record.idleTimeoutSeconds,
+    maxLifetimeSeconds: record.maxLifetimeSeconds,
+    lastActivityAt: record.lastActivityAt,
   };
 }
 

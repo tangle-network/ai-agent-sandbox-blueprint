@@ -31,6 +31,8 @@ export interface ApiSandbox {
   service_id?: number;
   managing_operator?: string;
   tee_deployment_id?: string;
+  idle_timeout_seconds?: number;
+  max_lifetime_seconds?: number;
   credentials_available?: boolean;
   circuit_breaker_active?: boolean;
   circuit_breaker_remaining_secs?: number;
@@ -117,6 +119,9 @@ function sandboxFromApi(api: ApiSandbox): LocalSandbox {
     circuitBreakerActive: api.circuit_breaker_active ?? undefined,
     circuitBreakerRemainingSecs: api.circuit_breaker_remaining_secs ?? undefined,
     circuitBreakerProbing: api.circuit_breaker_probing ?? undefined,
+    idleTimeoutSeconds: api.idle_timeout_seconds ?? undefined,
+    maxLifetimeSeconds: api.max_lifetime_seconds ?? undefined,
+    lastActivityAt: api.last_activity_at ? api.last_activity_at * 1000 : undefined,
   });
 }
 
@@ -213,6 +218,9 @@ export function reconcileSandboxes(
         circuitBreakerActive: api.circuit_breaker_active ?? undefined,
         circuitBreakerRemainingSecs: api.circuit_breaker_remaining_secs ?? undefined,
         circuitBreakerProbing: api.circuit_breaker_probing ?? undefined,
+        idleTimeoutSeconds: api.idle_timeout_seconds ?? undefined,
+        maxLifetimeSeconds: api.max_lifetime_seconds ?? undefined,
+        lastActivityAt: api.last_activity_at ? api.last_activity_at * 1000 : undefined,
       }));
       continue;
     }
@@ -249,6 +257,9 @@ export function reconcileSandboxes(
           circuitBreakerActive: inferredApi.circuit_breaker_active ?? undefined,
           circuitBreakerRemainingSecs: inferredApi.circuit_breaker_remaining_secs ?? undefined,
           circuitBreakerProbing: inferredApi.circuit_breaker_probing ?? undefined,
+          idleTimeoutSeconds: inferredApi.idle_timeout_seconds ?? undefined,
+          maxLifetimeSeconds: inferredApi.max_lifetime_seconds ?? undefined,
+          lastActivityAt: inferredApi.last_activity_at ? inferredApi.last_activity_at * 1000 : undefined,
         }));
         continue;
       }

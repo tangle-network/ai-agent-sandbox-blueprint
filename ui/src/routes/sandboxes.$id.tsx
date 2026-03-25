@@ -80,6 +80,16 @@ function formatServiceId(serviceId: string): string {
   return /^\d+$/.test(trimmed) ? `#${trimmed}` : trimmed;
 }
 
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return 'Unlimited';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours > 0 && minutes > 0) return `${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours} hour${hours !== 1 ? 's' : ''}`;
+  if (minutes > 0) return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+  return `${seconds}s`;
+}
+
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -738,6 +748,36 @@ export default function SandboxDetail() {
               {sb.txHash && <LabeledValueRow label="TX Hash" value={truncateAddress(sb.txHash)} mono copyable copyValue={sb.txHash} alignRight />}
             </CardContent>
           </Card>
+
+          {/* Lifecycle Limits */}
+          {(sb.idleTimeoutSeconds != null || sb.maxLifetimeSeconds != null) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Lifecycle Limits</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2.5">
+                {sb.idleTimeoutSeconds != null && (
+                  <LabeledValueRow label="Idle Timeout" value={formatDuration(sb.idleTimeoutSeconds)} alignRight />
+                )}
+                {sb.maxLifetimeSeconds != null && (
+                  <LabeledValueRow label="Max Lifetime" value={formatDuration(sb.maxLifetimeSeconds)} alignRight />
+                )}
+                {sb.lastActivityAt != null && (
+                  <LabeledValueRow label="Last Activity" value={new Date(sb.lastActivityAt).toLocaleString()} alignRight />
+                )}
+                {sb.maxLifetimeSeconds != null && sb.maxLifetimeSeconds > 0 && (
+                  <LabeledValueRow
+                    label="Expires At"
+                    value={(() => {
+                      const expiresAt = sb.createdAt + sb.maxLifetimeSeconds * 1000;
+                      return expiresAt < Date.now() ? 'Expired' : new Date(expiresAt).toLocaleString();
+                    })()}
+                    alignRight
+                  />
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Exposed Ports */}
           {ports && ports.length > 0 && (
