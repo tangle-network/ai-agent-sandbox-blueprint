@@ -486,7 +486,7 @@ export default function InstanceDetail() {
   ];
 
   return (
-    <AnimatedPage className="mx-auto max-w-4xl px-4 sm:px-6 py-8">
+    <AnimatedPage className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 mb-6 text-sm text-cloud-elements-textTertiary">
         <Link to="/instances" className="hover:text-cloud-elements-textSecondary transition-colors">Instances</Link>

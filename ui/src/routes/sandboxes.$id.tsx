@@ -587,7 +587,7 @@ export default function SandboxDetail() {
   ];
 
   return (
-    <AnimatedPage className="mx-auto max-w-4xl px-4 sm:px-6 py-8">
+    <AnimatedPage className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
       {/* Header */}
       <div className="flex items-center gap-2 mb-6 text-sm text-cloud-elements-textTertiary">
         <Link to="/sandboxes" className="hover:text-cloud-elements-textSecondary transition-colors">Sandboxes</Link>
@@ -637,6 +637,14 @@ export default function SandboxDetail() {
                 <div className="i-ph:camera text-sm" />
                 Snapshot
               </Button>
+              {isRunning && sb.sandboxId && (
+                <Link to={`/workflows?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`}>
+                  <Button variant="secondary" size="sm">
+                    <div className="i-ph:flow-arrow text-sm" />
+                    Create Workflow
+                  </Button>
+                </Link>
+              )}
               <Button variant="destructive" size="sm" onClick={handleDelete}>
                 <div className="i-ph:trash text-sm" />
                 Delete
@@ -691,17 +699,6 @@ export default function SandboxDetail() {
           </p>
         </div>
       )}
-
-      <div className="flex justify-end mb-4">
-        {isRunning && sb.sandboxId && (
-          <Link to={`/workflows?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`}>
-            <Button variant="secondary" size="sm">
-              <div className="i-ph:flow-arrow text-sm" />
-              Create Workflow
-            </Button>
-          </Link>
-        )}
-      </div>
 
       {/* Tab Content */}
       {tab === 'overview' && (
