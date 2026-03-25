@@ -20,10 +20,7 @@ pub enum SandboxError {
     /// Service temporarily unavailable (capacity exceeded, overloaded).
     Unavailable(String),
     /// Circuit breaker is active for the sandbox sidecar.
-    CircuitBreaker {
-        remaining_secs: u64,
-        probing: bool,
-    },
+    CircuitBreaker { remaining_secs: u64, probing: bool },
 }
 
 impl fmt::Display for SandboxError {

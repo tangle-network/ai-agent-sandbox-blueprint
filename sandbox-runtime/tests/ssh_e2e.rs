@@ -11,20 +11,50 @@ use sandbox_runtime::runtime::{
 
 // These tests mutate process env and rely on global OnceCell state.
 static TEST_LOCK: Mutex<()> = Mutex::const_new(());
+const TEST_IMAGE: &str = "agent-dev:latest";
 
 fn setup_env(state_dir: &TempDir) {
     unsafe {
         std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path());
-        std::env::set_var("SIDECAR_IMAGE", "agent-dev:latest");
+        std::env::set_var("SIDECAR_IMAGE", TEST_IMAGE);
         std::env::set_var("SIDECAR_PULL_IMAGE", "false");
         std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
         std::env::set_var("REQUEST_TIMEOUT_SECS", "60");
         std::env::set_var("SESSION_AUTH_SECRET", "ssh-e2e-test-secret");
-        std::env::set_var(
-            "DOCKER_HOST",
-            "unix:///Users/tlinhsmacbook/.docker/run/docker.sock",
-        );
+        std::env::remove_var("DOCKER_HOST");
     }
+}
+
+fn command_present(program: &str) -> bool {
+    Command::new("sh")
+        .args(["-lc", &format!("command -v {program} >/dev/null 2>&1")])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn image_exists(image: &str) -> bool {
+    Command::new("docker")
+        .args(["image", "inspect", image])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn image_supports_sidecar_user(image: &str) -> bool {
+    Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--entrypoint",
+            "sh",
+            image,
+            "-lc",
+            "id -u sidecar >/dev/null 2>&1",
+        ])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn generate_test_key(dir: &TempDir) -> (String, String) {
@@ -69,6 +99,33 @@ fn ssh_command(private_key: &str, port: u16, remote: Option<&str>) -> Command {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn docker_ssh_supports_commands_and_interactive_shell() {
     let _guard = TEST_LOCK.lock().await;
+    if !command_present("docker")
+        || !Command::new("docker")
+            .args(["info"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    {
+        eprintln!("SKIP: Docker is not available");
+        return;
+    }
+    if !command_present("ssh") {
+        eprintln!("SKIP: ssh client is not available");
+        return;
+    }
+    if !command_present("ssh-keygen") {
+        eprintln!("SKIP: ssh-keygen is not available");
+        return;
+    }
+    if !image_exists(TEST_IMAGE) {
+        eprintln!("SKIP: required Docker image {TEST_IMAGE} is not available locally");
+        return;
+    }
+    if !image_supports_sidecar_user(TEST_IMAGE) {
+        eprintln!("SKIP: Docker image {TEST_IMAGE} does not provide a sidecar user");
+        return;
+    }
+
     let state_dir = TempDir::new().expect("temp state dir");
     let key_dir = TempDir::new().expect("temp key dir");
     setup_env(&state_dir);
@@ -76,7 +133,7 @@ async fn docker_ssh_supports_commands_and_interactive_shell() {
 
     let params = CreateSandboxParams {
         name: "ssh-e2e".to_string(),
-        image: "agent-dev:latest".to_string(),
+        image: TEST_IMAGE.to_string(),
         stack: "default".to_string(),
         agent_identifier: "default".to_string(),
         env_json: String::new(),

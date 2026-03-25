@@ -186,9 +186,7 @@ fn circuit_breaker_api_error(err: SandboxError) -> (StatusCode, Json<ApiError>) 
             if probing {
                 "Sidecar recovery probe in progress. Please retry shortly.".to_string()
             } else {
-                format!(
-                    "Sidecar is in circuit-breaker cooldown ({remaining_secs}s remaining)."
-                )
+                format!("Sidecar is in circuit-breaker cooldown ({remaining_secs}s remaining).")
             },
             Some("CIRCUIT_BREAKER"),
             Some(remaining_secs * 1000),
@@ -1954,12 +1952,9 @@ async fn agent_on_sidecar(
         {
             Ok(parsed) => parsed,
             Err(err) => {
-                if let Some(translated) = translate_missing_agent_factory_error(
-                    record,
-                    &record.agent_identifier,
-                    &err,
-                )
-                .await
+                if let Some(translated) =
+                    translate_missing_agent_factory_error(record, &record.agent_identifier, &err)
+                        .await
                 {
                     return Err(translated);
                 }
@@ -3184,6 +3179,7 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::util::ServiceExt;
 
+    use std::ffi::{OsStr, OsString};
     use std::sync::{Arc, Mutex, Once};
     use std::time::Duration;
     use tokio::net::TcpListener;
@@ -3197,6 +3193,34 @@ mod tests {
             std::fs::create_dir_all(&dir).ok();
             unsafe { std::env::set_var("BLUEPRINT_STATE_DIR", dir) };
         });
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
     }
 
     fn docker_ok() -> bool {
@@ -5058,11 +5082,12 @@ mod tests {
         init();
         let sandbox_id = "sandbox-service-backfill";
         let call_id = 880_001;
-        let keystore_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../scripts/data/operator1/keystore");
-        unsafe {
-            std::env::set_var("KEYSTORE_URI", format!("file://{}", keystore_dir.display()));
-        }
+        let _managing_operator = EnvVarGuard::set(
+            "MANAGING_OPERATOR_ADDRESS",
+            "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+        );
+        let _operator_address = EnvVarGuard::remove("OPERATOR_ADDRESS");
+        let _keystore_uri = EnvVarGuard::remove("KEYSTORE_URI");
 
         insert_sandbox_for_listing(
             sandbox_id,
@@ -5111,6 +5136,19 @@ mod tests {
             .unwrap()
             .expect("stored sandbox");
         assert_eq!(stored.service_id, Some(42));
+    }
+
+    #[test]
+    fn test_derive_operator_address_from_keystore_uri() {
+        let keystore_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/data/operator1/keystore");
+        let derived = derive_operator_address_from_keystore_uri(&format!(
+            "file://{}",
+            keystore_dir.display()
+        ))
+        .expect("keystore should derive operator address");
+
+        assert_eq!(derived, "0x70997970c51812dc3a010c7d01b50e0d17dc79c8");
     }
 
     #[tokio::test]
