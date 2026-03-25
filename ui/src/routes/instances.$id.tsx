@@ -26,6 +26,7 @@ import { truncateAddress } from '@tangle-network/agent-ui/primitives';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
+import { OnChainVerificationCard } from '~/components/shared/OnChainVerificationCard';
 
 import { useAccount } from 'wagmi';
 import {
@@ -614,6 +615,17 @@ export default function InstanceDetail() {
             <ExposedPortsCard
               ports={ports}
               proxyBaseUrl={`${operatorUrl}/api/sandbox/port/`}
+              className="lg:col-span-2"
+            />
+          )}
+
+          {/* On-Chain Verification */}
+          {serviceId !== null && (
+            <OnChainVerificationCard
+              serviceId={serviceId}
+              operator={inst.operator}
+              sidecarUrl={inst.sidecarUrl}
+              blueprintType={inst.teeEnabled ? 'tee-instance' : 'instance'}
               className="lg:col-span-2"
             />
           )}

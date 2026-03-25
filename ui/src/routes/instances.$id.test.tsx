@@ -172,6 +172,10 @@ vi.mock('~/components/shared/OperatorTerminalView', () => ({
   OperatorTerminalView: () => <div data-testid="operator-terminal">Operator Terminal</div>,
 }));
 
+vi.mock('~/components/shared/OnChainVerificationCard', () => ({
+  OnChainVerificationCard: () => <div data-testid="on-chain-verification">On-Chain Verification</div>,
+}));
+
 vi.mock('~/components/shared/ConfirmDialog', () => ({
   ConfirmDialog: ({
     open,

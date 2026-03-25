@@ -319,4 +319,57 @@ export const agentInstanceBlueprintAbi = [
       { name: 'sidecarUrl', type: 'string', indexed: false },
     ],
   },
+
+  // ── Instance-mode view functions ──
+  {
+    type: 'function',
+    name: 'isProvisioned',
+    inputs: [{ name: 'serviceId', type: 'uint64' }],
+    outputs: [{ type: 'bool' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'isOperatorProvisioned',
+    inputs: [
+      { name: 'serviceId', type: 'uint64' },
+      { name: 'operator', type: 'address' },
+    ],
+    outputs: [{ type: 'bool' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'getOperatorCount',
+    inputs: [{ name: 'serviceId', type: 'uint64' }],
+    outputs: [{ type: 'uint32' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'getAttestationHash',
+    inputs: [
+      { name: 'serviceId', type: 'uint64' },
+      { name: 'operator', type: 'address' },
+    ],
+    outputs: [{ type: 'bytes32' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'getOperatorEndpoints',
+    inputs: [{ name: 'serviceId', type: 'uint64' }],
+    outputs: [
+      { name: 'operators', type: 'address[]' },
+      { name: 'sidecarUrls', type: 'string[]' },
+    ],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'getServiceConfig',
+    inputs: [{ name: 'serviceId', type: 'uint64' }],
+    outputs: [{ type: 'bytes' }],
+    stateMutability: 'view',
+  },
 ] as const;
