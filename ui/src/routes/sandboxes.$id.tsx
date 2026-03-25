@@ -127,6 +127,7 @@ export default function SandboxDetail() {
 
   // Secrets state
   const [secretsJson, setSecretsJson] = useState('{\n  \n}');
+  const [secretsVisible, setSecretsVisible] = useState(false);
   const [secretsBusy, setSecretsBusy] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
   const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
@@ -1027,9 +1028,20 @@ export default function SandboxDetail() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-cloud-elements-textSecondary">
-                  Secrets (JSON object)
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-cloud-elements-textSecondary">
+                    Secrets (JSON object)
+                  </label>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 w-7 p-0"
+                    onClick={() => setSecretsVisible((v) => !v)}
+                    title={secretsVisible ? 'Hide secrets' : 'Show secrets'}
+                  >
+                    <div className={cn('text-sm', secretsVisible ? 'i-ph:eye' : 'i-ph:eye-slash')} />
+                  </Button>
+                </div>
                 {secretsLoading && (
                   <p className="text-xs text-cloud-elements-textTertiary">Loading existing secrets...</p>
                 )}
@@ -1038,6 +1050,7 @@ export default function SandboxDetail() {
                   onChange={(e) => setSecretsJson(e.target.value)}
                   placeholder='{"API_KEY": "sk-...", "DB_URL": "postgres://..."}'
                   className="font-data text-xs min-h-[120px] resize-y"
+                  style={{ filter: secretsVisible ? 'none' : 'blur(4px)' }}
                   disabled={secretsLoading}
                 />
                 <p className="text-[11px] text-cloud-elements-textTertiary">

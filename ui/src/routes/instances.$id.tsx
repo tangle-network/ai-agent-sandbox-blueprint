@@ -83,6 +83,7 @@ export default function InstanceDetail() {
   const [tab, setTab] = useState<ActionTab>('overview');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [secretsJson, setSecretsJson] = useState('{\n  \n}');
+  const [secretsVisible, setSecretsVisible] = useState(false);
   const [secretsBusy, setSecretsBusy] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
   const [secretsSuccess, setSecretsSuccess] = useState<string | null>(null);
@@ -852,9 +853,20 @@ export default function InstanceDetail() {
               {isOperatorAuthed ? (
                 <>
                   <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-cloud-elements-textSecondary" htmlFor="instance-secrets-json">
-                      Secrets (JSON object)
-                    </label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-medium text-cloud-elements-textSecondary" htmlFor="instance-secrets-json">
+                        Secrets (JSON object)
+                      </label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 w-7 p-0"
+                        onClick={() => setSecretsVisible((v) => !v)}
+                        title={secretsVisible ? 'Hide secrets' : 'Show secrets'}
+                      >
+                        <div className={cn('text-sm', secretsVisible ? 'i-ph:eye' : 'i-ph:eye-slash')} />
+                      </Button>
+                    </div>
                     {secretsLoading && (
                       <p className="text-xs text-cloud-elements-textTertiary">Loading existing secrets...</p>
                     )}
@@ -864,6 +876,7 @@ export default function InstanceDetail() {
                       onChange={(e) => setSecretsJson(e.target.value)}
                       placeholder='{"API_KEY": "sk-...", "DB_URL": "postgres://..."}'
                       className="font-data text-xs min-h-[120px] resize-y"
+                      style={{ filter: secretsVisible ? 'none' : 'blur(4px)' }}
                       disabled={secretsLoading}
                     />
                     <p className="text-[11px] text-cloud-elements-textTertiary">
