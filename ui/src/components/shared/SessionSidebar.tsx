@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useStore } from '@nanostores/react';
 import { ChatContainer, type AgentBranding } from '@tangle-network/agent-ui';
 import type { SandboxClient } from '~/lib/api/sandboxClient';
@@ -6,9 +6,13 @@ import {
   chatSessionsStore,
   getSessions,
   getActiveSession,
+  getLoading,
+  getError,
   setActiveSession,
-  createSession,
-  deleteSession,
+  fetchSessions,
+  createSessionApi,
+  deleteSessionApi,
+  loadSessionMessages,
 } from '~/lib/stores/chatSessions';
 import { useSandboxSession } from '~/lib/hooks/useSandboxSession';
 import { cn } from '@tangle-network/blueprint-ui';
@@ -52,9 +56,26 @@ export function SessionSidebar({
   const storeState = useStore(chatSessionsStore);
   const sessions = useMemo(() => getSessions(sandboxId), [storeState, sandboxId]);
   const activeSession = useMemo(() => getActiveSession(sandboxId), [storeState, sandboxId]);
+  const isLoading = useMemo(() => getLoading(sandboxId), [storeState, sandboxId]);
+  const storeError = useMemo(() => getError(sandboxId), [storeState, sandboxId]);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const fetchedRef = useRef(false);
+
+  // Fetch sessions from API on mount
+  useEffect(() => {
+    if (!client || fetchedRef.current) return;
+    fetchedRef.current = true;
+    fetchSessions(client, sandboxId);
+  }, [client, sandboxId]);
+
+  // Load messages when active session changes and hasn't been loaded yet
+  useEffect(() => {
+    if (!client || !activeSession || activeSession.messagesLoaded) return;
+    loadSessionMessages(client, sandboxId, activeSession.id);
+  }, [client, sandboxId, activeSession?.id, activeSession?.messagesLoaded]);
 
   // Session hook
   const { messages, partMap, isStreaming, error, send } = useSandboxSession({
@@ -64,19 +85,60 @@ export function SessionSidebar({
     systemPrompt,
   });
 
-  const handleNewSession = useCallback(() => {
-    createSession(sandboxId);
-  }, [sandboxId]);
+  const handleNewSession = useCallback(async () => {
+    if (!client || creating) return;
+    setCreating(true);
+    await createSessionApi(client, sandboxId);
+    setCreating(false);
+  }, [client, sandboxId, creating]);
 
   const handleDelete = useCallback(
-    (e: React.MouseEvent, sessionId: string) => {
+    async (e: React.MouseEvent, sessionId: string) => {
       e.stopPropagation();
-      deleteSession(sandboxId, sessionId);
+      if (!client) return;
+      await deleteSessionApi(client, sandboxId, sessionId);
     },
-    [sandboxId],
+    [client, sandboxId],
   );
 
-  // Auto-create a session if none exist
+  const handleRetry = useCallback(() => {
+    if (!client) return;
+    fetchedRef.current = false;
+    fetchSessions(client, sandboxId);
+  }, [client, sandboxId]);
+
+  // Loading state
+  if (isLoading && sessions.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-3 p-8">
+        <div className="i-ph:spinner-gap text-2xl text-cloud-elements-textTertiary animate-spin" />
+        <p className="text-sm text-cloud-elements-textSecondary">Loading sessions...</p>
+      </div>
+    );
+  }
+
+  // Error state (no sessions loaded)
+  if (storeError && sessions.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
+        <div className="i-ph:warning-circle text-4xl text-crimson-500/60" />
+        <p className="text-sm text-crimson-600 dark:text-crimson-400 text-center">{storeError}</p>
+        <button
+          onClick={handleRetry}
+          className={cn(
+            'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-display font-medium',
+            'bg-cloud-elements-item-backgroundHover border border-cloud-elements-borderColor',
+            'text-cloud-elements-textPrimary hover:bg-cloud-elements-item-backgroundActive transition-colors',
+          )}
+        >
+          <div className="i-ph:arrow-clockwise text-sm" />
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  // Empty state — no sessions yet
   if (sessions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
@@ -86,13 +148,19 @@ export function SessionSidebar({
         </p>
         <button
           onClick={handleNewSession}
+          disabled={creating}
           className={cn(
             'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-display font-medium',
             'bg-teal-500/10 border border-teal-500/20 text-teal-700 dark:text-teal-400',
             'hover:bg-teal-500/20 transition-colors',
+            creating && 'opacity-50 cursor-not-allowed',
           )}
         >
-          <div className="i-ph:plus text-sm" />
+          {creating ? (
+            <div className="i-ph:spinner-gap text-sm animate-spin" />
+          ) : (
+            <div className="i-ph:plus text-sm" />
+          )}
           New Chat
         </button>
       </div>
@@ -111,10 +179,18 @@ export function SessionSidebar({
             </span>
             <button
               onClick={handleNewSession}
-              className="flex items-center justify-center w-6 h-6 rounded-md hover:bg-cloud-elements-item-backgroundHover transition-colors"
+              disabled={creating}
+              className={cn(
+                'flex items-center justify-center w-6 h-6 rounded-md hover:bg-cloud-elements-item-backgroundHover transition-colors',
+                creating && 'opacity-50 cursor-not-allowed',
+              )}
               title="New chat"
             >
-              <div className="i-ph:plus text-sm text-cloud-elements-textTertiary" />
+              {creating ? (
+                <div className="i-ph:spinner-gap text-sm text-cloud-elements-textTertiary animate-spin" />
+              ) : (
+                <div className="i-ph:plus text-sm text-cloud-elements-textTertiary" />
+              )}
             </button>
           </div>
 
@@ -205,23 +281,41 @@ export function SessionSidebar({
         )}
 
         {/* Error banner */}
-        {error && (
-          <div className="px-3 py-2 bg-crimson-500/5 border-b border-crimson-500/20">
-            <p className="text-xs text-crimson-600 dark:text-crimson-400">{error}</p>
+        {(error || storeError) && (
+          <div className="px-3 py-2 bg-crimson-500/5 border-b border-crimson-500/20 flex items-center gap-2">
+            <p className="text-xs text-crimson-600 dark:text-crimson-400 flex-1">{error || storeError}</p>
+            {storeError && (
+              <button
+                onClick={handleRetry}
+                className="text-xs text-crimson-600 dark:text-crimson-400 underline hover:no-underline shrink-0"
+              >
+                Retry
+              </button>
+            )}
           </div>
         )}
 
-        {/* Chat container */}
-        <div className="flex-1 min-h-0">
-          <ChatContainer
-            messages={messages}
-            partMap={partMap}
-            isStreaming={isStreaming}
-            onSend={send}
-            branding={CHAT_BRANDING}
-            placeholder="Ask the agent anything..."
-          />
-        </div>
+        {/* Messages loading indicator */}
+        {activeSession && !activeSession.messagesLoaded ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="flex items-center gap-2 text-cloud-elements-textTertiary">
+              <div className="i-ph:spinner-gap text-lg animate-spin" />
+              <span className="text-sm">Loading messages...</span>
+            </div>
+          </div>
+        ) : (
+          /* Chat container */
+          <div className="flex-1 min-h-0">
+            <ChatContainer
+              messages={messages}
+              partMap={partMap}
+              isStreaming={isStreaming}
+              onSend={send}
+              branding={CHAT_BRANDING}
+              placeholder="Ask the agent anything..."
+            />
+          </div>
+        )}
       </div>
     </div>
   );

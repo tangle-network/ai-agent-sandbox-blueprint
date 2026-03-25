@@ -123,4 +123,138 @@ describe('SandboxClient direct mode', () => {
     expect(body.prompt).toBe('hello');
     expect(body.message).toBeUndefined();
   });
+
+  it('throws when calling chat session methods in direct mode', async () => {
+    const client = createDirectClient('http://sidecar:8080', 'sidecar-token');
+    await expect(client.listChatSessions()).rejects.toThrow('only available in proxied mode');
+  });
+});
+
+// ── Chat session CRUD ──
+
+describe('SandboxClient chat session CRUD (sandbox-scoped)', () => {
+  const makeClient = () =>
+    createProxiedClient('sandbox-1', async () => 'op-token', 'http://operator:9090');
+
+  it('listChatSessions hits correct URL', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ sessions: [{ session_id: 's1', title: 'Chat' }] }), { status: 200 }),
+    );
+
+    const client = makeClient();
+    const result = await client.listChatSessions();
+
+    expect(result).toEqual([{ session_id: 's1', title: 'Chat' }]);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://operator:9090/api/sandboxes/sandbox-1/live/chat/sessions',
+    );
+  });
+
+  it('createChatSession sends title in body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ session_id: 'new-s', title: 'My Chat' }), { status: 200 }),
+    );
+
+    const client = makeClient();
+    const result = await client.createChatSession('My Chat');
+
+    expect(result.session_id).toBe('new-s');
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://operator:9090/api/sandboxes/sandbox-1/live/chat/sessions');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body as string)).toEqual({ title: 'My Chat' });
+  });
+
+  it('getChatSession hits correct URL with session ID', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ session_id: 's1', title: 'T', messages: [] }), { status: 200 }),
+    );
+
+    const client = makeClient();
+    const result = await client.getChatSession('s1');
+
+    expect(result.session_id).toBe('s1');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://operator:9090/api/sandboxes/sandbox-1/live/chat/sessions/s1',
+    );
+  });
+
+  it('deleteChatSession sends DELETE', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ deleted: true, session_id: 's1' }), { status: 200 }),
+    );
+
+    const client = makeClient();
+    await client.deleteChatSession('s1');
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://operator:9090/api/sandboxes/sandbox-1/live/chat/sessions/s1');
+    expect(opts.method).toBe('DELETE');
+  });
+
+  it('throws on list failure', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('Unauthorized', { status: 401 }),
+    );
+
+    const client = makeClient();
+    await expect(client.listChatSessions()).rejects.toThrow('List chat sessions failed (401)');
+  });
+});
+
+describe('SandboxClient chat session CRUD (instance-scoped)', () => {
+  const makeClient = () =>
+    createProxiedInstanceClient(async () => 'inst-token', 'http://instance-op:9091');
+
+  it('listChatSessions uses /api/sandbox/ path', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ sessions: [] }), { status: 200 }),
+    );
+
+    const client = makeClient();
+    await client.listChatSessions();
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://instance-op:9091/api/sandbox/live/chat/sessions',
+    );
+  });
+
+  it('createChatSession uses /api/sandbox/ path', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ session_id: 'i1', title: 'New Chat' }), { status: 200 }),
+    );
+
+    const client = makeClient();
+    await client.createChatSession();
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://instance-op:9091/api/sandbox/live/chat/sessions',
+    );
+  });
+
+  it('getChatSession uses /api/sandbox/ path', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ session_id: 'i1', title: 'T', messages: [] }), { status: 200 }),
+    );
+
+    const client = makeClient();
+    await client.getChatSession('i1');
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://instance-op:9091/api/sandbox/live/chat/sessions/i1',
+    );
+  });
+
+  it('deleteChatSession uses /api/sandbox/ path', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ deleted: true }), { status: 200 }),
+    );
+
+    const client = makeClient();
+    await client.deleteChatSession('i1');
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://instance-op:9091/api/sandbox/live/chat/sessions/i1',
+    );
+  });
 });

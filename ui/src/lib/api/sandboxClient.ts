@@ -29,6 +29,17 @@ export interface SandboxClientConfig {
   resourcePath?: string;
 }
 
+export interface ChatSessionSummary {
+  session_id: string;
+  title: string;
+}
+
+export interface ChatSessionDetail {
+  session_id: string;
+  title: string;
+  messages: Array<{ role: string; content: string; trace_id?: string; success?: boolean; error?: string | null }>;
+}
+
 export interface ExecResult {
   stdout: string;
   stderr: string;
@@ -238,6 +249,70 @@ export class SandboxClient {
       return res.ok;
     } catch {
       return false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chat session CRUD (proxied mode only)
+  // ---------------------------------------------------------------------------
+
+  private get chatSessionsBasePath(): string {
+    if (this.config.mode === 'direct') {
+      throw new Error('Chat session management is only available in proxied mode');
+    }
+    return `${this.baseUrl}${this.proxiedResourcePath}/live/chat/sessions`;
+  }
+
+  /** List all chat sessions for this resource. */
+  async listChatSessions(): Promise<ChatSessionSummary[]> {
+    const res = await fetch(this.chatSessionsBasePath, {
+      headers: await this.resolveAuthHeaders(false),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`List chat sessions failed (${res.status}): ${body}`);
+    }
+    const data = await res.json();
+    return data.sessions ?? [];
+  }
+
+  /** Create a new chat session. */
+  async createChatSession(title: string = 'New Chat'): Promise<ChatSessionSummary> {
+    const res = await fetch(this.chatSessionsBasePath, {
+      method: 'POST',
+      headers: await this.resolveAuthHeaders(true),
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Create chat session failed (${res.status}): ${body}`);
+    }
+    return await res.json();
+  }
+
+  /** Get a chat session with its message history. */
+  async getChatSession(sessionId: string): Promise<ChatSessionDetail> {
+    const url = `${this.chatSessionsBasePath}/${encodeURIComponent(sessionId)}`;
+    const res = await fetch(url, {
+      headers: await this.resolveAuthHeaders(false),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Get chat session failed (${res.status}): ${body}`);
+    }
+    return await res.json();
+  }
+
+  /** Delete a chat session. */
+  async deleteChatSession(sessionId: string): Promise<void> {
+    const url = `${this.chatSessionsBasePath}/${encodeURIComponent(sessionId)}`;
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: await this.resolveAuthHeaders(false),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Delete chat session failed (${res.status}): ${body}`);
     }
   }
 }
