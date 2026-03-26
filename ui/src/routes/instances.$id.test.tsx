@@ -169,7 +169,22 @@ vi.mock('~/components/shared/ResourceTabs', () => ({
 }));
 
 vi.mock('~/components/shared/OperatorTerminalView', () => ({
-  OperatorTerminalView: () => <div data-testid="operator-terminal">Operator Terminal</div>,
+  OperatorTerminalView: ({
+    initialCwd,
+    displayUsername,
+    displayPath,
+  }: {
+    initialCwd?: string;
+    displayUsername?: string;
+    displayPath?: string;
+  }) => (
+    <div data-testid="operator-terminal">
+      Operator Terminal
+      {displayUsername ? ` ${displayUsername}` : ''}
+      {displayPath ? ` ${displayPath}` : ''}
+      {initialCwd ? ` ${initialCwd}` : ''}
+    </div>
+  ),
 }));
 
 vi.mock('~/components/shared/OnChainVerificationCard', () => ({
@@ -238,6 +253,7 @@ describe('InstanceDetail overview card', () => {
     operatorAuthState.isAuthenticating = false;
     operatorAuthState.error = null;
     operatorAuthState.cachedToken = null;
+    mockOperatorApiCall.mockResolvedValue(new Response('{}', { status: 200 }));
   });
 
   it('renders sandbox-matching runtime details', () => {
@@ -421,6 +437,17 @@ describe('InstanceDetail SSH tab', () => {
       expect(mockOperatorApiCall).toHaveBeenCalledWith('ssh/user', undefined, { method: 'GET' });
     });
     expect(await screen.findByText(/Detected sandbox user: sidecar/)).toBeInTheDocument();
+  });
+
+  it('starts the terminal in the detected SSH user home directory', async () => {
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+
+    await waitFor(() => {
+      expect(mockOperatorApiCall).toHaveBeenCalledWith('ssh/user', undefined, { method: 'GET' });
+    });
+    expect(await screen.findByText(/Operator Terminal sidecar \/home\/sidecar \/home\/sidecar/)).toBeInTheDocument();
   });
 
   it('stores backend-returned SSH username after provision', async () => {

@@ -120,6 +120,7 @@ export default function SandboxDetail() {
   const [sshBusy, setSshBusy] = useState(false);
   const [sshError, setSshError] = useState<string | null>(null);
   const [sshSuccess, setSshSuccess] = useState<string | null>(null);
+  const [detectedSshUsername, setDetectedSshUsername] = useState('');
   const [sshUserDetecting, setSshUserDetecting] = useState(false);
   const [sshUserHint, setSshUserHint] = useState<string | null>(null);
   const sshUsernameDirtyRef = useRef(false);
@@ -169,6 +170,8 @@ export default function SandboxDetail() {
     const user = sshUsername.trim() || 'sidecar';
     return `ssh ${user}@${sshHost} -p ${sb.sshPort}`;
   }, [sb?.sshPort, sshHost, sshUsername]);
+  const terminalUsername = detectedSshUsername.trim() || 'agent';
+  const terminalPath = `/home/${terminalUsername}`;
 
   // Resolve correct operator API URL (instance blueprints run on a different port)
   const instanceBpId = import.meta.env.VITE_INSTANCE_BLUEPRINT_ID;
@@ -226,6 +229,7 @@ export default function SandboxDetail() {
   useEffect(() => {
     sshUsernameDirtyRef.current = false;
     sshUserDetectionKeyRef.current = null;
+    setDetectedSshUsername('');
     setSshUsername('');
     setSshUserHint(null);
     setSshUserDetecting(false);
@@ -274,7 +278,7 @@ export default function SandboxDetail() {
   }, [agentConfigured, canonicalSandboxId, isOperatorAuthed, isRunning, operatorApiCall, operatorToken]);
 
   useEffect(() => {
-    if (tab !== 'ssh' || !sshDetectionKey) return;
+    if ((tab !== 'ssh' && tab !== 'terminal') || !sshDetectionKey) return;
     if (!isRunning) return;
     if (!isOperatorAuthed && !operatorToken) return;
     if (sshUserDetectionKeyRef.current === sshDetectionKey) return;
@@ -290,16 +294,19 @@ export default function SandboxDetail() {
         const detectedUsername = typeof body.username === 'string' ? body.username.trim() : '';
         if (cancelled) return;
         if (detectedUsername) {
+          setDetectedSshUsername(detectedUsername);
           if (!sshUsernameDirtyRef.current) {
             setSshUsername(detectedUsername);
           }
           setSshUserHint(`Detected sandbox user: ${detectedUsername}`);
         } else {
+          setDetectedSshUsername('');
           setSshUserHint('Could not detect the sandbox user. You can enter one manually.');
         }
       })
       .catch((e) => {
         if (cancelled) return;
+        setDetectedSshUsername('');
         setSshUserHint(
           e instanceof Error
             ? `Could not detect the sandbox user: ${parseApiError(e)}`
@@ -816,6 +823,16 @@ export default function SandboxDetail() {
                       : 'Connect Terminal'}
               </Button>
             </CardContent>
+          ) : sshUserDetecting ? (
+            <CardContent className="py-16 text-center">
+              <div className="i-ph:terminal-window text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
+              <p className="text-sm text-cloud-elements-textSecondary mb-2">
+                Preparing the sandbox terminal
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary">
+                Resolving the sandbox user so Terminal starts in the same home directory as SSH.
+              </p>
+            </CardContent>
           ) : (
             <CardContent className="p-0">
               <div className="h-[min(500px,60vh)]">
@@ -825,6 +842,9 @@ export default function SandboxDetail() {
                   token={operatorToken}
                   title="Sandbox Terminal"
                   subtitle="Connected through the operator API"
+                  initialCwd={terminalPath}
+                  displayUsername={terminalUsername}
+                  displayPath={terminalPath}
                 />
               </div>
             </CardContent>

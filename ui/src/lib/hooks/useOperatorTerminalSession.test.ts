@@ -56,11 +56,12 @@ describe('useOperatorTerminalSession', () => {
     vi.unstubAllGlobals();
   });
 
-  function renderTerminalHook() {
+  function renderTerminalHook(initialCwd = '') {
     return renderHook(() => useOperatorTerminalSession({
       apiUrl: BASE_URL,
       resourcePath: RESOURCE_PATH,
       token: 'token-1',
+      initialCwd,
       onOutput,
       onCommandComplete,
     }));
@@ -181,7 +182,7 @@ describe('useOperatorTerminalSession', () => {
     const sse = createSseStream();
     mockEmptyListThenCreate(sse);
 
-    const { result, unmount } = renderTerminalHook();
+    const { result, unmount } = renderTerminalHook('/home/agent');
     await waitFor(() => expect(result.current.isConnected).toBe(true));
 
     fetchMock.mockResolvedValueOnce(jsonResponse({ stdout: 'file-a\nfile-b\n' }));
@@ -202,6 +203,14 @@ describe('useOperatorTerminalSession', () => {
     expect(onOutput).toHaveBeenCalledTimes(1);
     expect(onOutput).toHaveBeenCalledWith('file-a\nfile-b\n');
     expect(onCommandComplete).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe(`${BASE_URL}${RESOURCE_PATH}/exec`);
+    expect(fetchMock.mock.calls.at(-1)?.[1]?.body).toBe(
+      JSON.stringify({
+        command: 'ls',
+        session_id: 'term-1',
+        cwd: '/home/agent',
+      }),
+    );
 
     unmount();
   });

@@ -96,6 +96,7 @@ export default function InstanceDetail() {
   const [sshBusy, setSshBusy] = useState(false);
   const [sshError, setSshError] = useState<string | null>(null);
   const [sshSuccess, setSshSuccess] = useState<string | null>(null);
+  const [detectedSshUsername, setDetectedSshUsername] = useState('');
   const [sshUserDetecting, setSshUserDetecting] = useState(false);
   const [sshUserHint, setSshUserHint] = useState<string | null>(null);
   const sshUsernameDirtyRef = useRef(false);
@@ -228,6 +229,8 @@ export default function InstanceDetail() {
     const user = sshUsername.trim() || 'sidecar';
     return `ssh ${user}@${sshHost} -p ${inst.sshPort}`;
   }, [inst?.sshPort, sshHost, sshUsername]);
+  const terminalUsername = detectedSshUsername.trim() || 'agent';
+  const terminalPath = `/home/${terminalUsername}`;
   const handleOperatorAuthenticate = useCallback(() => {
     void getOperatorToken();
   }, [getOperatorToken]);
@@ -236,14 +239,15 @@ export default function InstanceDetail() {
   useEffect(() => {
     sshUsernameDirtyRef.current = false;
     sshUserDetectionKeyRef.current = null;
+    setDetectedSshUsername('');
     setSshUsername('');
     setSshUserHint(null);
     setSshUserDetecting(false);
   }, [sshDetectionKey]);
 
-  // Auto-detect SSH username when SSH tab opens
+  // Auto-detect SSH username when SSH or Terminal opens
   useEffect(() => {
-    if (tab !== 'ssh' || !sshDetectionKey) return;
+    if ((tab !== 'ssh' && tab !== 'terminal') || !sshDetectionKey) return;
     if (!isRunning) return;
     if (!isOperatorAuthed && !operatorToken) return;
     if (sshUserDetectionKeyRef.current === sshDetectionKey) return;
@@ -259,16 +263,19 @@ export default function InstanceDetail() {
         const detectedUsername = typeof body.username === 'string' ? body.username.trim() : '';
         if (cancelled) return;
         if (detectedUsername) {
+          setDetectedSshUsername(detectedUsername);
           if (!sshUsernameDirtyRef.current) {
             setSshUsername(detectedUsername);
           }
           setSshUserHint(`Detected sandbox user: ${detectedUsername}`);
         } else {
+          setDetectedSshUsername('');
           setSshUserHint('Could not detect the sandbox user. You can enter one manually.');
         }
       })
       .catch((e) => {
         if (cancelled) return;
+        setDetectedSshUsername('');
         setSshUserHint(
           e instanceof Error
             ? `Could not detect the sandbox user: ${parseApiError(e)}`
@@ -638,15 +645,29 @@ export default function InstanceDetail() {
         <Card className="overflow-hidden">
           <CardContent className="p-0">
             {isOperatorAuthed && operatorToken ? (
-              <div className="h-[min(500px,60vh)]">
-                <OperatorTerminalView
-                  apiUrl={operatorUrl}
-                  resourcePath="/api/sandbox"
-                  token={operatorToken}
-                  title="Instance Terminal"
-                  subtitle="Connected through the operator API"
-                />
-              </div>
+              sshUserDetecting ? (
+                <div className="p-6 text-center">
+                  <p className="text-sm text-cloud-elements-textSecondary mb-2">
+                    Preparing the sandbox terminal
+                  </p>
+                  <p className="text-xs text-cloud-elements-textTertiary">
+                    Resolving the sandbox user so Terminal starts in the same home directory as SSH.
+                  </p>
+                </div>
+              ) : (
+                <div className="h-[min(500px,60vh)]">
+                  <OperatorTerminalView
+                    apiUrl={operatorUrl}
+                    resourcePath="/api/sandbox"
+                    token={operatorToken}
+                    title="Instance Terminal"
+                    subtitle="Connected through the operator API"
+                    initialCwd={terminalPath}
+                    displayUsername={terminalUsername}
+                    displayPath={terminalPath}
+                  />
+                </div>
+              )
             ) : (
               <div className="p-6 text-center">
                 <p className="text-sm text-cloud-elements-textSecondary mb-3">

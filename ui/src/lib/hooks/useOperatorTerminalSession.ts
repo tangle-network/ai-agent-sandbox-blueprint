@@ -4,6 +4,7 @@ export interface UseOperatorTerminalSessionOptions {
   apiUrl: string;
   resourcePath: string;
   token: string;
+  initialCwd?: string;
   onOutput: (data: string) => void;
   onCommandComplete: () => void;
 }
@@ -68,6 +69,7 @@ export function useOperatorTerminalSession({
   apiUrl,
   resourcePath,
   token,
+  initialCwd = '',
   onOutput,
   onCommandComplete,
 }: UseOperatorTerminalSessionOptions): UseOperatorTerminalSessionReturn {
@@ -86,6 +88,7 @@ export function useOperatorTerminalSession({
   const onCommandCompleteRef = useRef(onCommandComplete);
   onOutputRef.current = onOutput;
   onCommandCompleteRef.current = onCommandComplete;
+  const resolvedInitialCwd = initialCwd.trim();
 
   const terminalSessionBaseUrl = `${apiUrl}${resourcePath}/live/terminal/sessions`;
   const execUrl = `${apiUrl}${resourcePath}/exec`;
@@ -384,6 +387,7 @@ export function useOperatorTerminalSession({
         body: JSON.stringify({
           command,
           session_id: sid,
+          ...(resolvedInitialCwd ? { cwd: resolvedInitialCwd } : {}),
         }),
       });
 
@@ -430,7 +434,15 @@ export function useOperatorTerminalSession({
       pendingCommandRef.current = null;
       throw err;
     }
-  }, [clearPendingCommand, emitOutput, execUrl, finishPendingCommand, rememberFallbackChunk, token]);
+  }, [
+    clearPendingCommand,
+    emitOutput,
+    execUrl,
+    finishPendingCommand,
+    rememberFallbackChunk,
+    resolvedInitialCwd,
+    token,
+  ]);
 
   // ---------------------------------------------------------------------------
   // Lifecycle

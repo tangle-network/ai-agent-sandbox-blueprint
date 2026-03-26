@@ -11,6 +11,9 @@ interface OperatorTerminalViewProps {
   token: string;
   title?: string;
   subtitle?: string;
+  initialCwd?: string;
+  displayUsername?: string;
+  displayPath?: string;
 }
 
 const theme = {
@@ -46,22 +49,38 @@ export function OperatorTerminalView({
   token,
   title = 'Terminal',
   subtitle = 'Connected through the operator API',
+  initialCwd = '',
+  displayUsername = '',
+  displayPath = '',
 }: OperatorTerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const lineBufferRef = useRef('');
 
+  const formatBannerLine = useCallback((value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return ''.padEnd(37);
+    if (normalized.length <= 37) return normalized.padEnd(37);
+    return `${normalized.slice(0, 34)}...`;
+  }, []);
+
   const writeBanner = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
-    const padTitle = title.padEnd(37);
-    const padSubtitle = subtitle.padEnd(37);
+    const padTitle = formatBannerLine(title);
+    const padSubtitle = formatBannerLine(subtitle);
+    const identity = displayUsername && displayPath
+      ? formatBannerLine(`${displayUsername} | ${displayPath}`)
+      : '';
     term.writeln(`\x1b[38;5;48m\u256d${'─'.repeat(41)}\u256e\x1b[0m`);
     term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  \x1b[1m${padTitle}\x1b[0m\x1b[38;5;48m\u2502\x1b[0m`);
     term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${padSubtitle}\x1b[38;5;48m\u2502\x1b[0m`);
+    if (identity) {
+      term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${identity}\x1b[38;5;48m\u2502\x1b[0m`);
+    }
     term.writeln(`\x1b[38;5;48m\u2570${'─'.repeat(41)}\u256f\x1b[0m`);
     term.write(prompt);
-  }, [title, subtitle]);
+  }, [displayPath, displayUsername, formatBannerLine, subtitle, title]);
 
   const writePrompt = useCallback(() => {
     termRef.current?.write(prompt);
@@ -89,6 +108,7 @@ export function OperatorTerminalView({
     apiUrl,
     resourcePath,
     token,
+    initialCwd,
     onOutput: handleOutput,
     onCommandComplete: handleCommandComplete,
   });

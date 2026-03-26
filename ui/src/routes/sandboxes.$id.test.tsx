@@ -192,7 +192,22 @@ vi.mock('~/components/shared/JobPriceBadge', () => ({
 }));
 
 vi.mock('~/components/shared/OperatorTerminalView', () => ({
-  OperatorTerminalView: () => <div data-testid="operator-terminal">Operator Terminal</div>,
+  OperatorTerminalView: ({
+    initialCwd,
+    displayUsername,
+    displayPath,
+  }: {
+    initialCwd?: string;
+    displayUsername?: string;
+    displayPath?: string;
+  }) => (
+    <div data-testid="operator-terminal">
+      Operator Terminal
+      {displayUsername ? ` ${displayUsername}` : ''}
+      {displayPath ? ` ${displayPath}` : ''}
+      {initialCwd ? ` ${initialCwd}` : ''}
+    </div>
+  ),
 }));
 
 function makeSandbox(overrides: Partial<Record<string, unknown>> = {}) {
@@ -360,7 +375,7 @@ describe('SandboxDetail snapshot flow', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
 
-    expect(await screen.findByText('Operator Terminal')).toBeInTheDocument();
+    expect(await screen.findByTestId('operator-terminal')).toBeInTheDocument();
   });
 
   it('shows terminal when terminal tab is selected and hides it on switch', async () => {
@@ -376,6 +391,38 @@ describe('SandboxDetail snapshot flow', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Overview' }));
     expect(screen.queryByTestId('operator-terminal')).not.toBeInTheDocument();
+  });
+
+  it('starts the terminal in the detected SSH user home directory', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+    mockOperatorApiCall.mockImplementation(async (action: string) => {
+      if (action === 'ssh/user') {
+        return jsonResponse({ success: true, username: 'sidecar' });
+      }
+      return jsonResponse({});
+    });
+
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+
+    await waitFor(() => {
+      expect(mockOperatorApiCall).toHaveBeenCalledWith('ssh/user', undefined, { method: 'GET' });
+    });
+    expect(await screen.findByText(/Operator Terminal sidecar \/home\/sidecar \/home\/sidecar/)).toBeInTheDocument();
+  });
+
+  it('falls back to /home/agent when terminal user detection fails', async () => {
+    operatorAuthState.isAuthenticated = true;
+    operatorAuthState.cachedToken = 'operator-token';
+    mockOperatorApiCall.mockRejectedValueOnce(new Error('boom'));
+
+    renderSubject();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+
+    expect(await screen.findByText(/Operator Terminal agent \/home\/agent \/home\/agent/)).toBeInTheDocument();
   });
 
   it('blocks chat when the configured agent is not provided by the running image', async () => {
