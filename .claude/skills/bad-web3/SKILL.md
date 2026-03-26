@@ -27,6 +27,64 @@ Run these checks before executing `bad`:
 3. **MetaMask extension**: Find the browser-agent-driver project (check `~/development/tangle/browser-agent-driver` or resolve from `which bad`), then check `extensions/metamask` exists. If missing, run `pnpm wallet:setup` in that project.
 4. **Wallet profile**: Check `.agent-wallet-profile` exists in the browser-agent-driver project. If missing, run `pnpm wallet:onboard` in that project.
 
+## Pre-authenticate Operator API
+
+MetaMask 13.x `personal_sign` popups are not reliably auto-approved in Playwright. To work around this, pre-generate operator API auth tokens via shell commands and inject them into the `bad` goal.
+
+Run this **before** launching `bad`. Determine the wallet address and private key from the Anvil Accounts table below (default: account #0).
+
+```bash
+WALLET_ADDR="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+WALLET_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+# Read operator URLs from ui/.env.local
+OPERATOR_URL=$(grep '^VITE_OPERATOR_API_URL=' ui/.env.local | cut -d= -f2-)
+INSTANCE_OPERATOR_URL=$(grep '^VITE_INSTANCE_OPERATOR_API_URL=' ui/.env.local | cut -d= -f2-)
+```
+
+Then for each operator URL, get a PASETO token:
+
+```bash
+# IMPORTANT: use printf, NOT echo — zsh echo breaks JSON newlines
+CHALLENGE=$(curl -s -X POST "${OPERATOR_URL}/api/auth/challenge" \
+  -H 'Content-Type: application/json' \
+  -d "{\"address\":\"${WALLET_ADDR}\"}")
+NONCE=$(printf '%s' "$CHALLENGE" | jq -r '.nonce')
+EXPIRES=$(printf '%s' "$CHALLENGE" | jq -r '.expires_at')
+
+MESSAGE="Sign this message to authenticate with Tangle Sandbox.
+
+Nonce: ${NONCE}
+Expires: ${EXPIRES}"
+SIGNATURE=$(cast wallet sign --private-key "$WALLET_KEY" "$MESSAGE")
+
+SESSION=$(curl -s -X POST "${OPERATOR_URL}/api/auth/session" \
+  -H 'Content-Type: application/json' \
+  -d "{\"nonce\":\"${NONCE}\",\"signature\":\"${SIGNATURE}\"}")
+TOKEN=$(printf '%s' "$SESSION" | jq -r '.token')
+TOKEN_EXPIRES=$(printf '%s' "$SESSION" | jq -r '.expires_at')
+```
+
+**Validate**: `TOKEN` must start with `v4.local.`. If pre-auth fails (e.g. `cast` not installed, operator down), skip it and warn the user — the run will proceed without pre-auth but operator-authenticated features (sandbox list, chat, terminal) will not work.
+
+Repeat for `INSTANCE_OPERATOR_URL` if it exists (store as `INSTANCE_TOKEN` / `INSTANCE_TOKEN_EXPIRES`).
+
+### Inject tokens into the goal
+
+Prepend a `runScript` injection step to the user's goal. The sessionStorage key format is `tangle.operator_auth.{address_lowercase}::{operator_url}`.
+
+Build the injection script string (example for account #0 with both operators):
+
+```
+BEFORE doing anything else, run this script to inject operator auth tokens:
+sessionStorage.setItem('tangle.operator_auth.0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266::http://127.0.0.1:9102', JSON.stringify({token:"<SANDBOX_TOKEN>",expiresAt:<SANDBOX_TOKEN_EXPIRES>}));
+sessionStorage.setItem('tangle.operator_auth.0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266::http://127.0.0.1:9202', JSON.stringify({token:"<INSTANCE_TOKEN>",expiresAt:<INSTANCE_TOKEN_EXPIRES>}));
+location.reload();
+Then wait 3 seconds for the page to reload with auth active. After that proceed with the actual goal: <USER_GOAL>
+```
+
+Replace `<SANDBOX_TOKEN>`, `<SANDBOX_TOKEN_EXPIRES>`, `<INSTANCE_TOKEN>`, `<INSTANCE_TOKEN_EXPIRES>` with the actual values from the pre-auth step. The address must be fully lowercase. Use the actual operator URLs from `ui/.env.local`.
+
 ## Command Pattern
 
 Resolve `<BAD_PROJECT>` to the browser-agent-driver project directory (e.g. from `which bad` or common locations like `~/development/tangle/browser-agent-driver`).
@@ -43,13 +101,13 @@ bad run \
   --no-headless \
   --no-memory \
   --provider claude-code --model sonnet \
-  --goal "<USER_GOAL>" \
+  --goal "<GOAL_WITH_INJECTION_PREFIX>" \
   --url http://localhost:1338 \
   --max-turns 15 \
   --debug
 ```
 
-Replace `<BAD_PROJECT>` and `<USER_GOAL>`. Only change the provider/model if the user explicitly asks for a different one.
+Replace `<BAD_PROJECT>` and `<GOAL_WITH_INJECTION_PREFIX>` (the injection prefix + user goal). Only change the provider/model if the user explicitly asks for a different one.
 
 ## Output Mode
 
@@ -85,6 +143,7 @@ The default MetaMask profile uses account #0. If the user specifies a different 
 ## Notes
 
 - Always use `--no-headless` for wallet mode (MetaMask extension requires a visible browser).
-- The `--wallet-auto-approve` flag handles MetaMask popups automatically.
+- The `--wallet-auto-approve` flag handles MetaMask popups automatically (wallet connect, chain switch, transactions). However, `personal_sign` popups may not be reliably auto-approved in MetaMask 13.x — use the pre-authentication flow above to bypass this.
 - Run the command in the background with a timeout of 300000ms since it takes time for the agent to navigate.
 - To find the browser-agent-driver project: parse the path from `which bad` (reads the shell script shebang), or check common locations like `~/development/tangle/browser-agent-driver`.
+- Use `printf '%s'` (not `echo`) when piping API responses to `jq` — zsh's `echo` interprets escape sequences in JSON, breaking the parser.
