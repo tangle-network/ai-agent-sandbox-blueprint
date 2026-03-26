@@ -11,7 +11,7 @@ import {
   getSandboxRouteKey,
 } from '~/lib/stores/sandboxes';
 import { instanceListStore, runningInstances } from '~/lib/stores/instances';
-import { useServiceStats, useAvailableCapacity, useWorkflowIds } from '~/lib/hooks/useSandboxReads';
+import { useAvailableCapacity, useWorkflowIds } from '~/lib/hooks/useSandboxReads';
 import { cn } from '@tangle-network/blueprint-ui';
 
 export default function Dashboard() {
@@ -20,7 +20,6 @@ export default function Dashboard() {
   const stopped = useStore(stoppedSandboxes);
   const instances = useStore(instanceListStore);
   const runningInst = useStore(runningInstances);
-  const { data: stats } = useServiceStats();
   const { data: capacity } = useAvailableCapacity();
   const { data: workflowIds } = useWorkflowIds(false);
 
@@ -67,31 +66,6 @@ export default function Dashboard() {
           </StaggerItem>
         ))}
       </StaggerContainer>
-
-      {/* Network Stats (from contract) */}
-      {stats && (
-        <Card className="mb-8">
-          <CardContent className="p-6">
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-2">
-                <div className="i-ph:globe text-lg text-cloud-elements-textTertiary" />
-                <span className="text-sm text-cloud-elements-textSecondary">Network:</span>
-              </div>
-              <div className="flex items-center gap-4">
-                <span className="text-sm">
-                  <span className="text-cloud-elements-textTertiary">Total Sandboxes:</span>{' '}
-                  <span className="font-data font-semibold">{String(stats[0])}</span>
-                </span>
-                <span className="text-cloud-elements-dividerColor">|</span>
-                <span className="text-sm">
-                  <span className="text-cloud-elements-textTertiary">Total Capacity:</span>{' '}
-                  <span className="font-data font-semibold">{String(stats[1])}</span>
-                </span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Sandboxes */}
