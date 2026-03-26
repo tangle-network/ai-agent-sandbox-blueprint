@@ -477,9 +477,15 @@ async fn list_sandboxes(SessionAuth(address): SessionAuth) -> impl IntoResponse 
     match sandboxes().and_then(|s| s.values()) {
         Ok(records) => {
             let summaries: Vec<SandboxSummary> = records
-                .iter()
+                .into_iter()
                 .filter(|r| !r.owner.is_empty() && r.owner.eq_ignore_ascii_case(&address))
-                .map(|record| SandboxSummary::from_record(record, managing_operator.as_deref()))
+                .filter_map(|mut record| {
+                    if let Err(e) = runtime::unseal_record(&mut record) {
+                        tracing::warn!(id = %record.id, error = %e, "Failed to unseal record in listing — skipping");
+                        return None;
+                    }
+                    Some(SandboxSummary::from_record(&record, managing_operator.as_deref()))
+                })
                 .collect();
             (
                 StatusCode::OK,
