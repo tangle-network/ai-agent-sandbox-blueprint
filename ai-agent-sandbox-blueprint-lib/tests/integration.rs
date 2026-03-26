@@ -17,21 +17,21 @@ use ai_agent_sandbox_blueprint_lib::jobs::exec::{
 };
 use ai_agent_sandbox_blueprint_lib::jobs::ssh::{provision_key, revoke_key};
 use ai_agent_sandbox_blueprint_lib::runtime::{
-    get_sandbox_by_id, get_sandbox_by_url, require_sandbox_owner, require_sandbox_owner_by_url,
-    require_sidecar_auth, sandboxes, SandboxRecord,
+    SandboxRecord, get_sandbox_by_id, get_sandbox_by_url, require_sandbox_owner,
+    require_sandbox_owner_by_url, require_sidecar_auth, sandboxes,
 };
 use ai_agent_sandbox_blueprint_lib::util::build_snapshot_command;
 use ai_agent_sandbox_blueprint_lib::util::now_ts;
 use ai_agent_sandbox_blueprint_lib::workflows::{
-    list_workflows_for_owner, run_workflow, validate_workflow_execution_ready,
-    workflow_detail_for_owner, workflow_key, workflow_runtime_status_for_owner, workflow_tick,
-    workflows, WorkflowEntry, WorkflowTargetStatus,
+    WorkflowEntry, WorkflowTargetStatus, list_workflows_for_owner, run_workflow,
+    validate_workflow_execution_ready, workflow_detail_for_owner, workflow_key,
+    workflow_runtime_status_for_owner, workflow_tick, workflows,
 };
 use ai_agent_sandbox_blueprint_lib::*;
 use blueprint_sdk::alloy::sol_types::SolValue;
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use serde_json::{Value, json};
 use std::sync::Once;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -762,12 +762,16 @@ mod batch_jobs {
             .mount(&bad)
             .await;
 
-        assert!(run_task_request(&task_req(&good.uri(), "go"), "t")
-            .await
-            .is_ok());
-        assert!(run_task_request(&task_req(&bad.uri(), "go"), "t")
-            .await
-            .is_err());
+        assert!(
+            run_task_request(&task_req(&good.uri(), "go"), "t")
+                .await
+                .is_ok()
+        );
+        assert!(
+            run_task_request(&task_req(&bad.uri(), "go"), "t")
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -1738,10 +1742,11 @@ mod errors {
             .mount(&srv)
             .await;
         let r = sidecar_post_json(&srv.uri(), "/terminals/commands", "t", json!({})).await;
-        assert!(r
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid sidecar response JSON"));
+        assert!(
+            r.unwrap_err()
+                .to_string()
+                .contains("Invalid sidecar response JSON")
+        );
     }
 
     #[tokio::test]
@@ -1796,9 +1801,11 @@ mod errors {
             .respond_with(ResponseTemplate::new(502).set_body_string("Bad Gateway"))
             .mount(&srv)
             .await;
-        assert!(run_task_request(&task_req(&srv.uri(), "go"), "t")
-            .await
-            .is_err());
+        assert!(
+            run_task_request(&task_req(&srv.uri(), "go"), "t")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -4,8 +4,8 @@
 //! Simpler than the multi-sandbox blueprint — singleton lifecycle + workflows.
 
 use ai_agent_instance_blueprint_lib::{
-    bootstrap_workflows_from_chain, router, spawn_pending_provision_report_worker,
-    JOB_WORKFLOW_TICK,
+    JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, router,
+    spawn_pending_provision_report_worker,
 };
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -13,9 +13,9 @@ use axum::routing::get;
 use axum::{Json, Router as HttpRouter};
 use blueprint_producers_extra::cron::CronJob;
 use blueprint_sdk::contexts::tangle::TangleClientContext;
+use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
 use blueprint_sdk::runner::tangle::config::TangleConfig;
-use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 use blueprint_sdk::{error, info, warn};
 
@@ -449,7 +449,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
 fn setup_log() {
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
     if tracing_subscriber::registry()
         .with(fmt::layer())
         .with(EnvFilter::from_default_env())

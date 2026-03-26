@@ -12,15 +12,15 @@
 
 use ai_agent_instance_blueprint_lib::auto_provision::decode_provision_config;
 use ai_agent_instance_blueprint_lib::workflows::{
-    apply_workflow_execution, list_workflows_for_owner, resolve_next_run, run_workflow,
-    workflow_detail_for_owner, workflow_key, workflow_runtime_status_for_owner, workflow_tick,
-    workflows, WorkflowEntry, WorkflowTargetStatus,
+    WorkflowEntry, WorkflowTargetStatus, apply_workflow_execution, list_workflows_for_owner,
+    resolve_next_run, run_workflow, workflow_detail_for_owner, workflow_key,
+    workflow_runtime_status_for_owner, workflow_tick, workflows,
 };
 use ai_agent_instance_blueprint_lib::*;
 use blueprint_sdk::alloy::sol_types::SolValue;
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use serde_json::{Value, json};
 use std::sync::Once;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1813,22 +1813,26 @@ mod provision_guard_tests {
 
         // Both stores have data.
         assert!(get_instance_sandbox().unwrap().is_some());
-        assert!(runtime::sandboxes()
-            .unwrap()
-            .get(&sandbox_id)
-            .unwrap()
-            .is_some());
+        assert!(
+            runtime::sandboxes()
+                .unwrap()
+                .get(&sandbox_id)
+                .unwrap()
+                .is_some()
+        );
 
         // Clear both.
         clear_instance_sandbox().unwrap();
         rm(&sandbox_id);
 
         assert!(get_instance_sandbox().unwrap().is_none());
-        assert!(runtime::sandboxes()
-            .unwrap()
-            .get(&sandbox_id)
-            .unwrap()
-            .is_none());
+        assert!(
+            runtime::sandboxes()
+                .unwrap()
+                .get(&sandbox_id)
+                .unwrap()
+                .is_none()
+        );
     }
 }
 

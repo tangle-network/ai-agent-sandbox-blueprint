@@ -1,10 +1,10 @@
 //! Blueprint runner for ai-agent-sandbox-blueprint.
 
 use ai_agent_sandbox_blueprint_lib::workflows::{
-    workflow_key, workflow_runtime_status_for_owner, workflows, WorkflowEntry, WorkflowStatusError,
+    WorkflowEntry, WorkflowStatusError, workflow_key, workflow_runtime_status_for_owner, workflows,
 };
 use ai_agent_sandbox_blueprint_lib::{
-    bootstrap_workflows_from_chain, router, JsonResponse, SandboxCreateOutput, JOB_WORKFLOW_TICK,
+    JOB_WORKFLOW_TICK, JsonResponse, SandboxCreateOutput, bootstrap_workflows_from_chain, router,
 };
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -14,11 +14,11 @@ use blueprint_producers_extra::cron::CronJob;
 use blueprint_sdk::alloy::sol_types::SolValue;
 use blueprint_sdk::contexts::tangle::{TangleClient, TangleClientContext};
 use blueprint_sdk::core::error::BoxError;
+use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
 use blueprint_sdk::runner::tangle::config::TangleConfig;
-use blueprint_sdk::runner::BlueprintRunner;
-use blueprint_sdk::tangle::extract::{CallId, ServiceId};
 use blueprint_sdk::tangle::TangleProducer;
+use blueprint_sdk::tangle::extract::{CallId, ServiceId};
 use blueprint_sdk::{error, info, warn};
 use futures_util::Sink;
 use serde_json::Value;
@@ -28,11 +28,11 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 #[cfg(feature = "qos")]
+use blueprint_qos::QoSServiceBuilder;
+#[cfg(feature = "qos")]
 use blueprint_qos::heartbeat::{HeartbeatConfig, HeartbeatConsumer};
 #[cfg(feature = "qos")]
 use blueprint_qos::metrics::MetricsConfig;
-#[cfg(feature = "qos")]
-use blueprint_qos::QoSServiceBuilder;
 
 fn workflow_status_error(error: WorkflowStatusError) -> (StatusCode, Json<serde_json::Value>) {
     let status = match &error {
@@ -634,7 +634,7 @@ fn build_heartbeat_config() -> Option<HeartbeatConfig> {
 
 fn setup_log() {
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
     if tracing_subscriber::registry()
         .with(fmt::layer())
         .with(EnvFilter::from_default_env())
@@ -929,7 +929,7 @@ fn workflow_replay_matches_store(
 
 #[cfg(test)]
 mod tests {
-    use super::{workflow_replay_matches_store, WorkflowEntry};
+    use super::{WorkflowEntry, workflow_replay_matches_store};
     use serde_json::json;
 
     fn active_workflow(id: u64) -> WorkflowEntry {

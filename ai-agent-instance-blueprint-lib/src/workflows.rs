@@ -1,15 +1,15 @@
 use chrono::{TimeZone, Utc};
 use cron::Schedule;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Mutex;
 
+use crate::InstanceTaskRequest;
 use crate::jobs::exec::run_instance_task;
 use crate::store::PersistentStore;
 use crate::util::now_ts;
-use crate::InstanceTaskRequest;
 
 pub const WORKFLOW_TARGET_SANDBOX: u8 = 0;
 pub const WORKFLOW_TARGET_INSTANCE: u8 = 1;
