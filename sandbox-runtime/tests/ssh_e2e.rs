@@ -41,7 +41,7 @@ fn image_exists(image: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn image_supports_sidecar_user(image: &str) -> bool {
+fn image_supports_compatible_ssh_user(image: &str) -> bool {
     Command::new("docker")
         .args([
             "run",
@@ -50,7 +50,7 @@ fn image_supports_sidecar_user(image: &str) -> bool {
             "sh",
             image,
             "-lc",
-            "id -u sidecar >/dev/null 2>&1",
+            "getent passwd sidecar >/dev/null 2>&1 || getent passwd agent >/dev/null 2>&1",
         ])
         .status()
         .map(|status| status.success())
@@ -75,7 +75,7 @@ fn generate_test_key(dir: &TempDir) -> (String, String) {
     (private_key, public_key)
 }
 
-fn ssh_command(private_key: &str, port: u16, remote: Option<&str>) -> Command {
+fn ssh_command(private_key: &str, username: &str, port: u16, remote: Option<&str>) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.arg("-i")
         .arg(private_key)
@@ -89,7 +89,7 @@ fn ssh_command(private_key: &str, port: u16, remote: Option<&str>) -> Command {
             "-p",
         ])
         .arg(port.to_string())
-        .arg("sidecar@127.0.0.1");
+        .arg(format!("{username}@127.0.0.1"));
     if let Some(remote_cmd) = remote {
         cmd.arg(remote_cmd);
     }
@@ -121,8 +121,8 @@ async fn docker_ssh_supports_commands_and_interactive_shell() {
         eprintln!("SKIP: required Docker image {TEST_IMAGE} is not available locally");
         return;
     }
-    if !image_supports_sidecar_user(TEST_IMAGE) {
-        eprintln!("SKIP: Docker image {TEST_IMAGE} does not provide a sidecar user");
+    if !image_supports_compatible_ssh_user(TEST_IMAGE) {
+        eprintln!("SKIP: Docker image {TEST_IMAGE} does not provide a compatible SSH user");
         return;
     }
 
@@ -160,15 +160,20 @@ async fn docker_ssh_supports_commands_and_interactive_shell() {
 
     let test_result = async {
         let port = record.ssh_port.expect("ssh port should be exposed");
+        let login_user = record
+            .ssh_login_user
+            .clone()
+            .expect("ssh login user should be detected during creation");
         let (username, _) = provision_ssh_key(&record, None, &public_key)
             .await
             .expect("ssh key should provision");
-        assert_eq!(username, "sidecar");
+        assert_eq!(username, login_user);
 
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let command_output = ssh_command(
             &private_key,
+            &login_user,
             port,
             Some("whoami && pwd && echo SSH works!"),
         )
@@ -182,9 +187,9 @@ async fn docker_ssh_supports_commands_and_interactive_shell() {
         );
 
         let command_stdout = String::from_utf8_lossy(&command_output.stdout);
-        assert!(command_stdout.contains("sidecar"), "stdout={command_stdout}");
+        assert!(command_stdout.contains(&login_user), "stdout={command_stdout}");
         assert!(
-            command_stdout.contains("/home/sidecar"),
+            command_stdout.contains(&format!("/home/{login_user}")),
             "stdout={command_stdout}"
         );
         assert!(command_stdout.contains("SSH works!"), "stdout={command_stdout}");
@@ -192,7 +197,7 @@ async fn docker_ssh_supports_commands_and_interactive_shell() {
         let interactive = Command::new("sh")
             .arg("-lc")
             .arg(format!(
-                "printf 'whoami\\npwd\\nexit\\n' | ssh -tt -i '{private_key}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p {port} sidecar@127.0.0.1"
+                "printf 'whoami\\npwd\\nexit\\n' | ssh -tt -i '{private_key}' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p {port} {login_user}@127.0.0.1"
             ))
             .output()
             .expect("interactive ssh should run");
@@ -208,11 +213,11 @@ async fn docker_ssh_supports_commands_and_interactive_shell() {
         let interactive_stderr = String::from_utf8_lossy(&interactive.stderr);
         let interactive_text = format!("{interactive_stdout}\n{interactive_stderr}");
         assert!(
-            interactive_text.contains("sidecar"),
+            interactive_text.contains(&login_user),
             "interactive output={interactive_text}"
         );
         assert!(
-            interactive_text.contains("/home/sidecar"),
+            interactive_text.contains(&format!("/home/{login_user}")),
             "interactive output={interactive_text}"
         );
     }

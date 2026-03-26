@@ -20,6 +20,8 @@ use crate::{DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SS
 const PORT_MAPPING_RETRY_ATTEMPTS: usize = 60;
 const PORT_MAPPING_RETRY_DELAY_MS: u64 = 500;
 const SSH_DEFAULT_LOGIN_USER: &str = "sidecar";
+const SSH_FALLBACK_LOGIN_USER: &str = "agent";
+const SSH_COMPATIBLE_LOGIN_USERS: &[&str] = &[SSH_DEFAULT_LOGIN_USER, SSH_FALLBACK_LOGIN_USER];
 
 /// ABI-independent parameters for sandbox creation.
 ///
@@ -1353,8 +1355,8 @@ async fn docker_exec_as_user(
     })
 }
 
-fn build_docker_ssh_bootstrap_command() -> String {
-    let user_arg = shell_escape(SSH_DEFAULT_LOGIN_USER);
+fn build_docker_ssh_bootstrap_command(username: &str) -> String {
+    let user_arg = shell_escape(username);
     format!(
         r#"set -euo pipefail;
 user={user_arg};
@@ -1404,7 +1406,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PermitRootLogin no
-AllowUsers {SSH_DEFAULT_LOGIN_USER}
+AllowUsers {username}
 AuthorizedKeysFile .ssh/authorized_keys
 PidFile /run/sshd.pid
 Subsystem sftp internal-sftp
@@ -1550,6 +1552,47 @@ fn remove_ssh_key_assignment(sandbox_id: &str, username: &str, public_key: &str)
     Ok(())
 }
 
+#[cfg(test)]
+fn select_docker_ssh_login_user<'a, F>(mut user_exists: F) -> Option<&'a str>
+where
+    F: FnMut(&str) -> bool,
+{
+    SSH_COMPATIBLE_LOGIN_USERS
+        .iter()
+        .copied()
+        .find(|candidate| user_exists(candidate))
+}
+
+fn compatible_docker_ssh_users_summary() -> String {
+    SSH_COMPATIBLE_LOGIN_USERS.join(", ")
+}
+
+async fn docker_user_exists(container_id: &str, username: &str) -> Result<bool> {
+    let user_arg = shell_escape(username);
+    let command = format!("getent passwd {user_arg} >/dev/null 2>&1");
+    let result = docker_exec_as_user(container_id, "root", &command).await?;
+    Ok(result.exit_code == 0)
+}
+
+async fn detect_docker_ssh_username(record: &SandboxRecord) -> Result<String> {
+    if let Some(username) = &record.ssh_login_user {
+        return Ok(username.clone());
+    }
+
+    for candidate in SSH_COMPATIBLE_LOGIN_USERS {
+        if docker_user_exists(&record.container_id, candidate).await? {
+            persist_ssh_login_user(&record.id, candidate)?;
+            return Ok((*candidate).to_string());
+        }
+    }
+
+    Err(SandboxError::Validation(format!(
+        "SSH login user detection failed for sandbox {}: none of the supported users exist (checked: {})",
+        record.id,
+        compatible_docker_ssh_users_summary()
+    )))
+}
+
 fn resolve_docker_ssh_username(
     record: &SandboxRecord,
     requested: Option<String>,
@@ -1568,10 +1611,11 @@ fn resolve_docker_ssh_username(
 }
 
 async fn ensure_docker_ssh_ready(record: &SandboxRecord) -> Result<String> {
+    let login_user = detect_docker_ssh_username(record).await?;
     let root_bootstrap = docker_exec_as_user(
         &record.container_id,
         "root",
-        &build_docker_ssh_bootstrap_command(),
+        &build_docker_ssh_bootstrap_command(&login_user),
     )
     .await?;
     if root_bootstrap.exit_code != 0 {
@@ -1582,7 +1626,6 @@ async fn ensure_docker_ssh_ready(record: &SandboxRecord) -> Result<String> {
         )));
     }
 
-    let login_user = SSH_DEFAULT_LOGIN_USER.to_string();
     let home_bootstrap = docker_exec_as_user(
         &record.container_id,
         &login_user,
@@ -3230,8 +3273,26 @@ mod port_mapping_tests {
 
     #[test]
     fn docker_ssh_bootstrap_unlocks_login_user() {
-        let command = build_docker_ssh_bootstrap_command();
+        let command = build_docker_ssh_bootstrap_command("agent");
         assert!(command.contains("passwd -u \"$user\""));
+        assert!(command.contains("AllowUsers agent"));
+    }
+
+    #[test]
+    fn select_docker_ssh_login_user_prefers_sidecar_then_agent() {
+        let selected = select_docker_ssh_login_user(|candidate| candidate == "agent");
+        assert_eq!(selected, Some("agent"));
+
+        let selected = select_docker_ssh_login_user(|candidate| {
+            candidate == SSH_DEFAULT_LOGIN_USER || candidate == SSH_FALLBACK_LOGIN_USER
+        });
+        assert_eq!(selected, Some(SSH_DEFAULT_LOGIN_USER));
+    }
+
+    #[test]
+    fn select_docker_ssh_login_user_returns_none_when_no_compatible_user_exists() {
+        let selected = select_docker_ssh_login_user(|_| false);
+        assert_eq!(selected, None);
     }
 
     #[test]
