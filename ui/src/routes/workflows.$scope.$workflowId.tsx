@@ -330,10 +330,12 @@ export default function WorkflowDetail() {
               <span className="text-cloud-elements-textTertiary">Trigger</span>
               <span className="text-cloud-elements-textPrimary">{workflow.triggerType}</span>
             </div>
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-cloud-elements-textTertiary">Trigger Config</span>
-              <span className="font-data text-cloud-elements-textPrimary">{workflow.triggerConfig || 'Not set'}</span>
-            </div>
+            {workflow.triggerType === 'cron' && (
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-cloud-elements-textTertiary">Cron Expression</span>
+                <span className="font-data text-cloud-elements-textPrimary">{workflow.triggerConfig || 'Not set'}</span>
+              </div>
+            )}
             <div className="flex items-center justify-between gap-4">
               <span className="text-cloud-elements-textTertiary">Scope</span>
               <span className="text-cloud-elements-textPrimary capitalize">{workflow.scope}</span>

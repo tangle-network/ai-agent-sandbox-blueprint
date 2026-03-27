@@ -474,7 +474,6 @@ export default function Workflows() {
 
   const triggerOptions = [
     { label: 'Cron Schedule', value: 'cron' },
-    { label: 'Webhook', value: 'webhook' },
     { label: 'Manual', value: 'manual' },
   ];
 
@@ -601,18 +600,23 @@ export default function Workflows() {
                 <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Trigger Type</label>
                 <Select
                   value={triggerType}
-                  onValueChange={setTriggerType}
+                  onValueChange={(value) => {
+                    setTriggerType(value);
+                    if (value !== 'cron') setTriggerConfig('');
+                  }}
                   options={triggerOptions}
                 />
               </div>
-              <div>
-                <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Trigger Config</label>
-                <Input
-                  value={triggerConfig}
-                  onChange={(event) => setTriggerConfig(event.target.value)}
-                  placeholder={triggerType === 'cron' ? '0 */6 * * *' : triggerType === 'webhook' ? 'https://...' : 'Optional'}
-                />
-              </div>
+              {triggerType === 'cron' && (
+                <div>
+                  <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Cron Expression</label>
+                  <Input
+                    value={triggerConfig}
+                    onChange={(event) => setTriggerConfig(event.target.value)}
+                    placeholder="0 */6 * * *"
+                  />
+                </div>
+              )}
             </div>
 
             <div>
@@ -722,7 +726,6 @@ function WorkflowCard({
 
   const triggerLabel: Record<string, string> = {
     cron: 'Cron',
-    webhook: 'Webhook',
     manual: 'Manual',
   };
 
