@@ -12,6 +12,7 @@
  */
 
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useChainId } from 'wagmi';
 import { decodeEventLog } from 'viem';
 import { encodeJobArgs } from '@tangle-network/blueprint-ui';
@@ -123,6 +124,7 @@ async function resolveActivatedServiceId(requestId: number): Promise<string | nu
 export function useCreateDeploy({ blueprint, job, values, infra, validate }: UseCreateDeployOpts) {
   const { address, isConnected } = useAccount();
   const walletChainId = useChainId();
+  const queryClient = useQueryClient();
 
   const mode = deriveMode(blueprint?.id);
   const isTeeInstance = blueprint?.id === 'ai-agent-tee-instance-blueprint';
@@ -373,6 +375,13 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
       }
     }
   }, [instanceProvision]);
+
+  // ── Invalidate capacity queries after successful creation ──
+  useEffect(() => {
+    if (jobConfirmed || serviceConfirmed) {
+      void queryClient.invalidateQueries({ queryKey: ['sandbox-contract-read'] });
+    }
+  }, [jobConfirmed, serviceConfirmed, queryClient]);
 
   // ── Deploy action ──
 
