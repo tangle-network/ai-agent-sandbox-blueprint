@@ -600,11 +600,9 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
     // Fast-fail: if the instance has no agent configured, the sidecar will
     // reject the request with "No factory registered for agent identifier".
     if sandbox.agent_identifier.trim().is_empty() {
-        return Err(
-            "Instance has no agent configured. \
+        return Err("Instance has no agent configured. \
              Configure an agent identifier on the instance before running workflows."
-                .to_string(),
-        );
+            .to_string());
     }
 
     match sandbox.service_id {
