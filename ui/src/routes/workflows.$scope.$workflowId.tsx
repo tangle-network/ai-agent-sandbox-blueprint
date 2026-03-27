@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Link, useParams } from 'react-router';
 import { useStore } from '@nanostores/react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAccount } from 'wagmi';
 import {
   AnimatedPage,
@@ -12,9 +13,10 @@ import {
   Button,
   Badge,
 } from '@tangle-network/blueprint-ui/components';
-import { getAddresses } from '@tangle-network/blueprint-ui';
+import { getAddresses, encodeJobArgs, getJobById, useSubmitJob } from '@tangle-network/blueprint-ui';
 
 import { type SandboxAddresses, isContractDeployed } from '~/lib/contracts/chains';
+import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
 import { useWorkflowDetail } from '~/lib/hooks/useWorkflowRuntimeStatus';
 import { instanceListStore } from '~/lib/stores/instances';
 import { sandboxListStore } from '~/lib/stores/sandboxes';
@@ -137,6 +139,8 @@ export default function WorkflowDetail() {
   const addrs = getAddresses<SandboxAddresses>();
   const sandboxes = useStore(sandboxListStore);
   const instances = useStore(instanceListStore);
+  const queryClient = useQueryClient();
+  const { submitJob, status: txStatus } = useSubmitJob();
 
   const blueprintId = useMemo<WorkflowBlueprintId | null>(
     () => (scope ? getWorkflowBlueprintIdForScope(scope) : null),
@@ -159,6 +163,43 @@ export default function WorkflowDetail() {
       instances,
     );
   }, [blueprintId, instances, sandboxes, workflowDetailQuery.data]);
+
+  const jobValue = (jobId: number): bigint =>
+    BigInt(PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
+
+  const invalidateWorkflowQueries = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['workflow-summaries'] }),
+      queryClient.invalidateQueries({ queryKey: ['workflow-operator-detail'] }),
+      queryClient.invalidateQueries({ queryKey: ['workflow-runtime-status'] }),
+      queryClient.invalidateQueries({ queryKey: ['workflow-contract-read'] }),
+      queryClient.invalidateQueries({ queryKey: ['workflow-batch'] }),
+      queryClient.invalidateQueries({ queryKey: ['sandbox-contract-read'] }),
+      queryClient.invalidateQueries({ queryKey: ['sandbox-workflow-batch'] }),
+    ]);
+  }, [queryClient]);
+
+  const handleWorkflowAction = useCallback(async (
+    action: 'trigger' | 'cancel',
+  ) => {
+    const data = workflowDetailQuery.data;
+    if (!data?.targetServiceId || !blueprintId || workflowId === null) return;
+    const jobId = action === 'trigger' ? JOB_IDS.WORKFLOW_TRIGGER : JOB_IDS.WORKFLOW_CANCEL;
+    const job = getJobById(blueprintId, jobId);
+    if (!job) return;
+
+    await submitJob({
+      serviceId: BigInt(data.targetServiceId),
+      jobId,
+      args: encodeJobArgs(job, { workflowId }),
+      label: `${action === 'trigger' ? 'Trigger' : 'Cancel'} Workflow #${String(workflowId)}`,
+      value: jobValue(jobId),
+    });
+
+    await invalidateWorkflowQueries();
+  }, [blueprintId, invalidateWorkflowQueries, submitJob, workflowDetailQuery.data, workflowId]);
+
+  const txPending = txStatus === 'pending' || txStatus === 'signing';
 
   if (!scope || workflowId === null) {
     return (
@@ -293,9 +334,30 @@ export default function WorkflowDetail() {
                 : 'Resolving workflow target...'}
           </p>
         </div>
-        <Link to="/workflows">
-          <Button variant="secondary" size="sm">Back to Workflows</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          {workflow.active && workflow.targetServiceId !== 0 ? (
+            <Button
+              variant="success"
+              size="sm"
+              onClick={() => void handleWorkflowAction('trigger')}
+              disabled={txPending || !workflow.runnable}
+            >
+              <div className="i-ph:play text-xs" />
+              Trigger
+            </Button>
+          ) : null}
+          {workflow.active && workflow.targetServiceId !== 0 ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void handleWorkflowAction('cancel')}
+              disabled={txPending}
+            >
+              <div className="i-ph:stop text-xs" />
+              Cancel
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       {!workflow.runnable ? (
@@ -350,7 +412,7 @@ export default function WorkflowDetail() {
             </div>
             <div className="flex items-center justify-between gap-4">
               <span className="text-cloud-elements-textTertiary">Target Sandbox</span>
-              <span className="text-cloud-elements-textPrimary">
+              <span className="text-right text-cloud-elements-textPrimary">
                 {workflow.targetSandboxId || 'Not set'}
               </span>
             </div>

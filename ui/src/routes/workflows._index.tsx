@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import { useStore } from '@nanostores/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAccount } from 'wagmi';
@@ -1054,9 +1054,13 @@ function WorkflowCard({
   const detailPath = isPending ? null : buildWorkflowDetailPath(workflow.scope, workflow.id);
   const canTrigger = !isPending && workflow.data.runnable && workflow.data.targetServiceId !== 0;
   const canCancel = !isPending && workflow.data.active && workflow.data.targetServiceId !== 0;
+  const navigate = useNavigate();
 
   return (
-    <Card>
+    <Card
+      className={detailPath ? 'cursor-pointer transition-colors hover:bg-cloud-elements-background-depth-2' : undefined}
+      onClick={detailPath ? () => navigate(detailPath) : undefined}
+    >
       <CardContent className="p-5">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-4 min-w-0">
@@ -1079,18 +1083,9 @@ function WorkflowCard({
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                {detailPath ? (
-                  <Link
-                    to={detailPath}
-                    className="text-sm font-display font-semibold text-cloud-elements-textPrimary hover:text-violet-400 transition-colors"
-                  >
-                    {name || `Workflow #${String(workflow.id)}`}
-                  </Link>
-                ) : (
-                  <span className="text-sm font-display font-semibold text-cloud-elements-textPrimary">
-                    {name || `Workflow #${String(workflow.id)}`}
-                  </span>
-                )}
+                <span className="text-sm font-display font-semibold text-cloud-elements-textPrimary">
+                  {name || `Workflow #${String(workflow.id)}`}
+                </span>
                 <Badge variant={status.variant}>
                   {status.label}
                 </Badge>
@@ -1124,14 +1119,7 @@ function WorkflowCard({
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {detailPath ? (
-              <Link to={detailPath}>
-                <Button variant="outline" size="sm">
-                  View Details
-                </Button>
-              </Link>
-            ) : null}
+          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             {isPending ? (
               <Button
                 variant="secondary"
