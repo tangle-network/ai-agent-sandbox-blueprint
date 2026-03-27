@@ -247,7 +247,6 @@ export default function CreatePage() {
 
   const isSandbox = deploy.mode === 'sandbox';
   const entityLabel = isSandbox ? 'Sandbox' : 'Instance';
-  const entityLabelPlural = isSandbox ? 'Sandboxes' : 'Instances';
   const currentIdx = STEPS.findIndex((s) => s.key === step);
 
   // Per-job RFQ pricing
@@ -450,7 +449,13 @@ export default function CreatePage() {
           serviceError={serviceError}
           onBack={() => { setStep('configure'); deployReset(); }}
           onDeploy={deploy.deploy}
-          onViewList={() => navigate(isSandbox ? '/sandboxes' : '/instances')}
+          onViewDetail={() => {
+            const key = isSandbox
+              ? deploy.sandboxDraftKey
+              : String(values.name || '');
+            if (key) navigate(`/${isSandbox ? 'sandboxes' : 'instances'}/${encodeURIComponent(key)}`);
+            else navigate(isSandbox ? '/sandboxes' : '/instances');
+          }}
           onOpenInfra={() => setShowInfra(true)}
           onProvisionReady={(sandboxId, sidecarUrl) => {
             if (isSandbox) {
@@ -619,7 +624,7 @@ interface DeployStepProps {
   serviceError: string | null;
   onBack: () => void;
   onDeploy: () => void;
-  onViewList: () => void;
+  onViewDetail: () => void;
   onOpenInfra: () => void;
   onProvisionReady: (sandboxId: string, sidecarUrl: string) => void;
 }
@@ -629,7 +634,7 @@ function DeployStep({
   capacity, provisionEstimate, provisionPriceFormatted,
   hasProvisionRfq, priceLoading,
   serviceInfo, serviceValidating, serviceError,
-  onBack, onDeploy, onViewList, onOpenInfra, onProvisionReady,
+  onBack, onDeploy, onViewDetail, onOpenInfra, onProvisionReady,
 }: DeployStepProps) {
   const { address, isConnected, status: walletStatus } = useAccount();
   const isReconnecting = walletStatus === 'reconnecting';
@@ -668,7 +673,7 @@ function DeployStep({
   const isSandbox = !isInstanceMode;
   const isActive = status !== 'idle';
   const isComplete = status === 'confirmed' || status === 'ready';
-  const entityLabelPlural = entityLabel === 'Sandbox' ? 'Sandboxes' : `${entityLabel}s`;
+
 
   useEffect(() => {
     setProvisionError(null);
@@ -900,9 +905,9 @@ function DeployStep({
       <div className="flex justify-between pt-1">
         <Button variant="secondary" onClick={onBack}>Back</Button>
         {isComplete ? (
-          <Button variant="success" onClick={onViewList}>
+          <Button variant="success" onClick={onViewDetail}>
             <div className="i-ph:check-bold text-sm" />
-            View {entityLabelPlural}
+            View {entityLabel}
           </Button>
         ) : (
           <DeployButton
