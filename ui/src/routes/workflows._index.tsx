@@ -1,32 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
+import { Link, useNavigate } from 'react-router';
+import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAccount } from 'wagmi';
 import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle-network/blueprint-ui/components';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
+import { Card, CardContent } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
-import { Input } from '@tangle-network/blueprint-ui/components';
-import { Select } from '@tangle-network/blueprint-ui/components';
 import {
   useWorkflowOperatorAccess,
   useWorkflowSummaries,
   type WorkflowOperatorSummary,
 } from '~/lib/hooks/useWorkflowRuntimeStatus';
-import { getAddresses, publicClient, tangleJobsAbi, useSubmitJob } from '@tangle-network/blueprint-ui';
+import { getAddresses, useSubmitJob } from '@tangle-network/blueprint-ui';
 import { encodeJobArgs } from '@tangle-network/blueprint-ui';
 import { getJobById } from '@tangle-network/blueprint-ui';
 import { JOB_IDS, PRICING_TIERS } from '~/lib/types/sandbox';
 import { cn } from '@tangle-network/blueprint-ui';
-import { decodeEventLog, type Address } from 'viem';
+import { type Address } from 'viem';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { sandboxListStore } from '~/lib/stores/sandboxes';
 import { instanceListStore } from '~/lib/stores/instances';
 import {
-  addPendingWorkflow,
-  buildPendingWorkflowKey,
   normalizeWorkflowOwnerAddress,
   pendingWorkflowStore,
   removePendingWorkflow,
@@ -34,32 +31,15 @@ import {
   type PendingWorkflowCreation,
 } from '~/lib/stores/pendingWorkflows';
 import {
-  WORKFLOW_TARGET_INSTANCE,
-  WORKFLOW_TARGET_SANDBOX,
   buildWorkflowDetailPath,
   getWorkflowBlueprintIdForScope,
-  getWorkflowScopeFromBlueprintId,
   resolveWorkflowTargetLabelFromValues,
   type WorkflowBlueprintId,
   type WorkflowScope,
 } from '~/lib/workflows';
 
-const DEFAULT_WORKFLOW_JSON = '{\n  "prompt": ""\n}';
-const DEFAULT_WORKFLOW_CONFIG_JSON = '{}';
 const WORKFLOW_VISIBILITY_POLL_INTERVAL_MS = 3_000;
 const WORKFLOW_VISIBILITY_TIMEOUT_MS = 120_000;
-
-type WorkflowTarget = {
-  key: string;
-  value: string;
-  label: string;
-  kindLabel: string;
-  description: string;
-  serviceId: string;
-  targetKind: number;
-  targetSandboxId: string;
-  blueprintId: WorkflowBlueprintId;
-};
 
 type RemoteWorkflowRecord = {
   kind: 'remote';
@@ -82,7 +62,6 @@ type PendingWorkflowRecord = {
 };
 
 type WorkflowRecord = RemoteWorkflowRecord | PendingWorkflowRecord;
-type CreateState = 'idle' | 'signing' | 'confirming';
 
 function getWorkflowStatusPresentation(workflow: WorkflowOperatorSummary) {
   if (!workflow.runnable) {
@@ -156,28 +135,6 @@ function getWorkflowIdentityKey(scope: WorkflowScope, workflowId: bigint | numbe
   return `${scope}:${String(workflowId)}`;
 }
 
-function parseWorkflowCallId(
-  logs: Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>,
-): number | null {
-  for (const log of logs) {
-    try {
-      const decoded = decodeEventLog({
-        abi: tangleJobsAbi,
-        data: log.data,
-        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
-      });
-
-      if (decoded.eventName === 'JobSubmitted' && 'callId' in decoded.args) {
-        return Number(decoded.args.callId);
-      }
-    } catch {
-      // Ignore unrelated logs while scanning the receipt.
-    }
-  }
-
-  return null;
-}
-
 function getWorkflowSortTimestamp(workflow: WorkflowRecord) {
   if (workflow.kind === 'pending') {
     return workflow.pending.createdAt;
@@ -202,7 +159,6 @@ function getOperatorLabel(scope: WorkflowScope) {
 
 export default function Workflows() {
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
   const { address } = useAccount();
   const sandboxes = useStore(sandboxListStore);
   const instances = useStore(instanceListStore);
@@ -220,15 +176,6 @@ export default function Workflows() {
   const sandboxWorkflowAccess = useWorkflowOperatorAccess(sandboxOperatorUrl);
   const instanceWorkflowAccess = useWorkflowOperatorAccess(instanceOperatorUrl);
 
-  const [showCreate, setShowCreate] = useState(false);
-  const [name, setName] = useState('');
-  const [selectedTargetKey, setSelectedTargetKey] = useState('');
-  const [triggerType, setTriggerType] = useState('cron');
-  const [triggerConfig, setTriggerConfig] = useState('');
-  const [workflowJson, setWorkflowJson] = useState(DEFAULT_WORKFLOW_JSON);
-  const [sandboxConfigJson, setSandboxConfigJson] = useState(DEFAULT_WORKFLOW_CONFIG_JSON);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [createState, setCreateState] = useState<CreateState>('idle');
   const [resolvingPendingKeys, setResolvingPendingKeys] = useState<Record<string, boolean>>({});
   const resolvingPendingKeysRef = useRef(new Set<string>());
   const workflowOperatorAccessRef = useRef({
@@ -246,68 +193,6 @@ export default function Workflows() {
   const normalizedOwnerAddress = useMemo(
     () => normalizeWorkflowOwnerAddress(address),
     [address],
-  );
-
-  const availableTargets = useMemo<WorkflowTarget[]>(() => {
-    const sandboxTargets: WorkflowTarget[] = sandboxes
-      .filter((sandbox) => sandbox.status === 'running' && !!sandbox.sandboxId && !!sandbox.serviceId)
-      .map((sandbox) => ({
-        key: `sandbox:${sandbox.sandboxId ?? sandbox.localId}`,
-        value: `sandbox:${sandbox.sandboxId ?? sandbox.localId}`,
-        label: sandbox.name,
-        kindLabel: 'Sandbox',
-        description: sandbox.image,
-        serviceId: sandbox.serviceId,
-        targetKind: WORKFLOW_TARGET_SANDBOX,
-        targetSandboxId: sandbox.sandboxId ?? '',
-        blueprintId: 'ai-agent-sandbox-blueprint',
-      }));
-
-    const instanceTargets: WorkflowTarget[] = instances
-      .filter((instance) => instance.status === 'running' && !!instance.serviceId)
-      .map((instance) => {
-        const blueprintId: WorkflowBlueprintId = instance.teeEnabled
-          ? 'ai-agent-tee-instance-blueprint'
-          : 'ai-agent-instance-blueprint';
-        return {
-          key: `instance:${instance.id}`,
-          value: `instance:${instance.id}`,
-          label: instance.name,
-          kindLabel: instance.teeEnabled ? 'TEE Instance' : 'Instance',
-          description: instance.image,
-          serviceId: instance.serviceId,
-          targetKind: WORKFLOW_TARGET_INSTANCE,
-          targetSandboxId: '',
-          blueprintId,
-        };
-      });
-
-    return [...sandboxTargets, ...instanceTargets];
-  }, [instances, sandboxes]);
-
-  useEffect(() => {
-    const requestedTarget = searchParams.get('target');
-    if (!requestedTarget && availableTargets.length === 0) return;
-
-    const normalizedRequested = requestedTarget ? decodeURIComponent(requestedTarget) : '';
-    const targetExists = normalizedRequested
-      ? availableTargets.some((target) => target.value === normalizedRequested)
-      : false;
-
-    if (targetExists) {
-      setSelectedTargetKey(normalizedRequested);
-      setShowCreate(true);
-      return;
-    }
-
-    if (!selectedTargetKey && availableTargets.length > 0) {
-      setSelectedTargetKey(availableTargets[0].value);
-    }
-  }, [availableTargets, searchParams, selectedTargetKey]);
-
-  const selectedTarget = useMemo(
-    () => availableTargets.find((target) => target.value === selectedTargetKey) ?? null,
-    [availableTargets, selectedTargetKey],
   );
 
   const remoteWorkflows = useMemo<RemoteWorkflowRecord[]>(() => {
@@ -559,6 +444,9 @@ export default function Workflows() {
       if (visibility.status === 'visible') {
         removePendingWorkflow(pending.key);
         await invalidateWorkflowQueries();
+        if (interactive) {
+          toast.success(`Workflow #${pending.workflowId} is now live`);
+        }
         return true;
       }
 
@@ -631,122 +519,6 @@ export default function Workflows() {
     return () => window.clearInterval(intervalId);
   }, [address, ownedPendingWorkflows, remoteWorkflowKeys, resolvePendingWorkflow]);
 
-  const resetCreateForm = useCallback(() => {
-    setShowCreate(false);
-    setName('');
-    setTriggerConfig('');
-    setWorkflowJson(DEFAULT_WORKFLOW_JSON);
-    setSandboxConfigJson(DEFAULT_WORKFLOW_CONFIG_JSON);
-  }, []);
-
-  const handleCreate = useCallback(async () => {
-    if (!address || !name || !selectedTarget) return;
-
-    const job = getJobById(selectedTarget.blueprintId, JOB_IDS.WORKFLOW_CREATE);
-    if (!job) return;
-
-    setCreateError(null);
-
-    if (triggerType === 'cron' && triggerConfig.trim()) {
-      const fields = triggerConfig.trim().split(/\s+/);
-      if (fields.length < 6 || fields.length > 7) {
-        setCreateError(
-          `Cron expression must have 6 or 7 fields (sec min hour dom mon dow [year]), got ${fields.length}. Example: 0 */5 * * * *`,
-        );
-        return;
-      }
-    }
-
-    setCreateState('signing');
-
-    try {
-      const hash = await submitJob({
-        serviceId: BigInt(selectedTarget.serviceId),
-        jobId: JOB_IDS.WORKFLOW_CREATE,
-        args: encodeJobArgs(job, {
-          name,
-          workflowJson,
-          triggerType,
-          triggerConfig,
-          sandboxConfigJson,
-          targetKind: selectedTarget.targetKind,
-          targetSandboxId: selectedTarget.targetSandboxId,
-          targetServiceId: Number(selectedTarget.serviceId),
-        }),
-        label: `Create Workflow: ${name}`,
-        value: jobValue(JOB_IDS.WORKFLOW_CREATE),
-      });
-
-      if (!hash) {
-        return;
-      }
-
-      setCreateState('confirming');
-
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status === 'reverted') {
-        throw new Error('Workflow creation transaction reverted.');
-      }
-
-      const workflowCallId = parseWorkflowCallId(
-        receipt.logs as Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>,
-      );
-
-      if (workflowCallId == null) {
-        throw new Error('Transaction confirmed, but the workflow call ID could not be found.');
-      }
-
-      const scope = getWorkflowScopeFromBlueprintId(selectedTarget.blueprintId);
-      const pending: PendingWorkflowCreation = {
-        key: buildPendingWorkflowKey(address, scope, workflowCallId),
-        ownerAddress: normalizedOwnerAddress,
-        workflowId: workflowCallId,
-        scope,
-        blueprintId: selectedTarget.blueprintId,
-        operatorUrl: scope === 'sandbox' ? sandboxOperatorUrl : instanceOperatorUrl,
-        name,
-        triggerType,
-        triggerConfig,
-        targetKind: selectedTarget.targetKind,
-        targetSandboxId: selectedTarget.targetSandboxId,
-        targetServiceId: Number(selectedTarget.serviceId),
-        targetLabel: selectedTarget.label,
-        kindLabel: selectedTarget.kindLabel,
-        txHash: hash,
-        createdAt: Date.now(),
-        submittedAt: Date.now(),
-        status: 'processing',
-        statusMessage: 'Transaction confirmed. Waiting for the operator to publish the workflow.',
-      };
-
-      addPendingWorkflow(pending);
-      await invalidateWorkflowQueries();
-      resetCreateForm();
-      void resolvePendingWorkflow(pending);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Workflow creation failed';
-      setCreateError(message);
-    } finally {
-      setCreateState('idle');
-    }
-  }, [
-    address,
-    instanceOperatorUrl,
-    invalidateWorkflowQueries,
-    jobValue,
-    name,
-    normalizedOwnerAddress,
-    resetCreateForm,
-    resolvePendingWorkflow,
-    sandboxConfigJson,
-    sandboxOperatorUrl,
-    selectedTarget,
-    submitJob,
-    triggerConfig,
-    triggerType,
-    workflowJson,
-  ]);
-
   const handleWorkflowAction = useCallback(async (
     workflow: RemoteWorkflowRecord,
     action: 'trigger' | 'cancel',
@@ -756,32 +528,26 @@ export default function Workflows() {
     const job = getJobById(workflow.blueprintId, jobId);
     if (!job) return;
 
-    await submitJob({
-      serviceId: BigInt(workflow.data.targetServiceId),
-      jobId,
-      args: encodeJobArgs(job, { workflowId: workflow.id }),
-      label: `${action === 'trigger' ? 'Trigger' : 'Cancel'} Workflow #${workflow.id}`,
-      value: jobValue(jobId),
-    });
+    try {
+      const hash = await submitJob({
+        serviceId: BigInt(workflow.data.targetServiceId),
+        jobId,
+        args: encodeJobArgs(job, { workflowId: workflow.id }),
+        label: `${action === 'trigger' ? 'Trigger' : 'Cancel'} Workflow #${workflow.id}`,
+        value: jobValue(jobId),
+      });
+      if (!hash) return;
 
-    await invalidateWorkflowQueries();
+      await invalidateWorkflowQueries();
+      toast.success(action === 'trigger' ? 'Workflow triggered' : 'Workflow cancelled');
+    } catch (e) {
+      toast.error(`Failed to ${action} workflow`);
+    }
   }, [invalidateWorkflowQueries, submitJob]);
 
   const handleResolvePendingWorkflow = useCallback(async (pending: PendingWorkflowCreation) => {
     await resolvePendingWorkflow(pending, { interactive: true });
   }, [resolvePendingWorkflow]);
-
-  const triggerOptions = [
-    { label: 'Cron Schedule', value: 'cron' },
-    { label: 'Manual', value: 'manual' },
-  ];
-
-  const isCreateBusy = txStatus === 'pending' || txStatus === 'signing' || createState !== 'idle';
-  const createButtonLabel = createState === 'signing'
-    ? 'Awaiting Signature...'
-    : createState === 'confirming'
-      ? 'Confirming Transaction...'
-      : 'Create Workflow';
 
   return (
     <AnimatedPage className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
@@ -796,10 +562,19 @@ export default function Workflows() {
                 : 'Automation across your sandboxes and instances'}
           </p>
         </div>
-        <Button onClick={() => setShowCreate((current) => !current)} disabled={!address || availableTargets.length === 0}>
-          <div className={showCreate ? 'i-ph:x text-base' : 'i-ph:plus text-base'} />
-          {showCreate ? 'Cancel' : 'New Workflow'}
-        </Button>
+        {address ? (
+          <Link to="/workflows/create">
+            <Button>
+              <div className="i-ph:plus text-base" />
+              New Workflow
+            </Button>
+          </Link>
+        ) : (
+          <Button disabled>
+            <div className="i-ph:plus text-base" />
+            New Workflow
+          </Button>
+        )}
       </div>
 
       {address && operatorAuthPrompts.length > 0 ? (
@@ -825,7 +600,12 @@ export default function Workflows() {
                     disabled={query.isAuthenticating}
                     onClick={() => {
                       void query.authenticate().then((token) => {
-                        if (token) void query.refetch();
+                        if (token) {
+                          toast.success(`Connected to ${label.toLowerCase()}`);
+                          void query.refetch();
+                        }
+                      }).catch(() => {
+                        toast.error(`Failed to connect to ${label.toLowerCase()}`);
                       });
                     }}
                   >
@@ -852,127 +632,6 @@ export default function Workflows() {
           ))}
         </div>
       ) : null}
-
-      {availableTargets.length === 0 && (
-        <Card className="mb-6">
-          <CardContent className="p-5">
-            <div className="flex items-center gap-3">
-              <div className="i-ph:warning text-lg text-amber-400" />
-              <div>
-                <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
-                  No runnable targets available
-                </p>
-                <p className="text-xs text-cloud-elements-textTertiary mt-1">
-                  Start a sandbox or instance first. Workflow targets are derived from running resources, not entered as service IDs.
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {showCreate && (
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Create Workflow</CardTitle>
-            <CardDescription>Choose the resource this workflow will automate, then define the trigger and task payload.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Name</label>
-                <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="daily-backup" />
-              </div>
-              <div>
-                <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Runs On</label>
-                <Select
-                  value={selectedTargetKey}
-                  onValueChange={setSelectedTargetKey}
-                  options={availableTargets.map((target) => ({
-                    value: target.value,
-                    label: `${target.kindLabel}: ${target.label}`,
-                  }))}
-                />
-                {selectedTarget && (
-                  <p className="text-[11px] text-cloud-elements-textTertiary mt-1">
-                    {selectedTarget.description}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Trigger Type</label>
-                <Select
-                  value={triggerType}
-                  onValueChange={(value) => {
-                    setTriggerType(value);
-                    if (value !== 'cron') setTriggerConfig('');
-                  }}
-                  options={triggerOptions}
-                />
-              </div>
-              {triggerType === 'cron' && (
-                <div>
-                  <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Cron Expression</label>
-                  <Input
-                    value={triggerConfig}
-                    onChange={(event) => setTriggerConfig(event.target.value)}
-                    placeholder="0 */6 * * *"
-                  />
-                </div>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Task Definition (JSON)</label>
-              <textarea
-                value={workflowJson}
-                onChange={(event) => setWorkflowJson(event.target.value)}
-                placeholder='{"prompt":"Summarize the latest logs"}'
-                rows={6}
-                className="flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-              />
-              <p className="text-[11px] text-cloud-elements-textTertiary mt-1">
-                The selected resource supplies the runtime target automatically. Do not include `sidecar_url` here.
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-display font-medium text-cloud-elements-textSecondary mb-2">Execution Config (JSON)</label>
-              <textarea
-                value={sandboxConfigJson}
-                onChange={(event) => setSandboxConfigJson(event.target.value)}
-                placeholder='{"image":"agent-dev:latest"}'
-                rows={3}
-                className="flex w-full rounded-lg border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50 resize-y"
-              />
-            </div>
-
-            {selectedTarget && (
-              <div className="glass-card rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Badge variant="accent">{selectedTarget.kindLabel}</Badge>
-                  <span className="text-sm font-display font-medium text-cloud-elements-textPrimary">{selectedTarget.label}</span>
-                </div>
-                <p className="text-xs text-cloud-elements-textTertiary">
-                  Job routing will use the target resource automatically. Service #{selectedTarget.serviceId} stays internal.
-                </p>
-              </div>
-            )}
-
-            <div className="flex justify-end">
-              <Button onClick={handleCreate} disabled={!name || !selectedTarget || isCreateBusy}>
-                <div className="i-ph:flow-arrow text-sm" />
-                {createButtonLabel}
-              </Button>
-            </div>
-
-            {createError ? <p className="text-sm text-rose-400">{createError}</p> : null}
-          </CardContent>
-        </Card>
-      )}
 
       {workflows.length > 0 ? (
         <StaggerContainer className="space-y-3">

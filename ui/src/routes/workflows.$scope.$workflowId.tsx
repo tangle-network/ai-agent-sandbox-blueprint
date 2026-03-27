@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { Link, useParams } from 'react-router';
+import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAccount } from 'wagmi';
@@ -188,15 +189,21 @@ export default function WorkflowDetail() {
     const job = getJobById(blueprintId, jobId);
     if (!job) return;
 
-    await submitJob({
-      serviceId: BigInt(data.targetServiceId),
-      jobId,
-      args: encodeJobArgs(job, { workflowId }),
-      label: `${action === 'trigger' ? 'Trigger' : 'Cancel'} Workflow #${String(workflowId)}`,
-      value: jobValue(jobId),
-    });
+    try {
+      const hash = await submitJob({
+        serviceId: BigInt(data.targetServiceId),
+        jobId,
+        args: encodeJobArgs(job, { workflowId }),
+        label: `${action === 'trigger' ? 'Trigger' : 'Cancel'} Workflow #${String(workflowId)}`,
+        value: jobValue(jobId),
+      });
+      if (!hash) return;
 
-    await invalidateWorkflowQueries();
+      await invalidateWorkflowQueries();
+      toast.success(action === 'trigger' ? 'Workflow triggered' : 'Workflow cancelled');
+    } catch (e) {
+      toast.error(`Failed to ${action} workflow`);
+    }
   }, [blueprintId, invalidateWorkflowQueries, submitJob, workflowDetailQuery.data, workflowId]);
 
   const txPending = txStatus === 'pending' || txStatus === 'signing';
@@ -260,7 +267,12 @@ export default function WorkflowDetail() {
               disabled={workflowDetailQuery.isAuthenticating}
               onClick={() => {
                 void workflowDetailQuery.authenticate().then((token) => {
-                  if (token) void workflowDetailQuery.refetch();
+                  if (token) {
+                    toast.success('Connected to operator');
+                    void workflowDetailQuery.refetch();
+                  }
+                }).catch(() => {
+                  toast.error('Failed to connect to operator');
                 });
               }}
             >

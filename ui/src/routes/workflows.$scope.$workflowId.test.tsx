@@ -6,6 +6,8 @@ import WorkflowDetail from './workflows.$scope.$workflowId';
 const {
   accountRef,
   workflowDetailQueryRef,
+  mockToastSuccess,
+  mockToastError,
 } = vi.hoisted(() => ({
   accountRef: {
     current: { address: undefined as `0x${string}` | undefined },
@@ -21,6 +23,8 @@ const {
       refetch: vi.fn(),
     },
   },
+  mockToastSuccess: vi.fn(),
+  mockToastError: vi.fn(),
 }));
 
 vi.mock('react-router', () => ({
@@ -36,6 +40,19 @@ vi.mock('@nanostores/react', () => ({
 
 vi.mock('wagmi', () => ({
   useAccount: () => accountRef.current,
+}));
+
+vi.mock('sonner', () => ({
+  toast: {
+    success: mockToastSuccess,
+    error: mockToastError,
+  },
+}));
+
+vi.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({
+    invalidateQueries: vi.fn().mockResolvedValue(undefined),
+  }),
 }));
 
 vi.mock('@tangle-network/blueprint-ui/components', () => ({
@@ -60,8 +77,31 @@ vi.mock('@tangle-network/blueprint-ui', async (importOriginal) => {
       jobs: '0x4444444444444444444444444444444444444444',
       services: '0x5555555555555555555555555555555555555555',
     }),
+    useSubmitJob: () => ({
+      submitJob: vi.fn(),
+      status: 'idle',
+    }),
+    encodeJobArgs: vi.fn(),
+    getJobById: vi.fn(),
   };
 });
+
+vi.mock('~/lib/contracts/chains', () => ({
+  isContractDeployed: () => true,
+}));
+
+vi.mock('~/lib/types/sandbox', () => ({
+  JOB_IDS: { WORKFLOW_TRIGGER: 3, WORKFLOW_CANCEL: 4 },
+  PRICING_TIERS: {},
+}));
+
+vi.mock('~/lib/stores/sandboxes', () => ({
+  sandboxListStore: { get: () => [] },
+}));
+
+vi.mock('~/lib/stores/instances', () => ({
+  instanceListStore: { get: () => [] },
+}));
 
 vi.mock('~/lib/hooks/useSandboxReads', () => ({
   useWorkflowForAddress: () => ({ data: null, isLoading: false, error: null }),
@@ -69,6 +109,11 @@ vi.mock('~/lib/hooks/useSandboxReads', () => ({
 
 vi.mock('~/lib/hooks/useWorkflowRuntimeStatus', () => ({
   useWorkflowDetail: () => workflowDetailQueryRef.current,
+}));
+
+vi.mock('~/lib/workflows', () => ({
+  getWorkflowBlueprintIdForScope: (scope: string) => `ai-agent-${scope}-blueprint`,
+  resolveWorkflowTargetLabelFromValues: () => ({ label: 'Test Target', kindLabel: 'Sandbox' }),
 }));
 
 describe('WorkflowDetail access control', () => {

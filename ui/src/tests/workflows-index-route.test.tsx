@@ -1,12 +1,10 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Workflows from '../routes/workflows._index';
 
 const {
   accountRef,
-  sandboxesRef,
-  instancesRef,
   pendingWorkflowsRef,
   workflowSummaryRef,
   instanceWorkflowSummaryRef,
@@ -15,22 +13,14 @@ const {
   submitStatusRef,
   fetchMock,
   submitJobMock,
-  waitForTransactionReceiptMock,
   invalidateQueriesMock,
-  decodeEventLogMock,
-  getJobByIdMock,
-  encodeJobArgsMock,
   useWorkflowSummariesMock,
   useWorkflowOperatorAccessMock,
+  mockToastSuccess,
+  mockToastError,
 } = vi.hoisted(() => ({
   accountRef: {
     current: { address: '0x123400000000000000000000000000000000abcd' as `0x${string}` | undefined },
-  },
-  sandboxesRef: {
-    current: [] as Array<Record<string, unknown>>,
-  },
-  instancesRef: {
-    current: [] as Array<Record<string, unknown>>,
   },
   pendingWorkflowsRef: {
     current: [] as Array<Record<string, unknown>>,
@@ -52,20 +42,18 @@ const {
   },
   fetchMock: vi.fn(),
   submitJobMock: vi.fn(),
-  waitForTransactionReceiptMock: vi.fn(),
   invalidateQueriesMock: vi.fn().mockResolvedValue(undefined),
-  decodeEventLogMock: vi.fn(),
-  getJobByIdMock: vi.fn(),
-  encodeJobArgsMock: vi.fn(() => '0xencoded'),
   useWorkflowSummariesMock: vi.fn(),
   useWorkflowOperatorAccessMock: vi.fn(),
+  mockToastSuccess: vi.fn(),
+  mockToastError: vi.fn(),
 }));
 
 vi.mock('react-router', () => ({
   Link: ({ children, to, ...props }: { children: React.ReactNode; to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
-  useSearchParams: () => [new URLSearchParams()],
+  useNavigate: () => vi.fn(),
 }));
 
 vi.mock('@nanostores/react', () => ({
@@ -82,33 +70,21 @@ vi.mock('wagmi', () => ({
   useAccount: () => accountRef.current,
 }));
 
+vi.mock('sonner', () => ({
+  toast: {
+    success: mockToastSuccess,
+    error: mockToastError,
+  },
+}));
+
 vi.mock('@tangle-network/blueprint-ui/components', () => ({
   AnimatedPage: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
   StaggerContainer: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
   StaggerItem: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
   Card: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
   CardContent: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
-  CardHeader: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
-  CardTitle: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
-  CardDescription: ({ children, ...props }: { children: React.ReactNode }) => <div {...props}>{children}</div>,
   Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
   Badge: ({ children, ...props }: { children: React.ReactNode }) => <span {...props}>{children}</span>,
-  Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
-  Select: ({
-    options,
-    value,
-    onValueChange,
-  }: {
-    options: Array<{ value: string; label: string }>;
-    value: string;
-    onValueChange: (value: string) => void;
-  }) => (
-    <select value={value} onChange={(event) => onValueChange(event.target.value)}>
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>{option.label}</option>
-      ))}
-    </select>
-  ),
 }));
 
 vi.mock('@tangle-network/blueprint-ui', async (importOriginal) => {
@@ -121,16 +97,12 @@ vi.mock('@tangle-network/blueprint-ui', async (importOriginal) => {
       instanceBlueprint: '0x2222222222222222222222222222222222222222',
       teeInstanceBlueprint: '0x3333333333333333333333333333333333333333',
     }),
-    publicClient: {
-      waitForTransactionReceipt: waitForTransactionReceiptMock,
-    },
-    tangleJobsAbi: [],
     useSubmitJob: () => ({
       submitJob: submitJobMock,
       status: submitStatusRef.current,
     }),
-    encodeJobArgs: encodeJobArgsMock,
-    getJobById: getJobByIdMock,
+    encodeJobArgs: vi.fn(() => '0xencoded'),
+    getJobById: vi.fn(),
   };
 });
 
@@ -138,7 +110,6 @@ vi.mock('viem', async (importOriginal) => {
   const actual = await importOriginal<typeof import('viem')>();
   return {
     ...actual,
-    decodeEventLog: decodeEventLogMock,
   };
 });
 
@@ -153,13 +124,13 @@ vi.mock('~/lib/config', () => ({
 
 vi.mock('~/lib/stores/sandboxes', () => ({
   sandboxListStore: {
-    get: () => sandboxesRef.current,
+    get: () => [],
   },
 }));
 
 vi.mock('~/lib/stores/instances', () => ({
   instanceListStore: {
-    get: () => instancesRef.current,
+    get: () => [],
   },
 }));
 
@@ -168,14 +139,6 @@ vi.mock('~/lib/stores/pendingWorkflows', () => ({
     get: () => pendingWorkflowsRef.current,
   },
   normalizeWorkflowOwnerAddress: (address: string | null | undefined) => (address || '').trim().toLowerCase(),
-  buildPendingWorkflowKey: (ownerAddress: string, scope: string, workflowId: number) =>
-    `${(ownerAddress || '').trim().toLowerCase()}::${scope}::${workflowId}`,
-  addPendingWorkflow: (entry: Record<string, unknown>) => {
-    pendingWorkflowsRef.current = [
-      entry,
-      ...pendingWorkflowsRef.current.filter((record) => record.key !== entry.key),
-    ];
-  },
   updatePendingWorkflow: (key: string, patch: Record<string, unknown>) => {
     pendingWorkflowsRef.current = pendingWorkflowsRef.current.map((entry) => (
       entry.key === key ? { ...entry, ...patch } : entry
@@ -190,17 +153,6 @@ vi.mock('~/lib/hooks/useWorkflowRuntimeStatus', () => ({
   useWorkflowSummaries: (...args: unknown[]) => useWorkflowSummariesMock(...args),
   useWorkflowOperatorAccess: (...args: unknown[]) => useWorkflowOperatorAccessMock(...args),
 }));
-
-function makeTargetSandbox() {
-  sandboxesRef.current = [{
-    localId: 'sandbox-local-1',
-    sandboxId: 'sandbox-1',
-    name: 'Target Sandbox',
-    image: 'ghcr.io/example/agent:latest',
-    serviceId: '7',
-    status: 'running',
-  }];
-}
 
 function setDefaultWorkflowSummaryMocks() {
   useWorkflowSummariesMock.mockImplementation((operatorUrl: string) => ({
@@ -246,23 +198,9 @@ function setDefaultWorkflowSummaryMocks() {
   }));
 }
 
-async function createWorkflow(name = 'Nightly Summary') {
-  await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name: 'New Workflow' }));
-    await Promise.resolve();
-  });
-  const nameInput = screen.getByPlaceholderText('daily-backup');
-  fireEvent.change(nameInput, {
-    target: { value: name },
-  });
-  fireEvent.click(screen.getByRole('button', { name: 'Create Workflow' }));
-}
-
 describe('Workflows list', () => {
   beforeEach(() => {
     vi.useRealTimers();
-    sandboxesRef.current = [];
-    instancesRef.current = [];
     pendingWorkflowsRef.current = [];
     workflowSummaryRef.current = [];
     instanceWorkflowSummaryRef.current = [];
@@ -271,29 +209,10 @@ describe('Workflows list', () => {
     submitStatusRef.current = 'idle';
     fetchMock.mockReset();
     submitJobMock.mockReset();
-    waitForTransactionReceiptMock.mockReset();
     invalidateQueriesMock.mockClear();
-    decodeEventLogMock.mockReset();
-    getJobByIdMock.mockReset();
-    encodeJobArgsMock.mockClear();
     useWorkflowSummariesMock.mockReset();
     useWorkflowOperatorAccessMock.mockReset();
 
-    getJobByIdMock.mockReturnValue({ id: 2, name: 'workflow_create' });
-    submitJobMock.mockResolvedValue('0xabc123');
-    waitForTransactionReceiptMock.mockResolvedValue({
-      status: 'success',
-      logs: [{ topics: ['job-submitted'], data: '0x01' }],
-    });
-    decodeEventLogMock.mockImplementation(({ topics }: { topics: string[] }) => {
-      if (topics[0] === 'job-submitted') {
-        return {
-          eventName: 'JobSubmitted',
-          args: { callId: 101n },
-        };
-      }
-      throw new Error('no match');
-    });
     fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -332,74 +251,6 @@ describe('Workflows list', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
   });
 
-  it('keeps a newly submitted workflow from hard-failing before the operator exposes it', async () => {
-    vi.useFakeTimers();
-    makeTargetSandbox();
-    let visibilityChecks = 0;
-    fetchMock.mockImplementation(async () => {
-      visibilityChecks += 1;
-      if (visibilityChecks < 4) {
-        return new Response(null, { status: 404 });
-      }
-
-      workflowSummaryRef.current = [{
-        scope: 'sandbox',
-        workflowId: 101,
-        name: 'Nightly Summary',
-        triggerType: 'cron',
-        triggerConfig: '',
-        targetKind: 0,
-        targetSandboxId: 'sandbox-1',
-        targetServiceId: 7,
-        active: true,
-        targetStatus: 'available',
-        runnable: true,
-        running: false,
-        lastRunAt: null,
-        nextRunAt: 1710000300,
-        latestExecution: null,
-      }];
-
-      return new Response(JSON.stringify({ workflowId: 101 }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    });
-
-    render(<Workflows />);
-    await createWorkflow();
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(screen.queryByText(/workflow creation failed/i)).not.toBeInTheDocument();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(6_000);
-    });
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(screen.queryByText('Processing')).not.toBeInTheDocument();
-    expect(screen.getByText('Active')).toBeInTheDocument();
-    expect(screen.getAllByText('Nightly Summary').length).toBeGreaterThan(0);
-  });
-
-  it('shows a submitted state instead of a hard failure when operator auth is missing', async () => {
-    makeTargetSandbox();
-    sandboxTokenRef.current = null;
-    setDefaultWorkflowSummaryMocks();
-
-    render(<Workflows />);
-    await createWorkflow('Needs Auth');
-
-    expect(await screen.findByText('Submitted')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Connect Operator' })).toBeInTheDocument();
-    expect(screen.getByText(/Connect to the sandbox operator to verify/i)).toBeInTheDocument();
-    expect(screen.queryByText(/workflow creation failed/i)).not.toBeInTheDocument();
-  });
-
   it('renders a timed-out pending workflow as informational instead of failed', () => {
     pendingWorkflowsRef.current = [{
       key: '0x123400000000000000000000000000000000abcd::sandbox::101',
@@ -430,34 +281,10 @@ describe('Workflows list', () => {
     expect(screen.queryByText(/workflow creation failed/i)).not.toBeInTheDocument();
   });
 
-  it('still hard-fails when the confirmed receipt does not contain JobSubmitted', async () => {
-    makeTargetSandbox();
-    waitForTransactionReceiptMock.mockResolvedValue({
-      status: 'success',
-      logs: [{ topics: ['unrelated-event'], data: '0x02' }],
-    });
-    decodeEventLogMock.mockImplementation(() => {
-      throw new Error('no match');
-    });
-
+  it('renders a link to the create page', () => {
     render(<Workflows />);
-    await createWorkflow('Broken Receipt');
 
-    expect(await screen.findByText(/workflow call ID could not be found/i)).toBeInTheDocument();
-    expect(pendingWorkflowsRef.current).toHaveLength(0);
-  });
-
-  it('still hard-fails when the workflow creation transaction reverts', async () => {
-    makeTargetSandbox();
-    waitForTransactionReceiptMock.mockResolvedValue({
-      status: 'reverted',
-      logs: [],
-    });
-
-    render(<Workflows />);
-    await createWorkflow('Reverted Workflow');
-
-    expect(await screen.findByText(/transaction reverted/i)).toBeInTheDocument();
-    expect(pendingWorkflowsRef.current).toHaveLength(0);
+    const link = screen.getByRole('link', { name: /New Workflow/i });
+    expect(link).toHaveAttribute('href', '/workflows/create');
   });
 });
