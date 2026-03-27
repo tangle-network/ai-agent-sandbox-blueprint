@@ -2044,8 +2044,15 @@ fn build_env_vars(env_json: &str, token: &str, container_port: u16) -> Result<Ve
     let mut env_vars = vec![
         format!("SIDECAR_PORT={container_port}"),
         format!("SIDECAR_AUTH_TOKEN={token}"),
+        // Switch sidecar to container mode so it uses /home/agent (where the
+        // Dockerfile pre-creates .local, .cache, .config owned by agent) instead
+        // of per-request /tmp/agent/workspace/req-* dirs on tmpfs.
+        "AGENT_WORKSPACE_ROOT=/home/agent".to_string(),
+        "AGENT_SUBPROCESS_UID=1000".to_string(),
+        "AGENT_SUBPROCESS_GID=1000".to_string(),
     ];
 
+    // User-supplied env vars are appended after defaults so they can override.
     let env_map = parse_json_object(env_json, "env_json")?;
     if let Some(Value::Object(map)) = env_map.as_ref() {
         for (key, value) in map {
@@ -2279,6 +2286,63 @@ async fn create_sidecar_docker(
                 },
             )
             .await?;
+
+        // Repair workspace ownership before the sidecar spawns OpenCode as the
+        // agent user (uid 1000).  Without this, /home/agent dirs may be root-owned
+        // and the demoted process crashes with EACCES on mkdir .local.
+        match docker_exec_as_user(
+            &container_id,
+            "root",
+            "chown -R agent:agent /home/agent 2>/dev/null || true",
+        )
+        .await
+        {
+            Ok(r) if r.exit_code != 0 => {
+                tracing::warn!(
+                    sandbox_id,
+                    exit_code = r.exit_code,
+                    stderr = %r.stderr,
+                    "workspace ownership repair returned non-zero (continuing)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    sandbox_id,
+                    error = %e,
+                    "workspace ownership repair failed (continuing)"
+                );
+            }
+            _ => {}
+        }
+
+        // Pre-create directories that the sidecar's root process will try to
+        // mkdir before demoting to uid 1000.  Without DAC_OVERRIDE the root
+        // process cannot write to agent-owned /home/agent, so we create them
+        // as the agent user who legitimately owns the parent directory.
+        match docker_exec_as_user(
+            &container_id,
+            "agent",
+            "mkdir -p /home/agent/.opencode-home/.config",
+        )
+        .await
+        {
+            Ok(r) if r.exit_code != 0 => {
+                tracing::warn!(
+                    sandbox_id,
+                    exit_code = r.exit_code,
+                    stderr = %r.stderr,
+                    "opencode-home pre-creation returned non-zero (continuing)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    sandbox_id,
+                    error = %e,
+                    "opencode-home pre-creation failed (continuing)"
+                );
+            }
+            _ => {}
+        }
 
         let now = crate::util::now_ts();
         let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
