@@ -162,7 +162,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
 
   const [jobError, setJobError] = useState<string | null>(null);
 
-  // Extract callId from the JobCalled event in the receipt logs
+  // Extract callId from the JobSubmitted event in the receipt logs
   const callId = useMemo<number | null>(() => {
     if (!jobReceipt?.logs) return null;
     for (const log of jobReceipt.logs) {
@@ -172,7 +172,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
           data: log.data,
           topics: log.topics,
         });
-        if (decoded.eventName === 'JobCalled' && 'callId' in decoded.args) {
+        if (decoded.eventName === 'JobSubmitted' && 'callId' in decoded.args) {
           return Number(decoded.args.callId);
         }
       } catch {

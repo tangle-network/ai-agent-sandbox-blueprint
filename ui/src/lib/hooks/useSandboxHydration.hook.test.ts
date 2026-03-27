@@ -245,7 +245,7 @@ describe('useSandboxHydration hook', () => {
       logs: [{ data: '0x', topics: [] }],
     });
     mockDecodeEventLog.mockReturnValue({
-      eventName: 'JobCalled',
+      eventName: 'JobSubmitted',
       args: { callId: 0n },
     });
 
@@ -299,7 +299,7 @@ describe('useSandboxHydration hook', () => {
     await waitFor(() => {
       expect(sandboxListStore.get()).toHaveLength(1);
       expect(sandboxListStore.get()[0].status).toBe('error');
-      expect(sandboxListStore.get()[0].errorMessage).toBe('Sandbox transaction confirmed without a JobCalled event.');
+      expect(sandboxListStore.get()[0].errorMessage).toBe('Sandbox transaction confirmed without a JobSubmitted event.');
     });
   });
 

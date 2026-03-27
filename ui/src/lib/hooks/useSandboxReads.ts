@@ -11,7 +11,7 @@ import { parseAbiItem } from 'viem';
 import { JOB_IDS } from '~/lib/types/sandbox';
 
 const workflowJobCalledEvent = parseAbiItem(
-  'event JobCalled(uint64 indexed serviceId, uint8 indexed job, uint64 indexed callId, address caller, bytes args)',
+  'event JobSubmitted(uint64 indexed serviceId, uint64 indexed callId, uint8 jobIndex, address caller, bytes inputs)',
 );
 
 function useSandboxReadDeps() {
@@ -252,11 +252,13 @@ export function useOwnedWorkflowIdsForAddress(
           event: workflowJobCalledEvent,
           args: {
             serviceId: workflowServiceId,
-            job: JOB_IDS.WORKFLOW_CREATE,
           },
           fromBlock: 0n,
           toBlock: 'latest',
-        }),
+        }).then((logs) => logs.filter((log) => {
+          const args = log.args as { jobIndex?: number };
+          return args.jobIndex === JOB_IDS.WORKFLOW_CREATE;
+        })),
       ]);
 
       const ownershipEvents = ownershipLogs

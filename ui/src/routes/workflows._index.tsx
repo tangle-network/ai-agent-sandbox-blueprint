@@ -396,7 +396,7 @@ export default function Workflows() {
             data: log.data,
             topics: log.topics,
           });
-          if (decoded.eventName === 'JobCalled' && 'callId' in decoded.args) {
+          if (decoded.eventName === 'JobSubmitted' && 'callId' in decoded.args) {
             workflowCallId = decoded.args.callId as bigint;
             break;
           }

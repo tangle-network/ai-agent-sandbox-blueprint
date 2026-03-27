@@ -40,7 +40,7 @@ function getCallIdFromReceiptLogs(logs: Array<{ data: `0x${string}`; topics: rea
         data: log.data,
         topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
       });
-      if (decoded.eventName === 'JobCalled' && 'callId' in decoded.args) {
+      if (decoded.eventName === 'JobSubmitted' && 'callId' in decoded.args) {
         return Number(decoded.args.callId);
       }
     } catch {
@@ -90,7 +90,7 @@ async function recoverDraftFromReceipt(
     return {
       ...sandbox,
       status: 'error',
-      errorMessage: 'Sandbox transaction confirmed without a JobCalled event.',
+      errorMessage: 'Sandbox transaction confirmed without a JobSubmitted event.',
     };
   } catch {
     if (hasRecentPendingTx(sandbox)) return sandbox;
