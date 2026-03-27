@@ -59,13 +59,15 @@ const PRE_AGENT_SECTIONS: FormSection[] = [
   { label: 'Image', fields: ['image'] },
 ];
 
-const POST_AGENT_SECTIONS: FormSection[] = [
-  { label: 'Runtime & Stack', fields: ['runtimeBackend', 'stack'] },
-  { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
-  { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
-  { label: 'Features', fields: ['sshEnabled', 'sshPublicKey'] },
-  { label: 'Advanced Options', fields: ['metadataJson', 'teeRequired', 'teeType'], collapsed: true },
-];
+function getPostAgentSections(isTee: boolean): FormSection[] {
+  return [
+    { label: 'Runtime & Stack', fields: ['runtimeBackend', 'stack'] },
+    { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
+    { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
+    { label: 'Features', fields: ['sshEnabled', 'sshPublicKey'] },
+    { label: 'Advanced Options', fields: isTee ? ['metadataJson', 'teeRequired', 'teeType'] : ['metadataJson'], collapsed: true },
+  ];
+}
 
 // ── Wizard Steps ──
 
@@ -146,6 +148,22 @@ export default function CreatePage() {
   }, [selectedBlueprint]);
 
   const { values, errors, onChange, validate, reset: resetForm } = useJobForm(createJob);
+
+  const isTeeBlueprint = selectedBlueprint?.id === 'ai-agent-tee-instance-blueprint';
+  const postAgentSections = useMemo(() => getPostAgentSections(isTeeBlueprint), [isTeeBlueprint]);
+
+  // For non-TEE blueprints, hide the TEE runtime backend option from the form.
+  const displayJob = useMemo<JobDefinition | null>(() => {
+    if (!createJob || isTeeBlueprint) return createJob;
+    return {
+      ...createJob,
+      fields: createJob.fields.map((f) =>
+        f.name === 'runtimeBackend' && f.options
+          ? { ...f, options: f.options.filter((o) => o.value !== 'tee') }
+          : f,
+      ),
+    };
+  }, [createJob, isTeeBlueprint]);
 
   // Extra ports input (not an ABI field — merged into metadataJson before deploy)
   const [portsInput, setPortsInput] = useState('');
@@ -323,7 +341,7 @@ export default function CreatePage() {
       {step === 'blueprint' && <BlueprintSelector onSelect={handleSelectBlueprint} />}
 
       {/* Step 2: Configure */}
-      {step === 'configure' && createJob && (
+      {step === 'configure' && createJob && displayJob && (
         <div className="space-y-4">
           <Card>
             <CardHeader>
@@ -335,7 +353,7 @@ export default function CreatePage() {
             </CardHeader>
             <CardContent>
               <BlueprintJobForm
-                job={createJob}
+                job={displayJob}
                 values={values}
                 onChange={onChange}
                 errors={errors}
@@ -360,11 +378,11 @@ export default function CreatePage() {
               )}
 
               <BlueprintJobForm
-                job={createJob}
+                job={displayJob}
                 values={values}
                 onChange={onChange}
                 errors={errors}
-                sections={POST_AGENT_SECTIONS}
+                sections={postAgentSections}
               />
 
               {/* Environment variables — key-value editor instead of raw JSON */}
@@ -413,10 +431,10 @@ export default function CreatePage() {
       )}
 
       {/* Step 3: Review & Deploy */}
-      {step === 'deploy' && createJob && selectedBlueprint && (
+      {step === 'deploy' && createJob && displayJob && selectedBlueprint && (
         <DeployStep
           blueprint={selectedBlueprint}
-          job={createJob}
+          job={displayJob}
           values={values}
           ports={supportsMetadataPorts ? parsePortsInput(portsInput) : []}
           infra={infra}
