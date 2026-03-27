@@ -94,7 +94,7 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 tee_metadata_json: None,
                 tee_attestation_json: None,
                 name: String::new(),
-                agent_identifier: String::new(),
+                agent_identifier: "default".into(),
                 metadata_json: String::new(),
                 disk_gb: 0,
                 stack: String::new(),

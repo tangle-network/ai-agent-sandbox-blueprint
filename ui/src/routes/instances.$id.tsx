@@ -532,8 +532,8 @@ export default function InstanceDetail() {
               Snapshot
             </Button>
             {inst.serviceId && (
-              <Link to={`/workflows?target=${encodeURIComponent(`instance:${inst.id}`)}`}>
-                <Button variant="secondary" size="sm">
+              <Link to={`/workflows/create?target=${encodeURIComponent(`instance:${inst.id}`)}`}>
+                <Button variant="secondary" size="sm" title={!hasAgent ? 'No agent configured — workflow executions will fail' : undefined}>
                   <div className="i-ph:flow-arrow text-sm" />
                   Create Workflow
                 </Button>

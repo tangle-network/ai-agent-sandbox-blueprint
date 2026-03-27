@@ -646,8 +646,8 @@ export default function SandboxDetail() {
                 Snapshot
               </Button>
               {isRunning && sb.sandboxId && (
-                <Link to={`/workflows?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`}>
-                  <Button variant="secondary" size="sm">
+                <Link to={`/workflows/create?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`}>
+                  <Button variant="secondary" size="sm" title={!hasAgent ? 'No agent configured — workflow executions will fail' : undefined}>
                     <div className="i-ph:flow-arrow text-sm" />
                     Create Workflow
                   </Button>

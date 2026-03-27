@@ -314,7 +314,7 @@ fn summarize_last_run_at(
 }
 
 fn workflow_effective_state_from_target_status(
-    entry: &WorkflowEntry,
+    _entry: &WorkflowEntry,
     target_status: WorkflowTargetStatus,
 ) -> WorkflowEffectiveState {
     WorkflowEffectiveState {
@@ -671,6 +671,17 @@ pub fn workflow_detail_for_owner(
 pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, String> {
     let spec = parse_workflow_task_spec(entry.workflow_json.as_str())?;
     let record = resolve_workflow_sandbox(entry)?;
+
+    // Fast-fail: if the sandbox has no agent configured, the sidecar will
+    // reject the request with "No factory registered for agent identifier".
+    // Fail immediately with a clear message instead of burning a timeout.
+    if record.agent_identifier.trim().is_empty() {
+        return Err(format!(
+            "Sandbox '{}' has no agent configured. \
+             Configure an agent identifier on the sandbox before running workflows.",
+            record.id
+        ));
+    }
 
     // Look up token from sandbox record. Falls back to spec.sidecar_token for
     // backward compat with workflows created before 2-phase provisioning.

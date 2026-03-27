@@ -297,7 +297,7 @@ fn summarize_last_run_at(
 }
 
 fn workflow_effective_state_from_target_status(
-    entry: &WorkflowEntry,
+    _entry: &WorkflowEntry,
     target_status: WorkflowTargetStatus,
 ) -> WorkflowEffectiveState {
     WorkflowEffectiveState {
@@ -596,6 +596,17 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
         .map_err(|err| format!("workflow_json must be valid task JSON: {err}"))?;
 
     let sandbox = crate::require_instance_sandbox()?;
+
+    // Fast-fail: if the instance has no agent configured, the sidecar will
+    // reject the request with "No factory registered for agent identifier".
+    if sandbox.agent_identifier.trim().is_empty() {
+        return Err(
+            "Instance has no agent configured. \
+             Configure an agent identifier on the instance before running workflows."
+                .to_string(),
+        );
+    }
+
     match sandbox.service_id {
         Some(service_id) if service_id == entry.target_service_id => {}
         Some(service_id) => {
