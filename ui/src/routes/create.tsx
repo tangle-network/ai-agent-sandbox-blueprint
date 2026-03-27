@@ -571,21 +571,7 @@ function BlueprintSelector({ onSelect }: { onSelect: (bp: BlueprintDefinition) =
                 <h3 className="text-lg font-display font-semibold text-cloud-elements-textPrimary">{bp.name}</h3>
                 <Badge variant="secondary">v{bp.version}</Badge>
               </div>
-              <p className="text-sm text-cloud-elements-textSecondary mb-3">{bp.description}</p>
-              <div className="flex items-center gap-4 text-xs text-cloud-elements-textTertiary">
-                <span className="flex items-center gap-1">
-                  <div className="i-ph:briefcase text-sm" />
-                  {bp.jobs.length} jobs
-                </span>
-                <span className="flex items-center gap-1">
-                  <div className="i-ph:folder text-sm" />
-                  {bp.categories.length} categories
-                </span>
-                <span className="flex items-center gap-1">
-                  <div className="i-ph:tag text-sm" />
-                  {Math.min(...bp.jobs.map((j) => j.pricingMultiplier))}x&ndash;{Math.max(...bp.jobs.map((j) => j.pricingMultiplier))}x
-                </span>
-              </div>
+              <p className="text-sm text-cloud-elements-textSecondary">{bp.description}</p>
             </div>
             <div className="i-ph:arrow-right text-lg text-cloud-elements-textTertiary" />
           </div>
