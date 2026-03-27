@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useStore } from '@nanostores/react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -9,7 +9,11 @@ import { Button } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
 import { Input } from '@tangle-network/blueprint-ui/components';
 import { Select } from '@tangle-network/blueprint-ui/components';
-import { useWorkflowSummaries, type WorkflowOperatorSummary } from '~/lib/hooks/useWorkflowRuntimeStatus';
+import {
+  useWorkflowOperatorAccess,
+  useWorkflowSummaries,
+  type WorkflowOperatorSummary,
+} from '~/lib/hooks/useWorkflowRuntimeStatus';
 import { getAddresses, publicClient, tangleJobsAbi, useSubmitJob } from '@tangle-network/blueprint-ui';
 import { encodeJobArgs } from '@tangle-network/blueprint-ui';
 import { getJobById } from '@tangle-network/blueprint-ui';
@@ -21,14 +25,29 @@ import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { sandboxListStore } from '~/lib/stores/sandboxes';
 import { instanceListStore } from '~/lib/stores/instances';
 import {
+  addPendingWorkflow,
+  buildPendingWorkflowKey,
+  normalizeWorkflowOwnerAddress,
+  pendingWorkflowStore,
+  removePendingWorkflow,
+  updatePendingWorkflow,
+  type PendingWorkflowCreation,
+} from '~/lib/stores/pendingWorkflows';
+import {
   WORKFLOW_TARGET_INSTANCE,
   WORKFLOW_TARGET_SANDBOX,
   buildWorkflowDetailPath,
   getWorkflowBlueprintIdForScope,
+  getWorkflowScopeFromBlueprintId,
   resolveWorkflowTargetLabelFromValues,
   type WorkflowBlueprintId,
   type WorkflowScope,
 } from '~/lib/workflows';
+
+const DEFAULT_WORKFLOW_JSON = '{\n  "prompt": ""\n}';
+const DEFAULT_WORKFLOW_CONFIG_JSON = '{}';
+const WORKFLOW_VISIBILITY_POLL_INTERVAL_MS = 3_000;
+const WORKFLOW_VISIBILITY_TIMEOUT_MS = 120_000;
 
 type WorkflowTarget = {
   key: string;
@@ -40,10 +59,10 @@ type WorkflowTarget = {
   targetKind: number;
   targetSandboxId: string;
   blueprintId: WorkflowBlueprintId;
-  contractAddress: Address;
 };
 
-type WorkflowRecord = {
+type RemoteWorkflowRecord = {
+  kind: 'remote';
   id: bigint;
   scope: WorkflowScope;
   blueprintId: WorkflowBlueprintId;
@@ -51,6 +70,19 @@ type WorkflowRecord = {
   targetLabel: string;
   kindLabel: string;
 };
+
+type PendingWorkflowRecord = {
+  kind: 'pending';
+  id: bigint;
+  scope: WorkflowScope;
+  blueprintId: WorkflowBlueprintId;
+  pending: PendingWorkflowCreation;
+  targetLabel: string;
+  kindLabel: string;
+};
+
+type WorkflowRecord = RemoteWorkflowRecord | PendingWorkflowRecord;
+type CreateState = 'idle' | 'signing' | 'confirming';
 
 function getWorkflowStatusPresentation(workflow: WorkflowOperatorSummary) {
   if (!workflow.runnable) {
@@ -78,6 +110,30 @@ function getWorkflowStatusPresentation(workflow: WorkflowOperatorSummary) {
   };
 }
 
+function getPendingWorkflowStatusPresentation(pending: PendingWorkflowCreation) {
+  switch (pending.status) {
+    case 'awaiting-auth':
+      return {
+        label: 'Submitted',
+        variant: 'secondary' as const,
+        detail: pending.statusMessage || 'Connect to the operator to verify that the workflow is visible.',
+      };
+    case 'timed-out':
+      return {
+        label: 'Still Processing',
+        variant: 'secondary' as const,
+        detail: pending.statusMessage || 'Creation is taking longer than expected. Check status to look again.',
+      };
+    case 'processing':
+    default:
+      return {
+        label: 'Processing',
+        variant: 'accent' as const,
+        detail: pending.statusMessage || 'Transaction confirmed. Waiting for the operator to publish the workflow.',
+      };
+  }
+}
+
 function getWorkflowContractAddress(address: Address): Address | undefined {
   return isContractDeployed(address) ? address : undefined;
 }
@@ -96,12 +152,61 @@ function getWorkflowContractAddressForScope(
   }
 }
 
+function getWorkflowIdentityKey(scope: WorkflowScope, workflowId: bigint | number) {
+  return `${scope}:${String(workflowId)}`;
+}
+
+function parseWorkflowCallId(
+  logs: Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>,
+): number | null {
+  for (const log of logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: tangleJobsAbi,
+        data: log.data,
+        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
+      });
+
+      if (decoded.eventName === 'JobSubmitted' && 'callId' in decoded.args) {
+        return Number(decoded.args.callId);
+      }
+    } catch {
+      // Ignore unrelated logs while scanning the receipt.
+    }
+  }
+
+  return null;
+}
+
+function getWorkflowSortTimestamp(workflow: WorkflowRecord) {
+  if (workflow.kind === 'pending') {
+    return workflow.pending.createdAt;
+  }
+
+  return workflow.data.lastRunAt
+    ?? workflow.data.latestExecution?.executedAt
+    ?? workflow.data.nextRunAt
+    ?? 0;
+}
+
+function getOperatorLabel(scope: WorkflowScope) {
+  switch (scope) {
+    case 'sandbox':
+      return 'Sandbox operator';
+    case 'instance':
+      return 'Instance operator';
+    case 'tee':
+      return 'TEE operator';
+  }
+}
+
 export default function Workflows() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const { address } = useAccount();
   const sandboxes = useStore(sandboxListStore);
   const instances = useStore(instanceListStore);
+  const pendingWorkflowEntries = useStore(pendingWorkflowStore);
   const { submitJob, status: txStatus } = useSubmitJob();
   const addrs = getAddresses<SandboxAddresses>();
   const sandboxOperatorUrl = OPERATOR_API_URL;
@@ -112,16 +217,36 @@ export default function Workflows() {
     instanceOperatorUrl,
     hasDedicatedInstanceOperator,
   );
+  const sandboxWorkflowAccess = useWorkflowOperatorAccess(sandboxOperatorUrl);
+  const instanceWorkflowAccess = useWorkflowOperatorAccess(instanceOperatorUrl);
 
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState('');
   const [selectedTargetKey, setSelectedTargetKey] = useState('');
   const [triggerType, setTriggerType] = useState('cron');
   const [triggerConfig, setTriggerConfig] = useState('');
-  const [workflowJson, setWorkflowJson] = useState('{\n  "prompt": ""\n}');
-  const [sandboxConfigJson, setSandboxConfigJson] = useState('{}');
+  const [workflowJson, setWorkflowJson] = useState(DEFAULT_WORKFLOW_JSON);
+  const [sandboxConfigJson, setSandboxConfigJson] = useState(DEFAULT_WORKFLOW_CONFIG_JSON);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [isVerifyingCreate, setIsVerifyingCreate] = useState(false);
+  const [createState, setCreateState] = useState<CreateState>('idle');
+  const [resolvingPendingKeys, setResolvingPendingKeys] = useState<Record<string, boolean>>({});
+  const resolvingPendingKeysRef = useRef(new Set<string>());
+  const workflowOperatorAccessRef = useRef({
+    sandbox: sandboxWorkflowAccess,
+    instance: instanceWorkflowAccess,
+  });
+
+  useEffect(() => {
+    workflowOperatorAccessRef.current = {
+      sandbox: sandboxWorkflowAccess,
+      instance: instanceWorkflowAccess,
+    };
+  }, [instanceWorkflowAccess, sandboxWorkflowAccess]);
+
+  const normalizedOwnerAddress = useMemo(
+    () => normalizeWorkflowOwnerAddress(address),
+    [address],
+  );
 
   const availableTargets = useMemo<WorkflowTarget[]>(() => {
     const sandboxTargets: WorkflowTarget[] = sandboxes
@@ -136,7 +261,6 @@ export default function Workflows() {
         targetKind: WORKFLOW_TARGET_SANDBOX,
         targetSandboxId: sandbox.sandboxId ?? '',
         blueprintId: 'ai-agent-sandbox-blueprint',
-        contractAddress: addrs.sandboxBlueprint,
       }));
 
     const instanceTargets: WorkflowTarget[] = instances
@@ -155,12 +279,11 @@ export default function Workflows() {
           targetKind: WORKFLOW_TARGET_INSTANCE,
           targetSandboxId: '',
           blueprintId,
-          contractAddress: instance.teeEnabled ? addrs.teeInstanceBlueprint : addrs.instanceBlueprint,
         };
       });
 
     return [...sandboxTargets, ...instanceTargets];
-  }, [addrs.instanceBlueprint, addrs.sandboxBlueprint, addrs.teeInstanceBlueprint, instances, sandboxes]);
+  }, [instances, sandboxes]);
 
   useEffect(() => {
     const requestedTarget = searchParams.get('target');
@@ -187,7 +310,7 @@ export default function Workflows() {
     [availableTargets, selectedTargetKey],
   );
 
-  const workflows = useMemo<WorkflowRecord[]>(() => {
+  const remoteWorkflows = useMemo<RemoteWorkflowRecord[]>(() => {
     const summaryEntries = [
       ...(sandboxWorkflowSummaries.data ?? []).map((workflow) => ({
         workflow,
@@ -203,7 +326,7 @@ export default function Workflows() {
 
     const deduped = new Map<string, { workflow: WorkflowOperatorSummary; operatorUrl: string }>();
     for (const entry of summaryEntries) {
-      deduped.set(`${entry.workflow.scope}:${entry.workflow.workflowId}`, entry);
+      deduped.set(getWorkflowIdentityKey(entry.workflow.scope, entry.workflow.workflowId), entry);
     }
 
     return Array.from(deduped.values())
@@ -222,6 +345,7 @@ export default function Workflows() {
         );
 
         return {
+          kind: 'remote' as const,
           id: BigInt(workflow.workflowId),
           scope: workflow.scope,
           blueprintId,
@@ -230,18 +354,7 @@ export default function Workflows() {
           kindLabel: resolvedTarget.kindLabel,
         };
       })
-      .filter((workflow): workflow is WorkflowRecord => workflow !== null)
-      .sort((left, right) => {
-        const leftUpdated = left.data.lastRunAt
-          ?? left.data.latestExecution?.executedAt
-          ?? left.data.nextRunAt
-          ?? 0;
-        const rightUpdated = right.data.lastRunAt
-          ?? right.data.latestExecution?.executedAt
-          ?? right.data.nextRunAt
-          ?? 0;
-        return rightUpdated - leftUpdated || Number(right.id - left.id);
-      });
+      .filter((workflow): workflow is RemoteWorkflowRecord => workflow !== null);
   }, [
     addrs,
     hasDedicatedInstanceOperator,
@@ -253,10 +366,55 @@ export default function Workflows() {
     instanceWorkflowSummaries.data,
   ]);
 
+  const remoteWorkflowKeys = useMemo(
+    () => new Set(remoteWorkflows.map((workflow) => getWorkflowIdentityKey(workflow.scope, workflow.id))),
+    [remoteWorkflows],
+  );
+
+  const ownedPendingWorkflows = useMemo(
+    () => pendingWorkflowEntries.filter((entry) => entry.ownerAddress === normalizedOwnerAddress),
+    [normalizedOwnerAddress, pendingWorkflowEntries],
+  );
+
+  useEffect(() => {
+    for (const pending of ownedPendingWorkflows) {
+      if (remoteWorkflowKeys.has(getWorkflowIdentityKey(pending.scope, pending.workflowId))) {
+        removePendingWorkflow(pending.key);
+      }
+    }
+  }, [ownedPendingWorkflows, remoteWorkflowKeys]);
+
+  const workflows = useMemo<WorkflowRecord[]>(() => {
+    const merged: WorkflowRecord[] = [...remoteWorkflows];
+
+    for (const pending of ownedPendingWorkflows) {
+      if (remoteWorkflowKeys.has(getWorkflowIdentityKey(pending.scope, pending.workflowId))) {
+        continue;
+      }
+
+      merged.push({
+        kind: 'pending',
+        id: BigInt(pending.workflowId),
+        scope: pending.scope,
+        blueprintId: pending.blueprintId,
+        pending,
+        targetLabel: pending.targetLabel,
+        kindLabel: pending.kindLabel,
+      });
+    }
+
+    return merged.sort((left, right) => {
+      const timestampDifference = getWorkflowSortTimestamp(right) - getWorkflowSortTimestamp(left);
+      if (timestampDifference !== 0) return timestampDifference;
+      return Number(right.id - left.id);
+    });
+  }, [ownedPendingWorkflows, remoteWorkflowKeys, remoteWorkflows]);
+
   const isLoading = !!address && (
     sandboxWorkflowSummaries.isLoading
     || (hasDedicatedInstanceOperator && instanceWorkflowSummaries.isLoading)
   );
+
   const operatorAuthPrompts = useMemo(() => {
     const prompts = [{
       key: sandboxOperatorUrl,
@@ -280,9 +438,12 @@ export default function Workflows() {
     instanceOperatorUrl,
     instanceWorkflowSummaries,
   ]);
+
   const operatorErrors = useMemo(
     () => [
-      sandboxWorkflowSummaries.error ? { key: `error:${sandboxOperatorUrl}`, label: 'Sandbox operator', message: sandboxWorkflowSummaries.error.message } : null,
+      sandboxWorkflowSummaries.error
+        ? { key: `error:${sandboxOperatorUrl}`, label: 'Sandbox operator', message: sandboxWorkflowSummaries.error.message }
+        : null,
       hasDedicatedInstanceOperator && instanceWorkflowSummaries.error
         ? { key: `error:${instanceOperatorUrl}`, label: 'Instance operator', message: instanceWorkflowSummaries.error.message }
         : null,
@@ -299,52 +460,6 @@ export default function Workflows() {
   const jobValue = (jobId: number): bigint =>
     BigInt(PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
 
-  const waitForWorkflowOnChain = useCallback(async (contractAddress: Address, workflowId: bigint) => {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const result = await publicClient.readContract({
-        address: contractAddress,
-        abi: [
-          {
-            type: 'function',
-            name: 'getWorkflow',
-            inputs: [{ name: 'workflowId', type: 'uint64' }],
-            outputs: [
-              {
-                name: '',
-                type: 'tuple',
-                components: [
-                  { name: 'name', type: 'string' },
-                  { name: 'workflow_json', type: 'string' },
-                  { name: 'trigger_type', type: 'string' },
-                  { name: 'trigger_config', type: 'string' },
-                  { name: 'sandbox_config_json', type: 'string' },
-                  { name: 'target_kind', type: 'uint8' },
-                  { name: 'target_sandbox_id', type: 'string' },
-                  { name: 'target_service_id', type: 'uint64' },
-                  { name: 'active', type: 'bool' },
-                  { name: 'created_at', type: 'uint64' },
-                  { name: 'updated_at', type: 'uint64' },
-                  { name: 'last_triggered_at', type: 'uint64' },
-                ],
-              },
-            ],
-            stateMutability: 'view',
-          },
-        ],
-        functionName: 'getWorkflow',
-        args: [workflowId],
-      }) as { name?: string };
-
-      if (result.name?.trim()) {
-        return true;
-      }
-
-      await new Promise((resolve) => window.setTimeout(resolve, 1500));
-    }
-
-    return false;
-  }, []);
-
   const invalidateWorkflowQueries = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['workflow-summaries'] }),
@@ -357,14 +472,181 @@ export default function Workflows() {
     ]);
   }, [queryClient]);
 
+  const requestWorkflowVisibility = useCallback(async (
+    pending: PendingWorkflowCreation,
+    { interactive = false }: { interactive?: boolean } = {},
+  ) => {
+    const access = pending.scope === 'sandbox'
+      ? workflowOperatorAccessRef.current.sandbox
+      : workflowOperatorAccessRef.current.instance;
+
+    let token = access.getCachedToken();
+    if (!token && interactive) {
+      token = await access.authenticate();
+    }
+
+    if (!token) {
+      return {
+        status: 'auth-required' as const,
+        message: `Connect to the ${getOperatorLabel(pending.scope).toLowerCase()} to verify that the workflow is visible.`,
+      };
+    }
+
+    const request = async (authToken: string) =>
+      fetch(`${pending.operatorUrl}/api/workflows/${pending.workflowId}`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+        },
+      });
+
+    let response = await request(token);
+
+    if (response.status === 401) {
+      const refreshedToken = await access.getToken(true);
+      if (!refreshedToken) {
+        return {
+          status: 'auth-required' as const,
+          message: `Connect to the ${getOperatorLabel(pending.scope).toLowerCase()} to verify that the workflow is visible.`,
+        };
+      }
+      response = await request(refreshedToken);
+    }
+
+    if (response.status === 404) {
+      return { status: 'not-found' as const };
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      return {
+        status: 'auth-required' as const,
+        message: `Connect to the ${getOperatorLabel(pending.scope).toLowerCase()} to verify that the workflow is visible.`,
+      };
+    }
+
+    if (!response.ok) {
+      const message = await response.text();
+      return {
+        status: 'error' as const,
+        message: message || `Workflow request failed (${response.status})`,
+      };
+    }
+
+    return { status: 'visible' as const };
+  }, []);
+
+  const resolvePendingWorkflow = useCallback(async (
+    pending: PendingWorkflowCreation,
+    { interactive = false }: { interactive?: boolean } = {},
+  ) => {
+    if (resolvingPendingKeysRef.current.has(pending.key)) {
+      return false;
+    }
+
+    if (
+      !interactive
+      && pending.status === 'timed-out'
+      && Date.now() - pending.submittedAt >= WORKFLOW_VISIBILITY_TIMEOUT_MS
+    ) {
+      return false;
+    }
+
+    resolvingPendingKeysRef.current.add(pending.key);
+    setResolvingPendingKeys((current) => ({ ...current, [pending.key]: true }));
+
+    try {
+      const visibility = await requestWorkflowVisibility(pending, { interactive });
+
+      if (visibility.status === 'visible') {
+        removePendingWorkflow(pending.key);
+        await invalidateWorkflowQueries();
+        return true;
+      }
+
+      if (visibility.status === 'auth-required') {
+        if (
+          pending.status !== 'awaiting-auth'
+          || pending.statusMessage !== visibility.message
+        ) {
+          updatePendingWorkflow(pending.key, {
+            status: 'awaiting-auth',
+            statusMessage: visibility.message,
+          });
+        }
+        return false;
+      }
+
+      const timedOut = Date.now() - pending.submittedAt >= WORKFLOW_VISIBILITY_TIMEOUT_MS;
+      if (timedOut) {
+        const statusMessage = 'Creation is still processing. Use Check Status to try again.';
+        if (
+          pending.status !== 'timed-out'
+          || pending.statusMessage !== statusMessage
+        ) {
+          updatePendingWorkflow(pending.key, {
+            status: 'timed-out',
+            statusMessage,
+          });
+        }
+        return false;
+      }
+
+      const statusMessage = visibility.status === 'error'
+        ? 'Transaction confirmed. The operator has not exposed the workflow yet, so we will keep checking.'
+        : 'Transaction confirmed. Waiting for the operator to publish the workflow.';
+      if (
+        pending.status !== 'processing'
+        || pending.statusMessage !== statusMessage
+      ) {
+        updatePendingWorkflow(pending.key, {
+          status: 'processing',
+          statusMessage,
+        });
+      }
+      return false;
+    } finally {
+      resolvingPendingKeysRef.current.delete(pending.key);
+      setResolvingPendingKeys((current) => {
+        const next = { ...current };
+        delete next[pending.key];
+        return next;
+      });
+    }
+  }, [invalidateWorkflowQueries, requestWorkflowVisibility]);
+
+  useEffect(() => {
+    if (!address || ownedPendingWorkflows.length === 0) return;
+
+    const tick = () => {
+      for (const pending of ownedPendingWorkflows) {
+        if (remoteWorkflowKeys.has(getWorkflowIdentityKey(pending.scope, pending.workflowId))) {
+          continue;
+        }
+
+        void resolvePendingWorkflow(pending);
+      }
+    };
+
+    tick();
+    const intervalId = window.setInterval(tick, WORKFLOW_VISIBILITY_POLL_INTERVAL_MS);
+    return () => window.clearInterval(intervalId);
+  }, [address, ownedPendingWorkflows, remoteWorkflowKeys, resolvePendingWorkflow]);
+
+  const resetCreateForm = useCallback(() => {
+    setShowCreate(false);
+    setName('');
+    setTriggerConfig('');
+    setWorkflowJson(DEFAULT_WORKFLOW_JSON);
+    setSandboxConfigJson(DEFAULT_WORKFLOW_CONFIG_JSON);
+  }, []);
+
   const handleCreate = useCallback(async () => {
-    if (!name || !selectedTarget) return;
+    if (!address || !name || !selectedTarget) return;
+
     const job = getJobById(selectedTarget.blueprintId, JOB_IDS.WORKFLOW_CREATE);
     if (!job) return;
+
     setCreateError(null);
 
-    // Validate cron expression before submitting the on-chain transaction.
-    // The Rust cron crate requires 6 or 7 fields (sec min hour dom mon dow [year]).
     if (triggerType === 'cron' && triggerConfig.trim()) {
       const fields = triggerConfig.trim().split(/\s+/);
       if (fields.length < 6 || fields.length > 7) {
@@ -375,7 +657,7 @@ export default function Workflows() {
       }
     }
 
-    setIsVerifyingCreate(true);
+    setCreateState('signing');
 
     try {
       const hash = await submitJob({
@@ -399,61 +681,74 @@ export default function Workflows() {
         return;
       }
 
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      let workflowCallId: bigint | null = null;
+      setCreateState('confirming');
 
-      for (const log of receipt.logs) {
-        try {
-          const decoded = decodeEventLog({
-            abi: tangleJobsAbi,
-            data: log.data,
-            topics: log.topics,
-          });
-          if (decoded.eventName === 'JobSubmitted' && 'callId' in decoded.args) {
-            workflowCallId = decoded.args.callId as bigint;
-            break;
-          }
-        } catch {
-          // Ignore unrelated logs.
-        }
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (receipt.status === 'reverted') {
+        throw new Error('Workflow creation transaction reverted.');
       }
 
-      if (workflowCallId === null) {
+      const workflowCallId = parseWorkflowCallId(
+        receipt.logs as Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>,
+      );
+
+      if (workflowCallId == null) {
         throw new Error('Transaction confirmed, but the workflow call ID could not be found.');
       }
 
-      const visible = await waitForWorkflowOnChain(selectedTarget.contractAddress, workflowCallId);
-      if (!visible) {
-        throw new Error('Transaction confirmed, but the workflow was not readable from the chain.');
-      }
+      const scope = getWorkflowScopeFromBlueprintId(selectedTarget.blueprintId);
+      const pending: PendingWorkflowCreation = {
+        key: buildPendingWorkflowKey(address, scope, workflowCallId),
+        ownerAddress: normalizedOwnerAddress,
+        workflowId: workflowCallId,
+        scope,
+        blueprintId: selectedTarget.blueprintId,
+        operatorUrl: scope === 'sandbox' ? sandboxOperatorUrl : instanceOperatorUrl,
+        name,
+        triggerType,
+        triggerConfig,
+        targetKind: selectedTarget.targetKind,
+        targetSandboxId: selectedTarget.targetSandboxId,
+        targetServiceId: Number(selectedTarget.serviceId),
+        targetLabel: selectedTarget.label,
+        kindLabel: selectedTarget.kindLabel,
+        txHash: hash,
+        createdAt: Date.now(),
+        submittedAt: Date.now(),
+        status: 'processing',
+        statusMessage: 'Transaction confirmed. Waiting for the operator to publish the workflow.',
+      };
 
+      addPendingWorkflow(pending);
       await invalidateWorkflowQueries();
-
-      setShowCreate(false);
-      setName('');
-      setTriggerConfig('');
-      setWorkflowJson('{\n  "prompt": ""\n}');
-      setSandboxConfigJson('{}');
+      resetCreateForm();
+      void resolvePendingWorkflow(pending);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Workflow creation failed';
       setCreateError(message);
     } finally {
-      setIsVerifyingCreate(false);
+      setCreateState('idle');
     }
   }, [
+    address,
+    instanceOperatorUrl,
     invalidateWorkflowQueries,
+    jobValue,
     name,
+    normalizedOwnerAddress,
+    resetCreateForm,
+    resolvePendingWorkflow,
     sandboxConfigJson,
+    sandboxOperatorUrl,
     selectedTarget,
     submitJob,
     triggerConfig,
     triggerType,
-    waitForWorkflowOnChain,
     workflowJson,
   ]);
 
   const handleWorkflowAction = useCallback(async (
-    workflow: WorkflowRecord,
+    workflow: RemoteWorkflowRecord,
     action: 'trigger' | 'cancel',
   ) => {
     if (!workflow.data.targetServiceId) return;
@@ -472,10 +767,21 @@ export default function Workflows() {
     await invalidateWorkflowQueries();
   }, [invalidateWorkflowQueries, submitJob]);
 
+  const handleResolvePendingWorkflow = useCallback(async (pending: PendingWorkflowCreation) => {
+    await resolvePendingWorkflow(pending, { interactive: true });
+  }, [resolvePendingWorkflow]);
+
   const triggerOptions = [
     { label: 'Cron Schedule', value: 'cron' },
     { label: 'Manual', value: 'manual' },
   ];
+
+  const isCreateBusy = txStatus === 'pending' || txStatus === 'signing' || createState !== 'idle';
+  const createButtonLabel = createState === 'signing'
+    ? 'Awaiting Signature...'
+    : createState === 'confirming'
+      ? 'Confirming Transaction...'
+      : 'Create Workflow';
 
   return (
     <AnimatedPage className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
@@ -657,9 +963,9 @@ export default function Workflows() {
             )}
 
             <div className="flex justify-end">
-              <Button onClick={handleCreate} disabled={!name || !selectedTarget || txStatus === 'pending' || isVerifyingCreate}>
+              <Button onClick={handleCreate} disabled={!name || !selectedTarget || isCreateBusy}>
                 <div className="i-ph:flow-arrow text-sm" />
-                {isVerifyingCreate ? 'Verifying Workflow...' : 'Create Workflow'}
+                {createButtonLabel}
               </Button>
             </div>
 
@@ -671,11 +977,19 @@ export default function Workflows() {
       {workflows.length > 0 ? (
         <StaggerContainer className="space-y-3">
           {workflows.map((workflow) => (
-            <StaggerItem key={`${workflow.blueprintId}:${String(workflow.id)}`}>
+            <StaggerItem key={`${workflow.kind}:${workflow.blueprintId}:${String(workflow.id)}`}>
               <WorkflowCard
                 workflow={workflow}
-                onTrigger={() => void handleWorkflowAction(workflow, 'trigger')}
-                onCancel={() => void handleWorkflowAction(workflow, 'cancel')}
+                onTrigger={workflow.kind === 'remote'
+                  ? () => void handleWorkflowAction(workflow, 'trigger')
+                  : undefined}
+                onCancel={workflow.kind === 'remote'
+                  ? () => void handleWorkflowAction(workflow, 'cancel')
+                  : undefined}
+                onResolvePending={workflow.kind === 'pending'
+                  ? () => void handleResolvePendingWorkflow(workflow.pending)
+                  : undefined}
+                pendingActionLoading={workflow.kind === 'pending' && !!resolvingPendingKeys[workflow.pending.key]}
                 txPending={txStatus === 'pending' || txStatus === 'signing'}
               />
             </StaggerItem>
@@ -714,24 +1028,32 @@ function WorkflowCard({
   workflow,
   onTrigger,
   onCancel,
+  onResolvePending,
+  pendingActionLoading,
   txPending,
 }: {
   workflow: WorkflowRecord;
-  onTrigger: () => void;
-  onCancel: () => void;
+  onTrigger?: () => void;
+  onCancel?: () => void;
+  onResolvePending?: () => void;
+  pendingActionLoading: boolean;
   txPending: boolean;
 }) {
-  const { id, data, targetLabel, kindLabel } = workflow;
-  const status = getWorkflowStatusPresentation(data);
-
   const triggerLabel: Record<string, string> = {
     cron: 'Cron',
     manual: 'Manual',
   };
 
-  const canTrigger = data.runnable && data.targetServiceId !== 0;
-  const canCancel = data.active && data.targetServiceId !== 0;
-  const detailPath = buildWorkflowDetailPath(workflow.scope, id);
+  const isPending = workflow.kind === 'pending';
+  const name = isPending ? workflow.pending.name : workflow.data.name;
+  const triggerType = isPending ? workflow.pending.triggerType : workflow.data.triggerType;
+  const triggerConfig = isPending ? workflow.pending.triggerConfig : workflow.data.triggerConfig;
+  const status = isPending
+    ? getPendingWorkflowStatusPresentation(workflow.pending)
+    : getWorkflowStatusPresentation(workflow.data);
+  const detailPath = isPending ? null : buildWorkflowDetailPath(workflow.scope, workflow.id);
+  const canTrigger = !isPending && workflow.data.runnable && workflow.data.targetServiceId !== 0;
+  const canCancel = !isPending && workflow.data.active && workflow.data.targetServiceId !== 0;
 
   return (
     <Card>
@@ -740,65 +1062,97 @@ function WorkflowCard({
           <div className="flex items-center gap-4 min-w-0">
             <div className={cn(
               'w-10 h-10 rounded-lg flex items-center justify-center shrink-0',
-              data.active ? 'bg-teal-500/10' : 'bg-cloud-elements-background-depth-3',
+              isPending
+                ? 'bg-amber-500/10'
+                : workflow.data.active
+                  ? 'bg-teal-500/10'
+                  : 'bg-cloud-elements-background-depth-3',
             )}>
               <div className={cn(
                 'i-ph:flow-arrow text-lg',
-                data.active ? 'text-teal-400' : 'text-cloud-elements-textTertiary',
+                isPending
+                  ? 'text-amber-300'
+                  : workflow.data.active
+                    ? 'text-teal-400'
+                    : 'text-cloud-elements-textTertiary',
               )} />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <Link
-                  to={detailPath}
-                  className="text-sm font-display font-semibold text-cloud-elements-textPrimary hover:text-violet-400 transition-colors"
-                >
-                  {data.name || `Workflow #${String(id)}`}
-                </Link>
+                {detailPath ? (
+                  <Link
+                    to={detailPath}
+                    className="text-sm font-display font-semibold text-cloud-elements-textPrimary hover:text-violet-400 transition-colors"
+                  >
+                    {name || `Workflow #${String(workflow.id)}`}
+                  </Link>
+                ) : (
+                  <span className="text-sm font-display font-semibold text-cloud-elements-textPrimary">
+                    {name || `Workflow #${String(workflow.id)}`}
+                  </span>
+                )}
                 <Badge variant={status.variant}>
                   {status.label}
                 </Badge>
                 <Badge variant="accent">
-                  {triggerLabel[data.triggerType] ?? data.triggerType}
+                  {triggerLabel[triggerType] ?? triggerType}
                 </Badge>
-                <Badge variant="secondary">{kindLabel}</Badge>
+                <Badge variant="secondary">{workflow.kindLabel}</Badge>
               </div>
               <div className="flex items-center gap-3 mt-1 text-xs text-cloud-elements-textTertiary flex-wrap">
                 <span>
-                  {data.targetStatus === 'missing'
-                    ? `Target missing: ${targetLabel}`
-                    : `Runs on ${targetLabel}`}
+                  {isPending
+                    ? `Will run on ${workflow.targetLabel}`
+                    : workflow.data.targetStatus === 'missing'
+                      ? `Target missing: ${workflow.targetLabel}`
+                      : `Runs on ${workflow.targetLabel}`}
                 </span>
-                {data.triggerConfig && (
+                {triggerConfig ? (
                   <>
                     <span className="text-cloud-elements-dividerColor">·</span>
-                    <span className="font-data">{data.triggerConfig}</span>
+                    <span className="font-data">{triggerConfig}</span>
                   </>
-                )}
+                ) : null}
                 <span className="text-cloud-elements-dividerColor">·</span>
                 <span>{status.detail}</span>
-                {data.lastRunAt && data.lastRunAt > 0 && (
+                {!isPending && workflow.data.lastRunAt && workflow.data.lastRunAt > 0 ? (
                   <>
                     <span className="text-cloud-elements-dividerColor">·</span>
-                    <span>Last: {new Date(data.lastRunAt * 1000).toLocaleString()}</span>
+                    <span>Last: {new Date(workflow.data.lastRunAt * 1000).toLocaleString()}</span>
                   </>
-                )}
+                ) : null}
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Link to={detailPath}>
-              <Button variant="outline" size="sm">
-                View Details
+            {detailPath ? (
+              <Link to={detailPath}>
+                <Button variant="outline" size="sm">
+                  View Details
+                </Button>
+              </Link>
+            ) : null}
+            {isPending ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onResolvePending}
+                disabled={pendingActionLoading}
+              >
+                {pendingActionLoading
+                  ? 'Checking...'
+                  : workflow.pending.status === 'awaiting-auth'
+                    ? 'Connect Operator'
+                    : 'Check Status'}
               </Button>
-            </Link>
-            {data.active && data.targetServiceId !== 0 ? (
+            ) : null}
+            {!isPending && workflow.data.active && workflow.data.targetServiceId !== 0 ? (
               <Button variant="success" size="sm" onClick={onTrigger} disabled={txPending || !canTrigger}>
                 <div className="i-ph:play text-xs" />
                 Trigger
               </Button>
             ) : null}
-            {canCancel ? (
+            {!isPending && canCancel ? (
               <Button variant="secondary" size="sm" onClick={onCancel} disabled={txPending}>
                 <div className="i-ph:stop text-xs" />
                 Cancel

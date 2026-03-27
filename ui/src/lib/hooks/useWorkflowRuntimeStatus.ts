@@ -160,6 +160,34 @@ export function useWorkflowSummaries(
   };
 }
 
+export function useWorkflowOperatorAccess(operatorUrl: string) {
+  const {
+    getToken,
+    getCachedToken,
+    authCacheKey,
+    isAuthenticated,
+    isAuthenticating,
+    error: authError,
+  } = useOperatorAuth(operatorUrl);
+
+  const authenticate = useCallback(async () => {
+    const token = await getToken();
+    return token;
+  }, [getToken]);
+
+  return {
+    operatorUrl,
+    authCacheKey,
+    getToken,
+    getCachedToken,
+    authenticate,
+    authRequired: !getCachedToken(),
+    isAuthenticated,
+    isAuthenticating,
+    authError,
+  };
+}
+
 export function useWorkflowDetail(
   scope: WorkflowScope,
   workflowId: string | null,
