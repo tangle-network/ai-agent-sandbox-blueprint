@@ -688,7 +688,7 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
         Some(ref base) if !base.is_empty() => {
             format!("{}-{}", base, chrono::Utc::now().timestamp())
         }
-        _ => String::new(),
+        _ => format!("wf-{}-{}", entry.id, chrono::Utc::now().timestamp()),
     };
 
     let sidecar_url = record.sidecar_url.clone();

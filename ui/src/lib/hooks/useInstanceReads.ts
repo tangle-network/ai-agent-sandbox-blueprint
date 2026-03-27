@@ -37,8 +37,10 @@ function useInstanceContractRead<TData>({
 }): UseQueryResult<TData, Error> {
   const { address, chainId } = useInstanceReadDeps(blueprintType);
 
+  const serializedArgs = args?.map((a) => (typeof a === 'bigint' ? a.toString() : a));
+
   return useQuery<TData, Error>({
-    queryKey: ['instance-contract-read', chainId, address, functionName, args],
+    queryKey: ['instance-contract-read', chainId, address, functionName, serializedArgs],
     queryFn: async () =>
       publicClient.readContract({
         address,

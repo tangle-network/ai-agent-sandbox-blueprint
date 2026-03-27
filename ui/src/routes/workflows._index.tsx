@@ -362,6 +362,19 @@ export default function Workflows() {
     const job = getJobById(selectedTarget.blueprintId, JOB_IDS.WORKFLOW_CREATE);
     if (!job) return;
     setCreateError(null);
+
+    // Validate cron expression before submitting the on-chain transaction.
+    // The Rust cron crate requires 6 or 7 fields (sec min hour dom mon dow [year]).
+    if (triggerType === 'cron' && triggerConfig.trim()) {
+      const fields = triggerConfig.trim().split(/\s+/);
+      if (fields.length < 6 || fields.length > 7) {
+        setCreateError(
+          `Cron expression must have 6 or 7 fields (sec min hour dom mon dow [year]), got ${fields.length}. Example: 0 */5 * * * *`,
+        );
+        return;
+      }
+    }
+
     setIsVerifyingCreate(true);
 
     try {
