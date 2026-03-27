@@ -242,7 +242,7 @@ export default function CreatePage() {
   }, [runtimeBackend, supportsMetadataPorts, values, portsInput]);
 
   // Unified deploy hook — manages both submitJob and requestService paths
-  const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values: mergedValues, infra, validate });
+  const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values: mergedValues, infra, validate, capacity });
   const { reset: deployReset } = deploy;
 
   const isSandbox = deploy.mode === 'sandbox';
@@ -787,12 +787,27 @@ function DeployStep({
       )}
 
       {/* ── Capacity ── */}
-      {capacity !== undefined && (
+      {capacity !== undefined && Number(capacity) > 0 && (
         <div className="flex items-center gap-2 px-1">
           <div className="i-ph:shield-check text-sm text-teal-400" />
           <span className="text-xs text-cloud-elements-textTertiary">
             <span className="font-data font-semibold text-cloud-elements-textSecondary">{String(capacity)}</span> capacity slots available
           </span>
+        </div>
+      )}
+      {capacity !== undefined && Number(capacity) === 0 && isSandbox && status === 'idle' && (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
+          <div className="flex items-center gap-3">
+            <div className="i-ph:warning-circle text-lg text-amber-400" />
+            <div className="flex-1">
+              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+                No capacity available
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
+                All operator slots are in use. Delete unused sandboxes or try again later.
+              </p>
+            </div>
+          </div>
         </div>
       )}
 

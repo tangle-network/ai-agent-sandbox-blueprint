@@ -75,6 +75,7 @@ interface UseCreateDeployOpts {
   values: Record<string, unknown>;
   infra: InfraConfig;
   validate: () => boolean;
+  capacity?: number | bigint;
 }
 
 /** ~30 days at 3s blocks */
@@ -121,7 +122,7 @@ async function resolveActivatedServiceId(requestId: number): Promise<string | nu
 
 // ── Hook ──
 
-export function useCreateDeploy({ blueprint, job, values, infra, validate }: UseCreateDeployOpts) {
+export function useCreateDeploy({ blueprint, job, values, infra, validate, capacity }: UseCreateDeployOpts) {
   const { address, isConnected } = useAccount();
   const walletChainId = useChainId();
   const queryClient = useQueryClient();
@@ -594,6 +595,7 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate }: Use
     isNewService,
     operatorCount: operators.length,
     operatorsLoading,
+    capacity,
   });
 
   return {

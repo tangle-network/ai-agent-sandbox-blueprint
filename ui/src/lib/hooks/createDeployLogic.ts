@@ -76,6 +76,7 @@ export function computeCanDeploy(opts: {
   isNewService: boolean;
   operatorCount: number;
   operatorsLoading: boolean;
+  capacity?: number | bigint;
 }): boolean {
   return !!(
     opts.job &&
@@ -85,6 +86,7 @@ export function computeCanDeploy(opts: {
     opts.contractsDeployed &&
     opts.correctChain &&
     (opts.mode === 'sandbox' ? opts.hasValidService : true) &&
+    (opts.mode === 'sandbox' ? (opts.capacity === undefined || Number(opts.capacity) > 0) : true) &&
     (!opts.isNewService || (opts.operatorCount > 0 && !opts.operatorsLoading))
   );
 }
