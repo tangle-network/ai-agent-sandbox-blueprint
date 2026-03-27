@@ -319,7 +319,7 @@ fn workflow_effective_state_from_target_status(
 ) -> WorkflowEffectiveState {
     WorkflowEffectiveState {
         target_status,
-        runnable: entry.active && matches!(target_status, WorkflowTargetStatus::Available),
+        runnable: matches!(target_status, WorkflowTargetStatus::Available),
     }
 }
 
