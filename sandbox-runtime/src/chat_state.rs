@@ -11,6 +11,7 @@ use crate::live_operator_sessions::LiveJsonEvent;
 use crate::store::{self, PersistentStore};
 
 const CHAT_EVENT_BUFFER: usize = 256;
+const CHAT_RUN_PROGRESS_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -24,6 +25,7 @@ pub enum ChatRunKind {
 pub enum ChatRunStatus {
     Queued,
     Running,
+    Cancelling,
     Completed,
     Failed,
     Cancelled,
@@ -32,7 +34,7 @@ pub enum ChatRunStatus {
 
 impl ChatRunStatus {
     pub fn is_active(&self) -> bool {
-        matches!(self, Self::Queued | Self::Running)
+        matches!(self, Self::Queued | Self::Running | Self::Cancelling)
     }
 }
 
@@ -63,6 +65,10 @@ pub struct ChatSessionRecord {
     pub latest_sidecar_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_run_id: Option<String>,
+    #[serde(default)]
+    pub run_progress: Vec<ChatRunProgressRecord>,
+    #[serde(default = "default_next_progress_seq")]
+    pub next_progress_seq: u64,
     pub messages: Vec<ChatMessageRecord>,
 }
 
@@ -90,11 +96,25 @@ pub struct ChatRunRecord {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatRunProgressRecord {
+    pub seq: u64,
+    pub run_id: String,
+    pub status: ChatRunStatus,
+    pub phase: String,
+    pub message: String,
+    pub timestamp_ms: u64,
+}
+
 static CHAT_SESSIONS: OnceCell<PersistentStore<ChatSessionRecord>> = OnceCell::new();
 static CHAT_RUNS: OnceCell<PersistentStore<ChatRunRecord>> = OnceCell::new();
 static CHAT_STREAMS: Lazy<Mutex<HashMap<String, broadcast::Sender<LiveJsonEvent>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static CHAT_INIT: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
+
+fn default_next_progress_seq() -> u64 {
+    1
+}
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -189,6 +209,8 @@ pub fn create_session(
         updated_at: created_at,
         latest_sidecar_session_id: None,
         active_run_id: None,
+        run_progress: Vec::new(),
+        next_progress_seq: default_next_progress_seq(),
         messages: Vec::new(),
     };
     session_store()?
@@ -321,6 +343,51 @@ pub fn set_session_sidecar_session_id(
             session.updated_at = timestamp;
         })
         .map_err(|e| e.to_string())
+}
+
+pub fn append_run_progress(
+    session_id: &str,
+    run_id: &str,
+    status: ChatRunStatus,
+    phase: &str,
+    message: &str,
+) -> Result<Option<ChatRunProgressRecord>, String> {
+    let timestamp = now_ms();
+    let mut appended = None;
+    let updated = session_store()?
+        .update(session_id, |session| {
+            let seq = if session.next_progress_seq == 0 {
+                (session.run_progress.len() as u64) + 1
+            } else {
+                session.next_progress_seq
+            };
+            let entry = ChatRunProgressRecord {
+                seq,
+                run_id: run_id.to_string(),
+                status: status.clone(),
+                phase: phase.to_string(),
+                message: message.to_string(),
+                timestamp_ms: timestamp,
+            };
+            session.run_progress.push(entry.clone());
+            if session.run_progress.len() > CHAT_RUN_PROGRESS_LIMIT {
+                let overflow = session.run_progress.len() - CHAT_RUN_PROGRESS_LIMIT;
+                session.run_progress.drain(0..overflow);
+            }
+            session.next_progress_seq = seq.saturating_add(1);
+            session.updated_at = timestamp;
+            appended = Some(entry);
+        })
+        .map_err(|e| e.to_string())?;
+    if updated { Ok(appended) } else { Ok(None) }
+}
+
+pub fn list_run_progress_for_session(
+    session_id: &str,
+) -> Result<Vec<ChatRunProgressRecord>, String> {
+    Ok(get_session(session_id)?
+        .map(|session| session.run_progress)
+        .unwrap_or_default())
 }
 
 pub fn maybe_auto_title_session(session_id: &str, request_text: &str) -> Result<bool, String> {
