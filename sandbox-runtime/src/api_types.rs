@@ -99,15 +99,11 @@ pub struct ExecApiResponse {
 
 #[derive(Debug, Serialize)]
 pub struct PromptApiResponse {
-    pub success: bool,
-    pub response: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub error: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub trace_id: String,
-    pub duration_ms: u64,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
+    pub accepted: bool,
+    pub run_id: String,
+    pub session_id: String,
+    pub status: String,
+    pub accepted_at: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,16 +133,11 @@ impl TaskApiRequest {
 
 #[derive(Debug, Serialize)]
 pub struct TaskApiResponse {
-    pub success: bool,
-    pub result: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub error: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub trace_id: String,
-    pub duration_ms: u64,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
+    pub accepted: bool,
+    pub run_id: String,
     pub session_id: String,
+    pub status: String,
+    pub accepted_at: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

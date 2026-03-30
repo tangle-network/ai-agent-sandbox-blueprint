@@ -1,47 +1,48 @@
 import { atom } from 'nanostores';
 import type { SessionMessage, SessionPart, TextPart } from '@tangle-network/agent-ui';
-import type { SandboxClient } from '~/lib/api/sandboxClient';
+import type {
+  ChatRunSummary,
+  ChatSessionDetail,
+  ChatSessionSummary,
+  SandboxClient,
+} from '~/lib/api/sandboxClient';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+export interface ChatRunEntry {
+  id: string;
+  kind: ChatRunSummary['kind'];
+  status: ChatRunSummary['status'];
+  requestText: string;
+  createdAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  traceId?: string;
+  finalOutput?: string;
+  error?: string;
+}
 
 export interface ChatSessionEntry {
-  /** Server-assigned session ID (canonical) */
   id: string;
-  /** Session ID returned by sidecar for conversation continuity */
-  sidecarSessionId?: string;
   title: string;
   sandboxId: string;
   createdAt: number;
+  sidecarSessionId?: string;
+  activeRunId?: string;
+  runs: ChatRunEntry[];
   messages: SessionMessage[];
   partMap: Record<string, SessionPart[]>;
-  /** Whether messages have been fetched from the server */
-  messagesLoaded: boolean;
+  detailLoaded: boolean;
 }
 
 interface ChatSessionsState {
-  /** All sessions keyed by sandboxId → ChatSessionEntry[] */
   sessions: Record<string, ChatSessionEntry[]>;
-  /** Active session ID per sandbox */
   active: Record<string, string>;
-  /** Loading state per sandbox */
   loading: Record<string, boolean>;
-  /** Error state per sandbox */
   error: Record<string, string | null>;
 }
-
-// ---------------------------------------------------------------------------
-// Clean up stale localStorage data from previous implementation
-// ---------------------------------------------------------------------------
 
 if (typeof window !== 'undefined') {
   try { localStorage.removeItem('chat_sessions'); } catch { /* ignore */ }
 }
-
-// ---------------------------------------------------------------------------
-// Store
-// ---------------------------------------------------------------------------
 
 export const chatSessionsStore = atom<ChatSessionsState>({
   sessions: {},
@@ -50,33 +51,86 @@ export const chatSessionsStore = atom<ChatSessionsState>({
   error: {},
 });
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function update(fn: (state: ChatSessionsState) => ChatSessionsState) {
   chatSessionsStore.set(fn(chatSessionsStore.get()));
 }
 
-/** Convert a server message into the local SessionMessage + SessionPart[] format. */
-function serverMessageToLocal(
-  msg: { role: string; content: string },
+function mapServerMessage(
+  msg: ChatSessionDetail['messages'][number],
   index: number,
 ): { message: SessionMessage; parts: SessionPart[] } {
+  const createdAt = typeof msg.created_at === 'number' ? msg.created_at : Date.now();
   const part: TextPart = { type: 'text', text: msg.content ?? '' };
   return {
     message: {
-      id: `server-${index}`,
-      role: msg.role as 'user' | 'assistant',
-      time: { created: Date.now() },
+      id: msg.id ?? `server-${index}`,
+      role: msg.role as 'user' | 'assistant' | 'system',
+      time: { created: createdAt },
     },
     parts: [part],
   };
 }
 
-// ---------------------------------------------------------------------------
-// Synchronous local-state API (unchanged interface)
-// ---------------------------------------------------------------------------
+function mapRun(run: ChatRunSummary): ChatRunEntry {
+  return {
+    id: run.id,
+    kind: run.kind,
+    status: run.status,
+    requestText: run.request_text,
+    createdAt: run.created_at,
+    startedAt: run.started_at ?? undefined,
+    completedAt: run.completed_at ?? undefined,
+    traceId: run.trace_id ?? undefined,
+    finalOutput: run.final_output ?? undefined,
+    error: run.error ?? undefined,
+  };
+}
+
+function applySessionSummary(
+  sandboxId: string,
+  existing: ChatSessionEntry | undefined,
+  summary: ChatSessionSummary,
+): ChatSessionEntry {
+  return {
+    id: summary.session_id,
+    title: summary.title,
+    sandboxId,
+    createdAt: existing?.createdAt ?? Date.now(),
+    sidecarSessionId: existing?.sidecarSessionId,
+    activeRunId: summary.active_run_id ?? existing?.activeRunId,
+    runs: existing?.runs ?? [],
+    messages: existing?.messages ?? [],
+    partMap: existing?.partMap ?? {},
+    detailLoaded: existing?.detailLoaded ?? false,
+  };
+}
+
+function applySessionDetail(
+  session: ChatSessionEntry,
+  detail: ChatSessionDetail,
+): ChatSessionEntry {
+  const converted = (detail.messages ?? []).map((message, index) => mapServerMessage(message, index));
+  const messages = converted.map((entry) => entry.message);
+  const partMap: Record<string, SessionPart[]> = {};
+  for (const entry of converted) {
+    partMap[entry.message.id] = entry.parts;
+  }
+
+  return {
+    ...session,
+    title: detail.title,
+    sidecarSessionId: detail.sidecar_session_id ?? undefined,
+    activeRunId: detail.active_run_id ?? undefined,
+    runs: (detail.runs ?? []).map(mapRun),
+    messages,
+    partMap,
+    detailLoaded: true,
+  };
+}
+
+export function hasActiveRun(session: ChatSessionEntry | null | undefined): boolean {
+  return !!session?.activeRunId;
+}
 
 export function getSessions(sandboxId: string): ChatSessionEntry[] {
   return chatSessionsStore.get().sessions[sandboxId] ?? [];
@@ -90,7 +144,7 @@ export function getActiveSession(sandboxId: string): ChatSessionEntry | undefine
   const state = chatSessionsStore.get();
   const activeId = state.active[sandboxId];
   if (!activeId) return undefined;
-  return (state.sessions[sandboxId] ?? []).find((s) => s.id === activeId);
+  return (state.sessions[sandboxId] ?? []).find((session) => session.id === activeId);
 }
 
 export function getLoading(sandboxId: string): boolean {
@@ -109,57 +163,55 @@ export function setActiveSession(sandboxId: string, sessionId: string) {
 }
 
 export function renameSession(sandboxId: string, sessionId: string, title: string) {
-  update((state) => {
-    const sessions = (state.sessions[sandboxId] ?? []).map((s) =>
-      s.id === sessionId ? { ...s, title } : s,
-    );
-    return { ...state, sessions: { ...state.sessions, [sandboxId]: sessions } };
-  });
+  update((state) => ({
+    ...state,
+    sessions: {
+      ...state.sessions,
+      [sandboxId]: (state.sessions[sandboxId] ?? []).map((session) =>
+        session.id === sessionId ? { ...session, title } : session,
+      ),
+    },
+  }));
 }
 
-export function updateSessionSidecarId(sandboxId: string, sessionId: string, sidecarSessionId: string) {
-  update((state) => {
-    const sessions = (state.sessions[sandboxId] ?? []).map((s) =>
-      s.id === sessionId ? { ...s, sidecarSessionId } : s,
-    );
-    return { ...state, sessions: { ...state.sessions, [sandboxId]: sessions } };
-  });
+export function markRunAccepted(
+  sandboxId: string,
+  sessionId: string,
+  runId: string,
+  status: ChatRunEntry['status'],
+  acceptedAt: number,
+  kind: ChatRunEntry['kind'],
+  requestText: string,
+) {
+  update((state) => ({
+    ...state,
+    sessions: {
+      ...state.sessions,
+      [sandboxId]: (state.sessions[sandboxId] ?? []).map((session) => {
+        if (session.id !== sessionId) return session;
+        const runs = session.runs.some((run) => run.id === runId)
+          ? session.runs.map((run) => (run.id === runId ? { ...run, status } : run))
+          : [
+            ...session.runs,
+            {
+              id: runId,
+              kind,
+              status,
+              requestText,
+              createdAt: acceptedAt,
+            },
+          ];
+        return {
+          ...session,
+          activeRunId: runId,
+          runs,
+        };
+      }),
+    },
+  }));
 }
 
-export function appendMessage(sandboxId: string, sessionId: string, message: SessionMessage, parts: SessionPart[]) {
-  update((state) => {
-    const sessions = (state.sessions[sandboxId] ?? []).map((s) => {
-      if (s.id !== sessionId) return s;
-      return {
-        ...s,
-        messages: [...s.messages, message],
-        partMap: { ...s.partMap, [message.id]: parts },
-      };
-    });
-    return { ...state, sessions: { ...state.sessions, [sandboxId]: sessions } };
-  });
-}
-
-export function updateParts(sandboxId: string, sessionId: string, messageId: string, parts: SessionPart[]) {
-  update((state) => {
-    const sessions = (state.sessions[sandboxId] ?? []).map((s) => {
-      if (s.id !== sessionId) return s;
-      return {
-        ...s,
-        partMap: { ...s.partMap, [messageId]: parts },
-      };
-    });
-    return { ...state, sessions: { ...state.sessions, [sandboxId]: sessions } };
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Async API-backed functions
-// ---------------------------------------------------------------------------
-
-/** Fetch sessions from the server and populate the store. */
 export async function fetchSessions(client: SandboxClient, sandboxId: string): Promise<void> {
-  // Skip if already loading
   if (chatSessionsStore.get().loading[sandboxId]) return;
 
   update((state) => ({
@@ -170,19 +222,17 @@ export async function fetchSessions(client: SandboxClient, sandboxId: string): P
 
   try {
     const summaries = await client.listChatSessions();
-    const entries: ChatSessionEntry[] = summaries.map((s) => ({
-      id: s.session_id,
-      title: s.title,
-      sandboxId,
-      createdAt: Date.now(),
-      messages: [],
-      partMap: {},
-      messagesLoaded: false,
-    }));
-
     update((state) => {
+      const currentSessions = state.sessions[sandboxId] ?? [];
+      const entries = summaries.map((summary) =>
+        applySessionSummary(
+          sandboxId,
+          currentSessions.find((session) => session.id === summary.session_id),
+          summary,
+        ),
+      );
       const currentActive = state.active[sandboxId];
-      const activeStillExists = entries.some((e) => e.id === currentActive);
+      const activeStillExists = entries.some((entry) => entry.id === currentActive);
       return {
         ...state,
         sessions: { ...state.sessions, [sandboxId]: entries },
@@ -194,16 +244,15 @@ export async function fetchSessions(client: SandboxClient, sandboxId: string): P
       };
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Failed to load sessions';
+    const message = err instanceof Error ? err.message : 'Failed to load sessions';
     update((state) => ({
       ...state,
       loading: { ...state.loading, [sandboxId]: false },
-      error: { ...state.error, [sandboxId]: msg },
+      error: { ...state.error, [sandboxId]: message },
     }));
   }
 }
 
-/** Create a new session via the API and add it to the store. */
 export async function createSessionApi(
   client: SandboxClient,
   sandboxId: string,
@@ -216,9 +265,12 @@ export async function createSessionApi(
       title: result.title,
       sandboxId,
       createdAt: Date.now(),
+      sidecarSessionId: undefined,
+      activeRunId: result.active_run_id ?? undefined,
+      runs: [],
       messages: [],
       partMap: {},
-      messagesLoaded: true, // new session has no messages
+      detailLoaded: true,
     };
 
     update((state) => {
@@ -233,27 +285,25 @@ export async function createSessionApi(
 
     return entry;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Failed to create session';
+    const message = err instanceof Error ? err.message : 'Failed to create session';
     update((state) => ({
       ...state,
-      error: { ...state.error, [sandboxId]: msg },
+      error: { ...state.error, [sandboxId]: message },
     }));
     return null;
   }
 }
 
-/** Delete a session via the API and remove it from the store. */
 export async function deleteSessionApi(
   client: SandboxClient,
   sandboxId: string,
   sessionId: string,
 ): Promise<void> {
-  // Optimistically remove from store
-  const prevState = chatSessionsStore.get();
-  const prevSessions = prevState.sessions[sandboxId] ?? [];
+  const previousState = chatSessionsStore.get();
+  const previousSessions = previousState.sessions[sandboxId] ?? [];
 
   update((state) => {
-    const remaining = (state.sessions[sandboxId] ?? []).filter((s) => s.id !== sessionId);
+    const remaining = (state.sessions[sandboxId] ?? []).filter((session) => session.id !== sessionId);
     const active = state.active[sandboxId] === sessionId
       ? remaining[0]?.id ?? ''
       : state.active[sandboxId];
@@ -267,47 +317,35 @@ export async function deleteSessionApi(
   try {
     await client.deleteChatSession(sessionId);
   } catch (err) {
-    // Restore on failure
-    const msg = err instanceof Error ? err.message : 'Failed to delete session';
+    const message = err instanceof Error ? err.message : 'Failed to delete session';
     update((state) => ({
       ...state,
-      sessions: { ...state.sessions, [sandboxId]: prevSessions },
-      active: { ...state.active, [sandboxId]: prevState.active[sandboxId] },
-      error: { ...state.error, [sandboxId]: msg },
+      sessions: { ...state.sessions, [sandboxId]: previousSessions },
+      active: { ...state.active, [sandboxId]: previousState.active[sandboxId] },
+      error: { ...state.error, [sandboxId]: message },
     }));
   }
 }
 
-/** Load messages for a session from the server. */
-export async function loadSessionMessages(
+export async function loadSessionDetail(
   client: SandboxClient,
   sandboxId: string,
   sessionId: string,
 ): Promise<void> {
   try {
     const detail = await client.getChatSession(sessionId);
-    const converted = (detail.messages ?? []).map((m, i) =>
-      serverMessageToLocal(m as { role: string; content: string }, i),
-    );
-
-    const messages = converted.map((c) => c.message);
-    const partMap: Record<string, SessionPart[]> = {};
-    for (const c of converted) {
-      partMap[c.message.id] = c.parts;
-    }
-
     update((state) => {
-      const sessions = (state.sessions[sandboxId] ?? []).map((s) => {
-        if (s.id !== sessionId) return s;
-        return { ...s, messages, partMap, messagesLoaded: true };
+      const sessions = (state.sessions[sandboxId] ?? []).map((session) => {
+        if (session.id !== sessionId) return session;
+        return applySessionDetail(session, detail);
       });
       return { ...state, sessions: { ...state.sessions, [sandboxId]: sessions } };
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Failed to load messages';
+    const message = err instanceof Error ? err.message : 'Failed to load session';
     update((state) => ({
       ...state,
-      error: { ...state.error, [sandboxId]: msg },
+      error: { ...state.error, [sandboxId]: message },
     }));
   }
 }

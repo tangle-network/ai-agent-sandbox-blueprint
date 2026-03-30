@@ -24,12 +24,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::api_types::*;
+use crate::chat_state::{
+    self, ChatMessageRecord, ChatRunKind, ChatRunRecord, ChatRunStatus, ChatSessionRecord,
+};
 use crate::circuit_breaker;
 use crate::error::SandboxError;
 use crate::http::{sidecar_get_json, sidecar_post_json};
 use crate::live_operator_sessions::{
-    LiveChatSession, LiveJsonEvent, LiveSessionStore, LiveTerminalSession, sse_from_json_events,
-    sse_from_terminal_output,
+    LiveSessionStore, LiveTerminalSession, sse_from_json_events, sse_from_terminal_output,
 };
 use crate::metrics;
 use crate::provision_progress;
@@ -56,8 +58,6 @@ const SIDECAR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Live terminal session output ring-buffer size.
 const LIVE_TERMINAL_OUTPUT_BUFFER: usize = 512;
-/// Live chat event ring-buffer size.
-const LIVE_CHAT_EVENTS_BUFFER: usize = 256;
 const AGENT_WARMUP_ERROR_CODE: &str = "AGENT_WARMING_UP";
 #[cfg(not(test))]
 const AGENT_WARMUP_RETRY_DELAYS_MS: &[u64] = &[250, 500, 1_000, 2_000, 4_000, 4_000, 4_000];
@@ -206,13 +206,20 @@ struct LiveSessionSummary {
     session_id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_run_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct LiveChatSessionDetail {
     session_id: String,
     title: String,
-    messages: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sidecar_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_run_id: Option<String>,
+    messages: Vec<ChatMessageRecord>,
+    runs: Vec<ChatRunRecord>,
 }
 
 fn live_scope_sandbox(sandbox_id: &str) -> String {
@@ -227,17 +234,8 @@ fn terminal_session_matches(session: &LiveTerminalSession, scope: &str, owner: &
     session.scope_id == scope && session.owner.eq_ignore_ascii_case(owner)
 }
 
-fn chat_session_matches(session: &LiveChatSession<Value>, scope: &str, owner: &str) -> bool {
-    session.scope_id == scope && session.owner.eq_ignore_ascii_case(owner)
-}
-
-struct ChatTurnPublish<'a> {
-    session_id: &'a str,
-    user_message: &'a str,
-    assistant_message: &'a str,
-    trace_id: &'a str,
-    success: bool,
-    error: &'a str,
+fn chat_session_matches(session: &ChatSessionRecord, scope: &str, owner: &str) -> bool {
+    chat_state::session_matches(session, scope, owner)
 }
 
 fn publish_terminal_output(scope: &str, owner: &str, session_id: &str, stdout: &str, stderr: &str) {
@@ -256,42 +254,20 @@ fn publish_terminal_output(scope: &str, owner: &str, session_id: &str, stdout: &
     }
 }
 
-fn publish_chat_turn(scope: &str, owner: &str, turn: ChatTurnPublish<'_>) {
-    if turn.session_id.trim().is_empty() {
+fn publish_chat_message(session_id: &str, message: ChatMessageRecord, event_type: &str) {
+    if message.content.trim().is_empty() && message.role.eq_ignore_ascii_case("assistant") {
         return;
     }
-    let Ok(Some(chat)) = LIVE_SESSIONS.get_chat(turn.session_id) else {
-        return;
-    };
-    if !chat_session_matches(&chat, scope, owner) {
-        return;
-    }
+    let _ = chat_state::append_message(session_id, message.clone());
+    let _ = chat_state::emit_event(
+        session_id,
+        event_type,
+        chat_state::message_event_payload(&message),
+    );
+}
 
-    let user_payload = json!({
-        "role": "user",
-        "content": turn.user_message,
-    });
-    let assistant_payload = json!({
-        "role": "assistant",
-        "content": turn.assistant_message,
-        "trace_id": turn.trace_id,
-        "success": turn.success,
-        "error": turn.error,
-    });
-
-    let _ = LIVE_SESSIONS.update_chat(turn.session_id, |session| {
-        session.messages.push(user_payload.clone());
-        let _ = session.events_tx.send(LiveJsonEvent {
-            event_type: "user_message".to_string(),
-            payload: user_payload,
-        });
-
-        session.messages.push(assistant_payload.clone());
-        let _ = session.events_tx.send(LiveJsonEvent {
-            event_type: "assistant_message".to_string(),
-            payload: assistant_payload,
-        });
-    });
+fn publish_run_event(session_id: &str, event_type: &str, run: &ChatRunRecord) {
+    let _ = chat_state::emit_event(session_id, event_type, chat_state::run_event_payload(run));
 }
 
 // ---------------------------------------------------------------------------
@@ -596,6 +572,7 @@ fn create_terminal_session(
     let summary = LiveSessionSummary {
         session_id: session.id.clone(),
         title: String::new(),
+        active_run_id: None,
     };
     LIVE_SESSIONS
         .insert_terminal(session)
@@ -616,6 +593,7 @@ fn list_terminal_sessions(
                 .map(|s| LiveSessionSummary {
                     session_id: s.id,
                     title: String::new(),
+                    active_run_id: None,
                 })
                 .collect()
         })
@@ -667,40 +645,27 @@ fn create_chat_session(
     owner: &str,
     title: String,
 ) -> Result<LiveSessionSummary, (StatusCode, Json<ApiError>)> {
-    let session_title = if title.trim().is_empty() {
-        "Chat Session".to_string()
-    } else {
-        title
-    };
-    let session = LiveChatSession::new(
-        scope_id,
-        owner.to_string(),
-        session_title.clone(),
-        LIVE_CHAT_EVENTS_BUFFER,
-    );
-    let summary = LiveSessionSummary {
-        session_id: session.id.clone(),
-        title: session_title,
-    };
-    LIVE_SESSIONS
-        .insert_chat(session)
+    let session = chat_state::create_session(&scope_id, owner, Some(&title))
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok(summary)
+    Ok(LiveSessionSummary {
+        session_id: session.id,
+        title: session.title,
+        active_run_id: session.active_run_id,
+    })
 }
 
 fn list_chat_sessions(
     scope_id: &str,
     owner: &str,
 ) -> Result<Vec<LiveSessionSummary>, (StatusCode, Json<ApiError>)> {
-    LIVE_SESSIONS
-        .list_chats()
+    chat_state::list_sessions(scope_id, owner)
         .map(|sessions| {
             sessions
                 .into_iter()
-                .filter(|s| chat_session_matches(s, scope_id, owner))
                 .map(|s| LiveSessionSummary {
                     session_id: s.id,
                     title: s.title,
+                    active_run_id: s.active_run_id,
                 })
                 .collect()
         })
@@ -712,17 +677,21 @@ fn get_chat_session(
     owner: &str,
     session_id: &str,
 ) -> Result<LiveChatSessionDetail, (StatusCode, Json<ApiError>)> {
-    let session = LIVE_SESSIONS
-        .get_chat(session_id)
+    let session = chat_state::get_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
     if !chat_session_matches(&session, scope_id, owner) {
         return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
     }
+    let runs = chat_state::list_runs_for_session(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(LiveChatSessionDetail {
         session_id: session.id,
         title: session.title,
+        sidecar_session_id: session.latest_sidecar_session_id,
+        active_run_id: session.active_run_id,
         messages: session.messages,
+        runs,
     })
 }
 
@@ -731,14 +700,14 @@ fn stream_chat_session(
     owner: &str,
     session_id: &str,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
-    let session = LIVE_SESSIONS
-        .get_chat(session_id)
+    let session = chat_state::get_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
     if !chat_session_matches(&session, scope_id, owner) {
         return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
     }
-    let rx = session.events_tx.subscribe();
+    let rx = chat_state::subscribe_events(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(sse_from_json_events(rx).into_response())
 }
 
@@ -747,15 +716,25 @@ fn delete_chat_session(
     owner: &str,
     session_id: &str,
 ) -> Result<serde_json::Value, (StatusCode, Json<ApiError>)> {
-    let session = LIVE_SESSIONS
-        .get_chat(session_id)
+    let session = chat_state::get_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
     if !chat_session_matches(&session, scope_id, owner) {
         return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
     }
-    let _ = LIVE_SESSIONS
-        .remove_chat(session_id)
+    if let Some(active_run_id) = session.active_run_id.as_deref() {
+        if let Some(run) = chat_state::get_run(active_run_id)
+            .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        {
+            if run.status.is_active() {
+                return Err(api_error(
+                    StatusCode::CONFLICT,
+                    "Cannot delete a chat session while a run is active",
+                ));
+            }
+        }
+    }
+    chat_state::delete_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(json!({ "deleted": true, "session_id": session_id }))
 }
@@ -2132,6 +2111,246 @@ async fn instance_exec_handler(
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
+fn chat_run_status_label(status: &ChatRunStatus) -> &'static str {
+    match status {
+        ChatRunStatus::Queued => "queued",
+        ChatRunStatus::Running => "running",
+        ChatRunStatus::Completed => "completed",
+        ChatRunStatus::Failed => "failed",
+        ChatRunStatus::Cancelled => "cancelled",
+        ChatRunStatus::Interrupted => "interrupted",
+    }
+}
+
+fn resolve_or_create_chat_session(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+) -> Result<ChatSessionRecord, (StatusCode, Json<ApiError>)> {
+    if session_id.trim().is_empty() {
+        return chat_state::create_session(scope_id, owner, Some("New Chat"))
+            .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e));
+    }
+
+    let session = chat_state::get_session(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
+
+    if !chat_session_matches(&session, scope_id, owner) {
+        return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
+    }
+
+    Ok(session)
+}
+
+fn enqueue_chat_run(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+    kind: ChatRunKind,
+    request_text: &str,
+) -> Result<(ChatSessionRecord, ChatRunRecord), (StatusCode, Json<ApiError>)> {
+    if let Some(existing) = chat_state::active_run_for_scope(scope_id, owner)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+    {
+        return Err(api_error_with_details(
+            StatusCode::CONFLICT,
+            format!(
+                "A chat run is already active for this resource ({})",
+                existing.id
+            ),
+            Some("CHAT_RUN_ACTIVE"),
+            None,
+        ));
+    }
+
+    let session = resolve_or_create_chat_session(scope_id, owner, session_id)?;
+    let run = chat_state::create_run(&session.id, scope_id, owner, kind, request_text)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let _ = chat_state::maybe_auto_title_session(&session.id, request_text);
+
+    let user_message = ChatMessageRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        run_id: Some(run.id.clone()),
+        role: "user".to_string(),
+        content: request_text.to_string(),
+        created_at: chat_state::now_ms(),
+        trace_id: None,
+        success: None,
+        error: None,
+    };
+    publish_chat_message(&session.id, user_message, "user_message");
+    if let Ok(Some(queued_run)) = chat_state::get_run(&run.id) {
+        publish_run_event(&session.id, "run_queued", &queued_run);
+        return Ok((session, queued_run));
+    }
+
+    Ok((session, run))
+}
+
+fn spawn_chat_run(
+    record: SandboxRecord,
+    session_id: String,
+    run_id: String,
+    message: String,
+    model: String,
+    context_json: String,
+    timeout_ms: u64,
+    max_turns: Option<u64>,
+) {
+    tokio::spawn(async move {
+        let started_at = chat_state::now_ms();
+        let _ = chat_state::update_run(&run_id, |run| {
+            run.status = ChatRunStatus::Running;
+            run.started_at = Some(started_at);
+        });
+        if let Ok(Some(run)) = chat_state::get_run(&run_id) {
+            publish_run_event(&session_id, "run_started", &run);
+        }
+
+        let sidecar_session_id = chat_state::get_session(&session_id)
+            .ok()
+            .flatten()
+            .and_then(|session| session.latest_sidecar_session_id)
+            .unwrap_or_default();
+
+        let result = agent_on_sidecar(
+            &record,
+            &message,
+            &sidecar_session_id,
+            &model,
+            &context_json,
+            timeout_ms,
+            max_turns,
+        )
+        .await;
+
+        match result {
+            Ok(ar) => {
+                metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
+                let completed_at = chat_state::now_ms();
+                let final_status = if ar.success {
+                    ChatRunStatus::Completed
+                } else {
+                    ChatRunStatus::Failed
+                };
+                let assistant_content = if !ar.response.trim().is_empty() {
+                    ar.response.clone()
+                } else if !ar.error.trim().is_empty() {
+                    format!("Error: {}", ar.error)
+                } else {
+                    String::new()
+                };
+
+                if !ar.session_id.trim().is_empty() {
+                    let _ = chat_state::set_session_sidecar_session_id(
+                        &session_id,
+                        Some(ar.session_id.clone()),
+                    );
+                }
+
+                let _ = chat_state::update_run(&run_id, |run| {
+                    run.status = final_status.clone();
+                    run.completed_at = Some(completed_at);
+                    if !ar.session_id.trim().is_empty() {
+                        run.sidecar_session_id = Some(ar.session_id.clone());
+                    }
+                    if !ar.trace_id.trim().is_empty() {
+                        run.trace_id = Some(ar.trace_id.clone());
+                    }
+                    if !ar.response.trim().is_empty() {
+                        run.final_output = Some(ar.response.clone());
+                    }
+                    if !ar.error.trim().is_empty() {
+                        run.error = Some(ar.error.clone());
+                    }
+                });
+                let _ = chat_state::clear_session_active_run(&session_id);
+
+                let assistant_message = ChatMessageRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    run_id: Some(run_id.clone()),
+                    role: "assistant".to_string(),
+                    content: assistant_content,
+                    created_at: completed_at,
+                    trace_id: if ar.trace_id.trim().is_empty() {
+                        None
+                    } else {
+                        Some(ar.trace_id.clone())
+                    },
+                    success: Some(ar.success),
+                    error: if ar.error.trim().is_empty() {
+                        None
+                    } else {
+                        Some(ar.error.clone())
+                    },
+                };
+                publish_chat_message(&session_id, assistant_message, "assistant_message");
+
+                if let Ok(Some(updated_run)) = chat_state::get_run(&run_id) {
+                    publish_run_event(
+                        &session_id,
+                        if updated_run.status == ChatRunStatus::Completed {
+                            "run_completed"
+                        } else {
+                            "run_failed"
+                        },
+                        &updated_run,
+                    );
+                }
+            }
+            Err((status, api_error_body)) => {
+                let completed_at = chat_state::now_ms();
+                let error_text = api_error_body.0.error.clone();
+                let _ = chat_state::update_run(&run_id, |run| {
+                    run.status = ChatRunStatus::Failed;
+                    run.completed_at = Some(completed_at);
+                    run.error = Some(error_text.clone());
+                });
+                let _ = chat_state::clear_session_active_run(&session_id);
+
+                let assistant_message = ChatMessageRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    run_id: Some(run_id.clone()),
+                    role: "assistant".to_string(),
+                    content: format!("Error: {}", error_text),
+                    created_at: completed_at,
+                    trace_id: None,
+                    success: Some(false),
+                    error: Some(error_text),
+                };
+                publish_chat_message(&session_id, assistant_message, "assistant_message");
+
+                if let Ok(Some(updated_run)) = chat_state::get_run(&run_id) {
+                    publish_run_event(&session_id, "run_failed", &updated_run);
+                } else {
+                    let _ = status;
+                }
+            }
+        }
+    });
+}
+
+fn accepted_prompt_response(run: &ChatRunRecord, session_id: &str) -> PromptApiResponse {
+    PromptApiResponse {
+        accepted: true,
+        run_id: run.id.clone(),
+        session_id: session_id.to_string(),
+        status: chat_run_status_label(&run.status).to_string(),
+        accepted_at: run.created_at,
+    }
+}
+
+fn accepted_task_response(run: &ChatRunRecord, session_id: &str) -> TaskApiResponse {
+    TaskApiResponse {
+        accepted: true,
+        run_id: run.id.clone(),
+        session_id: session_id.to_string(),
+        status: chat_run_status_label(&run.status).to_string(),
+        accepted_at: run.created_at,
+    }
+}
+
 // ── Prompt ───────────────────────────────────────────────────────────────
 
 async fn sandbox_prompt_handler(
@@ -2143,45 +2362,27 @@ async fn sandbox_prompt_handler(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let scope = live_scope_sandbox(&record.id);
-    let ar = agent_on_sidecar(
-        &record,
-        &req.message,
-        &req.session_id,
-        &req.model,
-        &req.context_json,
-        req.timeout_ms,
-        None,
-    )
-    .await?;
-    let live_session_id = if req.session_id.trim().is_empty() {
-        ar.session_id.as_str()
-    } else {
-        req.session_id.as_str()
-    };
-    publish_chat_turn(
+    require_running(&record)?;
+    let (session, run) = enqueue_chat_run(
         &scope,
         &address,
-        ChatTurnPublish {
-            session_id: live_session_id,
-            user_message: &req.message,
-            assistant_message: &ar.response,
-            trace_id: &ar.trace_id,
-            success: ar.success,
-            error: &ar.error,
-        },
+        &req.session_id,
+        ChatRunKind::Prompt,
+        &req.message,
+    )?;
+    spawn_chat_run(
+        record,
+        session.id.clone(),
+        run.id.clone(),
+        req.message,
+        req.model,
+        req.context_json,
+        req.timeout_ms,
+        None,
     );
-    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
-        StatusCode::OK,
-        Json(PromptApiResponse {
-            success: ar.success,
-            response: ar.response,
-            error: ar.error,
-            trace_id: ar.trace_id,
-            duration_ms: ar.duration_ms,
-            input_tokens: ar.input_tokens,
-            output_tokens: ar.output_tokens,
-        }),
+        StatusCode::ACCEPTED,
+        Json(accepted_prompt_response(&run, &session.id)),
     ))
 }
 
@@ -2193,45 +2394,27 @@ async fn instance_prompt_handler(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let scope = live_scope_instance(&record);
-    let ar = agent_on_sidecar(
-        &record,
-        &req.message,
-        &req.session_id,
-        &req.model,
-        &req.context_json,
-        req.timeout_ms,
-        None,
-    )
-    .await?;
-    let live_session_id = if req.session_id.trim().is_empty() {
-        ar.session_id.as_str()
-    } else {
-        req.session_id.as_str()
-    };
-    publish_chat_turn(
+    require_running(&record)?;
+    let (session, run) = enqueue_chat_run(
         &scope,
         &address,
-        ChatTurnPublish {
-            session_id: live_session_id,
-            user_message: &req.message,
-            assistant_message: &ar.response,
-            trace_id: &ar.trace_id,
-            success: ar.success,
-            error: &ar.error,
-        },
+        &req.session_id,
+        ChatRunKind::Prompt,
+        &req.message,
+    )?;
+    spawn_chat_run(
+        record,
+        session.id.clone(),
+        run.id.clone(),
+        req.message,
+        req.model,
+        req.context_json,
+        req.timeout_ms,
+        None,
     );
-    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
-        StatusCode::OK,
-        Json(PromptApiResponse {
-            success: ar.success,
-            response: ar.response,
-            error: ar.error,
-            trace_id: ar.trace_id,
-            duration_ms: ar.duration_ms,
-            input_tokens: ar.input_tokens,
-            output_tokens: ar.output_tokens,
-        }),
+        StatusCode::ACCEPTED,
+        Json(accepted_prompt_response(&run, &session.id)),
     ))
 }
 
@@ -2246,46 +2429,27 @@ async fn sandbox_task_handler(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let scope = live_scope_sandbox(&record.id);
-    let ar = agent_on_sidecar(
-        &record,
-        &req.prompt,
-        &req.session_id,
-        &req.model,
-        &req.context_json,
-        req.timeout_ms,
-        Some(req.max_turns),
-    )
-    .await?;
-    let live_session_id = if req.session_id.trim().is_empty() {
-        ar.session_id.as_str()
-    } else {
-        req.session_id.as_str()
-    };
-    publish_chat_turn(
+    require_running(&record)?;
+    let (session, run) = enqueue_chat_run(
         &scope,
         &address,
-        ChatTurnPublish {
-            session_id: live_session_id,
-            user_message: &req.prompt,
-            assistant_message: &ar.response,
-            trace_id: &ar.trace_id,
-            success: ar.success,
-            error: &ar.error,
-        },
+        &req.session_id,
+        ChatRunKind::Task,
+        &req.prompt,
+    )?;
+    spawn_chat_run(
+        record,
+        session.id.clone(),
+        run.id.clone(),
+        req.prompt,
+        req.model,
+        req.context_json,
+        req.timeout_ms,
+        Some(req.max_turns),
     );
-    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
-        StatusCode::OK,
-        Json(TaskApiResponse {
-            success: ar.success,
-            result: ar.response,
-            error: ar.error,
-            trace_id: ar.trace_id,
-            session_id: ar.session_id,
-            duration_ms: ar.duration_ms,
-            input_tokens: ar.input_tokens,
-            output_tokens: ar.output_tokens,
-        }),
+        StatusCode::ACCEPTED,
+        Json(accepted_task_response(&run, &session.id)),
     ))
 }
 
@@ -2297,46 +2461,27 @@ async fn instance_task_handler(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let scope = live_scope_instance(&record);
-    let ar = agent_on_sidecar(
-        &record,
-        &req.prompt,
-        &req.session_id,
-        &req.model,
-        &req.context_json,
-        req.timeout_ms,
-        Some(req.max_turns),
-    )
-    .await?;
-    let live_session_id = if req.session_id.trim().is_empty() {
-        ar.session_id.as_str()
-    } else {
-        req.session_id.as_str()
-    };
-    publish_chat_turn(
+    require_running(&record)?;
+    let (session, run) = enqueue_chat_run(
         &scope,
         &address,
-        ChatTurnPublish {
-            session_id: live_session_id,
-            user_message: &req.prompt,
-            assistant_message: &ar.response,
-            trace_id: &ar.trace_id,
-            success: ar.success,
-            error: &ar.error,
-        },
+        &req.session_id,
+        ChatRunKind::Task,
+        &req.prompt,
+    )?;
+    spawn_chat_run(
+        record,
+        session.id.clone(),
+        run.id.clone(),
+        req.prompt,
+        req.model,
+        req.context_json,
+        req.timeout_ms,
+        Some(req.max_turns),
     );
-    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
-        StatusCode::OK,
-        Json(TaskApiResponse {
-            success: ar.success,
-            result: ar.response,
-            error: ar.error,
-            trace_id: ar.trace_id,
-            session_id: ar.session_id,
-            duration_ms: ar.duration_ms,
-            input_tokens: ar.input_tokens,
-            output_tokens: ar.output_tokens,
-        }),
+        StatusCode::ACCEPTED,
+        Json(accepted_task_response(&run, &session.id)),
     ))
 }
 
@@ -3288,6 +3433,7 @@ mod tests {
         LIVE_SESSIONS
             .clear_all_for_testing()
             .expect("clear live sessions");
+        crate::chat_state::clear_all_for_testing().expect("clear chat state");
         sandboxes()
             .unwrap()
             .replace(std::collections::HashMap::new())
@@ -3612,6 +3758,22 @@ mod tests {
         .await
         .ok()
         .flatten()
+    }
+
+    async fn wait_for_run_terminal(run_id: &str) -> ChatRunRecord {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(run) = crate::chat_state::get_run(run_id).expect("get run") {
+                if !run.status.is_active() {
+                    return run;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for run {run_id} to finish"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test]
@@ -5073,15 +5235,20 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(prompt.status(), StatusCode::OK);
+        assert_eq!(prompt.status(), StatusCode::ACCEPTED);
         let prompt_json = body_json(prompt.into_body()).await;
-        assert_eq!(prompt_json["response"], "mock-agent-response");
+        let run_id = prompt_json["run_id"].as_str().expect("run_id");
+        let run = wait_for_run_terminal(run_id).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
 
         let frame = read_first_sse_frame(stream.into_body())
             .await
             .expect("chat sse frame");
         assert!(
-            frame.contains("user_message") || frame.contains("assistant_message"),
+            frame.contains("user_message")
+                || frame.contains("assistant_message")
+                || frame.contains("run_queued")
+                || frame.contains("run_started"),
             "expected chat stream event, got: {frame}"
         );
 
@@ -5102,6 +5269,7 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(detail_json["runs"][0]["status"], "completed");
 
         let agent_payload = sidecar_state
             .last_agent_payload
@@ -5110,7 +5278,13 @@ mod tests {
             .clone()
             .expect("agent payload");
         assert_eq!(agent_payload["message"], "hello from live stream");
-        assert_eq!(agent_payload["sessionId"], session_id);
+        assert!(
+            agent_payload.get("sessionId").is_none()
+                || agent_payload["sessionId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .is_empty()
+        );
         server.abort();
     }
 
@@ -5822,13 +5996,16 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let accepted = body_json(response.into_body()).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
         let payload = sidecar_state
             .last_agent_payload
             .lock()
             .expect("payload lock")
             .clone()
             .expect("sidecar should have received payload");
+        assert!(accepted.get("run_id").is_some());
         assert_eq!(
             payload["message"], "test prompt message",
             "sidecar should receive 'message' field"
@@ -5857,7 +6034,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let resp_json = body_json(response.into_body()).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
         // The task handler sends the prompt via the "message" field to the sidecar
         let payload = sidecar_state
             .last_agent_payload
@@ -5869,11 +6048,9 @@ mod tests {
             payload["message"], "do this task",
             "sidecar should receive task prompt in 'message' field"
         );
-        // The API response should use the "result" field
-        let resp_json = body_json(response.into_body()).await;
         assert!(
-            resp_json.get("result").is_some(),
-            "task API response should include 'result' field"
+            resp_json.get("run_id").is_some(),
+            "task API response should include 'run_id' field"
         );
         server.abort();
     }
@@ -5898,7 +6075,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = body_json(response.into_body()).await;
+        assert!(payload["session_id"].as_str().unwrap_or_default().len() > 0);
+        assert!(payload["run_id"].as_str().unwrap_or_default().len() > 0);
         server.abort();
     }
 
@@ -5923,9 +6103,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         let payload = body_json(response.into_body()).await;
-        assert_eq!(payload["response"], "mock-agent-response");
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
         assert_eq!(
             sidecar_state.agent_invocations.load(Ordering::Relaxed),
             3,
@@ -5955,16 +6136,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         let payload = body_json(response.into_body()).await;
-        assert_eq!(payload["code"], AGENT_WARMUP_ERROR_CODE);
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
+        assert_eq!(run.status, ChatRunStatus::Failed);
         assert_eq!(
-            payload["error"],
-            "Sandbox agent is still starting up. Please retry shortly."
-        );
-        assert!(
-            payload["retry_after_ms"].as_u64().unwrap_or(0) > 0,
-            "retry_after_ms should be included"
+            run.error.as_deref(),
+            Some("Sandbox agent is still starting up. Please retry shortly.")
         );
         assert_eq!(
             sidecar_state.agent_invocations.load(Ordering::Relaxed),
@@ -6019,11 +6197,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         let payload = body_json(response.into_body()).await;
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
         assert_eq!(
-            payload["error"],
-            "Unknown agent identifier \"a1\". Available agents: default, batch"
+            run.error.as_deref(),
+            Some("Unknown agent identifier \"a1\". Available agents: default, batch")
         );
         server.abort();
     }
@@ -6049,7 +6228,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = body_json(response.into_body()).await;
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
         assert_eq!(
             sidecar_state.agent_list_invocations.load(Ordering::Relaxed),
             0
@@ -6079,11 +6261,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         let payload = body_json(response.into_body()).await;
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
         assert_eq!(
-            payload["error"],
-            "Unknown agent identifier \"a1\". This sidecar image does not register that agent."
+            run.error.as_deref(),
+            Some(
+                "Unknown agent identifier \"a1\". This sidecar image does not register that agent."
+            )
         );
         server.abort();
     }

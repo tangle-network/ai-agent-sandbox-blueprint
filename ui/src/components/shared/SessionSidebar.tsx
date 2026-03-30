@@ -27,7 +27,7 @@ import {
   fetchSessions,
   createSessionApi,
   deleteSessionApi,
-  loadSessionMessages,
+  loadSessionDetail,
 } from '~/lib/stores/chatSessions';
 import { useSandboxSession } from '~/lib/hooks/useSandboxSession';
 import { cn } from '@tangle-network/blueprint-ui';
@@ -333,11 +333,21 @@ export function SessionSidebar({
     fetchSessions(client, sandboxId);
   }, [client, sandboxId]);
 
-  // Load messages when active session changes and hasn't been loaded yet
+  // Load full session detail when active session changes and hasn't been loaded yet
   useEffect(() => {
-    if (!client || !activeSession || activeSession.messagesLoaded) return;
-    loadSessionMessages(client, sandboxId, activeSession.id);
-  }, [client, sandboxId, activeSession?.id, activeSession?.messagesLoaded]);
+    if (!client || !activeSession || activeSession.detailLoaded) return;
+    void loadSessionDetail(client, sandboxId, activeSession.id);
+  }, [client, sandboxId, activeSession?.id, activeSession?.detailLoaded]);
+
+  // Poll while a run is active so refresh/reconnect still converges on the
+  // durable session state even without a long-lived submit request.
+  useEffect(() => {
+    if (!client || !activeSession?.activeRunId) return;
+    const interval = window.setInterval(() => {
+      void loadSessionDetail(client, sandboxId, activeSession.id);
+    }, 1500);
+    return () => window.clearInterval(interval);
+  }, [client, sandboxId, activeSession?.id, activeSession?.activeRunId]);
 
   // Session hook
   const { messages, partMap, isStreaming, error, send } = useSandboxSession({
@@ -558,11 +568,11 @@ export function SessionSidebar({
         )}
 
         {/* Messages loading indicator */}
-        {activeSession && !activeSession.messagesLoaded ? (
+        {activeSession && !activeSession.detailLoaded ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="flex items-center gap-2 text-cloud-elements-textTertiary">
               <div className="i-ph:spinner-gap text-lg animate-spin" />
-              <span className="text-sm">Loading messages...</span>
+              <span className="text-sm">Loading chat...</span>
             </div>
           </div>
         ) : (

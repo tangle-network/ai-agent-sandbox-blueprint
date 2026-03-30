@@ -32,12 +32,40 @@ export interface SandboxClientConfig {
 export interface ChatSessionSummary {
   session_id: string;
   title: string;
+  active_run_id?: string | null;
+}
+
+export interface ChatRunSummary {
+  id: string;
+  session_id: string;
+  kind: 'prompt' | 'task';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  request_text: string;
+  created_at: number;
+  started_at?: number | null;
+  completed_at?: number | null;
+  sidecar_session_id?: string | null;
+  trace_id?: string | null;
+  final_output?: string | null;
+  error?: string | null;
 }
 
 export interface ChatSessionDetail {
   session_id: string;
   title: string;
-  messages: Array<{ role: string; content: string; trace_id?: string; success?: boolean; error?: string | null }>;
+  sidecar_session_id?: string | null;
+  active_run_id?: string | null;
+  messages: Array<{
+    id: string;
+    run_id?: string | null;
+    role: string;
+    content: string;
+    created_at?: number;
+    trace_id?: string | null;
+    success?: boolean | null;
+    error?: string | null;
+  }>;
+  runs: ChatRunSummary[];
 }
 
 export interface ExecResult {
@@ -47,14 +75,22 @@ export interface ExecResult {
 }
 
 export interface PromptResult {
-  response: string;
+  accepted?: boolean;
+  response?: string;
+  runId?: string;
   sessionId?: string;
+  status?: string;
+  acceptedAt?: number;
 }
 
 export interface TaskResult {
-  response: string;
+  accepted?: boolean;
+  response?: string;
+  runId?: string;
   sessionId?: string;
-  isComplete: boolean;
+  status?: string;
+  acceptedAt?: number;
+  isComplete?: boolean;
 }
 
 interface OperatorErrorBody {
@@ -194,6 +230,15 @@ export class SandboxClient {
     }
 
     const data = await res.json();
+    if (this.config.mode === 'proxied') {
+      return {
+        accepted: data.accepted ?? true,
+        runId: data.run_id ?? data.runId,
+        sessionId: data.session_id ?? data.sessionId ?? sessionId,
+        status: data.status,
+        acceptedAt: data.accepted_at ?? data.acceptedAt,
+      };
+    }
     return {
       response: data.response ?? data.text ?? '',
       sessionId: data.session_id ?? data.sessionId ?? sessionId,
@@ -230,6 +275,15 @@ export class SandboxClient {
     }
 
     const data = await res.json();
+    if (this.config.mode === 'proxied') {
+      return {
+        accepted: data.accepted ?? true,
+        runId: data.run_id ?? data.runId,
+        sessionId: data.session_id ?? data.sessionId ?? sessionId,
+        status: data.status,
+        acceptedAt: data.accepted_at ?? data.acceptedAt,
+      };
+    }
     return {
       response: data.result ?? data.response ?? data.text ?? '',
       sessionId: data.session_id ?? data.sessionId ?? sessionId,
