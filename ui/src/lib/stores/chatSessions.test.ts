@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyChatStreamEvent,
   chatSessionsStore,
   createSessionApi,
   deleteSessionApi,
@@ -31,6 +32,7 @@ function seedSession(sandboxId: string, id: string, title = 'Test', detailLoaded
     sidecarSessionId: undefined,
     activeRunId: undefined,
     runs: [],
+    runProgress: [],
     messages: [],
     partMap: {},
     detailLoaded,
@@ -184,6 +186,16 @@ describe('loadSessionDetail', () => {
             created_at: 111,
           },
         ],
+        run_progress: [
+          {
+            seq: 1,
+            run_id: 'run-1',
+            status: 'running',
+            phase: 'running',
+            message: 'Operator started the agent run.',
+            timestamp_ms: 333,
+          },
+        ],
       }),
     });
 
@@ -196,5 +208,60 @@ describe('loadSessionDetail', () => {
     expect(session.detailLoaded).toBe(true);
     expect(session.messages).toHaveLength(2);
     expect(session.runs[0].id).toBe('run-1');
+    expect(session.runProgress).toHaveLength(1);
+    expect(session.runProgress[0].message).toContain('started');
+  });
+});
+
+describe('applyChatStreamEvent', () => {
+  it('applies live run updates and progress entries', () => {
+    seedSession('sb-1', 's1', 'Live', true);
+
+    applyChatStreamEvent('sb-1', 's1', {
+      type: 'run_started',
+      data: {
+        id: 'run-1',
+        session_id: 's1',
+        kind: 'prompt',
+        status: 'running',
+        request_text: 'hello',
+        created_at: 111,
+        started_at: 222,
+      },
+    });
+    applyChatStreamEvent('sb-1', 's1', {
+      type: 'run_progress',
+      data: {
+        run_id: 'run-1',
+        status: 'running',
+        phase: 'running',
+        message: 'Operator started the agent run.',
+        timestamp_ms: 333,
+      },
+    });
+
+    const session = getSessions('sb-1')[0];
+    expect(session.activeRunId).toBe('run-1');
+    expect(session.runs[0].status).toBe('running');
+    expect(session.runProgress).toHaveLength(1);
+    expect(session.runProgress[0].message).toContain('started');
+  });
+
+  it('applies live assistant messages', () => {
+    seedSession('sb-1', 's1', 'Live', true);
+
+    applyChatStreamEvent('sb-1', 's1', {
+      type: 'assistant_message',
+      data: {
+        id: 'm1',
+        role: 'assistant',
+        content: 'hello from stream',
+        created_at: 10,
+      },
+    });
+
+    const session = getSessions('sb-1')[0];
+    expect(session.messages).toHaveLength(1);
+    expect(session.partMap.m1?.[0]).toMatchObject({ type: 'text', text: 'hello from stream' });
   });
 });

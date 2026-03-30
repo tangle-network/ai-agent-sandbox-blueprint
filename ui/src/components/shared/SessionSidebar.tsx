@@ -46,6 +46,34 @@ const CHAT_BRANDING: AgentBranding = {
   textClass: 'text-teal-600 dark:text-teal-400',
 };
 
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+function formatRunStatus(status: string): string {
+  switch (status) {
+    case 'queued':
+      return 'Queued';
+    case 'running':
+      return 'Running';
+    case 'cancelling':
+      return 'Cancelling';
+    case 'completed':
+      return 'Completed';
+    case 'failed':
+      return 'Failed';
+    case 'cancelled':
+      return 'Cancelled';
+    case 'interrupted':
+      return 'Interrupted';
+    default:
+      return status;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ChatArea — replaces ChatContainer with text-always-visible behavior
 // ---------------------------------------------------------------------------
@@ -339,18 +367,20 @@ export function SessionSidebar({
     void loadSessionDetail(client, sandboxId, activeSession.id);
   }, [client, sandboxId, activeSession?.id, activeSession?.detailLoaded]);
 
-  // Poll while a run is active so refresh/reconnect still converges on the
-  // durable session state even without a long-lived submit request.
-  useEffect(() => {
-    if (!client || !activeSession?.activeRunId) return;
-    const interval = window.setInterval(() => {
-      void loadSessionDetail(client, sandboxId, activeSession.id);
-    }, 1500);
-    return () => window.clearInterval(interval);
-  }, [client, sandboxId, activeSession?.id, activeSession?.activeRunId]);
-
   // Session hook
-  const { messages, partMap, isStreaming, error, send } = useSandboxSession({
+  const {
+    messages,
+    partMap,
+    isStreaming,
+    isReconnecting,
+    isCancelling,
+    activeRun,
+    progress,
+    elapsedMs,
+    error,
+    send,
+    cancelActiveRun,
+  } = useSandboxSession({
     client,
     session: activeSession ?? null,
     sandboxId,
@@ -488,6 +518,11 @@ export function SessionSidebar({
                 <span className="text-xs font-body text-cloud-elements-textPrimary truncate flex-1">
                   {s.title}
                 </span>
+                {s.activeRunId && (
+                  <span className="px-1.5 py-0.5 rounded bg-teal-500/10 text-[10px] font-medium text-teal-700 dark:text-teal-400 shrink-0">
+                    Live
+                  </span>
+                )}
                 <button
                   onClick={(e) => handleDelete(e, s.id)}
                   className="opacity-0 group-hover:opacity-100 flex items-center justify-center w-5 h-5 rounded hover:bg-crimson-500/10 transition-all shrink-0"
@@ -563,6 +598,49 @@ export function SessionSidebar({
               >
                 Retry
               </button>
+            )}
+          </div>
+        )}
+
+        {activeRun && (
+          <div className="px-3 py-2 border-b border-cloud-elements-dividerColor/50 bg-cloud-elements-background-depth-1/30 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded-full bg-teal-500/10 text-[11px] font-medium text-teal-700 dark:text-teal-400">
+                {formatRunStatus(activeRun.status)}
+              </span>
+              <span className="text-xs text-cloud-elements-textTertiary">
+                {formatElapsed(elapsedMs)}
+              </span>
+              {isReconnecting && (
+                <span className="text-xs text-amber-600 dark:text-amber-400">
+                  Reconnecting…
+                </span>
+              )}
+              <div className="flex-1" />
+              <button
+                onClick={() => { void cancelActiveRun(); }}
+                disabled={isCancelling || activeRun.status === 'cancelling'}
+                className={cn(
+                  'px-2 py-1 rounded-md text-xs font-medium transition-colors',
+                  'border border-crimson-500/20 text-crimson-600 dark:text-crimson-400',
+                  'hover:bg-crimson-500/10',
+                  (isCancelling || activeRun.status === 'cancelling') && 'opacity-50 cursor-not-allowed',
+                )}
+              >
+                {isCancelling || activeRun.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}
+              </button>
+            </div>
+            {progress.length > 0 && (
+              <div className="space-y-1">
+                {progress.slice(-2).map((entry) => (
+                  <div
+                    key={`${entry.runId}-${entry.timestampMs}-${entry.phase}`}
+                    className="text-xs text-cloud-elements-textSecondary"
+                  >
+                    {entry.message}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}

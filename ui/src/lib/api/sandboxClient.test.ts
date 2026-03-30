@@ -195,6 +195,59 @@ describe('SandboxClient chat session CRUD (sandbox-scoped)', () => {
     expect(url).toBe('http://operator:9090/api/sandboxes/sandbox-1/live/chat/sessions/s1');
     expect(options.method).toBe('DELETE');
   });
+
+  it('cancelChatRun posts to the run cancel endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          success: true,
+          session_id: 's1',
+          run_id: 'run-1',
+          status: 'cancelled',
+          cancelled_at: 999,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const client = makeClient();
+    const result = await client.cancelChatRun('s1', 'run-1');
+
+    expect(result.status).toBe('cancelled');
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://operator:9090/api/sandboxes/sandbox-1/live/chat/sessions/s1/runs/run-1/cancel');
+    expect(options.method).toBe('POST');
+  });
+
+  it('streamChatSession parses event names and payloads from SSE frames', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'event: run_started\ndata: {"id":"run-1","session_id":"s1","kind":"prompt","status":"running","request_text":"hello","created_at":1}\n\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    );
+
+    const client = makeClient();
+    const events: Array<{ type: string; data: unknown }> = [];
+    await client.streamChatSession('s1', {
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('run_started');
+    expect((events[0].data as { id: string }).id).toBe('run-1');
+  });
 });
 
 describe('SandboxClient chat session CRUD (instance-scoped)', () => {

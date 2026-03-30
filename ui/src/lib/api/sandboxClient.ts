@@ -39,7 +39,7 @@ export interface ChatRunSummary {
   id: string;
   session_id: string;
   kind: 'prompt' | 'task';
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  status: 'queued' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   request_text: string;
   created_at: number;
   started_at?: number | null;
@@ -64,6 +64,14 @@ export interface ChatSessionDetail {
     trace_id?: string | null;
     success?: boolean | null;
     error?: string | null;
+  }>;
+  run_progress?: Array<{
+    seq?: number;
+    run_id?: string | null;
+    status?: ChatRunSummary['status'] | string;
+    phase?: string;
+    message?: string;
+    timestamp_ms?: number;
   }>;
   runs: ChatRunSummary[];
 }
@@ -98,6 +106,24 @@ interface OperatorErrorBody {
   code?: string;
   retry_after_ms?: number;
 }
+
+export interface ChatStreamEvent {
+  type: string;
+  data: unknown;
+}
+
+export interface CancelChatRunResult {
+  success: boolean;
+  sessionId: string;
+  runId: string;
+  status: ChatRunSummary['status'] | string;
+  cancelledAt: number;
+}
+
+const CHAT_REQUEST_TIMEOUT_MS = 15_000;
+const CHAT_STREAM_CONNECT_TIMEOUT_MS = 10_000;
+const DEFAULT_PROMPT_RUN_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_TASK_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
 export class SandboxClient {
   private config: SandboxClientConfig;
@@ -174,6 +200,87 @@ export class SandboxClient {
     return new Error(`${operation} failed (${status}): ${errorBody}`);
   }
 
+  private createTimedSignal(timeoutMs: number, upstreamSignal?: AbortSignal) {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = globalThis.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+
+    const abortFromUpstream = () => controller.abort();
+    if (upstreamSignal) {
+      if (upstreamSignal.aborted) {
+        controller.abort();
+      } else {
+        upstreamSignal.addEventListener('abort', abortFromUpstream, { once: true });
+      }
+    }
+
+    return {
+      signal: controller.signal,
+      didTimeout: () => timedOut,
+      cleanup: () => {
+        globalThis.clearTimeout(timeoutId);
+        if (upstreamSignal) {
+          upstreamSignal.removeEventListener('abort', abortFromUpstream);
+        }
+      },
+    };
+  }
+
+  private async fetchWithTimeout(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number,
+    timeoutMessage: string,
+  ): Promise<Response> {
+    const timeout = this.createTimedSignal(timeoutMs, init.signal ?? undefined);
+    try {
+      const res = await fetch(url, { ...init, signal: timeout.signal });
+      return res;
+    } catch (error) {
+      if (timeout.didTimeout()) {
+        throw new Error(timeoutMessage);
+      }
+      throw error;
+    } finally {
+      timeout.cleanup();
+    }
+  }
+
+  private parseSseFrame(frame: string): ChatStreamEvent | null {
+    let eventType = 'message';
+    const dataLines: string[] = [];
+
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('event:')) {
+        eventType = line.slice(6).trim();
+        continue;
+      }
+      if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    if (dataLines.length === 0) {
+      return null;
+    }
+
+    const rawData = dataLines.join('\n');
+    try {
+      return {
+        type: eventType,
+        data: JSON.parse(rawData),
+      };
+    } catch {
+      return {
+        type: eventType,
+        data: rawData,
+      };
+    }
+  }
+
   /** Execute a shell command in the sandbox. */
   async exec(command: string): Promise<ExecResult> {
     const url =
@@ -217,12 +324,13 @@ export class SandboxClient {
       body.context_json = JSON.stringify({ system_prompt: systemPrompt });
     }
     if (sessionId?.trim()) body.session_id = sessionId;
+    if (this.config.mode === 'proxied') body.timeout_ms = DEFAULT_PROMPT_RUN_TIMEOUT_MS;
 
-    const res = await fetch(url, {
+    const res = await this.fetchWithTimeout(url, {
       method: 'POST',
       headers: await this.resolveAuthHeaders(true),
       body: JSON.stringify(body),
-    });
+    }, CHAT_REQUEST_TIMEOUT_MS, 'Prompt request timed out while waiting for the operator to accept the run.');
 
     if (!res.ok) {
       const errorBody = await res.text();
@@ -262,12 +370,13 @@ export class SandboxClient {
       body.context_json = JSON.stringify({ system_prompt: systemPrompt });
     }
     if (sessionId?.trim()) body.session_id = sessionId;
+    if (this.config.mode === 'proxied') body.timeout_ms = DEFAULT_TASK_RUN_TIMEOUT_MS;
 
-    const res = await fetch(url, {
+    const res = await this.fetchWithTimeout(url, {
       method: 'POST',
       headers: await this.resolveAuthHeaders(true),
       body: JSON.stringify(body),
-    });
+    }, CHAT_REQUEST_TIMEOUT_MS, 'Task request timed out while waiting for the operator to accept the run.');
 
     if (!res.ok) {
       const errorBody = await res.text();
@@ -317,6 +426,14 @@ export class SandboxClient {
     return `${this.baseUrl}${this.proxiedResourcePath}/live/chat/sessions`;
   }
 
+  private getChatSessionPath(sessionId: string): string {
+    return `${this.chatSessionsBasePath}/${encodeURIComponent(sessionId)}`;
+  }
+
+  private getChatRunCancelPath(sessionId: string, runId: string): string {
+    return `${this.getChatSessionPath(sessionId)}/runs/${encodeURIComponent(runId)}/cancel`;
+  }
+
   /** List all chat sessions for this resource. */
   async listChatSessions(): Promise<ChatSessionSummary[]> {
     const res = await fetch(this.chatSessionsBasePath, {
@@ -346,7 +463,7 @@ export class SandboxClient {
 
   /** Get a chat session with its message history. */
   async getChatSession(sessionId: string): Promise<ChatSessionDetail> {
-    const url = `${this.chatSessionsBasePath}/${encodeURIComponent(sessionId)}`;
+    const url = this.getChatSessionPath(sessionId);
     const res = await fetch(url, {
       headers: await this.resolveAuthHeaders(false),
     });
@@ -359,7 +476,7 @@ export class SandboxClient {
 
   /** Delete a chat session. */
   async deleteChatSession(sessionId: string): Promise<void> {
-    const url = `${this.chatSessionsBasePath}/${encodeURIComponent(sessionId)}`;
+    const url = this.getChatSessionPath(sessionId);
     const res = await fetch(url, {
       method: 'DELETE',
       headers: await this.resolveAuthHeaders(false),
@@ -367,6 +484,94 @@ export class SandboxClient {
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Delete chat session failed (${res.status}): ${body}`);
+    }
+  }
+
+  async cancelChatRun(sessionId: string, runId: string): Promise<CancelChatRunResult> {
+    if (this.config.mode === 'direct') {
+      throw new Error('Chat run cancellation is only available in proxied mode');
+    }
+
+    const res = await this.fetchWithTimeout(
+      this.getChatRunCancelPath(sessionId, runId),
+      {
+        method: 'POST',
+        headers: await this.resolveAuthHeaders(false),
+      },
+      CHAT_REQUEST_TIMEOUT_MS,
+      'Cancel request timed out while waiting for the operator to acknowledge the run cancellation.',
+    );
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Cancel chat run failed (${res.status}): ${body}`);
+    }
+
+    const data = await res.json();
+    return {
+      success: data.success ?? true,
+      sessionId: data.session_id ?? data.sessionId ?? sessionId,
+      runId: data.run_id ?? data.runId ?? runId,
+      status: data.status ?? 'cancelled',
+      cancelledAt: data.cancelled_at ?? data.cancelledAt ?? Date.now(),
+    };
+  }
+
+  async streamChatSession(
+    sessionId: string,
+    options: {
+      signal?: AbortSignal;
+      onOpen?: () => void;
+      onEvent: (event: ChatStreamEvent) => void;
+    },
+  ): Promise<void> {
+    if (this.config.mode === 'direct') {
+      throw new Error('Chat session streaming is only available in proxied mode');
+    }
+
+    const res = await this.fetchWithTimeout(
+      `${this.getChatSessionPath(sessionId)}/stream`,
+      {
+        headers: await this.resolveAuthHeaders(false),
+        signal: options.signal,
+      },
+      CHAT_STREAM_CONNECT_TIMEOUT_MS,
+      'Chat stream connection timed out while opening the live session stream.',
+    );
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Chat stream failed (${res.status}): ${body}`);
+    }
+
+    if (!res.body) {
+      throw new Error('Chat stream is unavailable');
+    }
+
+    options.onOpen?.();
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+
+        for (const frame of frames) {
+          const parsed = this.parseSseFrame(frame);
+          if (parsed) {
+            options.onEvent(parsed);
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
     }
   }
 }

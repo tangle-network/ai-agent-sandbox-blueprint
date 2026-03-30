@@ -1,6 +1,7 @@
 import { atom } from 'nanostores';
 import type { SessionMessage, SessionPart, TextPart } from '@tangle-network/agent-ui';
 import type {
+  ChatStreamEvent,
   ChatRunSummary,
   ChatSessionDetail,
   ChatSessionSummary,
@@ -20,6 +21,14 @@ export interface ChatRunEntry {
   error?: string;
 }
 
+export interface ChatRunProgressEntry {
+  runId: string;
+  status: ChatRunEntry['status'] | string;
+  phase: string;
+  message: string;
+  timestampMs: number;
+}
+
 export interface ChatSessionEntry {
   id: string;
   title: string;
@@ -28,6 +37,7 @@ export interface ChatSessionEntry {
   sidecarSessionId?: string;
   activeRunId?: string;
   runs: ChatRunEntry[];
+  runProgress: ChatRunProgressEntry[];
   messages: SessionMessage[];
   partMap: Record<string, SessionPart[]>;
   detailLoaded: boolean;
@@ -86,6 +96,23 @@ function mapRun(run: ChatRunSummary): ChatRunEntry {
   };
 }
 
+function mapRunProgress(
+  entry: NonNullable<ChatSessionDetail['run_progress']>[number],
+): ChatRunProgressEntry | null {
+  const runId = entry.run_id ?? undefined;
+  if (!runId) {
+    return null;
+  }
+
+  return {
+    runId,
+    status: entry.status ?? 'running',
+    phase: entry.phase ?? 'progress',
+    message: entry.message ?? '',
+    timestampMs: entry.timestamp_ms ?? Date.now(),
+  };
+}
+
 function applySessionSummary(
   sandboxId: string,
   existing: ChatSessionEntry | undefined,
@@ -99,6 +126,7 @@ function applySessionSummary(
     sidecarSessionId: existing?.sidecarSessionId,
     activeRunId: summary.active_run_id ?? existing?.activeRunId,
     runs: existing?.runs ?? [],
+    runProgress: existing?.runProgress ?? [],
     messages: existing?.messages ?? [],
     partMap: existing?.partMap ?? {},
     detailLoaded: existing?.detailLoaded ?? false,
@@ -122,6 +150,9 @@ function applySessionDetail(
     sidecarSessionId: detail.sidecar_session_id ?? undefined,
     activeRunId: detail.active_run_id ?? undefined,
     runs: (detail.runs ?? []).map(mapRun),
+    runProgress: (detail.run_progress ?? [])
+      .map((entry) => mapRunProgress(entry))
+      .filter((entry): entry is ChatRunProgressEntry => entry !== null),
     messages,
     partMap,
     detailLoaded: true,
@@ -268,6 +299,7 @@ export async function createSessionApi(
       sidecarSessionId: undefined,
       activeRunId: result.active_run_id ?? undefined,
       runs: [],
+      runProgress: [],
       messages: [],
       partMap: {},
       detailLoaded: true,
@@ -348,4 +380,133 @@ export async function loadSessionDetail(
       error: { ...state.error, [sandboxId]: message },
     }));
   }
+}
+
+function applyStreamMessage(
+  session: ChatSessionEntry,
+  payload: ChatSessionDetail['messages'][number],
+): ChatSessionEntry {
+  const { message, parts } = mapServerMessage(payload, session.messages.length);
+  const existingIndex = session.messages.findIndex((entry) => entry.id === message.id);
+  const nextMessages = [...session.messages];
+  if (existingIndex >= 0) {
+    nextMessages[existingIndex] = message;
+  } else {
+    nextMessages.push(message);
+  }
+
+  return {
+    ...session,
+    messages: nextMessages,
+    partMap: {
+      ...session.partMap,
+      [message.id]: parts,
+    },
+    detailLoaded: true,
+  };
+}
+
+function applyRunUpdate(
+  session: ChatSessionEntry,
+  payload: ChatRunSummary,
+): ChatSessionEntry {
+  const run = mapRun(payload);
+  const existingIndex = session.runs.findIndex((entry) => entry.id === run.id);
+  const runs = [...session.runs];
+  if (existingIndex >= 0) {
+    runs[existingIndex] = { ...runs[existingIndex], ...run };
+  } else {
+    runs.push(run);
+  }
+
+  const isActive = ['queued', 'running', 'cancelling'].includes(run.status);
+  return {
+    ...session,
+    sidecarSessionId: payload.sidecar_session_id ?? session.sidecarSessionId,
+    activeRunId: isActive ? run.id : (session.activeRunId === run.id ? undefined : session.activeRunId),
+    runs,
+    detailLoaded: true,
+  };
+}
+
+function applyRunProgress(
+  session: ChatSessionEntry,
+  payload: {
+    run_id?: string;
+    runId?: string;
+    status?: string;
+    phase?: string;
+    message?: string;
+    timestamp_ms?: number;
+    timestampMs?: number;
+  },
+): ChatSessionEntry {
+  const runId = payload.run_id ?? payload.runId;
+  if (!runId) {
+    return session;
+  }
+
+  const entry: ChatRunProgressEntry = {
+    runId,
+    status: payload.status ?? 'running',
+    phase: payload.phase ?? 'progress',
+    message: payload.message ?? '',
+    timestampMs: payload.timestamp_ms ?? payload.timestampMs ?? Date.now(),
+  };
+
+  const deduped = session.runProgress.filter((item) => !(
+    item.runId === entry.runId
+    && item.phase === entry.phase
+    && item.message === entry.message
+    && item.timestampMs === entry.timestampMs
+  ));
+
+  return {
+    ...session,
+    runProgress: [...deduped, entry].slice(-50),
+    detailLoaded: true,
+  };
+}
+
+export function applyChatStreamEvent(
+  sandboxId: string,
+  sessionId: string,
+  event: ChatStreamEvent,
+) {
+  update((state) => ({
+    ...state,
+    sessions: {
+      ...state.sessions,
+      [sandboxId]: (state.sessions[sandboxId] ?? []).map((session) => {
+        if (session.id !== sessionId) return session;
+
+        if (event.type === 'user_message' || event.type === 'assistant_message') {
+          return applyStreamMessage(
+            session,
+            event.data as ChatSessionDetail['messages'][number],
+          );
+        }
+
+        if (
+          event.type === 'run_queued'
+          || event.type === 'run_started'
+          || event.type === 'run_cancel_requested'
+          || event.type === 'run_completed'
+          || event.type === 'run_failed'
+          || event.type === 'run_cancelled'
+        ) {
+          return applyRunUpdate(session, event.data as ChatRunSummary);
+        }
+
+        if (event.type === 'run_progress') {
+          return applyRunProgress(
+            session,
+            event.data as Parameters<typeof applyRunProgress>[1],
+          );
+        }
+
+        return session;
+      }),
+    },
+  }));
 }
