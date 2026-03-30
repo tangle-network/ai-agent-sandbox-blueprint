@@ -2470,8 +2470,7 @@ fn enqueue_chat_run(
     Ok((session, run))
 }
 
-fn spawn_chat_run(
-    record: SandboxRecord,
+struct SpawnChatRunRequest {
     session_id: String,
     run_id: String,
     message: String,
@@ -2479,7 +2478,18 @@ fn spawn_chat_run(
     context_json: String,
     timeout_ms: u64,
     max_turns: Option<u64>,
-) {
+}
+
+fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
+    let SpawnChatRunRequest {
+        session_id,
+        run_id,
+        message,
+        model,
+        context_json,
+        timeout_ms,
+        max_turns,
+    } = request;
     let spawned_run_id = run_id.clone();
     let handle = tokio::spawn(async move {
         struct ChatRunAbortGuard {
@@ -2557,7 +2567,7 @@ fn spawn_chat_run(
                 let assistant_content = if !ar.response.trim().is_empty() {
                     ar.response.clone()
                 } else if !ar.error.trim().is_empty() {
-                    format!("Error: {}", ar.error)
+                    format!("Error: {error}", error = ar.error)
                 } else {
                     String::new()
                 };
@@ -2648,7 +2658,7 @@ fn spawn_chat_run(
                     id: uuid::Uuid::new_v4().to_string(),
                     run_id: Some(run_id.clone()),
                     role: "assistant".to_string(),
-                    content: format!("Error: {}", error_text),
+                    content: format!("Error: {error_text}"),
                     created_at: completed_at,
                     trace_id: None,
                     success: Some(false),
@@ -2715,13 +2725,15 @@ async fn sandbox_prompt_handler(
     )?;
     spawn_chat_run(
         record,
-        session.id.clone(),
-        run.id.clone(),
-        req.message,
-        req.model,
-        req.context_json,
-        req.timeout_ms,
-        None,
+        SpawnChatRunRequest {
+            session_id: session.id.clone(),
+            run_id: run.id.clone(),
+            message: req.message,
+            model: req.model,
+            context_json: req.context_json,
+            timeout_ms: req.timeout_ms,
+            max_turns: None,
+        },
     );
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::ACCEPTED,
@@ -2747,13 +2759,15 @@ async fn instance_prompt_handler(
     )?;
     spawn_chat_run(
         record,
-        session.id.clone(),
-        run.id.clone(),
-        req.message,
-        req.model,
-        req.context_json,
-        req.timeout_ms,
-        None,
+        SpawnChatRunRequest {
+            session_id: session.id.clone(),
+            run_id: run.id.clone(),
+            message: req.message,
+            model: req.model,
+            context_json: req.context_json,
+            timeout_ms: req.timeout_ms,
+            max_turns: None,
+        },
     );
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::ACCEPTED,
@@ -2782,13 +2796,15 @@ async fn sandbox_task_handler(
     )?;
     spawn_chat_run(
         record,
-        session.id.clone(),
-        run.id.clone(),
-        req.prompt,
-        req.model,
-        req.context_json,
-        req.timeout_ms,
-        Some(req.max_turns),
+        SpawnChatRunRequest {
+            session_id: session.id.clone(),
+            run_id: run.id.clone(),
+            message: req.prompt,
+            model: req.model,
+            context_json: req.context_json,
+            timeout_ms: req.timeout_ms,
+            max_turns: Some(req.max_turns),
+        },
     );
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::ACCEPTED,
@@ -2814,13 +2830,15 @@ async fn instance_task_handler(
     )?;
     spawn_chat_run(
         record,
-        session.id.clone(),
-        run.id.clone(),
-        req.prompt,
-        req.model,
-        req.context_json,
-        req.timeout_ms,
-        Some(req.max_turns),
+        SpawnChatRunRequest {
+            session_id: session.id.clone(),
+            run_id: run.id.clone(),
+            message: req.prompt,
+            model: req.model,
+            context_json: req.context_json,
+            timeout_ms: req.timeout_ms,
+            max_turns: Some(req.max_turns),
+        },
     );
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::ACCEPTED,
@@ -6471,7 +6489,9 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let accepted = body_json(response.into_body()).await;
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        let run_id = accepted["run_id"].as_str().expect("run_id");
+        let run = wait_for_run_terminal(run_id).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
         let payload = sidecar_state
             .last_agent_payload
             .lock()
@@ -6509,7 +6529,9 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let resp_json = body_json(response.into_body()).await;
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        let run_id = resp_json["run_id"].as_str().expect("run_id");
+        let run = wait_for_run_terminal(run_id).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
         // The task handler sends the prompt via the "message" field to the sidecar
         let payload = sidecar_state
             .last_agent_payload
@@ -6550,8 +6572,13 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let payload = body_json(response.into_body()).await;
-        assert!(payload["session_id"].as_str().unwrap_or_default().len() > 0);
-        assert!(payload["run_id"].as_str().unwrap_or_default().len() > 0);
+        assert!(
+            !payload["session_id"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        assert!(!payload["run_id"].as_str().unwrap_or_default().is_empty());
         server.abort();
     }
 
