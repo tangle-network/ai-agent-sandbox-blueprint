@@ -41,7 +41,7 @@ describe('SandboxClient proxied mode', () => {
 
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe('http://operator:9090/api/sandboxes/sandbox-1/prompt');
-    expect(JSON.parse(options.body as string)).toEqual({ message: 'hello world' });
+    expect(JSON.parse(options.body as string)).toEqual({ message: 'hello world', timeout_ms: 600000 });
   });
 
   it('returns accepted run metadata for proxied task requests', async () => {
@@ -67,7 +67,7 @@ describe('SandboxClient proxied mode', () => {
 
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe('http://operator:9090/api/sandboxes/sandbox-2/task');
-    expect(JSON.parse(options.body as string)).toEqual({ prompt: 'build', session_id: 'chat-7' });
+    expect(JSON.parse(options.body as string)).toEqual({ prompt: 'build', session_id: 'chat-7', timeout_ms: 1800000 });
   });
 
   it('targets /api/sandbox/* for proxied instance prompt requests', async () => {
