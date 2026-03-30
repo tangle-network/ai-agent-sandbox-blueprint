@@ -20,16 +20,20 @@ use serde_json::{Map, Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::task::AbortHandle;
 
 use crate::api_types::*;
 use crate::chat_state::{
-    self, ChatMessageRecord, ChatRunKind, ChatRunRecord, ChatRunStatus, ChatSessionRecord,
+    self, ChatMessageRecord, ChatRunKind, ChatRunProgressRecord, ChatRunRecord, ChatRunStatus,
+    ChatSessionRecord,
 };
 use crate::circuit_breaker;
 use crate::error::SandboxError;
-use crate::http::{sidecar_get_json, sidecar_post_json};
+use crate::http::{sidecar_get_json, sidecar_post_json, sidecar_post_json_without_timeout};
 use crate::live_operator_sessions::{
     LiveSessionStore, LiveTerminalSession, sse_from_json_events, sse_from_terminal_output,
 };
@@ -49,9 +53,9 @@ use crate::session_auth::{self, SessionAuth};
 /// Timeout for exec (shell command) calls to the sidecar.
 const SIDECAR_EXEC_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Timeout for prompt/task (LLM agent) calls to the sidecar.
-/// These are longer because LLM inference can be slow.
-const SIDECAR_AGENT_TIMEOUT: Duration = Duration::from_secs(90);
+const DEFAULT_PROMPT_RUN_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+const DEFAULT_TASK_RUN_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+const CHAT_CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Timeout for other sidecar calls (snapshot, SSH provisioning, etc.).
 const SIDECAR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -66,6 +70,9 @@ const AGENT_WARMUP_RETRY_DELAYS_MS: &[u64] = &[5, 5, 5];
 
 /// Shared in-memory live chat/terminal sessions.
 static LIVE_SESSIONS: Lazy<LiveSessionStore<Value>> = Lazy::new(LiveSessionStore::default);
+static CHAT_RUN_ABORTS: Lazy<Mutex<HashMap<String, AbortHandle>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static CHAT_RUN_ENQUEUE_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 // ---------------------------------------------------------------------------
 // Request ID middleware
@@ -219,7 +226,17 @@ struct LiveChatSessionDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     active_run_id: Option<String>,
     messages: Vec<ChatMessageRecord>,
+    run_progress: Vec<ChatRunProgressRecord>,
     runs: Vec<ChatRunRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct CancelChatRunResponse {
+    success: bool,
+    session_id: String,
+    run_id: String,
+    status: String,
+    cancelled_at: u64,
 }
 
 fn live_scope_sandbox(sandbox_id: &str) -> String {
@@ -268,6 +285,47 @@ fn publish_chat_message(session_id: &str, message: ChatMessageRecord, event_type
 
 fn publish_run_event(session_id: &str, event_type: &str, run: &ChatRunRecord) {
     let _ = chat_state::emit_event(session_id, event_type, chat_state::run_event_payload(run));
+}
+
+fn publish_run_progress(
+    session_id: &str,
+    run_id: &str,
+    status: &ChatRunStatus,
+    phase: &str,
+    message: &str,
+) {
+    let Ok(Some(progress)) =
+        chat_state::append_run_progress(session_id, run_id, status.clone(), phase, message)
+    else {
+        return;
+    };
+    let _ = chat_state::emit_event(session_id, "run_progress", json!(progress));
+}
+
+fn register_chat_run_abort(run_id: &str, abort_handle: AbortHandle) {
+    if let Ok(mut handles) = CHAT_RUN_ABORTS.lock() {
+        handles.insert(run_id.to_string(), abort_handle);
+    }
+}
+
+fn clear_chat_run_abort(run_id: &str) {
+    if let Ok(mut handles) = CHAT_RUN_ABORTS.lock() {
+        handles.remove(run_id);
+    }
+}
+
+fn abort_chat_run_task(run_id: &str) -> bool {
+    match CHAT_RUN_ABORTS.lock() {
+        Ok(mut handles) => {
+            if let Some(handle) = handles.remove(run_id) {
+                handle.abort();
+                true
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -685,12 +743,15 @@ fn get_chat_session(
     }
     let runs = chat_state::list_runs_for_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let run_progress = chat_state::list_run_progress_for_session(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(LiveChatSessionDetail {
         session_id: session.id,
         title: session.title,
         sidecar_session_id: session.latest_sidecar_session_id,
         active_run_id: session.active_run_id,
         messages: session.messages,
+        run_progress,
         runs,
     })
 }
@@ -737,6 +798,75 @@ fn delete_chat_session(
     chat_state::delete_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(json!({ "deleted": true, "session_id": session_id }))
+}
+
+async fn cancel_chat_run(
+    record: &SandboxRecord,
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+    run_id: &str,
+) -> Result<CancelChatRunResponse, (StatusCode, Json<ApiError>)> {
+    let (session, run) = resolve_chat_run(scope_id, owner, session_id, run_id)?;
+
+    if run.status == ChatRunStatus::Cancelled {
+        return Ok(CancelChatRunResponse {
+            success: true,
+            session_id: session.id,
+            run_id: run.id,
+            status: chat_run_status_label(&run.status).to_string(),
+            cancelled_at: run.completed_at.unwrap_or(run.created_at),
+        });
+    }
+
+    if !run.status.is_active() {
+        return Ok(CancelChatRunResponse {
+            success: true,
+            session_id: session.id,
+            run_id: run.id,
+            status: chat_run_status_label(&run.status).to_string(),
+            cancelled_at: run.completed_at.unwrap_or(chat_state::now_ms()),
+        });
+    }
+
+    if session.active_run_id.as_deref() != Some(run.id.as_str()) {
+        return Err(api_error_with_details(
+            StatusCode::CONFLICT,
+            "This run is no longer the active chat run for the session",
+            Some("CHAT_RUN_NOT_ACTIVE"),
+            None,
+        ));
+    }
+
+    let cancelling_at = chat_state::now_ms();
+    let _ = chat_state::update_run(&run.id, |entry| {
+        entry.status = ChatRunStatus::Cancelling;
+        if entry.started_at.is_none() {
+            entry.started_at = Some(cancelling_at);
+        }
+    });
+    if let Ok(Some(cancelling_run)) = chat_state::get_run(&run.id) {
+        publish_run_event(&session.id, "run_cancel_requested", &cancelling_run);
+        publish_run_progress(
+            &session.id,
+            &cancelling_run.id,
+            &cancelling_run.status,
+            "cancelling",
+            "Cancellation requested. Stopping the active run.",
+        );
+    }
+
+    abort_chat_run_task(&run.id);
+    let updated_run = finalize_cancelled_chat_run(&session.id, &run.id, "Run cancelled by user.")?;
+    best_effort_cancel_sidecar_run(record).await;
+
+    Ok(CancelChatRunResponse {
+        success: true,
+        session_id: session.id,
+        run_id: updated_run.id,
+        status: chat_run_status_label(&updated_run.status).to_string(),
+        cancelled_at: updated_run.completed_at.unwrap_or(cancelling_at),
+    })
 }
 
 async fn sandbox_terminal_session_create_handler(
@@ -821,6 +951,22 @@ async fn sandbox_chat_session_delete_handler(
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
+async fn sandbox_chat_run_cancel_handler(
+    SessionAuth(address): SessionAuth,
+    Path((sandbox_id, session_id, run_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let resp = cancel_chat_run(
+        &record,
+        &live_scope_sandbox(&record.id),
+        &address,
+        &session_id,
+        &run_id,
+    )
+    .await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
 async fn instance_terminal_session_create_handler(
     SessionAuth(address): SessionAuth,
 ) -> impl IntoResponse {
@@ -896,6 +1042,22 @@ async fn instance_chat_session_delete_handler(
 ) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
     let resp = delete_chat_session(&live_scope_instance(&record), &address, &session_id)?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
+async fn instance_chat_run_cancel_handler(
+    SessionAuth(address): SessionAuth,
+    Path((session_id, run_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let resp = cancel_chat_run(
+        &record,
+        &live_scope_instance(&record),
+        &address,
+        &session_id,
+        &run_id,
+    )
+    .await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
@@ -1760,7 +1922,12 @@ async fn run_sidecar_json_attempt(
 ) -> std::result::Result<Value, SidecarAttemptFailure> {
     match tokio::time::timeout(
         timeout,
-        sidecar_post_json(&record.sidecar_url, path, &record.token, payload.clone()),
+        sidecar_post_json_without_timeout(
+            &record.sidecar_url,
+            path,
+            &record.token,
+            payload.clone(),
+        ),
     )
     .await
     {
@@ -1800,6 +1967,7 @@ async fn sidecar_call(
     payload: Value,
     timeout: Duration,
     op_name: &str,
+    allow_transport_retry: bool,
 ) -> Result<Value, (StatusCode, Json<ApiError>)> {
     require_running(record)?;
     circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
@@ -1813,7 +1981,7 @@ async fn sidecar_call(
             ))
         }
         Err(SidecarAttemptFailure::Error(err)) => {
-            if is_retryable_transport_error(&err) {
+            if allow_transport_retry && is_retryable_transport_error(&err) {
                 if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
                     match run_sidecar_json_attempt(&refreshed, path, &payload, timeout).await {
                         Ok(parsed) => {
@@ -1946,6 +2114,7 @@ async fn exec_on_sidecar(
         payload,
         SIDECAR_EXEC_TIMEOUT,
         "exec",
+        true,
     )
     .await?;
     Ok(parse_exec_response(&parsed))
@@ -1987,6 +2156,8 @@ async fn agent_on_sidecar(
     timeout_ms: u64,
     max_turns: Option<u64>,
 ) -> Result<AgentResponse, (StatusCode, Json<ApiError>)> {
+    let resolved_timeout_ms = resolve_agent_run_timeout_ms(timeout_ms, max_turns);
+    let resolved_timeout = resolve_agent_run_timeout(timeout_ms, max_turns);
     // Prompt/task calls are latency-sensitive, so avoid paying an extra
     // discovery round-trip here. Let /agents/run stay authoritative and
     // translate invalid configured identifiers on the error path instead.
@@ -1995,7 +2166,7 @@ async fn agent_on_sidecar(
         session_id,
         model,
         context_json,
-        timeout_ms,
+        resolved_timeout_ms,
         max_turns,
         &record.agent_identifier,
     );
@@ -2007,8 +2178,9 @@ async fn agent_on_sidecar(
             &current_record,
             "/agents/run",
             payload.clone(),
-            SIDECAR_AGENT_TIMEOUT,
+            resolved_timeout,
             "agent",
+            false,
         )
         .await
         {
@@ -2115,11 +2287,26 @@ fn chat_run_status_label(status: &ChatRunStatus) -> &'static str {
     match status {
         ChatRunStatus::Queued => "queued",
         ChatRunStatus::Running => "running",
+        ChatRunStatus::Cancelling => "cancelling",
         ChatRunStatus::Completed => "completed",
         ChatRunStatus::Failed => "failed",
         ChatRunStatus::Cancelled => "cancelled",
         ChatRunStatus::Interrupted => "interrupted",
     }
+}
+
+fn resolve_agent_run_timeout_ms(timeout_ms: u64, max_turns: Option<u64>) -> u64 {
+    if timeout_ms > 0 {
+        timeout_ms
+    } else if max_turns.is_some() {
+        DEFAULT_TASK_RUN_TIMEOUT_MS
+    } else {
+        DEFAULT_PROMPT_RUN_TIMEOUT_MS
+    }
+}
+
+fn resolve_agent_run_timeout(timeout_ms: u64, max_turns: Option<u64>) -> Duration {
+    Duration::from_millis(resolve_agent_run_timeout_ms(timeout_ms, max_turns))
 }
 
 fn resolve_or_create_chat_session(
@@ -2143,6 +2330,95 @@ fn resolve_or_create_chat_session(
     Ok(session)
 }
 
+fn resolve_chat_run(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+    run_id: &str,
+) -> Result<(ChatSessionRecord, ChatRunRecord), (StatusCode, Json<ApiError>)> {
+    let session = chat_state::get_session(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
+    if !chat_session_matches(&session, scope_id, owner) {
+        return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
+    }
+
+    let run = chat_state::get_run(run_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| {
+            api_error_with_details(
+                StatusCode::NOT_FOUND,
+                "Chat run not found",
+                Some("CHAT_RUN_NOT_FOUND"),
+                None,
+            )
+        })?;
+
+    if run.session_id != session.id
+        || run.scope_id != scope_id
+        || !run.owner.eq_ignore_ascii_case(owner)
+    {
+        return Err(api_error_with_details(
+            StatusCode::NOT_FOUND,
+            "Chat run not found",
+            Some("CHAT_RUN_NOT_FOUND"),
+            None,
+        ));
+    }
+
+    Ok((session, run))
+}
+
+async fn best_effort_cancel_sidecar_run(record: &SandboxRecord) {
+    let _ = tokio::time::timeout(
+        CHAT_CANCEL_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/agents/run/cancel",
+            &record.token,
+            json!({}),
+        ),
+    )
+    .await;
+}
+
+fn finalize_cancelled_chat_run(
+    session_id: &str,
+    run_id: &str,
+    error_text: &str,
+) -> Result<ChatRunRecord, (StatusCode, Json<ApiError>)> {
+    let cancelled_at = chat_state::now_ms();
+    let updated = chat_state::update_run(run_id, |run| {
+        run.status = ChatRunStatus::Cancelled;
+        run.completed_at = Some(cancelled_at);
+        run.error = Some(error_text.to_string());
+    })
+    .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    if !updated {
+        return Err(api_error_with_details(
+            StatusCode::NOT_FOUND,
+            "Chat run not found",
+            Some("CHAT_RUN_NOT_FOUND"),
+            None,
+        ));
+    }
+
+    let _ = chat_state::clear_session_active_run(session_id);
+    let updated_run = chat_state::get_run(run_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::INTERNAL_SERVER_ERROR, "Chat run disappeared"))?;
+    publish_run_event(session_id, "run_cancelled", &updated_run);
+    publish_run_progress(
+        session_id,
+        &updated_run.id,
+        &updated_run.status,
+        "cancelled",
+        "Run cancelled by user.",
+    );
+    Ok(updated_run)
+}
+
 fn enqueue_chat_run(
     scope_id: &str,
     owner: &str,
@@ -2150,6 +2426,12 @@ fn enqueue_chat_run(
     kind: ChatRunKind,
     request_text: &str,
 ) -> Result<(ChatSessionRecord, ChatRunRecord), (StatusCode, Json<ApiError>)> {
+    let _guard = CHAT_RUN_ENQUEUE_GUARD.lock().map_err(|e| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("chat enqueue lock poisoned: {e}"),
+        )
+    })?;
     if let Some(existing) = chat_state::active_run_for_scope(scope_id, owner)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
     {
@@ -2198,7 +2480,29 @@ fn spawn_chat_run(
     timeout_ms: u64,
     max_turns: Option<u64>,
 ) {
-    tokio::spawn(async move {
+    let spawned_run_id = run_id.clone();
+    let handle = tokio::spawn(async move {
+        struct ChatRunAbortGuard {
+            run_id: String,
+        }
+
+        impl Drop for ChatRunAbortGuard {
+            fn drop(&mut self) {
+                clear_chat_run_abort(&self.run_id);
+            }
+        }
+
+        let _abort_guard = ChatRunAbortGuard {
+            run_id: run_id.clone(),
+        };
+        publish_run_progress(
+            &session_id,
+            &run_id,
+            &ChatRunStatus::Queued,
+            "queued",
+            "Run accepted and queued by the operator.",
+        );
+
         let started_at = chat_state::now_ms();
         let _ = chat_state::update_run(&run_id, |run| {
             run.status = ChatRunStatus::Running;
@@ -2206,6 +2510,13 @@ fn spawn_chat_run(
         });
         if let Ok(Some(run)) = chat_state::get_run(&run_id) {
             publish_run_event(&session_id, "run_started", &run);
+            publish_run_progress(
+                &session_id,
+                &run_id,
+                &run.status,
+                "running",
+                "Operator started the agent run.",
+            );
         }
 
         let sidecar_session_id = chat_state::get_session(&session_id)
@@ -2224,6 +2535,15 @@ fn spawn_chat_run(
             max_turns,
         )
         .await;
+
+        if let Ok(Some(existing_run)) = chat_state::get_run(&run_id) {
+            if matches!(
+                existing_run.status,
+                ChatRunStatus::Cancelled | ChatRunStatus::Cancelling
+            ) {
+                return;
+            }
+        }
 
         match result {
             Ok(ar) => {
@@ -2297,6 +2617,21 @@ fn spawn_chat_run(
                         },
                         &updated_run,
                     );
+                    publish_run_progress(
+                        &session_id,
+                        &updated_run.id,
+                        &updated_run.status,
+                        if updated_run.status == ChatRunStatus::Completed {
+                            "completed"
+                        } else {
+                            "failed"
+                        },
+                        if updated_run.status == ChatRunStatus::Completed {
+                            "Run completed successfully."
+                        } else {
+                            "Run finished with an error."
+                        },
+                    );
                 }
             }
             Err((status, api_error_body)) => {
@@ -2323,12 +2658,20 @@ fn spawn_chat_run(
 
                 if let Ok(Some(updated_run)) = chat_state::get_run(&run_id) {
                     publish_run_event(&session_id, "run_failed", &updated_run);
+                    publish_run_progress(
+                        &session_id,
+                        &updated_run.id,
+                        &updated_run.status,
+                        "failed",
+                        "Run failed before the operator received a successful result.",
+                    );
                 } else {
                     let _ = status;
                 }
             }
         }
     });
+    register_chat_run_abort(&spawned_run_id, handle.abort_handle());
 }
 
 fn accepted_prompt_response(run: &ChatRunRecord, session_id: &str) -> PromptApiResponse {
@@ -2621,6 +2964,7 @@ async fn run_snapshot(
         payload,
         SIDECAR_DEFAULT_TIMEOUT,
         "snapshot",
+        true,
     )
     .await?;
     Ok(SnapshotApiResponse {
@@ -3244,6 +3588,10 @@ pub fn operator_api_router_with_tee_and_routes(
             axum::routing::delete(sandbox_chat_session_delete_handler),
         )
         .route(
+            "/api/sandboxes/{sandbox_id}/live/chat/sessions/{session_id}/runs/{run_id}/cancel",
+            post(sandbox_chat_run_cancel_handler),
+        )
+        .route(
             "/api/sandbox/secrets",
             get(instance_get_secrets)
                 .post(instance_inject_secrets)
@@ -3264,6 +3612,10 @@ pub fn operator_api_router_with_tee_and_routes(
         .route(
             "/api/sandbox/live/chat/sessions/{session_id}",
             axum::routing::delete(instance_chat_session_delete_handler),
+        )
+        .route(
+            "/api/sandbox/live/chat/sessions/{session_id}/runs/{run_id}/cancel",
+            post(instance_chat_run_cancel_handler),
         )
         .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
@@ -3512,8 +3864,10 @@ mod tests {
         exec_response: Arc<Mutex<Value>>,
         agents_response: Arc<Mutex<Value>>,
         remaining_agent_warmup_failures: Arc<AtomicU64>,
+        agent_response_delay_ms: Arc<AtomicU64>,
         agent_invocations: Arc<AtomicU64>,
         agent_list_invocations: Arc<AtomicU64>,
+        cancel_invocations: Arc<AtomicU64>,
     }
 
     async fn mock_sidecar_exec(
@@ -3535,6 +3889,10 @@ mod tests {
     ) -> impl IntoResponse {
         *state.last_agent_payload.lock().expect("agent lock") = Some(payload.clone());
         state.agent_invocations.fetch_add(1, Ordering::Relaxed);
+        let delay_ms = state.agent_response_delay_ms.load(Ordering::Relaxed);
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
         let identifier = payload
             .get("identifier")
             .and_then(Value::as_str)
@@ -3609,6 +3967,17 @@ mod tests {
             .into_response()
     }
 
+    async fn mock_sidecar_run_cancel(State(state): State<MockSidecarState>) -> impl IntoResponse {
+        state.cancel_invocations.fetch_add(1, Ordering::Relaxed);
+        (
+            StatusCode::OK,
+            Json(json!({
+                "success": true
+            })),
+        )
+            .into_response()
+    }
+
     async fn mock_sidecar_agents(State(state): State<MockSidecarState>) -> Json<Value> {
         state.agent_list_invocations.fetch_add(1, Ordering::Relaxed);
         let response = state
@@ -3643,6 +4012,7 @@ mod tests {
             .route("/terminals/commands", post(mock_sidecar_exec))
             .route("/agents", get(mock_sidecar_agents))
             .route("/agents/run", post(mock_sidecar_agent))
+            .route("/agents/run/cancel", post(mock_sidecar_run_cancel))
             .with_state(state.clone());
 
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -5266,10 +5636,18 @@ mod tests {
         assert_eq!(detail.status(), StatusCode::OK);
         let detail_json = body_json(detail.into_body()).await;
         let messages = detail_json["messages"].as_array().expect("messages array");
+        let run_progress = detail_json["run_progress"]
+            .as_array()
+            .expect("run_progress array");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
         assert_eq!(detail_json["runs"][0]["status"], "completed");
+        assert!(
+            run_progress.len() >= 2,
+            "expected persisted progress history in session detail"
+        );
+        assert_eq!(run_progress[0]["status"], "queued");
 
         let agent_payload = sidecar_state
             .last_agent_payload
@@ -5285,6 +5663,101 @@ mod tests {
                     .unwrap_or_default()
                     .is_empty()
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_live_chat_run_cancel_marks_run_cancelled() {
+        init();
+        reset_test_state();
+
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        sidecar_state
+            .agent_response_delay_ms
+            .store(250, Ordering::Relaxed);
+        insert_instance_sandbox_with_url("live-cancel-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/live/chat/sessions")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({ "title": "Cancelable" })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let session_id = body_json(create.into_body()).await["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+
+        let prompt = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "message": "cancel me",
+                            "session_id": session_id,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prompt.status(), StatusCode::ACCEPTED);
+        let prompt_json = body_json(prompt.into_body()).await;
+        let run_id = prompt_json["run_id"].as_str().expect("run_id").to_string();
+
+        let cancel = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/sandbox/live/chat/sessions/{session_id}/runs/{run_id}/cancel"
+                    ))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cancel.status(), StatusCode::OK);
+        let cancel_json = body_json(cancel.into_body()).await;
+        assert_eq!(cancel_json["status"], "cancelled");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let detail = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sandbox/live/chat/sessions/{session_id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.status(), StatusCode::OK);
+        let detail_json = body_json(detail.into_body()).await;
+        assert!(detail_json["active_run_id"].is_null());
+        assert_eq!(detail_json["runs"][0]["id"], run_id);
+        assert_eq!(detail_json["runs"][0]["status"], "cancelled");
+        assert!(
+            sidecar_state.cancel_invocations.load(Ordering::Relaxed) >= 1,
+            "expected operator to best-effort cancel the sidecar run",
+        );
+
         server.abort();
     }
 
