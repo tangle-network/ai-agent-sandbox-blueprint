@@ -4,11 +4,22 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 export default defineConfig({
   plugins: [tsconfigPaths()],
   resolve: {
-    alias: {
-      // @tangle-network/agent-ui is an optional peer dep of blueprint-ui — stub it
-      // so the optimizer doesn't fail when pre-bundling blueprint-ui.
-      '@tangle-network/agent-ui': new URL('./src/test/stubs/agent-ui.ts', import.meta.url).pathname,
-    },
+    alias: [
+      {
+        find: '@tangle-network/agent-ui/primitives',
+        replacement: new URL('./src/test/stubs/agent-ui-primitives.ts', import.meta.url).pathname,
+      },
+      {
+        find: '@tangle-network/agent-ui/terminal',
+        replacement: new URL('./src/test/stubs/agent-ui-terminal.tsx', import.meta.url).pathname,
+      },
+      {
+        // @tangle-network/agent-ui is an optional peer dep of blueprint-ui — stub it
+        // so the optimizer doesn't fail when pre-bundling blueprint-ui.
+        find: '@tangle-network/agent-ui',
+        replacement: new URL('./src/test/stubs/agent-ui.ts', import.meta.url).pathname,
+      },
+    ],
     dedupe: [
       'class-variance-authority',
       'clsx',

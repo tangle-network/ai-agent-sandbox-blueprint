@@ -1,208 +1,267 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import type { SessionMessage, SessionPart } from '@tangle-network/agent-ui';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyChatStreamEvent,
   chatSessionsStore,
-  createSession,
-  deleteSession,
-  renameSession,
-  updateSessionSidecarId,
-  appendMessage,
-  updateParts,
-  setActiveSession,
+  createSessionApi,
+  deleteSessionApi,
+  fetchSessions,
   getActiveSession,
   getActiveSessionId,
+  getError,
+  getLoading,
   getSessions,
+  hasActiveRun,
+  loadSessionDetail,
+  markRunAccepted,
+  renameSession,
+  setActiveSession,
 } from './chatSessions';
+import type { SandboxClient } from '~/lib/api/sandboxClient';
+
+function resetStore() {
+  chatSessionsStore.set({ sessions: {}, active: {}, loading: {}, error: {} });
+}
+
+function seedSession(sandboxId: string, id: string, title = 'Test', detailLoaded = true) {
+  const state = chatSessionsStore.get();
+  const entry = {
+    id,
+    title,
+    sandboxId,
+    createdAt: Date.now(),
+    sidecarSessionId: undefined,
+    activeRunId: undefined,
+    runs: [],
+    runProgress: [],
+    messages: [],
+    partMap: {},
+    detailLoaded,
+  };
+  const existing = state.sessions[sandboxId] ?? [];
+  chatSessionsStore.set({
+    ...state,
+    sessions: { ...state.sessions, [sandboxId]: [entry, ...existing] },
+    active: { ...state.active, [sandboxId]: state.active[sandboxId] ?? id },
+  });
+  return entry;
+}
+
+function mockClient(overrides: Partial<SandboxClient> = {}): SandboxClient {
+  return {
+    listChatSessions: vi.fn().mockResolvedValue([]),
+    createChatSession: vi.fn().mockResolvedValue({ session_id: 'new-id', title: 'New Chat' }),
+    getChatSession: vi.fn().mockResolvedValue({
+      session_id: 's1',
+      title: 'T',
+      messages: [],
+      runs: [],
+    }),
+    deleteChatSession: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  } as unknown as SandboxClient;
+}
 
 beforeEach(() => {
-  chatSessionsStore.set({ sessions: {}, active: {} });
-  localStorage.removeItem('chat_sessions');
+  resetStore();
 });
-
-// ── createSession ──
-
-describe('createSession', () => {
-  it('creates a session with default title', () => {
-    const entry = createSession('sb-1');
-    expect(entry.title).toBe('New Chat');
-    expect(entry.sandboxId).toBe('sb-1');
-    expect(entry.messages).toEqual([]);
-    expect(entry.partMap).toEqual({});
-  });
-
-  it('creates a session with custom title', () => {
-    const entry = createSession('sb-1', 'My Chat');
-    expect(entry.title).toBe('My Chat');
-  });
-
-  it('sets the created session as active', () => {
-    const entry = createSession('sb-1');
-    expect(getActiveSessionId('sb-1')).toBe(entry.id);
-  });
-
-  it('prepends new sessions (most recent first)', () => {
-    const first = createSession('sb-1', 'First');
-    const second = createSession('sb-1', 'Second');
-    const sessions = getSessions('sb-1');
-    expect(sessions[0].id).toBe(second.id);
-    expect(sessions[1].id).toBe(first.id);
-  });
-
-  it('isolates sessions by sandboxId', () => {
-    createSession('sb-1');
-    createSession('sb-2');
-    expect(getSessions('sb-1')).toHaveLength(1);
-    expect(getSessions('sb-2')).toHaveLength(1);
-  });
-});
-
-// ── deleteSession ──
-
-describe('deleteSession', () => {
-  it('removes the session', () => {
-    const entry = createSession('sb-1');
-    deleteSession('sb-1', entry.id);
-    expect(getSessions('sb-1')).toHaveLength(0);
-  });
-
-  it('activates next session when active is deleted', () => {
-    const first = createSession('sb-1', 'First');
-    createSession('sb-1', 'Second');
-    // Second is active and first in list
-    const secondId = getActiveSessionId('sb-1')!;
-    deleteSession('sb-1', secondId);
-    // Should fall back to the remaining session
-    expect(getActiveSessionId('sb-1')).toBe(first.id);
-  });
-
-  it('clears active when last session is deleted', () => {
-    const entry = createSession('sb-1');
-    deleteSession('sb-1', entry.id);
-    expect(getActiveSessionId('sb-1')).toBe('');
-  });
-
-  it('preserves active when non-active session is deleted', () => {
-    const first = createSession('sb-1', 'First');
-    const second = createSession('sb-1', 'Second');
-    // second is active
-    deleteSession('sb-1', first.id);
-    expect(getActiveSessionId('sb-1')).toBe(second.id);
-  });
-});
-
-// ── renameSession ──
 
 describe('renameSession', () => {
   it('updates the title', () => {
-    const entry = createSession('sb-1');
-    renameSession('sb-1', entry.id, 'Renamed');
+    seedSession('sb-1', 's1', 'Original');
+    renameSession('sb-1', 's1', 'Renamed');
     expect(getSessions('sb-1')[0].title).toBe('Renamed');
   });
-
-  it('no-op for unknown session', () => {
-    createSession('sb-1', 'Original');
-    renameSession('sb-1', 'unknown-id', 'Renamed');
-    expect(getSessions('sb-1')[0].title).toBe('Original');
-  });
 });
 
-// ── updateSessionSidecarId ──
-
-describe('updateSessionSidecarId', () => {
-  it('sets sidecarSessionId on the session', () => {
-    const entry = createSession('sb-1');
-    updateSessionSidecarId('sb-1', entry.id, 'sidecar-session-abc');
-    expect(getSessions('sb-1')[0].sidecarSessionId).toBe('sidecar-session-abc');
-  });
-});
-
-// ── appendMessage ──
-
-describe('appendMessage', () => {
-  it('appends a message and stores parts', () => {
-    const entry = createSession('sb-1');
-    const msg: SessionMessage = { id: 'msg-1', role: 'user', time: { created: Date.now() } };
-    const parts: SessionPart[] = [{ type: 'text', text: 'hello' }];
-    appendMessage('sb-1', entry.id, msg, parts);
+describe('markRunAccepted', () => {
+  it('tracks the active run on the session', () => {
+    seedSession('sb-1', 's1');
+    markRunAccepted('sb-1', 's1', 'run-1', 'queued', 100, 'prompt', 'hello');
     const session = getSessions('sb-1')[0];
-    expect(session.messages).toHaveLength(1);
-    expect(session.messages[0].id).toBe('msg-1');
-    expect(session.partMap['msg-1']).toEqual(parts);
-  });
-
-  it('appends multiple messages in order', () => {
-    const entry = createSession('sb-1');
-    const msg1: SessionMessage = { id: 'msg-1', role: 'user' };
-    const msg2: SessionMessage = { id: 'msg-2', role: 'assistant' };
-    appendMessage('sb-1', entry.id, msg1, []);
-    appendMessage('sb-1', entry.id, msg2, []);
-    const session = getSessions('sb-1')[0];
-    expect(session.messages).toHaveLength(2);
-    expect(session.messages[0].id).toBe('msg-1');
-    expect(session.messages[1].id).toBe('msg-2');
+    expect(session.activeRunId).toBe('run-1');
+    expect(session.runs[0]).toMatchObject({
+      id: 'run-1',
+      status: 'queued',
+      kind: 'prompt',
+      requestText: 'hello',
+    });
+    expect(hasActiveRun(session)).toBe(true);
   });
 });
 
-// ── updateParts ──
-
-describe('updateParts', () => {
-  it('updates parts for an existing message', () => {
-    const entry = createSession('sb-1');
-    const msg: SessionMessage = { id: 'msg-1', role: 'assistant' };
-    appendMessage('sb-1', entry.id, msg, [{ type: 'text', text: 'initial' }]);
-    updateParts('sb-1', entry.id, 'msg-1', [{ type: 'text', text: 'updated' }]);
-    expect((getSessions('sb-1')[0].partMap['msg-1'][0] as { text: string }).text).toBe('updated');
-  });
-});
-
-// ── setActiveSession / getActiveSession ──
-
-describe('setActiveSession', () => {
+describe('setActiveSession / getters', () => {
   it('switches the active session', () => {
-    const first = createSession('sb-1', 'First');
-    const second = createSession('sb-1', 'Second');
-    // second is active now
-    setActiveSession('sb-1', first.id);
-    expect(getActiveSessionId('sb-1')).toBe(first.id);
+    seedSession('sb-1', 's1', 'First');
+    seedSession('sb-1', 's2', 'Second');
+    setActiveSession('sb-1', 's1');
+    expect(getActiveSessionId('sb-1')).toBe('s1');
     expect(getActiveSession('sb-1')?.title).toBe('First');
   });
 });
 
-// ── getSessions ──
-
-describe('getSessions', () => {
-  it('returns empty array for unknown sandboxId', () => {
-    expect(getSessions('sb-unknown')).toEqual([]);
-  });
-});
-
-// ── getActiveSession ──
-
-describe('getActiveSession', () => {
-  it('returns undefined when no sessions exist', () => {
-    expect(getActiveSession('sb-unknown')).toBeUndefined();
-  });
-
-  it('returns undefined when active id does not match any session', () => {
-    createSession('sb-1');
-    // Manually set a bogus active
-    chatSessionsStore.set({
-      ...chatSessionsStore.get(),
-      active: { 'sb-1': 'nonexistent' },
+describe('fetchSessions', () => {
+  it('populates store from API response', async () => {
+    const client = mockClient({
+      listChatSessions: vi.fn().mockResolvedValue([
+        { session_id: 'a1', title: 'Alpha', active_run_id: 'run-a' },
+        { session_id: 'b2', title: 'Beta' },
+      ]),
     });
-    expect(getActiveSession('sb-1')).toBeUndefined();
+
+    await fetchSessions(client, 'sb-1');
+
+    const sessions = getSessions('sb-1');
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0].activeRunId).toBe('run-a');
+    expect(getActiveSessionId('sb-1')).toBe('a1');
+    expect(getLoading('sb-1')).toBe(false);
+    expect(getError('sb-1')).toBeNull();
+  });
+
+  it('sets error state on API failure', async () => {
+    const client = mockClient({
+      listChatSessions: vi.fn().mockRejectedValue(new Error('Network error')),
+    });
+
+    await fetchSessions(client, 'sb-1');
+
+    expect(getError('sb-1')).toBe('Network error');
+    expect(getLoading('sb-1')).toBe(false);
   });
 });
 
-// ── localStorage persistence ──
+describe('createSessionApi', () => {
+  it('creates a session via the API and prepends it', async () => {
+    seedSession('sb-1', 'existing');
+    const client = mockClient({
+      createChatSession: vi.fn().mockResolvedValue({ session_id: 'new-s', title: 'New Chat' }),
+    });
 
-describe('persistence', () => {
-  it('persists to localStorage on change', () => {
-    createSession('sb-1', 'Persisted');
-    const raw = localStorage.getItem('chat_sessions');
-    expect(raw).toBeTruthy();
-    const parsed = JSON.parse(raw!);
-    expect(parsed.sessions['sb-1']).toHaveLength(1);
-    expect(parsed.sessions['sb-1'][0].title).toBe('Persisted');
+    const entry = await createSessionApi(client, 'sb-1');
+
+    expect(entry?.id).toBe('new-s');
+    expect(getSessions('sb-1')[0].id).toBe('new-s');
+    expect(getActiveSessionId('sb-1')).toBe('new-s');
+  });
+});
+
+describe('deleteSessionApi', () => {
+  it('removes the session optimistically and restores on failure', async () => {
+    seedSession('sb-1', 's1', 'First');
+    seedSession('sb-1', 's2', 'Second');
+    setActiveSession('sb-1', 's2');
+
+    const client = mockClient({
+      deleteChatSession: vi.fn().mockRejectedValue(new Error('Delete failed')),
+    });
+
+    await deleteSessionApi(client, 'sb-1', 's2');
+
+    expect(getSessions('sb-1')).toHaveLength(2);
+    expect(getError('sb-1')).toBe('Delete failed');
+    expect(getActiveSessionId('sb-1')).toBe('s2');
+  });
+});
+
+describe('loadSessionDetail', () => {
+  it('loads messages and runs into the session entry', async () => {
+    seedSession('sb-1', 's1', 'Initial', false);
+    const client = mockClient({
+      getChatSession: vi.fn().mockResolvedValue({
+        session_id: 's1',
+        title: 'Loaded',
+        sidecar_session_id: 'sidecar-1',
+        active_run_id: 'run-1',
+        messages: [
+          { id: 'm1', role: 'user', content: 'hello', created_at: 111 },
+          { id: 'm2', role: 'assistant', content: 'hi', created_at: 222 },
+        ],
+        runs: [
+          {
+            id: 'run-1',
+            session_id: 's1',
+            kind: 'prompt',
+            status: 'running',
+            request_text: 'hello',
+            created_at: 111,
+          },
+        ],
+        run_progress: [
+          {
+            seq: 1,
+            run_id: 'run-1',
+            status: 'running',
+            phase: 'running',
+            message: 'Operator started the agent run.',
+            timestamp_ms: 333,
+          },
+        ],
+      }),
+    });
+
+    await loadSessionDetail(client, 'sb-1', 's1');
+
+    const session = getSessions('sb-1')[0];
+    expect(session.title).toBe('Loaded');
+    expect(session.sidecarSessionId).toBe('sidecar-1');
+    expect(session.activeRunId).toBe('run-1');
+    expect(session.detailLoaded).toBe(true);
+    expect(session.messages).toHaveLength(2);
+    expect(session.runs[0].id).toBe('run-1');
+    expect(session.runProgress).toHaveLength(1);
+    expect(session.runProgress[0].message).toContain('started');
+  });
+});
+
+describe('applyChatStreamEvent', () => {
+  it('applies live run updates and progress entries', () => {
+    seedSession('sb-1', 's1', 'Live', true);
+
+    applyChatStreamEvent('sb-1', 's1', {
+      type: 'run_started',
+      data: {
+        id: 'run-1',
+        session_id: 's1',
+        kind: 'prompt',
+        status: 'running',
+        request_text: 'hello',
+        created_at: 111,
+        started_at: 222,
+      },
+    });
+    applyChatStreamEvent('sb-1', 's1', {
+      type: 'run_progress',
+      data: {
+        run_id: 'run-1',
+        status: 'running',
+        phase: 'running',
+        message: 'Operator started the agent run.',
+        timestamp_ms: 333,
+      },
+    });
+
+    const session = getSessions('sb-1')[0];
+    expect(session.activeRunId).toBe('run-1');
+    expect(session.runs[0].status).toBe('running');
+    expect(session.runProgress).toHaveLength(1);
+    expect(session.runProgress[0].message).toContain('started');
+  });
+
+  it('applies live assistant messages', () => {
+    seedSession('sb-1', 's1', 'Live', true);
+
+    applyChatStreamEvent('sb-1', 's1', {
+      type: 'assistant_message',
+      data: {
+        id: 'm1',
+        role: 'assistant',
+        content: 'hello from stream',
+        created_at: 10,
+      },
+    });
+
+    const session = getSessions('sb-1')[0];
+    expect(session.messages).toHaveLength(1);
+    expect(session.partMap.m1?.[0]).toMatchObject({ type: 'text', text: 'hello from stream' });
   });
 });

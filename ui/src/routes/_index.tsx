@@ -4,9 +4,14 @@ import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle-network/blu
 import { Card, CardContent, CardHeader, CardTitle } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { StatusBadge } from '~/components/shared/StatusBadge';
-import { sandboxListStore, runningSandboxes, stoppedSandboxes } from '~/lib/stores/sandboxes';
+import {
+  sandboxListStore,
+  runningSandboxes,
+  stoppedSandboxes,
+  getSandboxRouteKey,
+} from '~/lib/stores/sandboxes';
 import { instanceListStore, runningInstances } from '~/lib/stores/instances';
-import { useServiceStats, useAvailableCapacity, useWorkflowIds } from '~/lib/hooks/useSandboxReads';
+import { useAvailableCapacity, useWorkflowIds } from '~/lib/hooks/useSandboxReads';
 import { cn } from '@tangle-network/blueprint-ui';
 
 export default function Dashboard() {
@@ -15,7 +20,6 @@ export default function Dashboard() {
   const stopped = useStore(stoppedSandboxes);
   const instances = useStore(instanceListStore);
   const runningInst = useStore(runningInstances);
-  const { data: stats } = useServiceStats();
   const { data: capacity } = useAvailableCapacity();
   const { data: workflowIds } = useWorkflowIds(false);
 
@@ -63,31 +67,6 @@ export default function Dashboard() {
         ))}
       </StaggerContainer>
 
-      {/* Network Stats (from contract) */}
-      {stats && (
-        <Card className="mb-8">
-          <CardContent className="p-6">
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-2">
-                <div className="i-ph:globe text-lg text-cloud-elements-textTertiary" />
-                <span className="text-sm text-cloud-elements-textSecondary">Network:</span>
-              </div>
-              <div className="flex items-center gap-4">
-                <span className="text-sm">
-                  <span className="text-cloud-elements-textTertiary">Total Sandboxes:</span>{' '}
-                  <span className="font-data font-semibold">{String(stats[0])}</span>
-                </span>
-                <span className="text-cloud-elements-dividerColor">|</span>
-                <span className="text-sm">
-                  <span className="text-cloud-elements-textTertiary">Total Capacity:</span>{' '}
-                  <span className="font-data font-semibold">{String(stats[1])}</span>
-                </span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Sandboxes */}
         <Card>
@@ -104,8 +83,8 @@ export default function Dashboard() {
               <div className="space-y-2">
                 {recentSandboxes.map((sb) => (
                   <Link
-                    key={sb.id}
-                    to={`/sandboxes/${encodeURIComponent(sb.id)}`}
+                    key={sb.localId}
+                    to={`/sandboxes/${encodeURIComponent(getSandboxRouteKey(sb))}`}
                     className="flex items-center justify-between p-3 rounded-lg hover:bg-cloud-elements-item-backgroundHover transition-colors"
                   >
                     <div className="flex items-center gap-3 min-w-0">

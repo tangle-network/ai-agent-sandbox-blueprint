@@ -423,8 +423,11 @@ mod tests {
             disk_gb: 20,
             stack: "default".to_string(),
             owner: "0xabc".to_string(),
+            service_id: None,
             tee_config: None,
             extra_ports: HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         let output = provision_output_from_record(&record);
@@ -469,8 +472,11 @@ mod tests {
             disk_gb: 20,
             stack: "default".to_string(),
             owner: "0xabc".to_string(),
+            service_id: None,
             tee_config: None,
             extra_ports: HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         let output = provision_output_from_record(&record);

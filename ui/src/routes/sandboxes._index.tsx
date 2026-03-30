@@ -1,29 +1,26 @@
 import { useStore } from '@nanostores/react';
 import { ProvisionedResourceListCard } from '~/components/shared/ProvisionedResourceListCard';
 import { ProvisionedResourceIndexPage } from '~/components/shared/ProvisionedResourceIndexPage';
-import { sandboxListStore, activeSandboxes } from '~/lib/stores/sandboxes';
-import { useSandboxHydration } from '~/lib/hooks/useSandboxHydration';
+import { sandboxListStore, runningSandboxes, getSandboxRouteKey } from '~/lib/stores/sandboxes';
 
 export default function SandboxList() {
-  useSandboxHydration();
   const allSandboxes = useStore(sandboxListStore);
-  const active = useStore(activeSandboxes);
+  const running = useStore(runningSandboxes);
+  const subtitle = running.length > 0
+    ? `${running.length} active sandbox${running.length > 1 ? 'es' : ''}`
+    : 'All your provisioned sandboxes';
 
   return (
     <ProvisionedResourceIndexPage
       title="Sandboxes"
-      subtitle={
-        active.length > 0
-          ? `${active.length} active sandbox${active.length > 1 ? 'es' : ''}`
-          : 'All your provisioned sandboxes'
-      }
+      subtitle={subtitle}
       createTo="/create"
       createLabel="New Sandbox"
       items={allSandboxes}
-      getKey={(sb) => sb.id}
+      getKey={(sb) => sb.localId}
       renderItem={(sb) => (
         <ProvisionedResourceListCard
-          to={`/sandboxes/${encodeURIComponent(sb.id)}`}
+          to={`/sandboxes/${encodeURIComponent(getSandboxRouteKey(sb))}`}
           name={sb.name}
           status={sb.status}
           teeEnabled={sb.teeEnabled}

@@ -20,20 +20,29 @@ use serde_json::{Map, Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::task::AbortHandle;
 
 use crate::api_types::*;
+use crate::chat_state::{
+    self, ChatMessageRecord, ChatRunKind, ChatRunProgressRecord, ChatRunRecord, ChatRunStatus,
+    ChatSessionRecord,
+};
 use crate::circuit_breaker;
-use crate::http::sidecar_post_json;
+use crate::error::SandboxError;
+use crate::http::{sidecar_get_json, sidecar_post_json, sidecar_post_json_without_timeout};
 use crate::live_operator_sessions::{
-    LiveChatSession, LiveJsonEvent, LiveSessionStore, LiveTerminalSession, sse_from_json_events,
-    sse_from_terminal_output,
+    LiveSessionStore, LiveTerminalSession, sse_from_json_events, sse_from_terminal_output,
 };
 use crate::metrics;
 use crate::provision_progress;
 use crate::rate_limit;
-use crate::runtime::{self, SandboxRecord, SandboxState, sandboxes};
+use crate::runtime::{
+    self, SandboxRecord, SandboxState, sandboxes, workflow_runtime_credentials_available,
+};
 use crate::secret_provisioning;
 use crate::session_auth::{self, SessionAuth};
 
@@ -44,20 +53,26 @@ use crate::session_auth::{self, SessionAuth};
 /// Timeout for exec (shell command) calls to the sidecar.
 const SIDECAR_EXEC_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Timeout for prompt/task (LLM agent) calls to the sidecar.
-/// These are longer because LLM inference can be slow.
-const SIDECAR_AGENT_TIMEOUT: Duration = Duration::from_secs(90);
+const DEFAULT_PROMPT_RUN_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+const DEFAULT_TASK_RUN_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+const CHAT_CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Timeout for other sidecar calls (snapshot, SSH provisioning, etc.).
 const SIDECAR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Live terminal session output ring-buffer size.
 const LIVE_TERMINAL_OUTPUT_BUFFER: usize = 512;
-/// Live chat event ring-buffer size.
-const LIVE_CHAT_EVENTS_BUFFER: usize = 256;
+const AGENT_WARMUP_ERROR_CODE: &str = "AGENT_WARMING_UP";
+#[cfg(not(test))]
+const AGENT_WARMUP_RETRY_DELAYS_MS: &[u64] = &[250, 500, 1_000, 2_000, 4_000, 4_000, 4_000];
+#[cfg(test)]
+const AGENT_WARMUP_RETRY_DELAYS_MS: &[u64] = &[5, 5, 5];
 
 /// Shared in-memory live chat/terminal sessions.
 static LIVE_SESSIONS: Lazy<LiveSessionStore<Value>> = Lazy::new(LiveSessionStore::default);
+static CHAT_RUN_ABORTS: Lazy<Mutex<HashMap<String, AbortHandle>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static CHAT_RUN_ENQUEUE_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 // ---------------------------------------------------------------------------
 // Request ID middleware
@@ -137,13 +152,54 @@ async fn security_headers_middleware(
 #[derive(Debug, Serialize)]
 pub struct ApiError {
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after_ms: Option<u64>,
 }
 
 pub(crate) fn api_error(
     status: StatusCode,
     msg: impl Into<String>,
 ) -> (StatusCode, Json<ApiError>) {
-    (status, Json(ApiError { error: msg.into() }))
+    api_error_with_details(status, msg, None, None)
+}
+
+pub(crate) fn api_error_with_details(
+    status: StatusCode,
+    msg: impl Into<String>,
+    code: Option<&str>,
+    retry_after_ms: Option<u64>,
+) -> (StatusCode, Json<ApiError>) {
+    (
+        status,
+        Json(ApiError {
+            error: msg.into(),
+            code: code.map(str::to_string),
+            retry_after_ms,
+        }),
+    )
+}
+
+/// Convert a `SandboxError` from `circuit_breaker::check_health` into a
+/// structured 503 response with the `CIRCUIT_BREAKER` error code.
+fn circuit_breaker_api_error(err: SandboxError) -> (StatusCode, Json<ApiError>) {
+    match err {
+        SandboxError::CircuitBreaker {
+            remaining_secs,
+            probing,
+        } => api_error_with_details(
+            StatusCode::SERVICE_UNAVAILABLE,
+            if probing {
+                "Sidecar recovery probe in progress. Please retry shortly.".to_string()
+            } else {
+                format!("Sidecar is in circuit-breaker cooldown ({remaining_secs}s remaining).")
+            },
+            Some("CIRCUIT_BREAKER"),
+            Some(remaining_secs * 1000),
+        ),
+        other => api_error(StatusCode::SERVICE_UNAVAILABLE, other.to_string()),
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -157,13 +213,30 @@ struct LiveSessionSummary {
     session_id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_run_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct LiveChatSessionDetail {
     session_id: String,
     title: String,
-    messages: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sidecar_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_run_id: Option<String>,
+    messages: Vec<ChatMessageRecord>,
+    run_progress: Vec<ChatRunProgressRecord>,
+    runs: Vec<ChatRunRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct CancelChatRunResponse {
+    success: bool,
+    session_id: String,
+    run_id: String,
+    status: String,
+    cancelled_at: u64,
 }
 
 fn live_scope_sandbox(sandbox_id: &str) -> String {
@@ -178,17 +251,8 @@ fn terminal_session_matches(session: &LiveTerminalSession, scope: &str, owner: &
     session.scope_id == scope && session.owner.eq_ignore_ascii_case(owner)
 }
 
-fn chat_session_matches(session: &LiveChatSession<Value>, scope: &str, owner: &str) -> bool {
-    session.scope_id == scope && session.owner.eq_ignore_ascii_case(owner)
-}
-
-struct ChatTurnPublish<'a> {
-    session_id: &'a str,
-    user_message: &'a str,
-    assistant_message: &'a str,
-    trace_id: &'a str,
-    success: bool,
-    error: &'a str,
+fn chat_session_matches(session: &ChatSessionRecord, scope: &str, owner: &str) -> bool {
+    chat_state::session_matches(session, scope, owner)
 }
 
 fn publish_terminal_output(scope: &str, owner: &str, session_id: &str, stdout: &str, stderr: &str) {
@@ -207,42 +271,61 @@ fn publish_terminal_output(scope: &str, owner: &str, session_id: &str, stdout: &
     }
 }
 
-fn publish_chat_turn(scope: &str, owner: &str, turn: ChatTurnPublish<'_>) {
-    if turn.session_id.trim().is_empty() {
+fn publish_chat_message(session_id: &str, message: ChatMessageRecord, event_type: &str) {
+    if message.content.trim().is_empty() && message.role.eq_ignore_ascii_case("assistant") {
         return;
     }
-    let Ok(Some(chat)) = LIVE_SESSIONS.get_chat(turn.session_id) else {
+    let _ = chat_state::append_message(session_id, message.clone());
+    let _ = chat_state::emit_event(
+        session_id,
+        event_type,
+        chat_state::message_event_payload(&message),
+    );
+}
+
+fn publish_run_event(session_id: &str, event_type: &str, run: &ChatRunRecord) {
+    let _ = chat_state::emit_event(session_id, event_type, chat_state::run_event_payload(run));
+}
+
+fn publish_run_progress(
+    session_id: &str,
+    run_id: &str,
+    status: &ChatRunStatus,
+    phase: &str,
+    message: &str,
+) {
+    let Ok(Some(progress)) =
+        chat_state::append_run_progress(session_id, run_id, status.clone(), phase, message)
+    else {
         return;
     };
-    if !chat_session_matches(&chat, scope, owner) {
-        return;
+    let _ = chat_state::emit_event(session_id, "run_progress", json!(progress));
+}
+
+fn register_chat_run_abort(run_id: &str, abort_handle: AbortHandle) {
+    if let Ok(mut handles) = CHAT_RUN_ABORTS.lock() {
+        handles.insert(run_id.to_string(), abort_handle);
     }
+}
 
-    let user_payload = json!({
-        "role": "user",
-        "content": turn.user_message,
-    });
-    let assistant_payload = json!({
-        "role": "assistant",
-        "content": turn.assistant_message,
-        "trace_id": turn.trace_id,
-        "success": turn.success,
-        "error": turn.error,
-    });
+fn clear_chat_run_abort(run_id: &str) {
+    if let Ok(mut handles) = CHAT_RUN_ABORTS.lock() {
+        handles.remove(run_id);
+    }
+}
 
-    let _ = LIVE_SESSIONS.update_chat(turn.session_id, |session| {
-        session.messages.push(user_payload.clone());
-        let _ = session.events_tx.send(LiveJsonEvent {
-            event_type: "user_message".to_string(),
-            payload: user_payload,
-        });
-
-        session.messages.push(assistant_payload.clone());
-        let _ = session.events_tx.send(LiveJsonEvent {
-            event_type: "assistant_message".to_string(),
-            payload: assistant_payload,
-        });
-    });
+fn abort_chat_run_task(run_id: &str) -> bool {
+    match CHAT_RUN_ABORTS.lock() {
+        Ok(mut handles) => {
+            if let Some(handle) = handles.remove(run_id) {
+                handle.abort();
+                true
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,14 +348,32 @@ struct SandboxSummary {
     last_activity_at: u64,
     ssh_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    service_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    managing_operator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tee_deployment_id: Option<String>,
     /// Extra user-exposed ports: container_port → host_port.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     extra_ports: std::collections::HashMap<u16, u16>,
+    /// Seconds of inactivity before the sandbox is automatically stopped.
+    idle_timeout_seconds: u64,
+    /// Maximum lifetime in seconds before the sandbox is hard-deleted.
+    max_lifetime_seconds: u64,
+    /// Whether the sandbox has AI credentials configured (e.g. ANTHROPIC_API_KEY).
+    credentials_available: bool,
+    /// Whether the circuit breaker is currently active for this sandbox's sidecar.
+    circuit_breaker_active: bool,
+    /// Seconds remaining in the circuit breaker cooldown (if active).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    circuit_breaker_remaining_secs: Option<u64>,
+    /// Whether a recovery probe is in flight.
+    circuit_breaker_probing: bool,
 }
 
-impl From<&SandboxRecord> for SandboxSummary {
-    fn from(r: &SandboxRecord) -> Self {
+impl SandboxSummary {
+    fn from_record(r: &SandboxRecord, managing_operator: Option<&str>) -> Self {
+        let breaker = circuit_breaker::query_status(&r.id);
         Self {
             id: r.id.clone(),
             name: r.name.clone(),
@@ -289,19 +390,136 @@ impl From<&SandboxRecord> for SandboxSummary {
             created_at: r.created_at,
             last_activity_at: r.last_activity_at,
             ssh_port: r.ssh_port,
+            service_id: r.service_id,
+            managing_operator: managing_operator.map(str::to_string),
             tee_deployment_id: r.tee_deployment_id.clone(),
             extra_ports: r.extra_ports.clone(),
+            idle_timeout_seconds: r.idle_timeout_seconds,
+            max_lifetime_seconds: r.max_lifetime_seconds,
+            credentials_available: workflow_runtime_credentials_available(&r.effective_env_json())
+                .unwrap_or(false),
+            circuit_breaker_active: breaker.active,
+            circuit_breaker_remaining_secs: breaker.remaining_secs,
+            circuit_breaker_probing: breaker.probing,
+        }
+    }
+}
+
+fn normalize_operator_address(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.len() != 42 || !trimmed.starts_with("0x") {
+        return None;
+    }
+    if trimmed.as_bytes()[2..]
+        .iter()
+        .all(|byte| byte.is_ascii_hexdigit())
+    {
+        Some(trimmed.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn keccak256(data: &[u8]) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+    let mut hasher = Keccak::v256();
+    let mut output = [0u8; 32];
+    hasher.update(data);
+    hasher.finalize(&mut output);
+    output
+}
+
+fn derive_operator_address_from_secret(secret: &[u8]) -> std::result::Result<String, String> {
+    use k256::ecdsa::SigningKey;
+
+    let key_bytes: [u8; 32] = secret
+        .try_into()
+        .map_err(|_| "operator key must be exactly 32 bytes".to_string())?;
+    let signing_key = SigningKey::from_bytes((&key_bytes).into())
+        .map_err(|err| format!("invalid operator key bytes: {err}"))?;
+    let verifying_key = signing_key.verifying_key();
+    let pubkey_bytes = verifying_key.to_encoded_point(false);
+    let pubkey_uncompressed = &pubkey_bytes.as_bytes()[1..];
+    let hash = keccak256(pubkey_uncompressed);
+    Ok(format!("0x{}", hex::encode(&hash[12..])))
+}
+
+fn derive_operator_address_from_keystore_uri(
+    keystore_uri: &str,
+) -> std::result::Result<String, String> {
+    use std::fs;
+    use std::path::Path;
+
+    let keystore_path = keystore_uri.strip_prefix("file://").unwrap_or(keystore_uri);
+    let ecdsa_dir = Path::new(keystore_path).join("Ecdsa");
+    let mut entries = fs::read_dir(&ecdsa_dir)
+        .map_err(|err| format!("failed to read {}: {err}", ecdsa_dir.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|err| format!("failed to enumerate {}: {err}", ecdsa_dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        let components: Vec<Vec<u8>> = serde_json::from_str(&raw)
+            .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+        if let Some(secret) = components.iter().rev().find(|part| part.len() == 32) {
+            return derive_operator_address_from_secret(secret);
+        }
+    }
+
+    Err(format!(
+        "no usable ECDSA secret found under {}",
+        ecdsa_dir.display()
+    ))
+}
+
+fn current_managing_operator() -> Option<String> {
+    for key in ["MANAGING_OPERATOR_ADDRESS", "OPERATOR_ADDRESS"] {
+        if let Ok(value) = std::env::var(key) {
+            if let Some(address) = normalize_operator_address(&value) {
+                return Some(address);
+            }
+        }
+    }
+
+    let keystore_uri = std::env::var("KEYSTORE_URI").ok()?;
+    match derive_operator_address_from_keystore_uri(&keystore_uri) {
+        Ok(address) => Some(address),
+        Err(err) => {
+            tracing::warn!(error = %err, "Failed to derive managing operator address from keystore");
+            None
         }
     }
 }
 
 async fn list_sandboxes(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    if let Ok(repaired) = runtime::repair_sandbox_service_links_from_provisions() {
+        if repaired > 0 {
+            tracing::info!(
+                repaired,
+                "Repaired missing sandbox service links from provision metadata"
+            );
+        }
+    }
+
+    let managing_operator = current_managing_operator();
     match sandboxes().and_then(|s| s.values()) {
         Ok(records) => {
             let summaries: Vec<SandboxSummary> = records
-                .iter()
+                .into_iter()
                 .filter(|r| !r.owner.is_empty() && r.owner.eq_ignore_ascii_case(&address))
-                .map(SandboxSummary::from)
+                .filter_map(|mut record| {
+                    if let Err(e) = runtime::unseal_record(&mut record) {
+                        tracing::warn!(id = %record.id, error = %e, "Failed to unseal record in listing — skipping");
+                        return None;
+                    }
+                    Some(SandboxSummary::from_record(&record, managing_operator.as_deref()))
+                })
                 .collect();
             (
                 StatusCode::OK,
@@ -412,6 +630,7 @@ fn create_terminal_session(
     let summary = LiveSessionSummary {
         session_id: session.id.clone(),
         title: String::new(),
+        active_run_id: None,
     };
     LIVE_SESSIONS
         .insert_terminal(session)
@@ -432,6 +651,7 @@ fn list_terminal_sessions(
                 .map(|s| LiveSessionSummary {
                     session_id: s.id,
                     title: String::new(),
+                    active_run_id: None,
                 })
                 .collect()
         })
@@ -483,40 +703,27 @@ fn create_chat_session(
     owner: &str,
     title: String,
 ) -> Result<LiveSessionSummary, (StatusCode, Json<ApiError>)> {
-    let session_title = if title.trim().is_empty() {
-        "Chat Session".to_string()
-    } else {
-        title
-    };
-    let session = LiveChatSession::new(
-        scope_id,
-        owner.to_string(),
-        session_title.clone(),
-        LIVE_CHAT_EVENTS_BUFFER,
-    );
-    let summary = LiveSessionSummary {
-        session_id: session.id.clone(),
-        title: session_title,
-    };
-    LIVE_SESSIONS
-        .insert_chat(session)
+    let session = chat_state::create_session(&scope_id, owner, Some(&title))
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok(summary)
+    Ok(LiveSessionSummary {
+        session_id: session.id,
+        title: session.title,
+        active_run_id: session.active_run_id,
+    })
 }
 
 fn list_chat_sessions(
     scope_id: &str,
     owner: &str,
 ) -> Result<Vec<LiveSessionSummary>, (StatusCode, Json<ApiError>)> {
-    LIVE_SESSIONS
-        .list_chats()
+    chat_state::list_sessions(scope_id, owner)
         .map(|sessions| {
             sessions
                 .into_iter()
-                .filter(|s| chat_session_matches(s, scope_id, owner))
                 .map(|s| LiveSessionSummary {
                     session_id: s.id,
                     title: s.title,
+                    active_run_id: s.active_run_id,
                 })
                 .collect()
         })
@@ -528,17 +735,24 @@ fn get_chat_session(
     owner: &str,
     session_id: &str,
 ) -> Result<LiveChatSessionDetail, (StatusCode, Json<ApiError>)> {
-    let session = LIVE_SESSIONS
-        .get_chat(session_id)
+    let session = chat_state::get_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
     if !chat_session_matches(&session, scope_id, owner) {
         return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
     }
+    let runs = chat_state::list_runs_for_session(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let run_progress = chat_state::list_run_progress_for_session(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(LiveChatSessionDetail {
         session_id: session.id,
         title: session.title,
+        sidecar_session_id: session.latest_sidecar_session_id,
+        active_run_id: session.active_run_id,
         messages: session.messages,
+        run_progress,
+        runs,
     })
 }
 
@@ -547,14 +761,14 @@ fn stream_chat_session(
     owner: &str,
     session_id: &str,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
-    let session = LIVE_SESSIONS
-        .get_chat(session_id)
+    let session = chat_state::get_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
     if !chat_session_matches(&session, scope_id, owner) {
         return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
     }
-    let rx = session.events_tx.subscribe();
+    let rx = chat_state::subscribe_events(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(sse_from_json_events(rx).into_response())
 }
 
@@ -563,17 +777,96 @@ fn delete_chat_session(
     owner: &str,
     session_id: &str,
 ) -> Result<serde_json::Value, (StatusCode, Json<ApiError>)> {
-    let session = LIVE_SESSIONS
-        .get_chat(session_id)
+    let session = chat_state::get_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
     if !chat_session_matches(&session, scope_id, owner) {
         return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
     }
-    let _ = LIVE_SESSIONS
-        .remove_chat(session_id)
+    if let Some(active_run_id) = session.active_run_id.as_deref() {
+        if let Some(run) = chat_state::get_run(active_run_id)
+            .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        {
+            if run.status.is_active() {
+                return Err(api_error(
+                    StatusCode::CONFLICT,
+                    "Cannot delete a chat session while a run is active",
+                ));
+            }
+        }
+    }
+    chat_state::delete_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(json!({ "deleted": true, "session_id": session_id }))
+}
+
+async fn cancel_chat_run(
+    record: &SandboxRecord,
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+    run_id: &str,
+) -> Result<CancelChatRunResponse, (StatusCode, Json<ApiError>)> {
+    let (session, run) = resolve_chat_run(scope_id, owner, session_id, run_id)?;
+
+    if run.status == ChatRunStatus::Cancelled {
+        return Ok(CancelChatRunResponse {
+            success: true,
+            session_id: session.id,
+            run_id: run.id,
+            status: chat_run_status_label(&run.status).to_string(),
+            cancelled_at: run.completed_at.unwrap_or(run.created_at),
+        });
+    }
+
+    if !run.status.is_active() {
+        return Ok(CancelChatRunResponse {
+            success: true,
+            session_id: session.id,
+            run_id: run.id,
+            status: chat_run_status_label(&run.status).to_string(),
+            cancelled_at: run.completed_at.unwrap_or(chat_state::now_ms()),
+        });
+    }
+
+    if session.active_run_id.as_deref() != Some(run.id.as_str()) {
+        return Err(api_error_with_details(
+            StatusCode::CONFLICT,
+            "This run is no longer the active chat run for the session",
+            Some("CHAT_RUN_NOT_ACTIVE"),
+            None,
+        ));
+    }
+
+    let cancelling_at = chat_state::now_ms();
+    let _ = chat_state::update_run(&run.id, |entry| {
+        entry.status = ChatRunStatus::Cancelling;
+        if entry.started_at.is_none() {
+            entry.started_at = Some(cancelling_at);
+        }
+    });
+    if let Ok(Some(cancelling_run)) = chat_state::get_run(&run.id) {
+        publish_run_event(&session.id, "run_cancel_requested", &cancelling_run);
+        publish_run_progress(
+            &session.id,
+            &cancelling_run.id,
+            &cancelling_run.status,
+            "cancelling",
+            "Cancellation requested. Stopping the active run.",
+        );
+    }
+
+    abort_chat_run_task(&run.id);
+    let updated_run = finalize_cancelled_chat_run(&session.id, &run.id, "Run cancelled by user.")?;
+    best_effort_cancel_sidecar_run(record).await;
+
+    Ok(CancelChatRunResponse {
+        success: true,
+        session_id: session.id,
+        run_id: updated_run.id,
+        status: chat_run_status_label(&updated_run.status).to_string(),
+        cancelled_at: updated_run.completed_at.unwrap_or(cancelling_at),
+    })
 }
 
 async fn sandbox_terminal_session_create_handler(
@@ -581,6 +874,7 @@ async fn sandbox_terminal_session_create_handler(
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_running(&record)?;
     let summary = create_terminal_session(live_scope_sandbox(&record.id), &address)?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
@@ -617,6 +911,7 @@ async fn sandbox_chat_session_create_handler(
     Json(req): Json<CreateLiveChatSessionRequest>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_running(&record)?;
     let summary = create_chat_session(live_scope_sandbox(&record.id), &address, req.title)?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
@@ -656,10 +951,27 @@ async fn sandbox_chat_session_delete_handler(
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
+async fn sandbox_chat_run_cancel_handler(
+    SessionAuth(address): SessionAuth,
+    Path((sandbox_id, session_id, run_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let resp = cancel_chat_run(
+        &record,
+        &live_scope_sandbox(&record.id),
+        &address,
+        &session_id,
+        &run_id,
+    )
+    .await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
 async fn instance_terminal_session_create_handler(
     SessionAuth(address): SessionAuth,
 ) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
+    require_running(&record)?;
     let summary = create_terminal_session(live_scope_instance(&record), &address)?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
@@ -694,6 +1006,7 @@ async fn instance_chat_session_create_handler(
     Json(req): Json<CreateLiveChatSessionRequest>,
 ) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
+    require_running(&record)?;
     let summary = create_chat_session(live_scope_instance(&record), &address, req.title)?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
@@ -732,6 +1045,22 @@ async fn instance_chat_session_delete_handler(
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
+async fn instance_chat_run_cancel_handler(
+    SessionAuth(address): SessionAuth,
+    Path((session_id, run_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let resp = cancel_chat_run(
+        &record,
+        &live_scope_instance(&record),
+        &address,
+        &session_id,
+        &run_id,
+    )
+    .await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
 // ---------------------------------------------------------------------------
 // Secret provisioning endpoints (2-phase)
 // ---------------------------------------------------------------------------
@@ -745,6 +1074,142 @@ struct InjectSecretsRequest {
 struct SecretsResponse {
     status: String,
     sandbox_id: String,
+    /// Whether AI credentials are available after this operation.
+    credentials_available: bool,
+}
+
+#[derive(Serialize)]
+struct GetSecretsResponse {
+    sandbox_id: String,
+    env_json: serde_json::Map<String, serde_json::Value>,
+    credentials_available: bool,
+}
+
+async fn instance_get_secrets(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    let record = match resolve_instance(&address) {
+        Ok(record) => record,
+        Err(err) => return err.into_response(),
+    };
+    if let Err(err) = reject_instance_tee_secrets(&record) {
+        return err.into_response();
+    }
+
+    let env_map: serde_json::Map<String, serde_json::Value> =
+        if record.user_env_json.trim().is_empty() {
+            serde_json::Map::new()
+        } else {
+            serde_json::from_str(&record.user_env_json).unwrap_or_default()
+        };
+
+    let creds =
+        workflow_runtime_credentials_available(&record.effective_env_json()).unwrap_or(false);
+
+    (
+        StatusCode::OK,
+        Json(GetSecretsResponse {
+            sandbox_id: record.id,
+            env_json: env_map,
+            credentials_available: creds,
+        }),
+    )
+        .into_response()
+}
+
+async fn instance_inject_secrets(
+    SessionAuth(address): SessionAuth,
+    Json(body): Json<InjectSecretsRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = crate::api_types::validate_secrets_map(&body.env_json) {
+        return api_error(StatusCode::BAD_REQUEST, e).into_response();
+    }
+
+    let record = match resolve_instance(&address) {
+        Ok(record) => record,
+        Err(err) => return err.into_response(),
+    };
+    if let Err(err) = reject_instance_tee_secrets(&record) {
+        return err.into_response();
+    }
+
+    match secret_provisioning::inject_secrets(&record.id, body.env_json, None).await {
+        Ok(updated) => {
+            sync_instance_record(&updated.id);
+            let creds = workflow_runtime_credentials_available(&updated.effective_env_json())
+                .unwrap_or(false);
+            (
+                StatusCode::OK,
+                Json(SecretsResponse {
+                    status: "secrets_configured".to_string(),
+                    sandbox_id: updated.id,
+                    credentials_available: creds,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn instance_wipe_secrets(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    let record = match resolve_instance(&address) {
+        Ok(record) => record,
+        Err(err) => return err.into_response(),
+    };
+    if let Err(err) = reject_instance_tee_secrets(&record) {
+        return err.into_response();
+    }
+
+    match secret_provisioning::wipe_secrets(&record.id, None).await {
+        Ok(updated) => {
+            sync_instance_record(&updated.id);
+            let creds = workflow_runtime_credentials_available(&updated.effective_env_json())
+                .unwrap_or(false);
+            (
+                StatusCode::OK,
+                Json(SecretsResponse {
+                    status: "secrets_wiped".to_string(),
+                    sandbox_id: updated.id,
+                    credentials_available: creds,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_secrets(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = secret_provisioning::validate_secret_access(&sandbox_id, &address) {
+        return api_error(StatusCode::FORBIDDEN, e.to_string()).into_response();
+    }
+
+    let record = match runtime::get_sandbox_by_id(&sandbox_id) {
+        Ok(r) => r,
+        Err(e) => return api_error(StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    };
+
+    let env_map: serde_json::Map<String, serde_json::Value> =
+        if record.user_env_json.trim().is_empty() {
+            serde_json::Map::new()
+        } else {
+            serde_json::from_str(&record.user_env_json).unwrap_or_default()
+        };
+
+    let creds =
+        workflow_runtime_credentials_available(&record.effective_env_json()).unwrap_or(false);
+
+    (
+        StatusCode::OK,
+        Json(GetSecretsResponse {
+            sandbox_id: record.id,
+            env_json: env_map,
+            credentials_available: creds,
+        }),
+    )
+        .into_response()
 }
 
 async fn inject_secrets(
@@ -760,14 +1225,19 @@ async fn inject_secrets(
     }
 
     match secret_provisioning::inject_secrets(&sandbox_id, body.env_json, None).await {
-        Ok(record) => (
-            StatusCode::OK,
-            Json(SecretsResponse {
-                status: "secrets_configured".to_string(),
-                sandbox_id: record.id,
-            }),
-        )
-            .into_response(),
+        Ok(record) => {
+            let creds = workflow_runtime_credentials_available(&record.effective_env_json())
+                .unwrap_or(false);
+            (
+                StatusCode::OK,
+                Json(SecretsResponse {
+                    status: "secrets_configured".to_string(),
+                    sandbox_id: record.id,
+                    credentials_available: creds,
+                }),
+            )
+                .into_response()
+        }
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -781,15 +1251,37 @@ async fn wipe_secrets(
     }
 
     match secret_provisioning::wipe_secrets(&sandbox_id, None).await {
-        Ok(record) => (
-            StatusCode::OK,
-            Json(SecretsResponse {
-                status: "secrets_wiped".to_string(),
-                sandbox_id: record.id,
-            }),
-        )
-            .into_response(),
+        Ok(record) => {
+            let creds = workflow_runtime_credentials_available(&record.effective_env_json())
+                .unwrap_or(false);
+            (
+                StatusCode::OK,
+                Json(SecretsResponse {
+                    status: "secrets_wiped".to_string(),
+                    sandbox_id: record.id,
+                    credentials_available: creds,
+                }),
+            )
+                .into_response()
+        }
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+fn reject_instance_tee_secrets(record: &SandboxRecord) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if record.tee_config.is_some() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "TEE instances do not support plain secrets injection. Use sealed secrets instead.",
+        ));
+    }
+
+    Ok(())
+}
+
+fn sync_instance_record(id: &str) {
+    if let Ok(Some(updated)) = sandboxes().and_then(|s| s.get(id)) {
+        let _ = runtime::instance_store().and_then(|s| s.insert("instance".to_string(), updated));
     }
 }
 
@@ -990,6 +1482,17 @@ fn resolve_instance(caller: &str) -> Result<SandboxRecord, (StatusCode, Json<Api
     Ok(record)
 }
 
+fn require_running(record: &SandboxRecord) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if record.state == SandboxState::Running {
+        return Ok(());
+    }
+
+    Err(api_error(
+        StatusCode::CONFLICT,
+        format!("Sandbox {} is stopped; resume it first", record.id),
+    ))
+}
+
 /// Build `/terminals/commands` payload for exec operations.
 fn build_exec_payload(command: &str, cwd: &str, env_json: &str, timeout_ms: u64) -> Value {
     let mut payload = Map::new();
@@ -1027,6 +1530,81 @@ fn parse_exec_response(parsed: &Value) -> ExecApiResponse {
             .unwrap_or_default()
             .to_string(),
     }
+}
+
+#[cfg(test)]
+fn first_nonempty_output_line(output: &str) -> Option<&str> {
+    output.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
+#[cfg(test)]
+fn strip_terminal_control_sequences(output: &str) -> String {
+    let mut cleaned = String::with_capacity(output.len());
+    let mut chars = output.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if matches!(chars.peek(), Some('[')) {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if ch.is_control() && ch != '\n' && ch != '\t' {
+            continue;
+        }
+
+        cleaned.push(ch);
+    }
+
+    cleaned
+}
+
+#[cfg(test)]
+fn summarize_exec_failure(exec: &ExecApiResponse) -> String {
+    let stderr = strip_terminal_control_sequences(&exec.stderr);
+    let stdout = strip_terminal_control_sequences(&exec.stdout);
+    first_nonempty_output_line(&stderr)
+        .or_else(|| first_nonempty_output_line(&stdout))
+        .unwrap_or("command failed")
+        .to_string()
+}
+
+#[cfg(test)]
+fn parse_detected_ssh_username(
+    exec: &ExecApiResponse,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    if exec.exit_code != 0 {
+        return Err(api_error(
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "SSH username detection failed (exit {}): {}",
+                exec.exit_code,
+                summarize_exec_failure(exec)
+            ),
+        ));
+    }
+
+    let stdout = strip_terminal_control_sequences(&exec.stdout);
+    for line in stdout.lines() {
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        if crate::ssh_validation::validate_ssh_username(candidate).is_ok() {
+            return Ok(candidate.to_string());
+        }
+    }
+
+    Err(api_error(
+        StatusCode::BAD_GATEWAY,
+        "SSH username detection failed: could not find a valid username in command output",
+    ))
 }
 
 /// Build `/agents/run` payload for prompt/task operations.
@@ -1100,6 +1678,120 @@ struct AgentResponse {
     input_tokens: u32,
     /// Output tokens produced, if reported by the sidecar.
     output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AgentDescriptor {
+    identifier: String,
+    #[serde(
+        rename = "displayName",
+        alias = "display_name",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    display_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SidecarAgentList {
+    #[serde(default)]
+    agents: Vec<AgentDescriptor>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentListApiResponse {
+    agents: Vec<AgentDescriptor>,
+    count: usize,
+}
+
+fn format_available_agents(agents: &[AgentDescriptor]) -> String {
+    agents
+        .iter()
+        .map(|agent| agent.identifier.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn invalid_agent_identifier_error(
+    agent_identifier: &str,
+    agents: &[AgentDescriptor],
+) -> (StatusCode, Json<ApiError>) {
+    let trimmed = agent_identifier.trim();
+    if agents.is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Unknown agent identifier \"{trimmed}\". This sidecar image does not register that agent."
+            ),
+        );
+    }
+
+    api_error(
+        StatusCode::BAD_REQUEST,
+        format!(
+            "Unknown agent identifier \"{trimmed}\". Available agents: {}",
+            format_available_agents(agents)
+        ),
+    )
+}
+
+async fn translate_missing_agent_factory_error(
+    record: &SandboxRecord,
+    agent_identifier: &str,
+    err: &(StatusCode, Json<ApiError>),
+) -> Option<(StatusCode, Json<ApiError>)> {
+    if agent_identifier.trim().is_empty() {
+        return None;
+    }
+
+    let message = err.1.0.error.as_str();
+    if message.contains("No factory registered for agent identifier") {
+        // This is a semantic agent-selection error, not a transport failure.
+        // Clear the unhealthy mark so a best-effort /agents lookup can enrich
+        // the returned error without restoring hot-path prevalidation.
+        circuit_breaker::clear(&record.id);
+        let agents = match fetch_sidecar_agents(record).await {
+            Ok(Some(agents)) => agents,
+            Ok(None) | Err(_) => Vec::new(),
+        };
+        return Some(invalid_agent_identifier_error(agent_identifier, &agents));
+    }
+
+    None
+}
+
+fn agent_warmup_retryable(err: &(StatusCode, Json<ApiError>)) -> bool {
+    let message = err.1.0.error.as_str();
+    message.contains("OpenCode server is not responding")
+        || message.contains("Failed to create OpenCode session")
+}
+
+fn request_id_for_logs() -> Option<String> {
+    CURRENT_REQUEST_ID.try_with(Clone::clone).ok()
+}
+
+fn agents_endpoint_unsupported(err: &(StatusCode, Json<ApiError>)) -> bool {
+    let message = err.1.0.error.as_str();
+    message.contains("HTTP 404") || message.contains("HTTP 405") || message.contains("HTTP 501")
+}
+
+fn agent_discovery_not_supported_message(message: &str) -> bool {
+    message.contains("HTTP 404") || message.contains("HTTP 405") || message.contains("HTTP 501")
+}
+
+fn parse_agent_descriptors(
+    parsed: Value,
+) -> Result<Vec<AgentDescriptor>, (StatusCode, Json<ApiError>)> {
+    serde_json::from_value::<SidecarAgentList>(parsed)
+        .map(|body| body.agents)
+        .map_err(|err| {
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                format!("Invalid sidecar /agents response: {err}"),
+            )
+        })
 }
 
 /// Parse agent response from sidecar (used by both prompt and task).
@@ -1191,6 +1883,77 @@ fn parse_agent_response(parsed: &Value) -> AgentResponse {
     }
 }
 
+enum SidecarAttemptFailure {
+    Timeout,
+    Error(SandboxError),
+}
+
+fn is_retryable_transport_error(err: &SandboxError) -> bool {
+    matches!(err, SandboxError::Http(msg) if msg.contains("error sending request for url"))
+}
+
+async fn try_refresh_stale_endpoint(
+    record: &SandboxRecord,
+    op_name: &str,
+) -> Option<SandboxRecord> {
+    if !runtime::supports_docker_endpoint_refresh(record) {
+        return None;
+    }
+
+    match runtime::refresh_docker_sandbox_endpoint(record).await {
+        Ok(updated) => Some(updated),
+        Err(err) => {
+            tracing::warn!(
+                sandbox_id = %record.id,
+                operation = op_name,
+                error = %err,
+                "failed to refresh stale sandbox endpoint"
+            );
+            None
+        }
+    }
+}
+
+async fn run_sidecar_json_attempt(
+    record: &SandboxRecord,
+    path: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> std::result::Result<Value, SidecarAttemptFailure> {
+    match tokio::time::timeout(
+        timeout,
+        sidecar_post_json_without_timeout(
+            &record.sidecar_url,
+            path,
+            &record.token,
+            payload.clone(),
+        ),
+    )
+    .await
+    {
+        Err(_) => Err(SidecarAttemptFailure::Timeout),
+        Ok(Err(err)) => Err(SidecarAttemptFailure::Error(err)),
+        Ok(Ok(parsed)) => Ok(parsed),
+    }
+}
+
+async fn run_sidecar_get_json_attempt(
+    record: &SandboxRecord,
+    path: &str,
+    timeout: Duration,
+) -> std::result::Result<Value, SidecarAttemptFailure> {
+    match tokio::time::timeout(
+        timeout,
+        sidecar_get_json(&record.sidecar_url, path, &record.token),
+    )
+    .await
+    {
+        Err(_) => Err(SidecarAttemptFailure::Timeout),
+        Ok(Err(err)) => Err(SidecarAttemptFailure::Error(err)),
+        Ok(Ok(parsed)) => Ok(parsed),
+    }
+}
+
 /// Call a sidecar endpoint with circuit-breaker integration and timeout.
 ///
 /// This is the single entry point for all sidecar HTTP calls. It:
@@ -1204,33 +1967,139 @@ async fn sidecar_call(
     payload: Value,
     timeout: Duration,
     op_name: &str,
+    allow_transport_retry: bool,
 ) -> Result<Value, (StatusCode, Json<ApiError>)> {
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    require_running(record)?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
 
-    let result = tokio::time::timeout(
-        timeout,
-        sidecar_post_json(&record.sidecar_url, path, &record.token, payload),
-    )
-    .await;
-
-    match result {
-        Err(_) => {
+    match run_sidecar_json_attempt(record, path, &payload, timeout).await {
+        Err(SidecarAttemptFailure::Timeout) => {
             circuit_breaker::mark_unhealthy(&record.id);
             Err(api_error(
                 StatusCode::GATEWAY_TIMEOUT,
                 format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
             ))
         }
-        Ok(Err(e)) => {
+        Err(SidecarAttemptFailure::Error(err)) => {
+            if allow_transport_retry && is_retryable_transport_error(&err) {
+                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
+                    match run_sidecar_json_attempt(&refreshed, path, &payload, timeout).await {
+                        Ok(parsed) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+                            return Ok(parsed);
+                        }
+                        Err(SidecarAttemptFailure::Timeout) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
+                        }
+                        Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
+                        }
+                    }
+                }
+            }
+
             circuit_breaker::mark_unhealthy(&record.id);
-            Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()))
+            Err(api_error(StatusCode::BAD_GATEWAY, err.to_string()))
         }
-        Ok(Ok(parsed)) => {
+        Ok(parsed) => {
             circuit_breaker::mark_healthy(&record.id);
             runtime::touch_sandbox(&record.id);
             Ok(parsed)
         }
+    }
+}
+
+async fn sidecar_get_call(
+    record: &SandboxRecord,
+    path: &str,
+    timeout: Duration,
+    op_name: &str,
+) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    require_running(record)?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
+
+    match run_sidecar_get_json_attempt(record, path, timeout).await {
+        Err(SidecarAttemptFailure::Timeout) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+            ))
+        }
+        Err(SidecarAttemptFailure::Error(err)) => {
+            let err_message = err.to_string();
+            if op_name == "agents" && agent_discovery_not_supported_message(&err_message) {
+                return Err(api_error(StatusCode::BAD_GATEWAY, err_message));
+            }
+
+            if is_retryable_transport_error(&err) {
+                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
+                    match run_sidecar_get_json_attempt(&refreshed, path, timeout).await {
+                        Ok(parsed) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+                            return Ok(parsed);
+                        }
+                        Err(SidecarAttemptFailure::Timeout) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
+                        }
+                        Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            let retry_message = retry_err.to_string();
+                            if op_name == "agents"
+                                && agent_discovery_not_supported_message(&retry_message)
+                            {
+                                return Err(api_error(StatusCode::BAD_GATEWAY, retry_message));
+                            }
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_message));
+                        }
+                    }
+                }
+            }
+
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(StatusCode::BAD_GATEWAY, err_message))
+        }
+        Ok(parsed) => {
+            circuit_breaker::mark_healthy(&record.id);
+            runtime::touch_sandbox(&record.id);
+            Ok(parsed)
+        }
+    }
+}
+
+async fn fetch_sidecar_agents(
+    record: &SandboxRecord,
+) -> Result<Option<Vec<AgentDescriptor>>, (StatusCode, Json<ApiError>)> {
+    let parsed = match sidecar_get_call(record, "/agents", SIDECAR_DEFAULT_TIMEOUT, "agents").await
+    {
+        Ok(parsed) => parsed,
+        Err(err) if agents_endpoint_unsupported(&err) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+
+    parse_agent_descriptors(parsed).map(Some)
+}
+
+async fn list_agents_on_sidecar(
+    record: &SandboxRecord,
+) -> Result<Vec<AgentDescriptor>, (StatusCode, Json<ApiError>)> {
+    match fetch_sidecar_agents(record).await? {
+        Some(agents) => Ok(agents),
+        None => Err(api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "This sidecar image does not expose agent discovery.",
+        )),
     }
 }
 
@@ -1245,9 +2114,37 @@ async fn exec_on_sidecar(
         payload,
         SIDECAR_EXEC_TIMEOUT,
         "exec",
+        true,
     )
     .await?;
     Ok(parse_exec_response(&parsed))
+}
+
+async fn sandbox_agents_handler(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    let agents = list_agents_on_sidecar(&record).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(AgentListApiResponse {
+            count: agents.len(),
+            agents,
+        }),
+    ))
+}
+
+async fn instance_agents_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    let agents = list_agents_on_sidecar(&record).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(AgentListApiResponse {
+            count: agents.len(),
+            agents,
+        }),
+    ))
 }
 
 async fn agent_on_sidecar(
@@ -1259,24 +2156,90 @@ async fn agent_on_sidecar(
     timeout_ms: u64,
     max_turns: Option<u64>,
 ) -> Result<AgentResponse, (StatusCode, Json<ApiError>)> {
+    let resolved_timeout_ms = resolve_agent_run_timeout_ms(timeout_ms, max_turns);
+    let resolved_timeout = resolve_agent_run_timeout(timeout_ms, max_turns);
+    // Prompt/task calls are latency-sensitive, so avoid paying an extra
+    // discovery round-trip here. Let /agents/run stay authoritative and
+    // translate invalid configured identifiers on the error path instead.
     let payload = build_agent_payload(
         message,
         session_id,
         model,
         context_json,
-        timeout_ms,
+        resolved_timeout_ms,
         max_turns,
         &record.agent_identifier,
     );
-    let parsed = sidecar_call(
-        record,
-        "/agents/run",
-        payload,
-        SIDECAR_AGENT_TIMEOUT,
-        "agent",
-    )
-    .await?;
-    Ok(parse_agent_response(&parsed))
+    let mut current_record = record.clone();
+    let mut last_retry_after_ms = None;
+
+    for attempt in 0..=AGENT_WARMUP_RETRY_DELAYS_MS.len() {
+        let parsed = match sidecar_call(
+            &current_record,
+            "/agents/run",
+            payload.clone(),
+            resolved_timeout,
+            "agent",
+            false,
+        )
+        .await
+        {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                if let Some(translated) =
+                    translate_missing_agent_factory_error(record, &record.agent_identifier, &err)
+                        .await
+                {
+                    return Err(translated);
+                }
+                if !agent_warmup_retryable(&err) {
+                    return Err(err);
+                }
+
+                circuit_breaker::clear(&record.id);
+
+                if let Some(delay_ms) = AGENT_WARMUP_RETRY_DELAYS_MS.get(attempt).copied() {
+                    tracing::warn!(
+                        request_id = ?request_id_for_logs(),
+                        sandbox_id = %record.id,
+                        sidecar_url = %current_record.sidecar_url,
+                        attempt = attempt + 1,
+                        retry_delay_ms = delay_ms,
+                        error = %err.1.0.error,
+                        "agent warmup detected; retrying prompt/task"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    current_record = runtime::get_sandbox_by_id(&record.id)
+                        .unwrap_or_else(|_| current_record.clone());
+                    last_retry_after_ms = Some(delay_ms);
+                    continue;
+                }
+
+                tracing::warn!(
+                    request_id = ?request_id_for_logs(),
+                    sandbox_id = %record.id,
+                    sidecar_url = %current_record.sidecar_url,
+                    attempts = AGENT_WARMUP_RETRY_DELAYS_MS.len() + 1,
+                    error = %err.1.0.error,
+                    "agent warmup retries exhausted"
+                );
+                return Err(api_error_with_details(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Sandbox agent is still starting up. Please retry shortly.",
+                    Some(AGENT_WARMUP_ERROR_CODE),
+                    last_retry_after_ms,
+                ));
+            }
+        };
+        return Ok(parse_agent_response(&parsed));
+    }
+
+    Err(api_error_with_details(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Sandbox agent is still starting up. Please retry shortly.",
+        Some(AGENT_WARMUP_ERROR_CODE),
+        last_retry_after_ms,
+    ))
 }
 
 // ── Exec ─────────────────────────────────────────────────────────────────
@@ -1320,6 +2283,427 @@ async fn instance_exec_handler(
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
+fn chat_run_status_label(status: &ChatRunStatus) -> &'static str {
+    match status {
+        ChatRunStatus::Queued => "queued",
+        ChatRunStatus::Running => "running",
+        ChatRunStatus::Cancelling => "cancelling",
+        ChatRunStatus::Completed => "completed",
+        ChatRunStatus::Failed => "failed",
+        ChatRunStatus::Cancelled => "cancelled",
+        ChatRunStatus::Interrupted => "interrupted",
+    }
+}
+
+fn resolve_agent_run_timeout_ms(timeout_ms: u64, max_turns: Option<u64>) -> u64 {
+    if timeout_ms > 0 {
+        timeout_ms
+    } else if max_turns.is_some() {
+        DEFAULT_TASK_RUN_TIMEOUT_MS
+    } else {
+        DEFAULT_PROMPT_RUN_TIMEOUT_MS
+    }
+}
+
+fn resolve_agent_run_timeout(timeout_ms: u64, max_turns: Option<u64>) -> Duration {
+    Duration::from_millis(resolve_agent_run_timeout_ms(timeout_ms, max_turns))
+}
+
+fn resolve_or_create_chat_session(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+) -> Result<ChatSessionRecord, (StatusCode, Json<ApiError>)> {
+    if session_id.trim().is_empty() {
+        return chat_state::create_session(scope_id, owner, Some("New Chat"))
+            .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e));
+    }
+
+    let session = chat_state::get_session(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
+
+    if !chat_session_matches(&session, scope_id, owner) {
+        return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
+    }
+
+    Ok(session)
+}
+
+fn resolve_chat_run(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+    run_id: &str,
+) -> Result<(ChatSessionRecord, ChatRunRecord), (StatusCode, Json<ApiError>)> {
+    let session = chat_state::get_session(session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Chat session not found"))?;
+    if !chat_session_matches(&session, scope_id, owner) {
+        return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
+    }
+
+    let run = chat_state::get_run(run_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| {
+            api_error_with_details(
+                StatusCode::NOT_FOUND,
+                "Chat run not found",
+                Some("CHAT_RUN_NOT_FOUND"),
+                None,
+            )
+        })?;
+
+    if run.session_id != session.id
+        || run.scope_id != scope_id
+        || !run.owner.eq_ignore_ascii_case(owner)
+    {
+        return Err(api_error_with_details(
+            StatusCode::NOT_FOUND,
+            "Chat run not found",
+            Some("CHAT_RUN_NOT_FOUND"),
+            None,
+        ));
+    }
+
+    Ok((session, run))
+}
+
+async fn best_effort_cancel_sidecar_run(record: &SandboxRecord) {
+    let _ = tokio::time::timeout(
+        CHAT_CANCEL_TIMEOUT,
+        sidecar_post_json(
+            &record.sidecar_url,
+            "/agents/run/cancel",
+            &record.token,
+            json!({}),
+        ),
+    )
+    .await;
+}
+
+fn finalize_cancelled_chat_run(
+    session_id: &str,
+    run_id: &str,
+    error_text: &str,
+) -> Result<ChatRunRecord, (StatusCode, Json<ApiError>)> {
+    let cancelled_at = chat_state::now_ms();
+    let updated = chat_state::update_run(run_id, |run| {
+        run.status = ChatRunStatus::Cancelled;
+        run.completed_at = Some(cancelled_at);
+        run.error = Some(error_text.to_string());
+    })
+    .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    if !updated {
+        return Err(api_error_with_details(
+            StatusCode::NOT_FOUND,
+            "Chat run not found",
+            Some("CHAT_RUN_NOT_FOUND"),
+            None,
+        ));
+    }
+
+    let _ = chat_state::clear_session_active_run(session_id);
+    let updated_run = chat_state::get_run(run_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| api_error(StatusCode::INTERNAL_SERVER_ERROR, "Chat run disappeared"))?;
+    publish_run_event(session_id, "run_cancelled", &updated_run);
+    publish_run_progress(
+        session_id,
+        &updated_run.id,
+        &updated_run.status,
+        "cancelled",
+        "Run cancelled by user.",
+    );
+    Ok(updated_run)
+}
+
+fn enqueue_chat_run(
+    scope_id: &str,
+    owner: &str,
+    session_id: &str,
+    kind: ChatRunKind,
+    request_text: &str,
+) -> Result<(ChatSessionRecord, ChatRunRecord), (StatusCode, Json<ApiError>)> {
+    let _guard = CHAT_RUN_ENQUEUE_GUARD.lock().map_err(|e| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("chat enqueue lock poisoned: {e}"),
+        )
+    })?;
+    if let Some(existing) = chat_state::active_run_for_scope(scope_id, owner)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+    {
+        return Err(api_error_with_details(
+            StatusCode::CONFLICT,
+            format!(
+                "A chat run is already active for this resource ({})",
+                existing.id
+            ),
+            Some("CHAT_RUN_ACTIVE"),
+            None,
+        ));
+    }
+
+    let session = resolve_or_create_chat_session(scope_id, owner, session_id)?;
+    let run = chat_state::create_run(&session.id, scope_id, owner, kind, request_text)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let _ = chat_state::maybe_auto_title_session(&session.id, request_text);
+
+    let user_message = ChatMessageRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        run_id: Some(run.id.clone()),
+        role: "user".to_string(),
+        content: request_text.to_string(),
+        created_at: chat_state::now_ms(),
+        trace_id: None,
+        success: None,
+        error: None,
+    };
+    publish_chat_message(&session.id, user_message, "user_message");
+    if let Ok(Some(queued_run)) = chat_state::get_run(&run.id) {
+        publish_run_event(&session.id, "run_queued", &queued_run);
+        return Ok((session, queued_run));
+    }
+
+    Ok((session, run))
+}
+
+struct SpawnChatRunRequest {
+    session_id: String,
+    run_id: String,
+    message: String,
+    model: String,
+    context_json: String,
+    timeout_ms: u64,
+    max_turns: Option<u64>,
+}
+
+fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
+    let SpawnChatRunRequest {
+        session_id,
+        run_id,
+        message,
+        model,
+        context_json,
+        timeout_ms,
+        max_turns,
+    } = request;
+    let spawned_run_id = run_id.clone();
+    let handle = tokio::spawn(async move {
+        struct ChatRunAbortGuard {
+            run_id: String,
+        }
+
+        impl Drop for ChatRunAbortGuard {
+            fn drop(&mut self) {
+                clear_chat_run_abort(&self.run_id);
+            }
+        }
+
+        let _abort_guard = ChatRunAbortGuard {
+            run_id: run_id.clone(),
+        };
+        publish_run_progress(
+            &session_id,
+            &run_id,
+            &ChatRunStatus::Queued,
+            "queued",
+            "Run accepted and queued by the operator.",
+        );
+
+        let started_at = chat_state::now_ms();
+        let _ = chat_state::update_run(&run_id, |run| {
+            run.status = ChatRunStatus::Running;
+            run.started_at = Some(started_at);
+        });
+        if let Ok(Some(run)) = chat_state::get_run(&run_id) {
+            publish_run_event(&session_id, "run_started", &run);
+            publish_run_progress(
+                &session_id,
+                &run_id,
+                &run.status,
+                "running",
+                "Operator started the agent run.",
+            );
+        }
+
+        let sidecar_session_id = chat_state::get_session(&session_id)
+            .ok()
+            .flatten()
+            .and_then(|session| session.latest_sidecar_session_id)
+            .unwrap_or_default();
+
+        let result = agent_on_sidecar(
+            &record,
+            &message,
+            &sidecar_session_id,
+            &model,
+            &context_json,
+            timeout_ms,
+            max_turns,
+        )
+        .await;
+
+        if let Ok(Some(existing_run)) = chat_state::get_run(&run_id) {
+            if matches!(
+                existing_run.status,
+                ChatRunStatus::Cancelled | ChatRunStatus::Cancelling
+            ) {
+                return;
+            }
+        }
+
+        match result {
+            Ok(ar) => {
+                metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
+                let completed_at = chat_state::now_ms();
+                let final_status = if ar.success {
+                    ChatRunStatus::Completed
+                } else {
+                    ChatRunStatus::Failed
+                };
+                let assistant_content = if !ar.response.trim().is_empty() {
+                    ar.response.clone()
+                } else if !ar.error.trim().is_empty() {
+                    format!("Error: {error}", error = ar.error)
+                } else {
+                    String::new()
+                };
+
+                if !ar.session_id.trim().is_empty() {
+                    let _ = chat_state::set_session_sidecar_session_id(
+                        &session_id,
+                        Some(ar.session_id.clone()),
+                    );
+                }
+
+                let _ = chat_state::update_run(&run_id, |run| {
+                    run.status = final_status.clone();
+                    run.completed_at = Some(completed_at);
+                    if !ar.session_id.trim().is_empty() {
+                        run.sidecar_session_id = Some(ar.session_id.clone());
+                    }
+                    if !ar.trace_id.trim().is_empty() {
+                        run.trace_id = Some(ar.trace_id.clone());
+                    }
+                    if !ar.response.trim().is_empty() {
+                        run.final_output = Some(ar.response.clone());
+                    }
+                    if !ar.error.trim().is_empty() {
+                        run.error = Some(ar.error.clone());
+                    }
+                });
+                let _ = chat_state::clear_session_active_run(&session_id);
+
+                let assistant_message = ChatMessageRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    run_id: Some(run_id.clone()),
+                    role: "assistant".to_string(),
+                    content: assistant_content,
+                    created_at: completed_at,
+                    trace_id: if ar.trace_id.trim().is_empty() {
+                        None
+                    } else {
+                        Some(ar.trace_id.clone())
+                    },
+                    success: Some(ar.success),
+                    error: if ar.error.trim().is_empty() {
+                        None
+                    } else {
+                        Some(ar.error.clone())
+                    },
+                };
+                publish_chat_message(&session_id, assistant_message, "assistant_message");
+
+                if let Ok(Some(updated_run)) = chat_state::get_run(&run_id) {
+                    publish_run_event(
+                        &session_id,
+                        if updated_run.status == ChatRunStatus::Completed {
+                            "run_completed"
+                        } else {
+                            "run_failed"
+                        },
+                        &updated_run,
+                    );
+                    publish_run_progress(
+                        &session_id,
+                        &updated_run.id,
+                        &updated_run.status,
+                        if updated_run.status == ChatRunStatus::Completed {
+                            "completed"
+                        } else {
+                            "failed"
+                        },
+                        if updated_run.status == ChatRunStatus::Completed {
+                            "Run completed successfully."
+                        } else {
+                            "Run finished with an error."
+                        },
+                    );
+                }
+            }
+            Err((status, api_error_body)) => {
+                let completed_at = chat_state::now_ms();
+                let error_text = api_error_body.0.error.clone();
+                let _ = chat_state::update_run(&run_id, |run| {
+                    run.status = ChatRunStatus::Failed;
+                    run.completed_at = Some(completed_at);
+                    run.error = Some(error_text.clone());
+                });
+                let _ = chat_state::clear_session_active_run(&session_id);
+
+                let assistant_message = ChatMessageRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    run_id: Some(run_id.clone()),
+                    role: "assistant".to_string(),
+                    content: format!("Error: {error_text}"),
+                    created_at: completed_at,
+                    trace_id: None,
+                    success: Some(false),
+                    error: Some(error_text),
+                };
+                publish_chat_message(&session_id, assistant_message, "assistant_message");
+
+                if let Ok(Some(updated_run)) = chat_state::get_run(&run_id) {
+                    publish_run_event(&session_id, "run_failed", &updated_run);
+                    publish_run_progress(
+                        &session_id,
+                        &updated_run.id,
+                        &updated_run.status,
+                        "failed",
+                        "Run failed before the operator received a successful result.",
+                    );
+                } else {
+                    let _ = status;
+                }
+            }
+        }
+    });
+    register_chat_run_abort(&spawned_run_id, handle.abort_handle());
+}
+
+fn accepted_prompt_response(run: &ChatRunRecord, session_id: &str) -> PromptApiResponse {
+    PromptApiResponse {
+        accepted: true,
+        run_id: run.id.clone(),
+        session_id: session_id.to_string(),
+        status: chat_run_status_label(&run.status).to_string(),
+        accepted_at: run.created_at,
+    }
+}
+
+fn accepted_task_response(run: &ChatRunRecord, session_id: &str) -> TaskApiResponse {
+    TaskApiResponse {
+        accepted: true,
+        run_id: run.id.clone(),
+        session_id: session_id.to_string(),
+        status: chat_run_status_label(&run.status).to_string(),
+        accepted_at: run.created_at,
+    }
+}
+
 // ── Prompt ───────────────────────────────────────────────────────────────
 
 async fn sandbox_prompt_handler(
@@ -1331,45 +2715,29 @@ async fn sandbox_prompt_handler(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let scope = live_scope_sandbox(&record.id);
-    let ar = agent_on_sidecar(
-        &record,
-        &req.message,
-        &req.session_id,
-        &req.model,
-        &req.context_json,
-        req.timeout_ms,
-        None,
-    )
-    .await?;
-    let live_session_id = if req.session_id.trim().is_empty() {
-        ar.session_id.as_str()
-    } else {
-        req.session_id.as_str()
-    };
-    publish_chat_turn(
+    require_running(&record)?;
+    let (session, run) = enqueue_chat_run(
         &scope,
         &address,
-        ChatTurnPublish {
-            session_id: live_session_id,
-            user_message: &req.message,
-            assistant_message: &ar.response,
-            trace_id: &ar.trace_id,
-            success: ar.success,
-            error: &ar.error,
+        &req.session_id,
+        ChatRunKind::Prompt,
+        &req.message,
+    )?;
+    spawn_chat_run(
+        record,
+        SpawnChatRunRequest {
+            session_id: session.id.clone(),
+            run_id: run.id.clone(),
+            message: req.message,
+            model: req.model,
+            context_json: req.context_json,
+            timeout_ms: req.timeout_ms,
+            max_turns: None,
         },
     );
-    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
-        StatusCode::OK,
-        Json(PromptApiResponse {
-            success: ar.success,
-            response: ar.response,
-            error: ar.error,
-            trace_id: ar.trace_id,
-            duration_ms: ar.duration_ms,
-            input_tokens: ar.input_tokens,
-            output_tokens: ar.output_tokens,
-        }),
+        StatusCode::ACCEPTED,
+        Json(accepted_prompt_response(&run, &session.id)),
     ))
 }
 
@@ -1381,45 +2749,29 @@ async fn instance_prompt_handler(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let scope = live_scope_instance(&record);
-    let ar = agent_on_sidecar(
-        &record,
-        &req.message,
-        &req.session_id,
-        &req.model,
-        &req.context_json,
-        req.timeout_ms,
-        None,
-    )
-    .await?;
-    let live_session_id = if req.session_id.trim().is_empty() {
-        ar.session_id.as_str()
-    } else {
-        req.session_id.as_str()
-    };
-    publish_chat_turn(
+    require_running(&record)?;
+    let (session, run) = enqueue_chat_run(
         &scope,
         &address,
-        ChatTurnPublish {
-            session_id: live_session_id,
-            user_message: &req.message,
-            assistant_message: &ar.response,
-            trace_id: &ar.trace_id,
-            success: ar.success,
-            error: &ar.error,
+        &req.session_id,
+        ChatRunKind::Prompt,
+        &req.message,
+    )?;
+    spawn_chat_run(
+        record,
+        SpawnChatRunRequest {
+            session_id: session.id.clone(),
+            run_id: run.id.clone(),
+            message: req.message,
+            model: req.model,
+            context_json: req.context_json,
+            timeout_ms: req.timeout_ms,
+            max_turns: None,
         },
     );
-    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
-        StatusCode::OK,
-        Json(PromptApiResponse {
-            success: ar.success,
-            response: ar.response,
-            error: ar.error,
-            trace_id: ar.trace_id,
-            duration_ms: ar.duration_ms,
-            input_tokens: ar.input_tokens,
-            output_tokens: ar.output_tokens,
-        }),
+        StatusCode::ACCEPTED,
+        Json(accepted_prompt_response(&run, &session.id)),
     ))
 }
 
@@ -1434,46 +2786,29 @@ async fn sandbox_task_handler(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     let scope = live_scope_sandbox(&record.id);
-    let ar = agent_on_sidecar(
-        &record,
-        &req.prompt,
-        &req.session_id,
-        &req.model,
-        &req.context_json,
-        req.timeout_ms,
-        Some(req.max_turns),
-    )
-    .await?;
-    let live_session_id = if req.session_id.trim().is_empty() {
-        ar.session_id.as_str()
-    } else {
-        req.session_id.as_str()
-    };
-    publish_chat_turn(
+    require_running(&record)?;
+    let (session, run) = enqueue_chat_run(
         &scope,
         &address,
-        ChatTurnPublish {
-            session_id: live_session_id,
-            user_message: &req.prompt,
-            assistant_message: &ar.response,
-            trace_id: &ar.trace_id,
-            success: ar.success,
-            error: &ar.error,
+        &req.session_id,
+        ChatRunKind::Task,
+        &req.prompt,
+    )?;
+    spawn_chat_run(
+        record,
+        SpawnChatRunRequest {
+            session_id: session.id.clone(),
+            run_id: run.id.clone(),
+            message: req.prompt,
+            model: req.model,
+            context_json: req.context_json,
+            timeout_ms: req.timeout_ms,
+            max_turns: Some(req.max_turns),
         },
     );
-    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
-        StatusCode::OK,
-        Json(TaskApiResponse {
-            success: ar.success,
-            result: ar.response,
-            error: ar.error,
-            trace_id: ar.trace_id,
-            session_id: ar.session_id,
-            duration_ms: ar.duration_ms,
-            input_tokens: ar.input_tokens,
-            output_tokens: ar.output_tokens,
-        }),
+        StatusCode::ACCEPTED,
+        Json(accepted_task_response(&run, &session.id)),
     ))
 }
 
@@ -1485,46 +2820,29 @@ async fn instance_task_handler(
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
     let scope = live_scope_instance(&record);
-    let ar = agent_on_sidecar(
-        &record,
-        &req.prompt,
-        &req.session_id,
-        &req.model,
-        &req.context_json,
-        req.timeout_ms,
-        Some(req.max_turns),
-    )
-    .await?;
-    let live_session_id = if req.session_id.trim().is_empty() {
-        ar.session_id.as_str()
-    } else {
-        req.session_id.as_str()
-    };
-    publish_chat_turn(
+    require_running(&record)?;
+    let (session, run) = enqueue_chat_run(
         &scope,
         &address,
-        ChatTurnPublish {
-            session_id: live_session_id,
-            user_message: &req.prompt,
-            assistant_message: &ar.response,
-            trace_id: &ar.trace_id,
-            success: ar.success,
-            error: &ar.error,
+        &req.session_id,
+        ChatRunKind::Task,
+        &req.prompt,
+    )?;
+    spawn_chat_run(
+        record,
+        SpawnChatRunRequest {
+            session_id: session.id.clone(),
+            run_id: run.id.clone(),
+            message: req.prompt,
+            model: req.model,
+            context_json: req.context_json,
+            timeout_ms: req.timeout_ms,
+            max_turns: Some(req.max_turns),
         },
     );
-    metrics::metrics().record_job(ar.duration_ms, ar.input_tokens, ar.output_tokens);
     Ok::<_, (StatusCode, Json<ApiError>)>((
-        StatusCode::OK,
-        Json(TaskApiResponse {
-            success: ar.success,
-            result: ar.response,
-            error: ar.error,
-            trace_id: ar.trace_id,
-            session_id: ar.session_id,
-            duration_ms: ar.duration_ms,
-            input_tokens: ar.input_tokens,
-            output_tokens: ar.output_tokens,
-        }),
+        StatusCode::ACCEPTED,
+        Json(accepted_task_response(&run, &session.id)),
     ))
 }
 
@@ -1544,6 +2862,9 @@ fn handle_lifecycle_outcome(
         {
             // Idempotent lifecycle call: already in target state.
             Ok(())
+        }
+        Err(crate::SandboxError::Unavailable(msg)) => {
+            Err(api_error(StatusCode::SERVICE_UNAVAILABLE, msg))
         }
         Err(e) => Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
@@ -1661,6 +2982,7 @@ async fn run_snapshot(
         payload,
         SIDECAR_DEFAULT_TIMEOUT,
         "snapshot",
+        true,
     )
     .await?;
     Ok(SnapshotApiResponse {
@@ -1690,53 +3012,35 @@ async fn instance_snapshot_handler(
 
 // ── SSH ──────────────────────────────────────────────────────────────────
 
-fn build_ssh_provision_command(username: &str, public_key: &str) -> String {
-    let user_arg = crate::util::shell_escape(username);
-    let key_arg = crate::util::shell_escape(public_key);
-    format!(
-        "set -euo pipefail; user={user_arg}; \
-home=$(getent passwd \"${{user}}\" | cut -d: -f6); \
-if [ -z \"$home\" ]; then echo \"User ${{user}} does not exist\" >&2; exit 1; fi; \
-mkdir -p \"$home/.ssh\"; chmod 700 \"$home/.ssh\"; \
-if ! grep -qxF {key_arg} \"$home/.ssh/authorized_keys\" 2>/dev/null; then \
-    echo {key_arg} >> \"$home/.ssh/authorized_keys\"; \
-fi; chmod 600 \"$home/.ssh/authorized_keys\""
-    )
+fn require_ssh(record: &SandboxRecord) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if record.ssh_port.is_none() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "SSH is not enabled for this sandbox",
+        ));
+    }
+    Ok(())
 }
 
-fn build_ssh_revoke_cmd(username: &str, public_key: &str) -> String {
-    let user_arg = crate::util::shell_escape(username);
-    let key_arg = crate::util::shell_escape(public_key);
-    format!(
-        "set -euo pipefail; user={user_arg}; \
-home=$(getent passwd \"${{user}}\" | cut -d: -f6); \
-if [ -z \"$home\" ]; then echo \"User ${{user}} does not exist\" >&2; exit 1; fi; \
-if [ -f \"$home/.ssh/authorized_keys\" ]; then \
-    tmp=$(mktemp /tmp/authorized_keys.XXXXXX); \
-    grep -vxF {key_arg} \"$home/.ssh/authorized_keys\" > \"$tmp\" || true; \
-    mv \"$tmp\" \"$home/.ssh/authorized_keys\"; chmod 600 \"$home/.ssh/authorized_keys\"; \
-fi"
-    )
+async fn detect_ssh_username(
+    record: &SandboxRecord,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    runtime::detect_ssh_username(record)
+        .await
+        .map_err(|e| api_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))
 }
 
 async fn run_ssh_provision(
     record: &SandboxRecord,
     req: &SshProvisionApiRequest,
 ) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
-    let username = crate::util::normalize_username(&req.username)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
-    let command = build_ssh_provision_command(&username, &req.public_key);
-    let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let parsed = sidecar_call(
-        record,
-        "/terminals/commands",
-        payload,
-        SIDECAR_DEFAULT_TIMEOUT,
-        "ssh-provision",
-    )
-    .await?;
+    let (username, parsed) =
+        runtime::provision_ssh_key(record, req.username.as_deref(), &req.public_key)
+            .await
+            .map_err(|e| api_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     Ok(SshApiResponse {
         success: true,
+        username,
         result: parsed,
     })
 }
@@ -1745,22 +3049,31 @@ async fn run_ssh_revoke(
     record: &SandboxRecord,
     req: &SshRevokeApiRequest,
 ) -> Result<SshApiResponse, (StatusCode, Json<ApiError>)> {
-    let username = crate::util::normalize_username(&req.username)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
-    let command = build_ssh_revoke_cmd(&username, &req.public_key);
-    let payload = json!({ "command": format!("sh -c {}", crate::util::shell_escape(&command)) });
-    let parsed = sidecar_call(
-        record,
-        "/terminals/commands",
-        payload,
-        SIDECAR_DEFAULT_TIMEOUT,
-        "ssh-revoke",
-    )
-    .await?;
+    let (username, parsed) =
+        runtime::revoke_ssh_key(record, req.username.as_deref(), &req.public_key)
+            .await
+            .map_err(|e| api_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     Ok(SshApiResponse {
         success: true,
+        username,
         result: parsed,
     })
+}
+
+async fn sandbox_ssh_user_handler(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+) -> impl IntoResponse {
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_ssh(&record)?;
+    let username = detect_ssh_username(&record).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(SshUserApiResponse {
+            success: true,
+            username,
+        }),
+    ))
 }
 
 async fn sandbox_ssh_provision_handler(
@@ -1771,6 +3084,7 @@ async fn sandbox_ssh_provision_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_ssh(&record)?;
     let resp = run_ssh_provision(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
@@ -1783,8 +3097,22 @@ async fn sandbox_ssh_revoke_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    require_ssh(&record)?;
     let resp = run_ssh_revoke(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
+async fn instance_ssh_user_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
+    let record = resolve_instance(&address)?;
+    require_ssh(&record)?;
+    let username = detect_ssh_username(&record).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((
+        StatusCode::OK,
+        Json(SshUserApiResponse {
+            success: true,
+            username,
+        }),
+    ))
 }
 
 async fn instance_ssh_provision_handler(
@@ -1794,6 +3122,7 @@ async fn instance_ssh_provision_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
+    require_ssh(&record)?;
     let resp = run_ssh_provision(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
@@ -1805,6 +3134,7 @@ async fn instance_ssh_revoke_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
+    require_ssh(&record)?;
     let resp = run_ssh_revoke(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
@@ -1906,13 +3236,6 @@ async fn run_port_proxy(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
-    let host_port = record.extra_ports.get(&port).copied().ok_or_else(|| {
-        api_error(
-            StatusCode::NOT_FOUND,
-            format!("Port {port} is not exposed on this sandbox"),
-        )
-    })?;
-
     // Defense-in-depth: reject clearly malicious path patterns even though the
     // target is always localhost and reqwest::Url::parse validates the result.
     if path.contains('\0') || path.starts_with("//") {
@@ -1922,16 +3245,7 @@ async fn run_port_proxy(
         ));
     }
 
-    circuit_breaker::check_health(&record.id)
-        .map_err(|e| api_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
-
-    let mut target = format!("http://127.0.0.1:{host_port}/{path}");
-    if let Some(qs) = query {
-        target.push('?');
-        target.push_str(qs);
-    }
-    let target_url = reqwest::Url::parse(&target)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("Invalid path: {e}")))?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
 
     tracing::debug!(
         sandbox_id = %record.id,
@@ -1941,14 +3255,49 @@ async fn run_port_proxy(
         "port proxy request"
     );
 
-    let result = tokio::time::timeout(
-        PORT_PROXY_TIMEOUT,
-        crate::http::proxy_http(target_url, method, &headers, body.to_vec()),
-    )
-    .await;
+    let build_target =
+        |current: &SandboxRecord| -> Result<reqwest::Url, (StatusCode, Json<ApiError>)> {
+            let host_port = current.extra_ports.get(&port).copied().ok_or_else(|| {
+                api_error(
+                    StatusCode::NOT_FOUND,
+                    format!("Port {port} is not exposed on this sandbox"),
+                )
+            })?;
 
-    match result {
-        Err(_) => {
+            let mut target = format!("http://127.0.0.1:{host_port}/{path}");
+            if let Some(qs) = query {
+                target.push('?');
+                target.push_str(qs);
+            }
+            reqwest::Url::parse(&target)
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("Invalid path: {e}")))
+        };
+
+    let proxy_once = |target_url: reqwest::Url,
+                      method: axum::http::Method,
+                      headers: HeaderMap,
+                      body: axum::body::Bytes| async move {
+        match tokio::time::timeout(
+            PORT_PROXY_TIMEOUT,
+            crate::http::proxy_http(target_url, method, &headers, body.to_vec()),
+        )
+        .await
+        {
+            Err(_) => Err(SidecarAttemptFailure::Timeout),
+            Ok(Err(err)) => Err(SidecarAttemptFailure::Error(err)),
+            Ok(Ok(resp)) => Ok(resp),
+        }
+    };
+
+    match proxy_once(
+        build_target(&record)?,
+        method.clone(),
+        headers.clone(),
+        body.clone(),
+    )
+    .await
+    {
+        Err(SidecarAttemptFailure::Timeout) => {
             circuit_breaker::mark_unhealthy(&record.id);
             Err(api_error(
                 StatusCode::GATEWAY_TIMEOUT,
@@ -1958,11 +3307,48 @@ async fn run_port_proxy(
                 ),
             ))
         }
-        Ok(Err(e)) => {
+        Err(SidecarAttemptFailure::Error(err)) => {
+            if is_retryable_transport_error(&err) {
+                if let Some(refreshed) = try_refresh_stale_endpoint(&record, "port_proxy").await {
+                    match proxy_once(build_target(&refreshed)?, method, headers, body).await {
+                        Ok((status, resp_headers, resp_body)) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+
+                            let mut response =
+                                axum::response::Response::builder().status(status.as_u16());
+                            for (name, value) in resp_headers.iter() {
+                                response = response.header(name.as_str(), value.as_bytes());
+                            }
+
+                            return response
+                                .body(axum::body::Body::from(resp_body))
+                                .map_err(|e| {
+                                    api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                                });
+                        }
+                        Err(SidecarAttemptFailure::Timeout) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!(
+                                    "Port proxy timed out after {}s",
+                                    PORT_PROXY_TIMEOUT.as_secs()
+                                ),
+                            ));
+                        }
+                        Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
+                        }
+                    }
+                }
+            }
+
             circuit_breaker::mark_unhealthy(&record.id);
-            Err(api_error(StatusCode::BAD_GATEWAY, e.to_string()))
+            Err(api_error(StatusCode::BAD_GATEWAY, err.to_string()))
         }
-        Ok(Ok((status, resp_headers, resp_body))) => {
+        Ok((status, resp_headers, resp_body)) => {
             circuit_breaker::mark_healthy(&record.id);
             runtime::touch_sandbox(&record.id);
 
@@ -2052,8 +3438,10 @@ pub fn build_cors_layer() -> CorsLayer {
              Set explicitly for production deployments."
         );
         let localhost_origins: Vec<_> = [
+            "http://localhost:1338",
             "http://localhost:3000",
             "http://localhost:5173",
+            "http://127.0.0.1:1338",
             "http://127.0.0.1:3000",
             "http://127.0.0.1:5173",
         ]
@@ -2113,7 +3501,7 @@ async fn http_metrics_middleware(
 ///
 /// For TEE-enabled operators, use [`operator_api_router_with_tee`] instead.
 pub fn operator_api_router() -> Router {
-    operator_api_router_with_tee(None)
+    operator_api_router_with_tee_and_routes(None, Router::new())
 }
 
 /// Build the operator API router with optional TEE sealed secrets endpoints.
@@ -2127,6 +3515,17 @@ pub fn operator_api_router() -> Router {
 pub fn operator_api_router_with_tee(
     tee: Option<std::sync::Arc<dyn crate::tee::TeeBackend>>,
 ) -> Router {
+    operator_api_router_with_tee_and_routes(tee, Router::new())
+}
+
+/// Build the operator API router and merge additional routes before applying
+/// shared middleware such as CORS, request IDs, rate limits, and security
+/// headers. This is important for blueprint-specific routes like
+/// `/api/workflows/{workflow_id}` so browser preflight requests reach them too.
+pub fn operator_api_router_with_tee_and_routes(
+    tee: Option<std::sync::Arc<dyn crate::tee::TeeBackend>>,
+    extra_routes: Router,
+) -> Router {
     let cors = build_cors_layer();
 
     // Read endpoints: 120 req/min per IP
@@ -2136,7 +3535,12 @@ pub fn operator_api_router_with_tee(
             "/api/sandboxes/{sandbox_id}/ports",
             get(sandbox_ports_handler),
         )
+        .route(
+            "/api/sandboxes/{sandbox_id}/agents",
+            get(sandbox_agents_handler),
+        )
         .route("/api/sandbox/ports", get(instance_ports_handler))
+        .route("/api/sandbox/agents", get(instance_agents_handler))
         .route(
             "/api/sandboxes/{sandbox_id}/live/terminal/sessions",
             get(sandbox_terminal_session_list_handler),
@@ -2183,7 +3587,7 @@ pub fn operator_api_router_with_tee(
     let write_routes = Router::new()
         .route(
             "/api/sandboxes/{sandbox_id}/secrets",
-            post(inject_secrets).delete(wipe_secrets),
+            get(get_secrets).post(inject_secrets).delete(wipe_secrets),
         )
         .route(
             "/api/sandboxes/{sandbox_id}/live/terminal/sessions",
@@ -2202,6 +3606,16 @@ pub fn operator_api_router_with_tee(
             axum::routing::delete(sandbox_chat_session_delete_handler),
         )
         .route(
+            "/api/sandboxes/{sandbox_id}/live/chat/sessions/{session_id}/runs/{run_id}/cancel",
+            post(sandbox_chat_run_cancel_handler),
+        )
+        .route(
+            "/api/sandbox/secrets",
+            get(instance_get_secrets)
+                .post(instance_inject_secrets)
+                .delete(instance_wipe_secrets),
+        )
+        .route(
             "/api/sandbox/live/terminal/sessions",
             post(instance_terminal_session_create_handler),
         )
@@ -2216,6 +3630,10 @@ pub fn operator_api_router_with_tee(
         .route(
             "/api/sandbox/live/chat/sessions/{session_id}",
             axum::routing::delete(instance_chat_session_delete_handler),
+        )
+        .route(
+            "/api/sandbox/live/chat/sessions/{session_id}/runs/{run_id}/cancel",
+            post(instance_chat_run_cancel_handler),
         )
         .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
@@ -2250,6 +3668,10 @@ pub fn operator_api_router_with_tee(
             post(sandbox_ssh_provision_handler).delete(sandbox_ssh_revoke_handler),
         )
         .route(
+            "/api/sandboxes/{sandbox_id}/ssh/user",
+            get(sandbox_ssh_user_handler),
+        )
+        .route(
             "/api/sandboxes/{sandbox_id}/port/{port}/{*rest}",
             any(sandbox_port_proxy_handler),
         )
@@ -2271,6 +3693,7 @@ pub fn operator_api_router_with_tee(
             "/api/sandbox/ssh",
             post(instance_ssh_provision_handler).delete(instance_ssh_revoke_handler),
         )
+        .route("/api/sandbox/ssh/user", get(instance_ssh_user_handler))
         .route(
             "/api/sandbox/port/{port}/{*rest}",
             any(instance_port_proxy_handler),
@@ -2332,6 +3755,7 @@ pub fn operator_api_router_with_tee(
     }
 
     router
+        .merge(extra_routes)
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1 MB max request body
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn(http_metrics_middleware))
@@ -2347,6 +3771,7 @@ pub fn operator_api_router_with_tee(
 }
 
 #[cfg(test)]
+#[serial_test::serial]
 mod tests {
     use super::*;
     use axum::body::Body;
@@ -2355,10 +3780,12 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::util::ServiceExt;
 
+    use std::ffi::{OsStr, OsString};
     use std::sync::{Arc, Mutex, Once};
     use std::time::Duration;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+
     static INIT: Once = Once::new();
     fn init() {
         INIT.call_once(|| {
@@ -2367,6 +3794,65 @@ mod tests {
             std::fs::create_dir_all(&dir).ok();
             unsafe { std::env::set_var("BLUEPRINT_STATE_DIR", dir) };
         });
+    }
+
+    fn reset_test_state() {
+        crate::session_auth::clear_all_for_testing();
+        crate::circuit_breaker::clear_all_for_testing();
+        crate::provision_progress::clear_all_for_testing().expect("clear provision state");
+        LIVE_SESSIONS
+            .clear_all_for_testing()
+            .expect("clear live sessions");
+        crate::chat_state::clear_all_for_testing().expect("clear chat state");
+        sandboxes()
+            .unwrap()
+            .replace(std::collections::HashMap::new())
+            .expect("clear sandbox store");
+        runtime::instance_store()
+            .unwrap()
+            .replace(std::collections::HashMap::new())
+            .expect("clear instance store");
+        rate_limit::read_limiter().reset();
+        rate_limit::write_limiter().reset();
+        rate_limit::auth_limiter().reset();
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    fn docker_ok() -> bool {
+        std::process::Command::new("docker")
+            .arg("info")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     fn app() -> Router {
@@ -2393,6 +3879,13 @@ mod tests {
     struct MockSidecarState {
         last_exec_payload: Arc<Mutex<Option<Value>>>,
         last_agent_payload: Arc<Mutex<Option<Value>>>,
+        exec_response: Arc<Mutex<Value>>,
+        agents_response: Arc<Mutex<Value>>,
+        remaining_agent_warmup_failures: Arc<AtomicU64>,
+        agent_response_delay_ms: Arc<AtomicU64>,
+        agent_invocations: Arc<AtomicU64>,
+        agent_list_invocations: Arc<AtomicU64>,
+        cancel_invocations: Arc<AtomicU64>,
     }
 
     async fn mock_sidecar_exec(
@@ -2400,45 +3893,144 @@ mod tests {
         Json(payload): Json<Value>,
     ) -> Json<Value> {
         *state.last_exec_payload.lock().expect("exec lock") = Some(payload);
-        Json(json!({
-            "result": {
-                "exitCode": 0,
-                "stdout": "mock-exec-stdout",
-                "stderr": ""
-            }
-        }))
+        let response = state
+            .exec_response
+            .lock()
+            .expect("exec response lock")
+            .clone();
+        Json(response)
     }
 
     async fn mock_sidecar_agent(
         State(state): State<MockSidecarState>,
         Json(payload): Json<Value>,
-    ) -> Json<Value> {
+    ) -> impl IntoResponse {
         *state.last_agent_payload.lock().expect("agent lock") = Some(payload.clone());
+        state.agent_invocations.fetch_add(1, Ordering::Relaxed);
+        let delay_ms = state.agent_response_delay_ms.load(Ordering::Relaxed);
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        let identifier = payload
+            .get("identifier")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let known_identifier = state
+            .agents_response
+            .lock()
+            .expect("agents response lock")
+            .get("agents")
+            .and_then(Value::as_array)
+            .map(|agents| {
+                agents.iter().any(|agent| {
+                    agent
+                        .get("identifier")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        == identifier
+                })
+            })
+            .unwrap_or(false);
+        if !known_identifier {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "AGENT_EXECUTION_FAILED",
+                        "message": format!(
+                            "No factory registered for agent identifier {identifier}"
+                        )
+                    }
+                })),
+            )
+                .into_response();
+        }
+        let remaining = state
+            .remaining_agent_warmup_failures
+            .load(Ordering::Relaxed);
+        if remaining > 0 {
+            state
+                .remaining_agent_warmup_failures
+                .fetch_sub(1, Ordering::Relaxed);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "AGENT_EXECUTION_FAILED",
+                        "message": "OpenCode server is not responding (may have crashed). Cannot create session."
+                    }
+                })),
+            )
+                .into_response();
+        }
         let session_id = payload
             .get("sessionId")
             .and_then(Value::as_str)
             .unwrap_or("mock-agent-session");
-        Json(json!({
-            "success": true,
-            "response": "mock-agent-response",
-            "traceId": "trace-mock-1",
-            "sessionId": session_id,
-            "usage": {
-                "input_tokens": 2,
-                "output_tokens": 3
-            }
-        }))
+        (
+            StatusCode::OK,
+            Json(json!({
+                "success": true,
+                "response": "mock-agent-response",
+                "traceId": "trace-mock-1",
+                "sessionId": session_id,
+                "usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 3
+                }
+            })),
+        )
+            .into_response()
+    }
+
+    async fn mock_sidecar_run_cancel(State(state): State<MockSidecarState>) -> impl IntoResponse {
+        state.cancel_invocations.fetch_add(1, Ordering::Relaxed);
+        (
+            StatusCode::OK,
+            Json(json!({
+                "success": true
+            })),
+        )
+            .into_response()
+    }
+
+    async fn mock_sidecar_agents(State(state): State<MockSidecarState>) -> Json<Value> {
+        state.agent_list_invocations.fetch_add(1, Ordering::Relaxed);
+        let response = state
+            .agents_response
+            .lock()
+            .expect("agents response lock")
+            .clone();
+        Json(response)
     }
 
     async fn spawn_mock_sidecar() -> (String, MockSidecarState, JoinHandle<()>) {
         let state = MockSidecarState::default();
+        *state.exec_response.lock().expect("exec response lock") = json!({
+            "result": {
+                "exitCode": 0,
+                "stdout": "mock-exec-stdout",
+                "stderr": ""
+            }
+        });
+        *state.agents_response.lock().expect("agents response lock") = json!({
+            "agents": [
+                { "identifier": "default", "displayName": "Default" },
+                { "identifier": "batch", "displayName": "Batch" }
+            ],
+            "count": 2
+        });
         let app = Router::new()
             .route(
                 "/health",
                 get(|| async { (StatusCode::OK, Json(json!({"status":"ok"}))) }),
             )
             .route("/terminals/commands", post(mock_sidecar_exec))
+            .route("/agents", get(mock_sidecar_agents))
             .route("/agents/run", post(mock_sidecar_agent))
+            .route("/agents/run/cancel", post(mock_sidecar_run_cancel))
             .with_state(state.clone());
 
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -2465,6 +4057,78 @@ mod tests {
         (sidecar_url, state, server)
     }
 
+    async fn spawn_mock_sidecar_with_agent_warmup_failures(
+        failures: u64,
+    ) -> (String, MockSidecarState, JoinHandle<()>) {
+        let (sidecar_url, state, server) = spawn_mock_sidecar().await;
+        state
+            .remaining_agent_warmup_failures
+            .store(failures, Ordering::Relaxed);
+        (sidecar_url, state, server)
+    }
+
+    async fn spawn_mock_sidecar_without_agent_listing() -> (String, JoinHandle<()>) {
+        let app = Router::new()
+            .route(
+                "/health",
+                get(|| async { (StatusCode::OK, Json(json!({"status":"ok"}))) }),
+            )
+            .route(
+                "/agents/run",
+                post(|Json(payload): Json<Value>| async move {
+                    let identifier = payload
+                        .get("identifier")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if identifier == "a1" {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "success": false,
+                                "error": {
+                                    "code": "AGENT_EXECUTION_FAILED",
+                                    "message": "No factory registered for agent identifier a1"
+                                }
+                            })),
+                        );
+                    }
+
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "success": true,
+                            "response": "ok",
+                            "traceId": "trace-mock-compat",
+                            "sessionId": "mock-agent-session"
+                        })),
+                    )
+                }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock sidecar without /agents");
+        let addr = listener.local_addr().expect("mock sidecar addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve mock sidecar");
+        });
+
+        let sidecar_url = format!("http://{addr}");
+        let health_url = format!("{sidecar_url}/health");
+        for _ in 0..20 {
+            if let Ok(resp) = reqwest::get(&health_url).await {
+                if resp.status().is_success() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        (sidecar_url, server)
+    }
+
     async fn read_first_sse_frame(mut body: Body) -> Option<String> {
         tokio::time::timeout(Duration::from_secs(3), async move {
             loop {
@@ -2484,9 +4148,26 @@ mod tests {
         .flatten()
     }
 
+    async fn wait_for_run_terminal(run_id: &str) -> ChatRunRecord {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(run) = crate::chat_state::get_run(run_id).expect("get run") {
+                if !run.status.is_active() {
+                    return run;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for run {run_id} to finish"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     #[tokio::test]
     async fn test_list_sandboxes_empty() {
         init();
+        reset_test_state();
 
         let response = app()
             .oneshot(
@@ -2522,6 +4203,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_provisions_empty() {
         init();
+        reset_test_state();
 
         let response = app()
             .oneshot(
@@ -2542,6 +4224,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_provision_not_found() {
         init();
+        reset_test_state();
 
         let response = app()
             .oneshot(
@@ -2560,6 +4243,7 @@ mod tests {
     #[tokio::test]
     async fn test_provision_lifecycle() {
         init();
+        reset_test_state();
 
         let auth = test_auth_header();
         // Start a provision
@@ -2753,8 +4437,40 @@ mod tests {
                 Request::builder()
                     .method("OPTIONS")
                     .uri("/api/sandboxes")
-                    .header("origin", "http://localhost:5173")
+                    .header("origin", "http://127.0.0.1:1338")
                     .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .contains_key("access-control-allow-origin")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cors_preflight_for_extra_routes() {
+        let app = operator_api_router_with_tee_and_routes(
+            None,
+            Router::new().route(
+                "/api/workflows/{workflow_id}",
+                get(|| async { StatusCode::OK }),
+            ),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/workflows/1")
+                    .header("origin", "http://127.0.0.1:1338")
+                    .header("access-control-request-method", "GET")
+                    .header("access-control-request-headers", "authorization")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2814,20 +4530,29 @@ mod tests {
             disk_gb: 50,
             stack: String::new(),
             owner: owner.to_string(),
+            service_id: None,
             tee_config: Some(crate::tee::TeeConfig {
                 required: true,
                 tee_type: crate::tee::TeeType::Tdx,
             }),
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
     /// Insert a non-TEE sandbox into the store.
-    fn insert_plain_sandbox_with_url(id: &str, owner: &str, sidecar_url: &str) {
+    fn insert_plain_sandbox_with_state_and_url(
+        id: &str,
+        owner: &str,
+        sidecar_url: &str,
+        state: crate::runtime::SandboxState,
+    ) {
         init();
         use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        let stopped_at = (state != SandboxState::Running).then_some(1_700_000_001);
         let mut record = SandboxRecord {
             id: id.to_string(),
             container_id: format!("ctr-{id}"),
@@ -2838,11 +4563,11 @@ mod tests {
             created_at: 1_700_000_000,
             cpu_cores: 1,
             memory_mb: 1024,
-            state: SandboxState::Running,
+            state,
             idle_timeout_seconds: 1800,
             max_lifetime_seconds: 86400,
             last_activity_at: 1_700_000_000,
-            stopped_at: None,
+            stopped_at,
             snapshot_image_id: None,
             snapshot_s3_url: None,
             container_removed_at: None,
@@ -2860,15 +4585,55 @@ mod tests {
             disk_gb: 10,
             stack: String::new(),
             owner: owner.to_string(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
+    fn insert_plain_sandbox_with_url(id: &str, owner: &str, sidecar_url: &str) {
+        insert_plain_sandbox_with_state_and_url(id, owner, sidecar_url, SandboxState::Running);
+    }
+
+    fn insert_stopped_sandbox_with_url(id: &str, owner: &str, sidecar_url: &str) {
+        insert_plain_sandbox_with_state_and_url(id, owner, sidecar_url, SandboxState::Stopped);
+    }
+
     fn insert_plain_sandbox(id: &str, owner: &str) {
         insert_plain_sandbox_with_url(id, owner, "http://localhost:9999");
+    }
+
+    /// Insert a mock-sidecar sandbox that should always take the non-Docker SSH path.
+    fn insert_mock_sidecar_ssh_sandbox(id: &str, owner: &str, sidecar_url: &str, ssh_port: u16) {
+        use crate::runtime::{sandboxes, seal_record};
+
+        insert_plain_sandbox_with_url(id, owner, sidecar_url);
+
+        let mut record = sandboxes()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .expect("sandbox must exist to configure mock ssh");
+        record.metadata_json = r#"{"runtime_backend":"firecracker"}"#.into();
+        record.ssh_port = Some(ssh_port);
+        seal_record(&mut record).unwrap();
+        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
+    }
+
+    fn set_agent_identifier(id: &str, agent_identifier: &str) {
+        use crate::runtime::{sandboxes, seal_record};
+        let mut record = sandboxes()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .expect("sandbox must exist to update agent identifier");
+        record.agent_identifier = agent_identifier.to_string();
+        seal_record(&mut record).unwrap();
+        sandboxes().unwrap().insert(id.to_string(), record).unwrap();
     }
 
     /// Insert a singleton instance record (stored under key "instance").
@@ -2887,6 +4652,31 @@ mod tests {
 
     fn insert_instance_sandbox(id: &str, owner: &str) {
         insert_instance_sandbox_with_url(id, owner, "http://localhost:9999");
+    }
+
+    fn insert_instance_tee_sandbox(id: &str, deployment_id: &str, owner: &str) {
+        insert_instance_sandbox(id, owner);
+        use crate::runtime::seal_record;
+        let mut record = sandboxes()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .expect("sandbox exists");
+        record.tee_deployment_id = Some(deployment_id.to_string());
+        record.tee_metadata_json = Some(r#"{"backend":"mock"}"#.into());
+        record.tee_config = Some(crate::tee::TeeConfig {
+            required: true,
+            tee_type: crate::tee::TeeType::Tdx,
+        });
+        seal_record(&mut record).unwrap();
+        sandboxes()
+            .unwrap()
+            .insert(id.to_string(), record.clone())
+            .unwrap();
+        runtime::instance_store()
+            .unwrap()
+            .insert("instance".to_string(), record)
+            .unwrap();
     }
 
     // Use a distinct owner for TEE tests so sandbox inserts don't pollute
@@ -3121,6 +4911,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_instance_secrets_empty_env_rejected() {
+        insert_instance_sandbox("inst-sec-empty-1", OP_TEST_OWNER);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "env_json": {} });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/secrets")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_instance_secrets_wrong_owner_forbidden() {
+        insert_instance_sandbox("inst-sec-owner-1", OP_TEST_OWNER);
+        let other_auth = format!(
+            "Bearer {}",
+            session_auth::create_test_token("0xOTHER0000000000000000000000000000000014")
+        );
+        let body = serde_json::json!({ "env_json": { "API_KEY": "secret-value" } });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/secrets")
+                    .header("authorization", &other_auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_instance_secrets_reject_tee_instances() {
+        insert_instance_tee_sandbox("inst-tee-sec-1", "deploy-tee-sec-1", OP_TEST_OWNER);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "env_json": { "API_KEY": "secret-value" } });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/secrets")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn test_sandbox_snapshot_empty_destination() {
         insert_plain_sandbox("snap-test-1", OP_TEST_OWNER);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
@@ -3169,6 +5028,7 @@ mod tests {
             "/api/sandbox/exec",
             "/api/sandbox/prompt",
             "/api/sandbox/task",
+            "/api/sandbox/secrets",
             "/api/sandbox/stop",
             "/api/sandbox/resume",
             "/api/sandbox/snapshot",
@@ -3191,6 +5051,19 @@ mod tests {
                 "Expected 401 for {path} (not 404), confirming route exists"
             );
         }
+
+        let response = app()
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/sandbox/agents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -3376,6 +5249,7 @@ mod tests {
         let session_id = created["session_id"].as_str().unwrap().to_string();
         assert_eq!(created["title"], "Ops Chat");
 
+        insert_instance_sandbox("live-inst-1", OP_TEST_OWNER);
         let list = app()
             .oneshot(
                 Request::builder()
@@ -3396,6 +5270,7 @@ mod tests {
             .collect();
         assert!(ids.iter().any(|id| *id == session_id));
 
+        insert_instance_sandbox("live-inst-1", OP_TEST_OWNER);
         let detail = app()
             .oneshot(
                 Request::builder()
@@ -3412,6 +5287,7 @@ mod tests {
         assert_eq!(detail_json["title"], "Ops Chat");
         assert!(detail_json["messages"].is_array());
 
+        insert_instance_sandbox("live-inst-1", OP_TEST_OWNER);
         let stream = app()
             .oneshot(
                 Request::builder()
@@ -3432,6 +5308,7 @@ mod tests {
             .unwrap_or("");
         assert!(ct.contains("text/event-stream"));
 
+        insert_instance_sandbox("live-inst-1", OP_TEST_OWNER);
         let deleted = app()
             .oneshot(
                 Request::builder()
@@ -3523,7 +5400,173 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_exec_recovers_from_stale_docker_sidecar_url() {
+        init();
+        if !docker_ok() {
+            eprintln!("SKIP: Docker not available");
+            return;
+        }
+
+        unsafe {
+            std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
+            std::env::set_var("REQUEST_TIMEOUT_SECS", "30");
+        }
+
+        let request = crate::CreateSandboxParams {
+            name: "stale-port-recovery".into(),
+            image: String::new(),
+            stack: String::new(),
+            agent_identifier: String::new(),
+            env_json: "{}".into(),
+            metadata_json: "{}".into(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 60,
+            idle_timeout_seconds: 30,
+            cpu_cores: 1,
+            memory_mb: 256,
+            disk_gb: 1,
+            owner: String::new(),
+            service_id: None,
+            tee_config: None,
+            user_env_json: String::new(),
+            port_mappings: Vec::new(),
+        };
+
+        let created = match crate::runtime::create_sidecar(&request, None).await {
+            Ok((record, _)) => record,
+            Err(err) => {
+                eprintln!("SKIP: create_sidecar failed: {err}");
+                return;
+            }
+        };
+
+        sandboxes()
+            .unwrap()
+            .update(&created.id, |record| {
+                record.owner = OP_TEST_OWNER.to_string();
+            })
+            .unwrap();
+
+        let original_url = created.sidecar_url.clone();
+        let stale_url = "http://127.0.0.1:9".to_string();
+        sandboxes()
+            .unwrap()
+            .update(&created.id, |record| {
+                record.sidecar_url = stale_url.clone();
+                record.sidecar_port = 9;
+            })
+            .unwrap();
+        circuit_breaker::clear(&created.id);
+
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = json!({ "command": "echo stale-recovery-ok" });
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sandboxes/{}/exec", created.id))
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response.into_body()).await;
+        assert!(
+            json["stdout"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("stale-recovery-ok"),
+            "exec should succeed after endpoint refresh: {json}"
+        );
+
+        let refreshed = sandboxes()
+            .unwrap()
+            .get(&created.id)
+            .unwrap()
+            .expect("sandbox should still exist");
+        assert_eq!(
+            refreshed.sidecar_url, original_url,
+            "successful retry should persist the live sidecar URL back into the store"
+        );
+        assert!(
+            circuit_breaker::check_health(&created.id).is_ok(),
+            "successful stale-endpoint recovery should not leave the breaker open"
+        );
+
+        crate::runtime::delete_sidecar(&refreshed, None)
+            .await
+            .unwrap();
+        let _ = sandboxes().unwrap().remove(&created.id);
+        circuit_breaker::clear(&created.id);
+    }
+
+    #[tokio::test]
+    async fn test_exec_rejects_stopped_sandbox() {
+        insert_stopped_sandbox_with_url("stopped-exec-1", OP_TEST_OWNER, "http://localhost:9999");
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = json!({ "command": "echo should-fail" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/stopped-exec-1/exec")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let json = body_json(response.into_body()).await;
+        assert_eq!(
+            json["error"],
+            "Sandbox stopped-exec-1 is stopped; resume it first"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_live_terminal_session_create_rejects_stopped_sandbox() {
+        insert_stopped_sandbox_with_url(
+            "stopped-live-term-1",
+            OP_TEST_OWNER,
+            "http://localhost:9999",
+        );
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/stopped-live-term-1/live/terminal/sessions")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let json = body_json(response.into_body()).await;
+        assert_eq!(
+            json["error"],
+            "Sandbox stopped-live-term-1 is stopped; resume it first"
+        );
+    }
+
+    #[tokio::test]
     async fn test_live_chat_prompt_updates_instance_stream_and_history() {
+        init();
+        reset_test_state();
+
         let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
         insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
@@ -3548,6 +5591,7 @@ mod tests {
             .expect("chat session_id")
             .to_string();
 
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
         let stream = app()
             .oneshot(
                 Request::builder()
@@ -3566,6 +5610,7 @@ mod tests {
             "message": "hello from live stream",
             "session_id": session_id,
         });
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
         let prompt = app()
             .oneshot(
                 Request::builder()
@@ -3578,18 +5623,24 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(prompt.status(), StatusCode::OK);
+        assert_eq!(prompt.status(), StatusCode::ACCEPTED);
         let prompt_json = body_json(prompt.into_body()).await;
-        assert_eq!(prompt_json["response"], "mock-agent-response");
+        let run_id = prompt_json["run_id"].as_str().expect("run_id");
+        let run = wait_for_run_terminal(run_id).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
 
         let frame = read_first_sse_frame(stream.into_body())
             .await
             .expect("chat sse frame");
         assert!(
-            frame.contains("user_message") || frame.contains("assistant_message"),
+            frame.contains("user_message")
+                || frame.contains("assistant_message")
+                || frame.contains("run_queued")
+                || frame.contains("run_started"),
             "expected chat stream event, got: {frame}"
         );
 
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
         let detail = app()
             .oneshot(
                 Request::builder()
@@ -3603,9 +5654,18 @@ mod tests {
         assert_eq!(detail.status(), StatusCode::OK);
         let detail_json = body_json(detail.into_body()).await;
         let messages = detail_json["messages"].as_array().expect("messages array");
+        let run_progress = detail_json["run_progress"]
+            .as_array()
+            .expect("run_progress array");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(detail_json["runs"][0]["status"], "completed");
+        assert!(
+            run_progress.len() >= 2,
+            "expected persisted progress history in session detail"
+        );
+        assert_eq!(run_progress[0]["status"], "queued");
 
         let agent_payload = sidecar_state
             .last_agent_payload
@@ -3614,7 +5674,108 @@ mod tests {
             .clone()
             .expect("agent payload");
         assert_eq!(agent_payload["message"], "hello from live stream");
-        assert_eq!(agent_payload["sessionId"], session_id);
+        assert!(
+            agent_payload.get("sessionId").is_none()
+                || agent_payload["sessionId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .is_empty()
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_live_chat_run_cancel_marks_run_cancelled() {
+        init();
+        reset_test_state();
+
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        sidecar_state
+            .agent_response_delay_ms
+            .store(250, Ordering::Relaxed);
+        insert_instance_sandbox_with_url("live-cancel-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/live/chat/sessions")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({ "title": "Cancelable" })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let session_id = body_json(create.into_body()).await["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+
+        let prompt = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "message": "cancel me",
+                            "session_id": session_id,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prompt.status(), StatusCode::ACCEPTED);
+        let prompt_json = body_json(prompt.into_body()).await;
+        let run_id = prompt_json["run_id"].as_str().expect("run_id").to_string();
+
+        let cancel = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/sandbox/live/chat/sessions/{session_id}/runs/{run_id}/cancel"
+                    ))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cancel.status(), StatusCode::OK);
+        let cancel_json = body_json(cancel.into_body()).await;
+        assert_eq!(cancel_json["status"], "cancelled");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let detail = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sandbox/live/chat/sessions/{session_id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.status(), StatusCode::OK);
+        let detail_json = body_json(detail.into_body()).await;
+        assert!(detail_json["active_run_id"].is_null());
+        assert_eq!(detail_json["runs"][0]["id"], run_id);
+        assert_eq!(detail_json["runs"][0]["status"], "cancelled");
+        assert!(
+            sidecar_state.cancel_invocations.load(Ordering::Relaxed) >= 1,
+            "expected operator to best-effort cancel the sidecar run",
+        );
+
         server.abort();
     }
 
@@ -3659,11 +5820,24 @@ mod tests {
             disk_gb: 10,
             stack: String::new(),
             owner: owner.to_string(),
+            service_id: None,
             tee_config: None,
             extra_ports: ports,
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
+    }
+
+    fn insert_sandbox_for_listing(id: &str, owner: &str, service_id: Option<u64>) {
+        insert_sandbox_with_ports(id, owner, std::collections::HashMap::new());
+        sandboxes()
+            .unwrap()
+            .update(id, |record| {
+                record.service_id = service_id;
+            })
+            .unwrap();
     }
 
     // =====================================================================
@@ -3683,6 +5857,88 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_list_sandboxes_repairs_service_links_and_exposes_managing_operator() {
+        init();
+        reset_test_state();
+
+        let sandbox_id = "sandbox-service-backfill";
+        let call_id = 880_001;
+        let _managing_operator = EnvVarGuard::set(
+            "MANAGING_OPERATOR_ADDRESS",
+            "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+        );
+        let _operator_address = EnvVarGuard::remove("OPERATOR_ADDRESS");
+        let _keystore_uri = EnvVarGuard::remove("KEYSTORE_URI");
+
+        insert_sandbox_for_listing(
+            sandbox_id,
+            "0x1234567890abcdef1234567890abcdef12345678",
+            None,
+        );
+        provision_progress::start_provision(call_id).unwrap();
+        provision_progress::update_provision(
+            call_id,
+            provision_progress::ProvisionPhase::Ready,
+            Some("Ready".into()),
+            Some(sandbox_id.to_string()),
+            Some("http://localhost:9999".into()),
+        )
+        .unwrap();
+        provision_progress::update_provision_metadata(call_id, json!({ "service_id": 42 }))
+            .unwrap();
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes")
+                    .header("authorization", test_auth_header())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = body_json(response.into_body()).await;
+        let listed_sandboxes = payload["sandboxes"].as_array().expect("sandbox list");
+        let sandbox = listed_sandboxes
+            .iter()
+            .find(|entry| entry["id"] == sandbox_id)
+            .expect("sandbox entry present");
+        assert_eq!(sandbox["service_id"], 42);
+        assert_eq!(
+            sandbox["managing_operator"],
+            "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+        );
+
+        let stored = sandboxes()
+            .unwrap()
+            .get(sandbox_id)
+            .unwrap()
+            .expect("stored sandbox");
+        assert_eq!(stored.service_id, Some(42));
+    }
+
+    #[test]
+    fn test_derive_operator_address_from_keystore_uri() {
+        let keystore_dir = tempfile::tempdir().expect("temp keystore dir");
+        let ecdsa_dir = keystore_dir.path().join("Ecdsa");
+        std::fs::create_dir_all(&ecdsa_dir).expect("create Ecdsa dir");
+        std::fs::write(
+            ecdsa_dir.join("operator-key.json"),
+            r#"[[2,186,87,52,216,247,9,23,25,71,30,127,126,214,185,223,23,13,199,12,198,97,202,5,230,136,96,26,217,132,240,104,176],[89,198,153,94,153,143,151,165,160,4,73,102,240,148,83,137,220,158,134,218,232,140,122,132,18,244,96,59,107,120,105,13]]"#,
+        )
+        .expect("write keystore file");
+        let derived = derive_operator_address_from_keystore_uri(&format!(
+            "file://{}",
+            keystore_dir.path().display()
+        ))
+        .expect("keystore should derive operator address");
+
+        assert_eq!(derived, "0x70997970c51812dc3a010c7d01b50e0d17dc79c8");
     }
 
     #[tokio::test]
@@ -4231,13 +6487,18 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let accepted = body_json(response.into_body()).await;
+        let run_id = accepted["run_id"].as_str().expect("run_id");
+        let run = wait_for_run_terminal(run_id).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
         let payload = sidecar_state
             .last_agent_payload
             .lock()
             .expect("payload lock")
             .clone()
             .expect("sidecar should have received payload");
+        assert!(accepted.get("run_id").is_some());
         assert_eq!(
             payload["message"], "test prompt message",
             "sidecar should receive 'message' field"
@@ -4266,7 +6527,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let resp_json = body_json(response.into_body()).await;
+        let run_id = resp_json["run_id"].as_str().expect("run_id");
+        let run = wait_for_run_terminal(run_id).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
         // The task handler sends the prompt via the "message" field to the sidecar
         let payload = sidecar_state
             .last_agent_payload
@@ -4278,11 +6543,9 @@ mod tests {
             payload["message"], "do this task",
             "sidecar should receive task prompt in 'message' field"
         );
-        // The API response should use the "result" field
-        let resp_json = body_json(response.into_body()).await;
         assert!(
-            resp_json.get("result").is_some(),
-            "task API response should include 'result' field"
+            resp_json.get("run_id").is_some(),
+            "task API response should include 'run_id' field"
         );
         server.abort();
     }
@@ -4307,8 +6570,372 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = body_json(response.into_body()).await;
+        assert!(
+            !payload["session_id"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        assert!(!payload["run_id"].as_str().unwrap_or_default().is_empty());
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_retries_transient_agent_warmup_failures() {
+        let (sidecar_url, sidecar_state, server) =
+            spawn_mock_sidecar_with_agent_warmup_failures(2).await;
+        insert_plain_sandbox_with_url("agent-warmup-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "warm up and reply" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/agent-warmup-1/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = body_json(response.into_body()).await;
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
+        assert_eq!(
+            sidecar_state.agent_invocations.load(Ordering::Relaxed),
+            3,
+            "should retry warmup failures before succeeding"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_returns_structured_service_unavailable_when_agent_stays_warming() {
+        let (sidecar_url, sidecar_state, server) =
+            spawn_mock_sidecar_with_agent_warmup_failures(10).await;
+        insert_plain_sandbox_with_url("agent-warmup-2", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "still warming" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/agent-warmup-2/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = body_json(response.into_body()).await;
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
+        assert_eq!(run.status, ChatRunStatus::Failed);
+        assert_eq!(
+            run.error.as_deref(),
+            Some("Sandbox agent is still starting up. Please retry shortly.")
+        );
+        assert_eq!(
+            sidecar_state.agent_invocations.load(Ordering::Relaxed),
+            (AGENT_WARMUP_RETRY_DELAYS_MS.len() + 1) as u64
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_agents_endpoint_lists_registered_agents() {
+        let (sidecar_url, _sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("agents-list-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/agents-list-1/agents")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response.into_body()).await;
+        assert_eq!(body["count"], 2);
+        assert_eq!(body["agents"][0]["identifier"], "default");
+        assert_eq!(body["agents"][1]["identifier"], "batch");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_rejects_unknown_configured_agent_identifier() {
+        let (sidecar_url, _sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("bad-agent-1", OP_TEST_OWNER, &sidecar_url);
+        set_agent_identifier("bad-agent-1", "a1");
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "hello" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/bad-agent-1/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = body_json(response.into_body()).await;
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
+        assert_eq!(
+            run.error.as_deref(),
+            Some("Unknown agent identifier \"a1\". Available agents: default, batch")
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_skips_agent_listing_for_valid_configured_agent() {
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("good-agent-1", OP_TEST_OWNER, &sidecar_url);
+        set_agent_identifier("good-agent-1", "default");
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "hello" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/good-agent-1/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = body_json(response.into_body()).await;
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
+        assert_eq!(
+            sidecar_state.agent_list_invocations.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(sidecar_state.agent_invocations.load(Ordering::Relaxed), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_prompt_translates_missing_factory_error_when_agent_listing_is_unavailable() {
+        let (sidecar_url, server) = spawn_mock_sidecar_without_agent_listing().await;
+        insert_plain_sandbox_with_url("bad-agent-compat-1", OP_TEST_OWNER, &sidecar_url);
+        set_agent_identifier("bad-agent-compat-1", "a1");
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({ "message": "hello" });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/bad-agent-compat-1/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = body_json(response.into_body()).await;
+        let run = wait_for_run_terminal(payload["run_id"].as_str().expect("run_id")).await;
+        assert_eq!(
+            run.error.as_deref(),
+            Some(
+                "Unknown agent identifier \"a1\". This sidecar image does not register that agent."
+            )
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_ssh_user_endpoint_detects_runtime_user() {
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        *sidecar_state
+            .exec_response
+            .lock()
+            .expect("exec response lock") = json!({
+            "result": {
+                "exitCode": 0,
+                "stdout": "sidecar\n",
+                "stderr": ""
+            }
+        });
+        insert_mock_sidecar_ssh_sandbox("ssh-user-1", OP_TEST_OWNER, &sidecar_url, 2222);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/ssh-user-1/ssh/user")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response.into_body()).await;
+        assert_eq!(body["success"], true, "body: {body}");
+        assert_eq!(body["username"], "sidecar", "body: {body}");
+
+        let payload = sidecar_state
+            .last_exec_payload
+            .lock()
+            .expect("payload lock")
+            .clone()
+            .expect("sidecar should have received exec payload");
+        assert_eq!(payload["command"], "id -un || whoami");
+        server.abort();
+    }
+
+    #[test]
+    fn test_parse_detected_ssh_username_tolerates_terminal_noise() {
+        let exec = ExecApiResponse {
+            exit_code: 0,
+            stdout: "\u{1b}[?2004l\rsidecar\r\n\u{1b}[?2004hcontainer:/sidecar$ exit\r\n"
+                .to_string(),
+            stderr: String::new(),
+        };
+
+        let username = parse_detected_ssh_username(&exec).expect("username should parse");
+        assert_eq!(username, "sidecar");
+    }
+
+    #[tokio::test]
+    async fn test_ssh_provision_returns_422_when_sidecar_command_fails() {
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        *sidecar_state
+            .exec_response
+            .lock()
+            .expect("exec response lock") = json!({
+            "result": {
+                "exitCode": 2,
+                "stdout": "",
+                "stderr": "User agent does not exist"
+            }
+        });
+        insert_mock_sidecar_ssh_sandbox("ssh-fail-1", OP_TEST_OWNER, &sidecar_url, 2222);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let body = serde_json::json!({
+            "username": "agent",
+            "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test"
+        });
+
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/ssh-fail-1/ssh")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(response.into_body()).await;
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("SSH provision failed for user 'agent'"),
+            "body: {json}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_ssh_endpoints_reject_non_ssh_sandbox() {
+        init();
+        // Sandbox with ssh_port: None (default from insert_plain_sandbox)
+        insert_plain_sandbox("ssh-nossh-1", OP_TEST_OWNER);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        // GET /ssh/user should be rejected
+        let resp = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/ssh-nossh-1/ssh/user")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp.into_body()).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("SSH is not enabled"),
+            "body: {body}"
+        );
+
+        // POST /ssh (provision) should be rejected
+        let provision_body = json!({
+            "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test"
+        });
+        let resp = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/ssh-nossh-1/ssh")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&provision_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // DELETE /ssh (revoke) should be rejected
+        let revoke_body = json!({
+            "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test"
+        });
+        let resp = app()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/sandboxes/ssh-nossh-1/ssh")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&revoke_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // =====================================================================

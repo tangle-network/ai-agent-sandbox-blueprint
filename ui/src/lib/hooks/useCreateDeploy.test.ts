@@ -40,8 +40,8 @@ describe('useCreateDeploy: deriveIsNewService', () => {
     expect(deriveIsNewService('instance', false, false, '')).toBe(true);
   });
 
-  it('returns false for instance mode with active, permitted service', () => {
-    expect(deriveIsNewService('instance', true, true, '42')).toBe(false);
+  it('returns true for instance mode with active, permitted service', () => {
+    expect(deriveIsNewService('instance', true, true, '42')).toBe(true);
   });
 
   it('returns true for instance mode when service is active but not permitted', () => {
@@ -233,12 +233,42 @@ describe('useCreateDeploy: computeCanDeploy', () => {
     })).toBe(false);
   });
 
-  it('returns true for instance mode with valid existing service (Path A)', () => {
+  it('returns true for instance mode with a reusable service because create still opens a new service request', () => {
     expect(computeCanDeploy({
       ...baseOpts,
       mode: 'instance',
       hasValidService: true,
-      isNewService: false,
+      isNewService: true,
+      operatorCount: 3,
+      operatorsLoading: false,
+    })).toBe(true);
+  });
+
+  it('returns true for sandbox mode when capacity is undefined (still loading)', () => {
+    expect(computeCanDeploy({ ...baseOpts, capacity: undefined })).toBe(true);
+  });
+
+  it('returns true for sandbox mode when capacity is greater than zero', () => {
+    expect(computeCanDeploy({ ...baseOpts, capacity: 5 })).toBe(true);
+  });
+
+  it('returns false for sandbox mode when capacity is 0', () => {
+    expect(computeCanDeploy({ ...baseOpts, capacity: 0 })).toBe(false);
+  });
+
+  it('returns false for sandbox mode when capacity is 0n (bigint)', () => {
+    expect(computeCanDeploy({ ...baseOpts, capacity: 0n })).toBe(false);
+  });
+
+  it('returns true for instance mode when capacity is 0 (capacity check is sandbox-only)', () => {
+    expect(computeCanDeploy({
+      ...baseOpts,
+      mode: 'instance',
+      hasValidService: false,
+      isNewService: true,
+      operatorCount: 3,
+      operatorsLoading: false,
+      capacity: 0,
     })).toBe(true);
   });
 });

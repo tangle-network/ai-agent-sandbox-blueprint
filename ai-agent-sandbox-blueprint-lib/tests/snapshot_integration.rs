@@ -814,8 +814,11 @@ async fn tiered_gc_cold_to_gone_real() {
         disk_gb: 0,
         stack: String::new(),
         owner: String::new(),
+        service_id: None,
         tee_config: None,
         extra_ports: std::collections::HashMap::new(),
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
 
     sandboxes()
@@ -913,8 +916,11 @@ async fn user_byos3_never_deleted_by_gc() {
         disk_gb: 0,
         stack: String::new(),
         owner: String::new(),
+        service_id: None,
         tee_config: None,
         extra_ports: std::collections::HashMap::new(),
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
 
     sandboxes()

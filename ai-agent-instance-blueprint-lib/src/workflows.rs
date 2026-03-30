@@ -11,6 +11,9 @@ use crate::jobs::exec::run_instance_task;
 use crate::store::PersistentStore;
 use crate::util::now_ts;
 
+pub const WORKFLOW_TARGET_SANDBOX: u8 = 0;
+pub const WORKFLOW_TARGET_INSTANCE: u8 = 1;
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowEntry {
     pub id: u64,
@@ -19,6 +22,12 @@ pub struct WorkflowEntry {
     pub trigger_type: String,
     pub trigger_config: String,
     pub sandbox_config_json: String,
+    #[serde(default)]
+    pub target_kind: u8,
+    #[serde(default)]
+    pub target_sandbox_id: String,
+    #[serde(default)]
+    pub target_service_id: u64,
     pub active: bool,
     pub next_run_at: Option<u64>,
     pub last_run_at: Option<u64>,
@@ -27,10 +36,129 @@ pub struct WorkflowEntry {
     pub owner: String,
 }
 
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowLatestExecution {
+    pub executed_at: u64,
+    pub success: bool,
+    pub result: String,
+    pub error: String,
+    pub trace_id: String,
+    pub duration_ms: u64,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub session_id: String,
+}
+
+impl WorkflowLatestExecution {
+    fn failed(executed_at: u64, error: String) -> Self {
+        Self {
+            executed_at,
+            success: false,
+            result: String::new(),
+            error,
+            trace_id: String::new(),
+            duration_ms: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            session_id: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRuntimeMetadata {
+    pub latest_execution: Option<WorkflowLatestExecution>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRuntimeStatus {
+    pub workflow_id: u64,
+    pub target_status: WorkflowTargetStatus,
+    pub runnable: bool,
+    pub running: bool,
+    pub last_run_at: Option<u64>,
+    pub next_run_at: Option<u64>,
+    pub latest_execution: Option<WorkflowLatestExecution>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowSummary {
+    pub workflow_id: u64,
+    pub name: String,
+    pub trigger_type: String,
+    pub trigger_config: String,
+    pub target_kind: u8,
+    pub target_sandbox_id: String,
+    pub target_service_id: u64,
+    pub active: bool,
+    pub target_status: WorkflowTargetStatus,
+    pub runnable: bool,
+    pub running: bool,
+    pub last_run_at: Option<u64>,
+    pub next_run_at: Option<u64>,
+    pub latest_execution: Option<WorkflowLatestExecution>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowDetail {
+    pub workflow_id: u64,
+    pub name: String,
+    pub workflow_json: String,
+    pub trigger_type: String,
+    pub trigger_config: String,
+    pub sandbox_config_json: String,
+    pub target_kind: u8,
+    pub target_sandbox_id: String,
+    pub target_service_id: u64,
+    pub active: bool,
+    pub target_status: WorkflowTargetStatus,
+    pub runnable: bool,
+    pub running: bool,
+    pub last_run_at: Option<u64>,
+    pub next_run_at: Option<u64>,
+    pub latest_execution: Option<WorkflowLatestExecution>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkflowTargetStatus {
+    Available,
+    Missing,
+}
+
 pub struct WorkflowExecution {
     pub response: Value,
     pub last_run_at: u64,
     pub next_run_at: Option<u64>,
+    pub latest_execution: WorkflowLatestExecution,
+}
+
+#[derive(Debug)]
+pub enum WorkflowStatusError {
+    NotFound(String),
+    Forbidden(String),
+    Internal(String),
+}
+
+impl WorkflowStatusError {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::NotFound(message) | Self::Forbidden(message) | Self::Internal(message) => {
+                message.as_str()
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorkflowEffectiveState {
+    target_status: WorkflowTargetStatus,
+    runnable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +178,8 @@ pub struct WorkflowTaskSpec {
 
 static WORKFLOWS: once_cell::sync::OnceCell<PersistentStore<WorkflowEntry>> =
     once_cell::sync::OnceCell::new();
+static WORKFLOW_RUNTIME: once_cell::sync::OnceCell<PersistentStore<WorkflowRuntimeMetadata>> =
+    once_cell::sync::OnceCell::new();
 
 /// Tracks workflow IDs that are currently executing to prevent concurrent runs.
 static RUNNING_WORKFLOWS: once_cell::sync::Lazy<Mutex<HashSet<u64>>> =
@@ -66,6 +196,271 @@ pub fn workflows() -> Result<&'static PersistentStore<WorkflowEntry>, String> {
 
 pub fn workflow_key(id: u64) -> String {
     id.to_string()
+}
+
+pub fn workflow_runtime() -> Result<&'static PersistentStore<WorkflowRuntimeMetadata>, String> {
+    WORKFLOW_RUNTIME
+        .get_or_try_init(|| {
+            let path = crate::store::state_dir().join("workflow-runtime.json");
+            PersistentStore::open(path).map_err(|e| e.to_string())
+        })
+        .map_err(|err: String| err)
+}
+
+pub struct WorkflowRunGuard {
+    workflow_id: u64,
+}
+
+impl Drop for WorkflowRunGuard {
+    fn drop(&mut self) {
+        RUNNING_WORKFLOWS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.workflow_id);
+    }
+}
+
+pub fn acquire_workflow_run(workflow_id: u64) -> Result<WorkflowRunGuard, String> {
+    let mut running = RUNNING_WORKFLOWS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if running.contains(&workflow_id) {
+        return Err(format!("Workflow {workflow_id} is already running"));
+    }
+    running.insert(workflow_id);
+    Ok(WorkflowRunGuard { workflow_id })
+}
+
+pub fn is_workflow_running(workflow_id: u64) -> bool {
+    RUNNING_WORKFLOWS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(&workflow_id)
+}
+
+pub fn store_latest_execution(
+    workflow_id: u64,
+    latest_execution: WorkflowLatestExecution,
+) -> Result<(), String> {
+    let key = workflow_key(workflow_id);
+    let updated = workflow_runtime()?
+        .update(&key, |metadata| {
+            metadata.latest_execution = Some(latest_execution.clone());
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !updated {
+        workflow_runtime()?
+            .insert(
+                key,
+                WorkflowRuntimeMetadata {
+                    latest_execution: Some(latest_execution),
+                },
+            )
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+pub fn store_failed_execution(
+    workflow_id: u64,
+    error: String,
+) -> Result<WorkflowLatestExecution, String> {
+    let latest_execution = WorkflowLatestExecution::failed(now_ts(), error);
+    store_latest_execution(workflow_id, latest_execution.clone())?;
+    Ok(latest_execution)
+}
+
+fn latest_execution_for_workflow(
+    workflow_id: u64,
+) -> Result<Option<WorkflowLatestExecution>, String> {
+    Ok(workflow_runtime()?
+        .get(&workflow_key(workflow_id))
+        .map_err(|e| e.to_string())?
+        .and_then(|metadata| metadata.latest_execution))
+}
+
+fn summarize_last_run_at(
+    entry: &WorkflowEntry,
+    latest_execution: &Option<WorkflowLatestExecution>,
+) -> Option<u64> {
+    let latest_run_at = latest_execution
+        .as_ref()
+        .map(|execution| execution.executed_at);
+    match (entry.last_run_at, latest_run_at) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn workflow_effective_state_from_target_status(
+    _entry: &WorkflowEntry,
+    target_status: WorkflowTargetStatus,
+) -> WorkflowEffectiveState {
+    WorkflowEffectiveState {
+        target_status,
+        runnable: matches!(target_status, WorkflowTargetStatus::Available),
+    }
+}
+
+fn owner_matches(entry: &WorkflowEntry, caller: &str) -> bool {
+    !entry.owner.is_empty() && entry.owner.eq_ignore_ascii_case(caller)
+}
+
+fn resolve_workflow_target_status(entry: &WorkflowEntry) -> Result<WorkflowTargetStatus, String> {
+    if entry.target_kind != WORKFLOW_TARGET_INSTANCE {
+        return Ok(WorkflowTargetStatus::Missing);
+    }
+
+    match crate::get_instance_sandbox().map_err(|e| e.to_string())? {
+        Some(record) => match record.service_id {
+            Some(service_id) if service_id == entry.target_service_id => {
+                Ok(WorkflowTargetStatus::Available)
+            }
+            Some(_) => Ok(WorkflowTargetStatus::Missing),
+            None => Err("Local instance sandbox is missing service binding".to_string()),
+        },
+        None => Ok(WorkflowTargetStatus::Missing),
+    }
+}
+
+fn require_workflow_access(
+    entry: &WorkflowEntry,
+    caller: &str,
+) -> Result<WorkflowEffectiveState, WorkflowStatusError> {
+    if entry.target_kind != WORKFLOW_TARGET_INSTANCE {
+        return Err(WorkflowStatusError::NotFound(
+            "Workflow target is not available on this operator".to_string(),
+        ));
+    }
+
+    let Some(record) =
+        crate::get_instance_sandbox().map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
+    else {
+        if owner_matches(entry, caller) {
+            return Ok(workflow_effective_state_from_target_status(
+                entry,
+                WorkflowTargetStatus::Missing,
+            ));
+        }
+        return Err(WorkflowStatusError::NotFound(
+            "Instance not provisioned".to_string(),
+        ));
+    };
+
+    if record.owner.is_empty() {
+        return Err(WorkflowStatusError::Forbidden(
+            "Instance has no owner configured".to_string(),
+        ));
+    }
+    if !record.owner.eq_ignore_ascii_case(caller) {
+        return Err(WorkflowStatusError::Forbidden(
+            "Not authorized for this instance".to_string(),
+        ));
+    }
+
+    match record.service_id {
+        Some(service_id) if service_id == entry.target_service_id => Ok(
+            workflow_effective_state_from_target_status(entry, WorkflowTargetStatus::Available),
+        ),
+        Some(_) => Ok(workflow_effective_state_from_target_status(
+            entry,
+            WorkflowTargetStatus::Missing,
+        )),
+        None => Err(WorkflowStatusError::Internal(
+            "Local instance sandbox is missing service binding".to_string(),
+        )),
+    }
+}
+
+fn workflow_summary_from_entry(
+    entry: &WorkflowEntry,
+    effective_state: WorkflowEffectiveState,
+) -> Result<WorkflowSummary, WorkflowStatusError> {
+    let latest_execution =
+        latest_execution_for_workflow(entry.id).map_err(WorkflowStatusError::Internal)?;
+    Ok(WorkflowSummary {
+        workflow_id: entry.id,
+        name: entry.name.clone(),
+        trigger_type: entry.trigger_type.clone(),
+        trigger_config: entry.trigger_config.clone(),
+        target_kind: entry.target_kind,
+        target_sandbox_id: entry.target_sandbox_id.clone(),
+        target_service_id: entry.target_service_id,
+        active: entry.active,
+        target_status: effective_state.target_status,
+        runnable: effective_state.runnable,
+        running: effective_state.runnable && is_workflow_running(entry.id),
+        last_run_at: summarize_last_run_at(entry, &latest_execution),
+        next_run_at: effective_state
+            .runnable
+            .then_some(entry.next_run_at)
+            .flatten(),
+        latest_execution,
+    })
+}
+
+fn workflow_detail_from_entry(
+    entry: &WorkflowEntry,
+    effective_state: WorkflowEffectiveState,
+) -> Result<WorkflowDetail, WorkflowStatusError> {
+    let summary = workflow_summary_from_entry(entry, effective_state)?;
+    Ok(WorkflowDetail {
+        workflow_id: summary.workflow_id,
+        name: summary.name,
+        workflow_json: entry.workflow_json.clone(),
+        trigger_type: summary.trigger_type,
+        trigger_config: summary.trigger_config,
+        sandbox_config_json: entry.sandbox_config_json.clone(),
+        target_kind: summary.target_kind,
+        target_sandbox_id: summary.target_sandbox_id,
+        target_service_id: summary.target_service_id,
+        active: summary.active,
+        target_status: summary.target_status,
+        runnable: summary.runnable,
+        running: summary.running,
+        last_run_at: summary.last_run_at,
+        next_run_at: summary.next_run_at,
+        latest_execution: summary.latest_execution,
+    })
+}
+
+fn resolve_workflow_owner(entry: &WorkflowEntry) -> Result<Option<String>, String> {
+    if entry.target_kind != WORKFLOW_TARGET_INSTANCE {
+        return Ok(None);
+    }
+
+    let Some(record) = crate::get_instance_sandbox().map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+
+    match record.service_id {
+        Some(service_id) if service_id == entry.target_service_id && !record.owner.is_empty() => {
+            Ok(Some(record.owner))
+        }
+        Some(_) | None => Ok(None),
+    }
+}
+
+fn merge_local_workflow_metadata(
+    entry: &mut WorkflowEntry,
+    existing: Option<&WorkflowEntry>,
+) -> Result<(), String> {
+    if let Some(existing) = existing.filter(|workflow| !workflow.owner.is_empty()) {
+        entry.owner = existing.owner.clone();
+        return Ok(());
+    }
+
+    if entry.owner.is_empty() {
+        if let Some(owner) = resolve_workflow_owner(entry)? {
+            entry.owner = owner;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn resolve_next_run(
@@ -94,15 +489,132 @@ fn compute_next_run(cron_expr: &str, from_ts: u64) -> Result<u64, String> {
         .ok_or_else(|| "Cron expression has no future run times".to_string())
 }
 
+pub fn workflow_runtime_status_for_owner(
+    workflow_id: u64,
+    caller: &str,
+) -> Result<WorkflowRuntimeStatus, WorkflowStatusError> {
+    let key = workflow_key(workflow_id);
+    let entry = workflows()
+        .map_err(WorkflowStatusError::Internal)?
+        .get(&key)
+        .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
+        .ok_or_else(|| WorkflowStatusError::NotFound("Workflow not found".to_string()))?;
+
+    let effective_state = require_workflow_access(&entry, caller)?;
+
+    let latest_execution =
+        latest_execution_for_workflow(workflow_id).map_err(WorkflowStatusError::Internal)?;
+
+    Ok(WorkflowRuntimeStatus {
+        workflow_id,
+        target_status: effective_state.target_status,
+        runnable: effective_state.runnable,
+        running: effective_state.runnable && is_workflow_running(workflow_id),
+        last_run_at: summarize_last_run_at(&entry, &latest_execution),
+        next_run_at: effective_state
+            .runnable
+            .then_some(entry.next_run_at)
+            .flatten(),
+        latest_execution,
+    })
+}
+
+pub fn list_workflows_for_owner(caller: &str) -> Result<Vec<WorkflowSummary>, WorkflowStatusError> {
+    let mut visible = Vec::new();
+
+    for entry in workflows()
+        .map_err(WorkflowStatusError::Internal)?
+        .values()
+        .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
+    {
+        match require_workflow_access(&entry, caller) {
+            Ok(effective_state) => {
+                visible.push(workflow_summary_from_entry(&entry, effective_state)?)
+            }
+            Err(WorkflowStatusError::Forbidden(_)) | Err(WorkflowStatusError::NotFound(_)) => {}
+            Err(WorkflowStatusError::Internal(err)) => {
+                return Err(WorkflowStatusError::Internal(err));
+            }
+        }
+    }
+
+    visible.sort_by(|left, right| {
+        let left_sort = left
+            .last_run_at
+            .or_else(|| {
+                left.latest_execution
+                    .as_ref()
+                    .map(|execution| execution.executed_at)
+            })
+            .or(left.next_run_at)
+            .unwrap_or(0);
+        let right_sort = right
+            .last_run_at
+            .or_else(|| {
+                right
+                    .latest_execution
+                    .as_ref()
+                    .map(|execution| execution.executed_at)
+            })
+            .or(right.next_run_at)
+            .unwrap_or(0);
+        right_sort
+            .cmp(&left_sort)
+            .then_with(|| right.workflow_id.cmp(&left.workflow_id))
+    });
+
+    Ok(visible)
+}
+
+pub fn workflow_detail_for_owner(
+    workflow_id: u64,
+    caller: &str,
+) -> Result<WorkflowDetail, WorkflowStatusError> {
+    let key = workflow_key(workflow_id);
+    let entry = workflows()
+        .map_err(WorkflowStatusError::Internal)?
+        .get(&key)
+        .map_err(|e| WorkflowStatusError::Internal(e.to_string()))?
+        .ok_or_else(|| WorkflowStatusError::NotFound("Workflow not found".to_string()))?;
+
+    let effective_state = require_workflow_access(&entry, caller)?;
+    workflow_detail_from_entry(&entry, effective_state)
+}
+
 pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, String> {
     if entry.workflow_json.trim().is_empty() {
         return Err("workflow_json is required".to_string());
+    }
+    if entry.target_kind != WORKFLOW_TARGET_INSTANCE {
+        return Err("workflow target is not an instance".to_string());
+    }
+    if entry.target_service_id == 0 {
+        return Err("workflow target_service_id is required".to_string());
     }
 
     let spec: WorkflowTaskSpec = serde_json::from_str(entry.workflow_json.as_str())
         .map_err(|err| format!("workflow_json must be valid task JSON: {err}"))?;
 
     let sandbox = crate::require_instance_sandbox()?;
+
+    // Fast-fail: if the instance has no agent configured, the sidecar will
+    // reject the request with "No factory registered for agent identifier".
+    if sandbox.agent_identifier.trim().is_empty() {
+        return Err("Instance has no agent configured. \
+             Configure an agent identifier on the instance before running workflows."
+            .to_string());
+    }
+
+    match sandbox.service_id {
+        Some(service_id) if service_id == entry.target_service_id => {}
+        Some(service_id) => {
+            return Err(format!(
+                "Instance workflow targets service {} but local instance is bound to service {}",
+                entry.target_service_id, service_id
+            ));
+        }
+        None => return Err("Local instance sandbox is missing service binding".to_string()),
+    }
 
     // Session-per-tick: each execution gets a unique session so messages don't
     // accumulate in a single session forever. The stored session_id acts as a
@@ -111,7 +623,7 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
         Some(ref base) if !base.is_empty() => {
             format!("{}-{}", base, chrono::Utc::now().timestamp())
         }
-        _ => String::new(),
+        _ => format!("wf-{}-{}", entry.id, chrono::Utc::now().timestamp()),
     };
 
     let request = InstanceTaskRequest {
@@ -127,6 +639,17 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
         run_instance_task(&sandbox.sidecar_url, &sandbox.token, &sandbox.id, &request).await?;
     let now = now_ts();
     let next_run_at = resolve_next_run(&entry.trigger_type, &entry.trigger_config, Some(now))?;
+    let latest_execution = WorkflowLatestExecution {
+        executed_at: now,
+        success: response.success,
+        result: response.result.clone(),
+        error: response.error.clone(),
+        trace_id: response.trace_id.clone(),
+        duration_ms: response.duration_ms,
+        input_tokens: response.input_tokens,
+        output_tokens: response.output_tokens,
+        session_id: response.session_id.clone(),
+    };
 
     Ok(WorkflowExecution {
         response: json!({
@@ -148,6 +671,7 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
         }),
         last_run_at: now,
         next_run_at,
+        latest_execution,
     })
 }
 
@@ -167,32 +691,29 @@ pub async fn workflow_tick() -> Result<Value, String> {
     let due: Vec<u64> = all
         .iter()
         .filter(|e| e.active && e.trigger_type == "cron")
+        .filter(|entry| {
+            !matches!(
+                resolve_workflow_target_status(entry),
+                Ok(WorkflowTargetStatus::Missing)
+            )
+        })
         .filter_map(|e| e.next_run_at.filter(|&t| t <= now).map(|_| e.id))
         .collect();
 
     let mut executed = Vec::new();
     for workflow_id in due {
-        {
-            let mut running = RUNNING_WORKFLOWS
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if running.contains(&workflow_id) {
+        let _run_guard = match acquire_workflow_run(workflow_id) {
+            Ok(guard) => guard,
+            Err(_) => {
                 tracing::debug!("Workflow {workflow_id} already running, skipping");
                 continue;
             }
-            running.insert(workflow_id);
-        }
+        };
 
         let key = workflow_key(workflow_id);
         let entry = match workflows()?.get(&key).map_err(|e| e.to_string())? {
             Some(e) if e.active => e,
-            _ => {
-                RUNNING_WORKFLOWS
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&workflow_id);
-                continue;
-            }
+            _ => continue,
         };
 
         // Advance next_run_at before running to avoid duplicate executions when
@@ -211,6 +732,7 @@ pub async fn workflow_tick() -> Result<Value, String> {
             Ok(execution) => {
                 let last_run_at = execution.last_run_at;
                 let next_run_at = execution.next_run_at;
+                store_latest_execution(workflow_id, execution.latest_execution.clone())?;
                 workflows()?
                     .update(&key, |e| {
                         e.last_run_at = Some(last_run_at);
@@ -219,17 +741,15 @@ pub async fn workflow_tick() -> Result<Value, String> {
                     .map_err(|e| e.to_string())?;
                 executed.push(execution.response);
             }
-            Err(err) => executed.push(json!({
-                "workflowId": workflow_id,
-                "status": "error",
-                "error": err,
-            })),
+            Err(err) => {
+                store_failed_execution(workflow_id, err.clone())?;
+                executed.push(json!({
+                    "workflowId": workflow_id,
+                    "status": "error",
+                    "error": err,
+                }));
+            }
         }
-
-        RUNNING_WORKFLOWS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&workflow_id);
     }
 
     Ok(json!({
@@ -250,7 +770,7 @@ pub async fn bootstrap_workflows_from_chain(
         return Ok(());
     };
 
-    let abi = blueprint_sdk::alloy::json_abi::JsonAbi::parse([WORKFLOW_REGISTRY_ABI])
+    let abi: blueprint_sdk::alloy::json_abi::JsonAbi = serde_json::from_str(WORKFLOW_REGISTRY_ABI)
         .map_err(|err| format!("Invalid workflow ABI: {err}"))?;
     let interface = blueprint_sdk::alloy::contract::Interface::new(abi);
     let contract = blueprint_sdk::alloy::contract::ContractInstance::new(
@@ -262,7 +782,7 @@ pub async fn bootstrap_workflows_from_chain(
     let ids = contract
         .function(
             "getWorkflowIds",
-            &[blueprint_sdk::alloy::dyn_abi::DynSolValue::Bool(true)],
+            &[blueprint_sdk::alloy::dyn_abi::DynSolValue::Bool(false)],
         )
         .map_err(|err| format!("Failed to build workflow IDs call: {err}"))?
         .call()
@@ -270,6 +790,12 @@ pub async fn bootstrap_workflows_from_chain(
         .map_err(|err| format!("Failed to read workflow IDs: {err}"))?;
 
     let ids = parse_workflow_ids(ids)?;
+    let existing_entries: HashMap<String, WorkflowEntry> = workflows()?
+        .values()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|entry| (workflow_key(entry.id), entry))
+        .collect();
     let mut entries: HashMap<String, WorkflowEntry> = HashMap::new();
     for workflow_id in ids {
         let output = contract
@@ -284,8 +810,10 @@ pub async fn bootstrap_workflows_from_chain(
             .call()
             .await
             .map_err(|err| format!("Failed to read workflow {workflow_id}: {err}"))?;
-        let entry = parse_workflow_config(workflow_id, output)?;
-        entries.insert(workflow_key(workflow_id), entry);
+        let mut entry = parse_workflow_config(workflow_id, output)?;
+        let key = workflow_key(workflow_id);
+        merge_local_workflow_metadata(&mut entry, existing_entries.get(&key))?;
+        entries.insert(key, entry);
     }
 
     workflows()?.replace(entries).map_err(|e| e.to_string())?;
@@ -324,7 +852,7 @@ fn parse_workflow_config(
     let blueprint_sdk::alloy::dyn_abi::DynSolValue::Tuple(fields) = first else {
         return Err("Unexpected workflow output type".to_string());
     };
-    if fields.len() != 9 {
+    if fields.len() != 12 {
         return Err("Unexpected workflow tuple size".to_string());
     }
 
@@ -333,8 +861,11 @@ fn parse_workflow_config(
     let trigger_type = dyn_string(&fields[2])?;
     let trigger_config = dyn_string(&fields[3])?;
     let sandbox_config_json = dyn_string(&fields[4])?;
-    let active = dyn_bool(&fields[5])?;
-    let last_triggered_at = dyn_u64(&fields[8])?;
+    let target_kind = dyn_u8(&fields[5])?;
+    let target_sandbox_id = dyn_string(&fields[6])?;
+    let target_service_id = dyn_u64(&fields[7])?;
+    let active = dyn_bool(&fields[8])?;
+    let last_triggered_at = dyn_u64(&fields[11])?;
     let last_run_at = if last_triggered_at > 0 {
         Some(last_triggered_at)
     } else {
@@ -349,6 +880,9 @@ fn parse_workflow_config(
         trigger_type,
         trigger_config,
         sandbox_config_json,
+        target_kind,
+        target_sandbox_id,
+        target_service_id,
         active,
         next_run_at,
         last_run_at,
@@ -379,4 +913,36 @@ fn dyn_u64(value: &blueprint_sdk::alloy::dyn_abi::DynSolValue) -> Result<u64, St
     }
 }
 
-const WORKFLOW_REGISTRY_ABI: &str = r#"[{"type":"function","name":"getWorkflowIds","inputs":[{"name":"activeOnly","type":"bool"}],"outputs":[{"name":"","type":"uint64[]"}],"stateMutability":"view"},{"type":"function","name":"getWorkflow","inputs":[{"name":"workflowId","type":"uint64"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"name","type":"string"},{"name":"workflowJson","type":"string"},{"name":"triggerType","type":"string"},{"name":"triggerConfig","type":"string"},{"name":"sandboxConfigJson","type":"string"},{"name":"active","type":"bool"},{"name":"createdAt","type":"uint64"},{"name":"updatedAt","type":"uint64"},{"name":"lastTriggeredAt","type":"uint64"}]}],"stateMutability":"view"}]"#;
+fn dyn_u8(value: &blueprint_sdk::alloy::dyn_abi::DynSolValue) -> Result<u8, String> {
+    match value {
+        blueprint_sdk::alloy::dyn_abi::DynSolValue::Uint(val, _) => (*val)
+            .try_into()
+            .map_err(|_| "Uint field overflow".to_string()),
+        _ => Err("Unexpected uint field type".to_string()),
+    }
+}
+
+const WORKFLOW_REGISTRY_ABI: &str = r#"[{"type":"function","name":"getWorkflowIds","inputs":[{"name":"activeOnly","type":"bool"}],"outputs":[{"name":"","type":"uint64[]"}],"stateMutability":"view"},{"type":"function","name":"getWorkflow","inputs":[{"name":"workflowId","type":"uint64"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"name","type":"string"},{"name":"workflowJson","type":"string"},{"name":"triggerType","type":"string"},{"name":"triggerConfig","type":"string"},{"name":"sandboxConfigJson","type":"string"},{"name":"targetKind","type":"uint8"},{"name":"targetSandboxId","type":"string"},{"name":"targetServiceId","type":"uint64"},{"name":"active","type":"bool"},{"name":"createdAt","type":"uint64"},{"name":"updatedAt","type":"uint64"},{"name":"lastTriggeredAt","type":"uint64"}]}],"stateMutability":"view"}]"#;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn workflow_registry_abi_parses() {
+        let _: blueprint_sdk::alloy::json_abi::JsonAbi =
+            serde_json::from_str(super::WORKFLOW_REGISTRY_ABI)
+                .expect("workflow registry ABI should parse");
+    }
+
+    #[test]
+    fn workflow_run_guard_tracks_running_state() {
+        let workflow_id = u64::MAX - 29;
+        assert!(!super::is_workflow_running(workflow_id));
+
+        let guard = super::acquire_workflow_run(workflow_id).unwrap();
+        assert!(super::is_workflow_running(workflow_id));
+        assert!(super::acquire_workflow_run(workflow_id).is_err());
+
+        drop(guard);
+        assert!(!super::is_workflow_running(workflow_id));
+    }
+}

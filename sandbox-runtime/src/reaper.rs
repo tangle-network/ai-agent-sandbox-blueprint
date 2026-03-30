@@ -7,7 +7,8 @@
 use crate::metrics::metrics;
 use crate::runtime::{
     SandboxState, SidecarRuntimeConfig, commit_container, delete_sidecar, docker_builder,
-    record_uses_firecracker, remove_snapshot_image, sandboxes, stop_sidecar,
+    record_uses_firecracker, refresh_docker_sandbox_endpoint, remove_snapshot_image, sandboxes,
+    stop_sidecar, supports_docker_endpoint_refresh,
 };
 use blueprint_sdk::{error, info};
 use docktopus::bollard::container::InspectContainerOptions;
@@ -489,16 +490,27 @@ pub async fn reconcile_on_startup() {
                             r.stopped_at = Some(now);
                         });
                     }
-                } else if running && record.state == SandboxState::Stopped {
-                    info!(
-                        "reconcile: marking sandbox {} as Running (container is running)",
-                        record.id
-                    );
-                    if let Ok(store) = sandboxes() {
-                        let _ = store.update(&record.id, |r| {
-                            r.state = SandboxState::Running;
-                            r.stopped_at = None;
-                        });
+                } else if running {
+                    if supports_docker_endpoint_refresh(&record) {
+                        if let Err(err) = refresh_docker_sandbox_endpoint(&record).await {
+                            error!(
+                                "reconcile: failed to refresh endpoint for sandbox {}: {err}",
+                                record.id
+                            );
+                        }
+                    }
+
+                    if record.state == SandboxState::Stopped {
+                        info!(
+                            "reconcile: marking sandbox {} as Running (container is running)",
+                            record.id
+                        );
+                        if let Ok(store) = sandboxes() {
+                            let _ = store.update(&record.id, |r| {
+                                r.state = SandboxState::Running;
+                                r.stopped_at = None;
+                            });
+                        }
                     }
                 }
             }
@@ -610,8 +622,11 @@ mod tests {
             disk_gb: 10,
             stack: String::new(),
             owner: "0xdeadbeef".to_string(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         }
     }
 

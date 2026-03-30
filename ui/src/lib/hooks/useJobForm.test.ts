@@ -75,19 +75,19 @@ describe('useJobForm with real blueprint jobs', () => {
     const { result } = renderHook(() => useJobForm(job));
     const v = result.current.values;
     expect(v.name).toBe('');
-    expect(v.image).toBe('ubuntu:22.04');
+    expect(v.image).toBe('agent-dev:latest');
     expect(v.runtimeBackend).toBe('docker');
     expect(v.stack).toBe('default');
     expect(v.cpuCores).toBe(2);
     expect(v.memoryMb).toBe(2048);
     expect(v.diskGb).toBe(10);
     expect(v.sshEnabled).toBe(false);
-    expect(v.webTerminalEnabled).toBe(true);
     expect(v.maxLifetimeSeconds).toBe(86400);
     expect(v.idleTimeoutSeconds).toBe(3600);
     expect(v.teeRequired).toBe(false);
     expect(v.teeType).toBe('0');
-    // sidecarToken should NOT be present (internal)
+    // Internal compatibility fields should NOT be present in form state.
+    expect(v).not.toHaveProperty('webTerminalEnabled');
     expect(v).not.toHaveProperty('sidecarToken');
   });
 

@@ -24,18 +24,18 @@ describe('Blueprint Registry', () => {
     expect(bp!.jobs.length).toBe(5);
   });
 
-  it('retrieves instance blueprint with 3 on-chain jobs', () => {
+  it('retrieves instance blueprint with 4 jobs (1 lifecycle + 3 workflow)', () => {
     const bp = getBlueprint('ai-agent-instance-blueprint');
     expect(bp).toBeDefined();
     expect(bp!.name).toBe('AI Agent Instance');
-    expect(bp!.jobs.length).toBe(3);
+    expect(bp!.jobs.length).toBe(4);
   });
 
-  it('retrieves TEE instance blueprint with 3 on-chain jobs', () => {
+  it('retrieves TEE instance blueprint with 4 jobs (1 lifecycle + 3 workflow)', () => {
     const bp = getBlueprint('ai-agent-tee-instance-blueprint');
     expect(bp).toBeDefined();
     expect(bp!.name).toBe('AI Agent TEE Instance');
-    expect(bp!.jobs.length).toBe(3);
+    expect(bp!.jobs.length).toBe(4);
   });
 
   it('filters jobs by category', () => {
@@ -124,9 +124,10 @@ describe('Blueprint Categories', () => {
     expect(cats).toContain('workflow');
   });
 
-  it('instance blueprint covers workflow category', () => {
+  it('instance blueprint covers lifecycle and workflow categories', () => {
     const bp = getBlueprint('ai-agent-instance-blueprint')!;
     const cats = new Set(bp.jobs.map((j) => j.category));
+    expect(cats).toContain('lifecycle');
     expect(cats).toContain('workflow');
   });
 

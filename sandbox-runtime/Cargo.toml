@@ -52,6 +52,7 @@ tower-http = { version = "0.6", features = ["cors", "timeout", "trace"] }
 [dev-dependencies]
 http-body-util = "0.1"
 hyper = "1"
+serial_test = "3"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 tower = { version = "0.5", features = ["util"] }

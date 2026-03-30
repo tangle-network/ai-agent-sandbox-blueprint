@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   sandboxListStore,
+  normalizeSandbox,
+  normalizeSandboxBlueprintId,
   addSandbox,
   updateSandboxStatus,
   removeSandbox,
@@ -8,12 +10,16 @@ import {
   runningSandboxes,
   stoppedSandboxes,
   activeSandboxes,
+  buildSandboxDeploymentFingerprint,
+  getSandboxStoreKey,
+  pruneSandboxCacheKeys,
   type LocalSandbox,
 } from './sandboxes';
 
-function makeSandbox(overrides: Partial<LocalSandbox> = {}): LocalSandbox {
+function makeSandbox(overrides: Partial<LocalSandbox> & { id?: string } = {}): LocalSandbox {
+  const { id, ...rest } = overrides;
   return {
-    id: 'sb-1',
+    localId: id ?? 'sb-1',
     name: 'test',
     image: 'ubuntu:22.04',
     cpuCores: 2,
@@ -23,12 +29,67 @@ function makeSandbox(overrides: Partial<LocalSandbox> = {}): LocalSandbox {
     blueprintId: 'ai-agent-sandbox-blueprint',
     serviceId: '1',
     status: 'running',
-    ...overrides,
+    ...rest,
   };
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   sandboxListStore.set([]);
+});
+
+describe('sandbox cache versioning', () => {
+  it('prefers the explicit deployment fingerprint when provided', () => {
+    expect(buildSandboxDeploymentFingerprint({
+      VITE_DEPLOYMENT_FINGERPRINT: 'local-abc-123',
+      VITE_CHAIN_ID: '31337',
+    })).toBe('local-abc-123');
+  });
+
+  it('falls back to environment details when no explicit fingerprint is set', () => {
+    expect(buildSandboxDeploymentFingerprint({
+      VITE_CHAIN_ID: '31337',
+      VITE_TANGLE_CONTRACT: '0xabc',
+      VITE_SANDBOX_BSM: '0xdef',
+      VITE_OPERATOR_API_URL: 'http://127.0.0.1:9102',
+    })).toBe('31337::0xabc::0xdef::http://127.0.0.1:9102');
+  });
+
+  it('prunes legacy and stale cache keys while keeping the active deployment key', () => {
+    const currentKey = getSandboxStoreKey('deploy-new');
+    window.localStorage.setItem('sandbox_cloud_sandboxes', JSON.stringify([{ localId: 'legacy' }]));
+    window.localStorage.setItem(getSandboxStoreKey('deploy-old'), JSON.stringify([{ localId: 'old' }]));
+    window.localStorage.setItem(currentKey, JSON.stringify([{ localId: 'current' }]));
+
+    pruneSandboxCacheKeys(window.localStorage, currentKey);
+
+    expect(window.localStorage.getItem('sandbox_cloud_sandboxes')).toBeNull();
+    expect(window.localStorage.getItem(getSandboxStoreKey('deploy-old'))).toBeNull();
+    expect(window.localStorage.getItem(currentKey)).toBe(JSON.stringify([{ localId: 'current' }]));
+  });
+});
+
+describe('normalizeSandboxBlueprintId', () => {
+  it('maps the legacy numeric sandbox blueprint ID to the canonical slug', () => {
+    expect(normalizeSandboxBlueprintId('1')).toBe('ai-agent-sandbox-blueprint');
+  });
+
+  it('leaves non-sandbox blueprint IDs unchanged', () => {
+    expect(normalizeSandboxBlueprintId('ai-agent-instance-blueprint')).toBe('ai-agent-instance-blueprint');
+  });
+});
+
+describe('normalizeSandbox', () => {
+  it('rewrites legacy persisted sandbox blueprint IDs during store normalization', () => {
+    const sandbox = normalizeSandbox({
+      localId: 'legacy:sb-1',
+      name: 'test',
+      blueprintId: '1',
+      serviceId: '1',
+    });
+
+    expect(sandbox.blueprintId).toBe('ai-agent-sandbox-blueprint');
+  });
 });
 
 // ── addSandbox ──
@@ -37,14 +98,14 @@ describe('addSandbox', () => {
   it('adds a new sandbox to the list', () => {
     addSandbox(makeSandbox({ id: 'sb-1' }));
     expect(sandboxListStore.get()).toHaveLength(1);
-    expect(sandboxListStore.get()[0].id).toBe('sb-1');
+    expect(sandboxListStore.get()[0].localId).toBe('sb-1');
   });
 
   it('prepends new sandbox (most recent first)', () => {
     addSandbox(makeSandbox({ id: 'sb-1' }));
     addSandbox(makeSandbox({ id: 'sb-2' }));
-    expect(sandboxListStore.get()[0].id).toBe('sb-2');
-    expect(sandboxListStore.get()[1].id).toBe('sb-1');
+    expect(sandboxListStore.get()[0].localId).toBe('sb-2');
+    expect(sandboxListStore.get()[1].localId).toBe('sb-1');
   });
 
   it('deduplicates by id — second add is no-op', () => {
@@ -133,7 +194,7 @@ describe('runningSandboxes', () => {
     addSandbox(makeSandbox({ id: 'sb-2', status: 'stopped' }));
     addSandbox(makeSandbox({ id: 'sb-3', status: 'running' }));
     expect(runningSandboxes.get()).toHaveLength(2);
-    expect(runningSandboxes.get().map((s) => s.id).sort()).toEqual(['sb-1', 'sb-3']);
+    expect(runningSandboxes.get().map((s) => s.localId).sort()).toEqual(['sb-1', 'sb-3']);
   });
 
   it('returns empty when none running', () => {

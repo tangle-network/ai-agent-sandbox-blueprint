@@ -1,20 +1,27 @@
 use docktopus::DockerBuilder;
-use docktopus::bollard::container::{
-    Config as BollardConfig, InspectContainerOptions, RemoveContainerOptions,
-};
+use docktopus::bollard::container::{Config as BollardConfig, LogOutput, RemoveContainerOptions};
+use docktopus::bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use docktopus::bollard::models::{HostConfig, PortBinding, PortMap};
 use docktopus::container::Container;
 use once_cell::sync::OnceCell;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio::sync::OnceCell as AsyncOnceCell;
+use tokio_stream::StreamExt;
 
 use crate::error::{Result, SandboxError};
-use crate::util::{merge_metadata, parse_json_object};
+use crate::util::{merge_metadata, parse_json_object, shell_escape};
 use crate::{DEFAULT_SIDECAR_HTTP_PORT, DEFAULT_SIDECAR_IMAGE, DEFAULT_SIDECAR_SSH_PORT};
+
+// Match the 30s sidecar health-check window for slower CI/coverage runners.
+const PORT_MAPPING_RETRY_ATTEMPTS: usize = 60;
+const PORT_MAPPING_RETRY_DELAY_MS: u64 = 500;
+const SSH_DEFAULT_LOGIN_USER: &str = "sidecar";
+const SSH_FALLBACK_LOGIN_USER: &str = "agent";
+const SSH_COMPATIBLE_LOGIN_USERS: &[&str] = &[SSH_DEFAULT_LOGIN_USER, SSH_FALLBACK_LOGIN_USER];
 
 /// ABI-independent parameters for sandbox creation.
 ///
@@ -35,6 +42,7 @@ pub struct CreateSandboxParams {
     pub metadata_json: String,
     pub ssh_enabled: bool,
     pub ssh_public_key: String,
+    /// Deprecated compatibility field: accepted from ABI/config inputs but ignored.
     pub web_terminal_enabled: bool,
     pub max_lifetime_seconds: u64,
     pub idle_timeout_seconds: u64,
@@ -44,6 +52,9 @@ pub struct CreateSandboxParams {
     /// On-chain caller address (hex string, e.g. "0x1234..."). Set by the job
     /// handler from the `Caller` extractor so that ownership can be enforced.
     pub owner: String,
+    /// Service ID that owns the on-chain job used to create this sandbox.
+    /// Optional for local-only or legacy sandboxes that were not linked.
+    pub service_id: Option<u64>,
     /// Optional TEE configuration. When set with `required: true`, the runtime
     /// must provision the sandbox inside a trusted execution environment.
     pub tee_config: Option<crate::tee::TeeConfig>,
@@ -129,7 +140,10 @@ impl SidecarRuntimeConfig {
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(crate::DEFAULT_TIMEOUT_SECS);
-            let docker_host = env::var("DOCKER_HOST").ok();
+            let docker_host = env::var("DOCKER_HOST")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(detect_docker_host_fallback);
             let pull_image = env::var("SIDECAR_PULL_IMAGE")
                 .ok()
                 .and_then(|v| v.parse::<bool>().ok())
@@ -304,6 +318,8 @@ pub struct SandboxRecord {
     /// ownership checks — only the owner may stop, resume, or delete a sandbox.
     #[serde(default)]
     pub owner: String,
+    #[serde(default)]
+    pub service_id: Option<u64>,
     /// TEE configuration used to create this sandbox (preserved for recreation).
     #[serde(default)]
     pub tee_config: Option<crate::tee::TeeConfig>,
@@ -311,6 +327,18 @@ pub struct SandboxRecord {
     /// Populated from `metadata_json.ports` at creation time.
     #[serde(default)]
     pub extra_ports: HashMap<u16, u16>,
+    /// SSH login user chosen by the runtime when SSH is enabled.
+    #[serde(default)]
+    pub ssh_login_user: Option<String>,
+    /// Persisted SSH key assignments so they can be replayed after recreation.
+    #[serde(default)]
+    pub ssh_authorized_keys: Vec<SshAuthorizedKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SshAuthorizedKey {
+    pub username: String,
+    pub public_key: String,
 }
 
 impl SandboxRecord {
@@ -330,7 +358,6 @@ use crate::store::PersistentStore;
 
 static SANDBOXES: OnceCell<PersistentStore<SandboxRecord>> = OnceCell::new();
 static INSTANCE_STORE: OnceCell<PersistentStore<SandboxRecord>> = OnceCell::new();
-static DOCKER_BUILDER: AsyncOnceCell<DockerBuilder> = AsyncOnceCell::const_new();
 static IMAGE_PULLED: AsyncOnceCell<()> = AsyncOnceCell::const_new();
 
 /// Access the fleet-mode sandbox store (`sandboxes.json`), initializing it on first call.
@@ -341,6 +368,62 @@ pub fn sandboxes() -> Result<&'static PersistentStore<SandboxRecord>> {
             PersistentStore::open(path)
         })
         .map_err(|err: SandboxError| err)
+}
+
+/// Best-effort repair for legacy cloud sandbox records that were persisted
+/// without their `service_id`.
+///
+/// We only backfill when the provision tracker can prove the relationship via
+/// `metadata.service_id` for the same `sandbox_id`. If no lineage is present,
+/// the record is left unchanged.
+pub fn repair_sandbox_service_links_from_provisions() -> Result<usize> {
+    let provisions = crate::provision_progress::list_all_provisions()?;
+    if provisions.is_empty() {
+        return Ok(0);
+    }
+
+    let mut service_by_sandbox_id = HashMap::<String, u64>::new();
+    for provision in provisions {
+        let Some(sandbox_id) = provision.sandbox_id else {
+            continue;
+        };
+        let Some(service_id) = provision
+            .metadata
+            .get("service_id")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            continue;
+        };
+        service_by_sandbox_id
+            .entry(sandbox_id)
+            .or_insert(service_id);
+    }
+
+    if service_by_sandbox_id.is_empty() {
+        return Ok(0);
+    }
+
+    let store = sandboxes()?;
+    let records = store.values()?;
+    let mut repaired = 0usize;
+
+    for record in records {
+        if record.service_id.is_some() {
+            continue;
+        }
+        let Some(service_id) = service_by_sandbox_id.get(&record.id).copied() else {
+            continue;
+        };
+        if store.update(&record.id, |entry| {
+            if entry.service_id.is_none() {
+                entry.service_id = Some(service_id);
+            }
+        })? {
+            repaired += 1;
+        }
+    }
+
+    Ok(repaired)
 }
 
 /// Access the instance-mode singleton sandbox store (`instance.json`).
@@ -368,26 +451,34 @@ pub fn get_instance_sandbox() -> Result<Option<SandboxRecord>> {
     }
 }
 
-/// Return the cached Docker client, connecting on first call.
-pub async fn docker_builder() -> Result<&'static DockerBuilder> {
-    // Return cached builder if already initialized.
-    if let Some(builder) = DOCKER_BUILDER.get() {
-        return Ok(builder);
-    }
-    // Build a new connection. If this fails, the error is returned but NOT
-    // cached, so subsequent calls will retry instead of being permanently
-    // broken by a transient Docker outage.
+/// Build a fresh Docker client for each call.
+///
+/// We intentionally do not cache the builder for the life of the process so
+/// Docker Desktop socket or port-mapping state cannot go stale across long-lived
+/// operator sessions.
+pub async fn docker_builder() -> Result<DockerBuilder> {
     let config = SidecarRuntimeConfig::load();
-    let builder = match config.docker_host.as_deref() {
+    match config.docker_host.as_deref() {
         Some(host) => DockerBuilder::with_address(host).await.map_err(|err| {
             SandboxError::Docker(format!("Failed to connect to Docker at {host}: {err}"))
-        })?,
+        }),
         None => DockerBuilder::new()
             .await
-            .map_err(|err| SandboxError::Docker(format!("Failed to connect to Docker: {err}")))?,
-    };
-    // If another task raced us, use theirs; otherwise cache ours.
-    Ok(DOCKER_BUILDER.get_or_init(|| async { builder }).await)
+            .map_err(|err| SandboxError::Docker(format!("Failed to connect to Docker: {err}"))),
+    }
+}
+
+fn detect_docker_host_fallback() -> Option<String> {
+    let default_socket = std::path::Path::new("/var/run/docker.sock");
+    if default_socket.exists() {
+        return None;
+    }
+
+    let home = env::var("HOME").ok()?;
+    let docker_desktop_socket = std::path::Path::new(&home).join(".docker/run/docker.sock");
+    docker_desktop_socket
+        .exists()
+        .then(|| format!("unix://{}", docker_desktop_socket.display()))
 }
 
 /// Default timeout for Docker operations (seconds).
@@ -478,6 +569,113 @@ async fn start_container_with_retry(container: &mut Container) -> Result<()> {
             docker_timeout("start_container_retry", container.start(false)).await
         }
     }
+}
+
+fn existing_store_entry_for_override(sandbox_id: &str) -> Result<Option<SandboxRecord>> {
+    sandboxes()?.get(sandbox_id)
+}
+
+fn adjusted_sandbox_count_for_limit(current: usize, reusing_existing_slot: bool) -> usize {
+    if reusing_existing_slot {
+        current.saturating_sub(1)
+    } else {
+        current
+    }
+}
+
+fn enforce_sandbox_count_limit(
+    config: &SidecarRuntimeConfig,
+    reusing_existing_slot: bool,
+) -> Result<()> {
+    if config.sandbox_max_count == 0 {
+        return Ok(());
+    }
+
+    let current = sandboxes()?.values()?.len();
+    let effective_current = adjusted_sandbox_count_for_limit(current, reusing_existing_slot);
+    if effective_current >= config.sandbox_max_count {
+        return Err(SandboxError::Validation(format!(
+            "Sandbox limit reached ({current}/{max}). Delete unused sandboxes before creating new ones.",
+            max = config.sandbox_max_count,
+        )));
+    }
+
+    Ok(())
+}
+
+fn restore_previous_store_entry(
+    sandbox_id: &str,
+    previous_record: Option<SandboxRecord>,
+) -> Result<()> {
+    match previous_record {
+        Some(record) => sandboxes()?.insert(sandbox_id.to_string(), record),
+        None => {
+            let _ = sandboxes()?.remove(sandbox_id)?;
+            Ok(())
+        }
+    }
+}
+
+fn is_retryable_port_mapping_error(err: &SandboxError) -> bool {
+    let SandboxError::Docker(msg) = err else {
+        return false;
+    };
+
+    msg.starts_with("Missing container port mappings")
+        || msg.starts_with("Missing port bindings for ")
+        || msg.starts_with("Missing host port for ")
+        || (msg.starts_with("Host port for ") && msg.ends_with(" is not assigned yet"))
+}
+
+async fn retry_port_mapping_lookup_inner<T, F, Fut>(
+    operation: &str,
+    container_id: &str,
+    max_attempts: usize,
+    delay_ms: u64,
+    mut f: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut last_err = None;
+    tracing::info!(
+        operation,
+        container_id,
+        "Resolving published sidecar endpoint"
+    );
+
+    for attempt in 0..max_attempts {
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if !is_retryable_port_mapping_error(&err) {
+                    return Err(err);
+                }
+                last_err = Some(err);
+                if attempt + 1 < max_attempts {
+                    tracing::warn!(
+                        operation,
+                        container_id,
+                        attempt = attempt + 1,
+                        max_attempts,
+                        error = %last_err.as_ref().expect("last_err just set"),
+                        "Published sidecar endpoint not ready yet, retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                }
+            }
+        }
+    }
+
+    let last_err = last_err.unwrap_or_else(|| {
+        SandboxError::Unavailable(format!(
+            "Unable to resolve published sidecar endpoint for container {container_id}"
+        ))
+    });
+    Err(SandboxError::Unavailable(format!(
+        "{operation} failed: Docker did not publish sidecar port for container {container_id} after {max_attempts} attempts: {last_err}"
+    )))
 }
 
 /// Best-effort removal of an orphaned container after a partial creation failure.
@@ -877,8 +1075,11 @@ async fn create_sidecar_tee(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
+        service_id: request.service_id,
         tee_config: request.tee_config.clone(),
         extra_ports: deployment.extra_ports,
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
 
     let mut sealed = record.clone();
@@ -1003,10 +1204,639 @@ pub(crate) fn record_uses_firecracker(record: &SandboxRecord) -> bool {
     runtime_backend_for_record(record) == RuntimeBackend::Firecracker
 }
 
+pub fn supports_docker_endpoint_refresh(record: &SandboxRecord) -> bool {
+    record.tee_deployment_id.is_none() && !record_uses_firecracker(record)
+}
+
 fn parse_url_port(url: &str) -> Option<u16> {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|u| u.port_or_known_default())
+}
+
+#[derive(Debug, Default, Clone)]
+struct ExecCommandResult {
+    exit_code: i64,
+    stdout: String,
+    stderr: String,
+}
+
+fn exec_result_json(result: &ExecCommandResult) -> Value {
+    json!({
+        "result": {
+            "exitCode": result.exit_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+    })
+}
+
+fn summarize_exec_failure(result: &ExecCommandResult) -> String {
+    result
+        .stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .or_else(|| {
+            result
+                .stdout
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+        })
+        .unwrap_or("command failed")
+        .to_string()
+}
+
+fn parse_sidecar_exec_result(parsed: &Value) -> ExecCommandResult {
+    let result = parsed.get("result");
+    ExecCommandResult {
+        exit_code: result
+            .and_then(|r| r.get("exitCode"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        stdout: result
+            .and_then(|r| r.get("stdout"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        stderr: result
+            .and_then(|r| r.get("stderr"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
+fn extract_detected_ssh_username(result: &ExecCommandResult) -> Result<String> {
+    if result.exit_code != 0 {
+        return Err(SandboxError::Validation(format!(
+            "SSH username detection failed (exit {}): {}",
+            result.exit_code,
+            summarize_exec_failure(result)
+        )));
+    }
+
+    for line in result.stdout.lines() {
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        if crate::ssh_validation::validate_ssh_username(candidate).is_ok() {
+            return Ok(candidate.to_string());
+        }
+    }
+
+    Err(SandboxError::Validation(
+        "SSH username detection failed: could not find a valid username in command output".into(),
+    ))
+}
+
+async fn docker_exec_as_user(
+    container_id: &str,
+    user: &str,
+    command: &str,
+) -> Result<ExecCommandResult> {
+    let builder = docker_builder().await?;
+    let exec = docker_timeout(
+        "create_exec",
+        builder.client().create_exec(
+            container_id,
+            CreateExecOptions::<String> {
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                cmd: Some(vec![
+                    "/bin/sh".to_string(),
+                    "-lc".to_string(),
+                    command.to_string(),
+                ]),
+                user: Some(user.to_string()),
+                ..Default::default()
+            },
+        ),
+    )
+    .await?;
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    match docker_timeout(
+        "start_exec",
+        builder
+            .client()
+            .start_exec(&exec.id, None::<StartExecOptions>),
+    )
+    .await?
+    {
+        StartExecResults::Attached { mut output, .. } => {
+            while let Some(chunk) = output.next().await {
+                let chunk =
+                    chunk.map_err(|e| SandboxError::Docker(format!("exec output failed: {e}")))?;
+                match chunk {
+                    LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                        stdout.extend_from_slice(&message);
+                    }
+                    LogOutput::StdErr { message } => stderr.extend_from_slice(&message),
+                    LogOutput::StdIn { .. } => {}
+                }
+            }
+        }
+        StartExecResults::Detached => {
+            return Err(SandboxError::Docker(
+                "exec unexpectedly detached while waiting for SSH bootstrap output".into(),
+            ));
+        }
+    }
+
+    let inspect = docker_timeout("inspect_exec", builder.client().inspect_exec(&exec.id)).await?;
+    Ok(ExecCommandResult {
+        exit_code: inspect.exit_code.unwrap_or_default(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+fn build_docker_ssh_bootstrap_command(username: &str) -> String {
+    let user_arg = shell_escape(username);
+    format!(
+        r#"set -euo pipefail;
+user={user_arg};
+shell="/bin/sh";
+[ -x "$shell" ] || shell="/bin/bash";
+if ! getent passwd "$user" >/dev/null 2>&1; then
+  echo "User $user does not exist" >&2;
+  exit 1;
+fi;
+home=$(getent passwd "$user" | cut -d: -f6);
+if [ -z "$home" ]; then
+  echo "User $user does not have a home directory" >&2;
+  exit 1;
+fi;
+current_shell=$(getent passwd "$user" | cut -d: -f7);
+if [ "$current_shell" = "/sbin/nologin" ] || [ "$current_shell" = "/bin/false" ]; then
+  awk -F: -v user="$user" -v shell="$shell" 'BEGIN {{ OFS=FS }} $1==user {{ $7=shell }} {{ print }}' /etc/passwd > /tmp/passwd.tangle;
+  cat /tmp/passwd.tangle > /etc/passwd;
+  rm -f /tmp/passwd.tangle;
+fi;
+if command -v passwd >/dev/null 2>&1; then
+  # OpenSSH rejects locked accounts before checking authorized_keys.
+  passwd -u "$user" >/dev/null 2>&1 || true;
+fi;
+if ! command -v sshd >/dev/null 2>&1; then
+  if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache openssh-server >/dev/null;
+  elif command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive;
+    apt-get update >/dev/null;
+    apt-get install -y --no-install-recommends openssh-server >/dev/null;
+    rm -rf /var/lib/apt/lists/*;
+  else
+    echo "Unsupported package manager for SSH bootstrap" >&2;
+    exit 1;
+  fi;
+fi;
+mkdir -p /run/sshd;
+ssh-keygen -A >/dev/null 2>&1;
+cat > /etc/ssh/sshd_config.tangle <<'EOF'
+Port 22
+Protocol 2
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin no
+AllowUsers {username}
+AuthorizedKeysFile .ssh/authorized_keys
+PidFile /run/sshd.pid
+Subsystem sftp internal-sftp
+EOF
+if ! awk 'NR > 1 {{ split($2,a,":"); if (toupper(a[2]) == "0016" && $4 == "0A") found=1 }} END {{ exit(found ? 0 : 1) }}' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+  if [ -f /run/sshd.pid ] && kill -0 "$(cat /run/sshd.pid)" 2>/dev/null; then
+    kill "$(cat /run/sshd.pid)" 2>/dev/null || true;
+    sleep 1;
+  fi;
+  rm -f /run/sshd.pid;
+  /usr/sbin/sshd -f /etc/ssh/sshd_config.tangle;
+fi;
+awk 'NR > 1 {{ split($2,a,":"); if (toupper(a[2]) == "0016" && $4 == "0A") found=1 }} END {{ exit(found ? 0 : 1) }}' /proc/net/tcp /proc/net/tcp6 2>/dev/null"#,
+    )
+}
+
+fn build_docker_ssh_user_home_bootstrap_command(username: &str) -> String {
+    let user_arg = shell_escape(username);
+    format!(
+        r#"set -euo pipefail;
+user={user_arg};
+home=$(getent passwd "$user" | cut -d: -f6);
+if [ -z "$home" ]; then
+  echo "User $user does not exist" >&2;
+  exit 1;
+fi;
+mkdir -p "$home/.ssh";
+touch "$home/.ssh/authorized_keys";
+chmod 700 "$home/.ssh";
+chmod 600 "$home/.ssh/authorized_keys""#
+    )
+}
+
+fn build_ssh_key_install_command(username: &str, public_key: &str) -> String {
+    let user_arg = shell_escape(username);
+    let key_arg = shell_escape(public_key);
+    format!(
+        r#"set -euo pipefail;
+user={user_arg};
+key={key_arg};
+home=$(getent passwd "$user" | cut -d: -f6);
+if [ -z "$home" ]; then
+  echo "User $user does not exist" >&2;
+  exit 1;
+fi;
+mkdir -p "$home/.ssh";
+touch "$home/.ssh/authorized_keys";
+chmod 700 "$home/.ssh";
+if ! grep -qxF "$key" "$home/.ssh/authorized_keys" 2>/dev/null; then
+  printf '%s\n' "$key" >> "$home/.ssh/authorized_keys";
+fi;
+chmod 600 "$home/.ssh/authorized_keys""#
+    )
+}
+
+fn build_ssh_key_revoke_command(username: &str, public_key: &str) -> String {
+    let user_arg = shell_escape(username);
+    let key_arg = shell_escape(public_key);
+    format!(
+        r#"set -euo pipefail;
+user={user_arg};
+key={key_arg};
+home=$(getent passwd "$user" | cut -d: -f6);
+if [ -z "$home" ]; then
+  echo "User $user does not exist" >&2;
+  exit 1;
+fi;
+if [ -f "$home/.ssh/authorized_keys" ]; then
+  tmp=$(mktemp /tmp/authorized_keys.XXXXXX);
+  grep -vxF "$key" "$home/.ssh/authorized_keys" > "$tmp" || true;
+  mv "$tmp" "$home/.ssh/authorized_keys";
+  chmod 600 "$home/.ssh/authorized_keys";
+fi"#
+    )
+}
+
+fn build_sidecar_ssh_key_install_command(username: &str, public_key: &str) -> String {
+    let user_arg = shell_escape(username);
+    let key_arg = shell_escape(public_key);
+    format!(
+        "set -euo pipefail; user={user_arg}; \
+home=$(getent passwd \"${{user}}\" | cut -d: -f6); \
+if [ -z \"$home\" ]; then echo \"User ${{user}} does not exist\" >&2; exit 1; fi; \
+mkdir -p \"$home/.ssh\"; chmod 700 \"$home/.ssh\"; \
+if ! grep -qxF {key_arg} \"$home/.ssh/authorized_keys\" 2>/dev/null; then \
+    echo {key_arg} >> \"$home/.ssh/authorized_keys\"; \
+fi; chmod 600 \"$home/.ssh/authorized_keys\""
+    )
+}
+
+fn build_sidecar_ssh_key_revoke_command(username: &str, public_key: &str) -> String {
+    let user_arg = shell_escape(username);
+    let key_arg = shell_escape(public_key);
+    format!(
+        "set -euo pipefail; user={user_arg}; \
+home=$(getent passwd \"${{user}}\" | cut -d: -f6); \
+if [ -z \"$home\" ]; then echo \"User ${{user}} does not exist\" >&2; exit 1; fi; \
+if [ -f \"$home/.ssh/authorized_keys\" ]; then \
+    tmp=$(mktemp /tmp/authorized_keys.XXXXXX); \
+    grep -vxF {key_arg} \"$home/.ssh/authorized_keys\" > \"$tmp\" || true; \
+    mv \"$tmp\" \"$home/.ssh/authorized_keys\"; chmod 600 \"$home/.ssh/authorized_keys\"; \
+fi"
+    )
+}
+
+fn normalize_requested_ssh_username(username: Option<&str>) -> Result<Option<String>> {
+    let Some(username) = username.map(str::trim) else {
+        return Ok(None);
+    };
+    if username.is_empty() {
+        return Ok(None);
+    }
+    crate::ssh_validation::validate_ssh_username(username).map_err(SandboxError::Validation)?;
+    Ok(Some(username.to_string()))
+}
+
+fn persist_ssh_login_user(sandbox_id: &str, username: &str) -> Result<()> {
+    sandboxes()?.update(sandbox_id, |record| {
+        record.ssh_login_user = Some(username.to_string());
+    })?;
+    Ok(())
+}
+
+fn persist_ssh_key_assignment(sandbox_id: &str, username: &str, public_key: &str) -> Result<()> {
+    sandboxes()?.update(sandbox_id, |record| {
+        let entry = SshAuthorizedKey {
+            username: username.to_string(),
+            public_key: public_key.to_string(),
+        };
+        if !record.ssh_authorized_keys.contains(&entry) {
+            record.ssh_authorized_keys.push(entry);
+        }
+    })?;
+    Ok(())
+}
+
+fn remove_ssh_key_assignment(sandbox_id: &str, username: &str, public_key: &str) -> Result<()> {
+    sandboxes()?.update(sandbox_id, |record| {
+        record
+            .ssh_authorized_keys
+            .retain(|entry| !(entry.username == username && entry.public_key == public_key));
+    })?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn select_docker_ssh_login_user<'a, F>(mut user_exists: F) -> Option<&'a str>
+where
+    F: FnMut(&str) -> bool,
+{
+    SSH_COMPATIBLE_LOGIN_USERS
+        .iter()
+        .copied()
+        .find(|candidate| user_exists(candidate))
+}
+
+fn compatible_docker_ssh_users_summary() -> String {
+    SSH_COMPATIBLE_LOGIN_USERS.join(", ")
+}
+
+async fn docker_user_exists(container_id: &str, username: &str) -> Result<bool> {
+    let user_arg = shell_escape(username);
+    let command = format!("getent passwd {user_arg} >/dev/null 2>&1");
+    let result = docker_exec_as_user(container_id, "root", &command).await?;
+    Ok(result.exit_code == 0)
+}
+
+async fn detect_docker_ssh_username(record: &SandboxRecord) -> Result<String> {
+    if let Some(username) = &record.ssh_login_user {
+        return Ok(username.clone());
+    }
+
+    for candidate in SSH_COMPATIBLE_LOGIN_USERS {
+        if docker_user_exists(&record.container_id, candidate).await? {
+            persist_ssh_login_user(&record.id, candidate)?;
+            return Ok((*candidate).to_string());
+        }
+    }
+
+    Err(SandboxError::Validation(format!(
+        "SSH login user detection failed for sandbox {}: none of the supported users exist (checked: {})",
+        record.id,
+        compatible_docker_ssh_users_summary()
+    )))
+}
+
+fn resolve_docker_ssh_username(
+    record: &SandboxRecord,
+    requested: Option<String>,
+) -> Result<String> {
+    let login_user = record
+        .ssh_login_user
+        .clone()
+        .unwrap_or_else(|| SSH_DEFAULT_LOGIN_USER.to_string());
+    match requested {
+        Some(username) if username != login_user => Err(SandboxError::Validation(format!(
+            "SSH login is only supported for user '{login_user}'"
+        ))),
+        Some(username) => Ok(username),
+        None => Ok(login_user),
+    }
+}
+
+async fn ensure_docker_ssh_ready(record: &SandboxRecord) -> Result<String> {
+    let login_user = detect_docker_ssh_username(record).await?;
+    let root_bootstrap = docker_exec_as_user(
+        &record.container_id,
+        "root",
+        &build_docker_ssh_bootstrap_command(&login_user),
+    )
+    .await?;
+    if root_bootstrap.exit_code != 0 {
+        return Err(SandboxError::Validation(format!(
+            "SSH bootstrap failed for sandbox {}: {}",
+            record.id,
+            summarize_exec_failure(&root_bootstrap)
+        )));
+    }
+
+    let home_bootstrap = docker_exec_as_user(
+        &record.container_id,
+        &login_user,
+        &build_docker_ssh_user_home_bootstrap_command(&login_user),
+    )
+    .await?;
+    if home_bootstrap.exit_code != 0 {
+        return Err(SandboxError::Validation(format!(
+            "SSH bootstrap failed for sandbox {}: {}",
+            record.id,
+            summarize_exec_failure(&home_bootstrap)
+        )));
+    }
+
+    persist_ssh_login_user(&record.id, &login_user)?;
+    Ok(login_user)
+}
+
+fn is_docker_unavailable(err: &SandboxError) -> bool {
+    matches!(err, SandboxError::Docker(msg) if msg.contains("Failed to connect to Docker") || msg.contains("Socket not found"))
+}
+
+async fn detect_sidecar_ssh_username(record: &SandboxRecord) -> Result<String> {
+    let payload = json!({ "command": "id -un || whoami" });
+    let parsed = crate::http::sidecar_post_json(
+        &record.sidecar_url,
+        "/terminals/commands",
+        &record.token,
+        payload,
+    )
+    .await?;
+    let username = extract_detected_ssh_username(&parse_sidecar_exec_result(&parsed))?;
+    persist_ssh_login_user(&record.id, &username)?;
+    Ok(username)
+}
+
+async fn execute_docker_ssh_command(
+    record: &SandboxRecord,
+    user: &str,
+    command: &str,
+) -> Result<ExecCommandResult> {
+    let result = docker_exec_as_user(&record.container_id, user, command).await?;
+    if result.exit_code != 0 {
+        return Err(SandboxError::Validation(format!(
+            "SSH command failed for sandbox {} (user {}): {}",
+            record.id,
+            user,
+            summarize_exec_failure(&result)
+        )));
+    }
+    Ok(result)
+}
+
+async fn execute_sidecar_ssh_command(record: &SandboxRecord, command: &str) -> Result<Value> {
+    let payload = json!({ "command": format!("sh -c {}", shell_escape(command)) });
+    crate::http::sidecar_post_json(
+        &record.sidecar_url,
+        "/terminals/commands",
+        &record.token,
+        payload,
+    )
+    .await
+}
+
+async fn prepare_ssh_access(record: &SandboxRecord) -> Result<(SandboxRecord, bool)> {
+    if record.ssh_port.is_none() {
+        return Err(SandboxError::Validation(
+            "SSH is not enabled for this sandbox".into(),
+        ));
+    }
+
+    if supports_docker_endpoint_refresh(record) {
+        match ensure_docker_ssh_ready(record).await {
+            Ok(_) => return Ok((get_sandbox_by_id(&record.id)?, true)),
+            Err(err) if is_docker_unavailable(&err) => {
+                return Ok((get_sandbox_by_id(&record.id)?, false));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok((get_sandbox_by_id(&record.id)?, false))
+}
+
+pub async fn ensure_ssh_ready(record: &SandboxRecord) -> Result<SandboxRecord> {
+    let (record, _) = prepare_ssh_access(record).await?;
+    Ok(record)
+}
+
+pub async fn detect_ssh_username(record: &SandboxRecord) -> Result<String> {
+    let (record, docker_managed) = prepare_ssh_access(record).await?;
+    if docker_managed {
+        return Ok(record
+            .ssh_login_user
+            .unwrap_or_else(|| SSH_DEFAULT_LOGIN_USER.to_string()));
+    }
+    if let Some(username) = &record.ssh_login_user {
+        return Ok(username.clone());
+    }
+    detect_sidecar_ssh_username(&record).await
+}
+
+pub async fn provision_ssh_key(
+    record: &SandboxRecord,
+    requested_username: Option<&str>,
+    public_key: &str,
+) -> Result<(String, Value)> {
+    crate::ssh_validation::validate_ssh_public_key(public_key).map_err(SandboxError::Validation)?;
+    let requested = normalize_requested_ssh_username(requested_username)?;
+    let (ready_record, docker_managed) = prepare_ssh_access(record).await?;
+    let username = if docker_managed {
+        resolve_docker_ssh_username(&ready_record, requested)?
+    } else {
+        match requested {
+            Some(username) => username,
+            None => detect_ssh_username(&ready_record).await?,
+        }
+    };
+
+    let result_json = if docker_managed {
+        exec_result_json(
+            &execute_docker_ssh_command(
+                &ready_record,
+                &username,
+                &build_ssh_key_install_command(&username, public_key),
+            )
+            .await?,
+        )
+    } else {
+        let parsed = execute_sidecar_ssh_command(
+            &ready_record,
+            &build_sidecar_ssh_key_install_command(&username, public_key),
+        )
+        .await?;
+        let exec = parse_sidecar_exec_result(&parsed);
+        if exec.exit_code != 0 {
+            return Err(SandboxError::Validation(format!(
+                "SSH provision failed for user '{username}' (exit {}): {}",
+                exec.exit_code,
+                summarize_exec_failure(&exec)
+            )));
+        }
+        parsed
+    };
+
+    persist_ssh_login_user(&ready_record.id, &username)?;
+    persist_ssh_key_assignment(&ready_record.id, &username, public_key)?;
+    Ok((username, result_json))
+}
+
+pub async fn revoke_ssh_key(
+    record: &SandboxRecord,
+    requested_username: Option<&str>,
+    public_key: &str,
+) -> Result<(String, Value)> {
+    crate::ssh_validation::validate_ssh_public_key(public_key).map_err(SandboxError::Validation)?;
+    let requested = normalize_requested_ssh_username(requested_username)?;
+    let (ready_record, docker_managed) = prepare_ssh_access(record).await?;
+    let username = if docker_managed {
+        resolve_docker_ssh_username(&ready_record, requested)?
+    } else {
+        match requested {
+            Some(username) => username,
+            None => detect_ssh_username(&ready_record).await?,
+        }
+    };
+
+    let result_json = if docker_managed {
+        exec_result_json(
+            &execute_docker_ssh_command(
+                &ready_record,
+                &username,
+                &build_ssh_key_revoke_command(&username, public_key),
+            )
+            .await?,
+        )
+    } else {
+        let parsed = execute_sidecar_ssh_command(
+            &ready_record,
+            &build_sidecar_ssh_key_revoke_command(&username, public_key),
+        )
+        .await?;
+        let exec = parse_sidecar_exec_result(&parsed);
+        if exec.exit_code != 0 {
+            return Err(SandboxError::Validation(format!(
+                "SSH revoke failed for user '{username}' (exit {}): {}",
+                exec.exit_code,
+                summarize_exec_failure(&exec)
+            )));
+        }
+        parsed
+    };
+
+    persist_ssh_login_user(&ready_record.id, &username)?;
+    remove_ssh_key_assignment(&ready_record.id, &username, public_key)?;
+    Ok((username, result_json))
+}
+
+pub async fn restore_ssh_access(record: &SandboxRecord) -> Result<SandboxRecord> {
+    let (updated, docker_managed) = prepare_ssh_access(record).await?;
+    if docker_managed {
+        for entry in updated.ssh_authorized_keys.clone() {
+            let _ = execute_docker_ssh_command(
+                &updated,
+                &entry.username,
+                &build_ssh_key_install_command(&entry.username, &entry.public_key),
+            )
+            .await?;
+        }
+    }
+    get_sandbox_by_id(&record.id)
 }
 
 async fn create_sidecar_firecracker(
@@ -1015,16 +1845,12 @@ async fn create_sidecar_firecracker(
     sandbox_id_override: Option<&str>,
 ) -> Result<SandboxRecord> {
     let config = SidecarRuntimeConfig::load();
+    let sandbox_id = sandbox_id_override
+        .map(ToString::to_string)
+        .unwrap_or_else(next_sandbox_id);
+    let previous_store_entry = existing_store_entry_for_override(&sandbox_id)?;
 
-    if config.sandbox_max_count > 0 {
-        let current = sandboxes()?.values()?.len();
-        if current >= config.sandbox_max_count {
-            return Err(SandboxError::Validation(format!(
-                "Sandbox limit reached ({current}/{max}). Delete unused sandboxes before creating new ones.",
-                max = config.sandbox_max_count,
-            )));
-        }
-    }
+    enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
 
     let extra_ports = parse_extra_ports(&request.metadata_json, &request.port_mappings);
     if !extra_ports.is_empty() {
@@ -1039,10 +1865,6 @@ async fn create_sidecar_firecracker(
     } else {
         request.image.clone()
     };
-
-    let sandbox_id = sandbox_id_override
-        .map(ToString::to_string)
-        .unwrap_or_else(next_sandbox_id);
 
     let metadata_raw = parse_json_object(&request.metadata_json, "metadata_json")?;
     let snapshot_destination = metadata_raw
@@ -1141,8 +1963,11 @@ async fn create_sidecar_firecracker(
         disk_gb: request.disk_gb,
         stack: request.stack.clone(),
         owner: request.owner.clone(),
+        service_id: request.service_id,
         tee_config: None,
         extra_ports: HashMap::new(),
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
 
     let mut sealed = record.clone();
@@ -1178,23 +2003,66 @@ pub fn merge_env_json(base: &str, user: &str) -> String {
     })
 }
 
+pub fn workflow_runtime_credentials_available(env_json: &str) -> Result<bool> {
+    let env_map = parse_json_object(env_json, "env_json")?;
+    let Some(Value::Object(map)) = env_map else {
+        return Ok(false);
+    };
+
+    let has_native_provider_key = map
+        .get("ANTHROPIC_API_KEY")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || map
+            .get("ZAI_API_KEY")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+
+    let has_explicit_opencode = map
+        .get("OPENCODE_MODEL_PROVIDER")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        && map
+            .get("OPENCODE_MODEL_NAME")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        && map
+            .get("OPENCODE_MODEL_API_KEY")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+
+    Ok(has_native_provider_key || has_explicit_opencode)
+}
+
 /// Build the `Vec<String>` of `KEY=VALUE` env vars for a Docker container.
 fn build_env_vars(env_json: &str, token: &str, container_port: u16) -> Result<Vec<String>> {
     let mut env_vars = vec![
         format!("SIDECAR_PORT={container_port}"),
         format!("SIDECAR_AUTH_TOKEN={token}"),
+        // Switch sidecar to container mode so it uses /home/agent (where the
+        // Dockerfile pre-creates .local, .cache, .config owned by agent) instead
+        // of per-request /tmp/agent/workspace/req-* dirs on tmpfs.
+        "AGENT_WORKSPACE_ROOT=/home/agent".to_string(),
+        "AGENT_SUBPROCESS_UID=1000".to_string(),
+        "AGENT_SUBPROCESS_GID=1000".to_string(),
     ];
-    if !env_json.trim().is_empty() {
-        if let Some(Value::Object(map)) = parse_json_object(env_json, "env_json")? {
-            for (key, value) in map {
-                let val = match value {
-                    Value::String(v) => v,
-                    Value::Number(v) => v.to_string(),
-                    Value::Bool(v) => v.to_string(),
-                    _ => continue,
-                };
-                env_vars.push(format!("{key}={val}"));
-            }
+
+    // User-supplied env vars are appended after defaults so they can override.
+    let env_map = parse_json_object(env_json, "env_json")?;
+    if let Some(Value::Object(map)) = env_map.as_ref() {
+        for (key, value) in map {
+            let val = match value {
+                Value::String(v) => v.clone(),
+                Value::Number(v) => v.to_string(),
+                Value::Bool(v) => v.to_string(),
+                _ => continue,
+            };
+            env_vars.push(format!("{key}={val}"));
         }
     }
     Ok(env_vars)
@@ -1267,11 +2135,21 @@ fn build_docker_config(
             None
         },
         cap_drop: Some(vec!["ALL".to_string()]),
-        cap_add: Some(vec![
-            "SYS_PTRACE".to_string(),
-            "SETGID".to_string(),
-            "SETUID".to_string(),
-        ]),
+        cap_add: Some({
+            let mut caps = vec![
+                "SYS_PTRACE".to_string(),
+                "SETGID".to_string(),
+                "SETUID".to_string(),
+                // Agent frameworks (e.g. opencode) chown workspace dirs on startup.
+                "CHOWN".to_string(),
+            ];
+            if ssh_enabled {
+                // OpenSSH's pre-auth sandbox chroots into /var/empty.
+                caps.push("SYS_CHROOT".to_string());
+                caps.push("NET_BIND_SERVICE".to_string());
+            }
+            caps
+        }),
         security_opt: Some(vec!["no-new-privileges=false".to_string()]),
         pids_limit: Some(512),
         readonly_rootfs: Some(false),
@@ -1313,17 +2191,13 @@ async fn create_sidecar_docker(
     sandbox_id_override: Option<&str>,
 ) -> Result<SandboxRecord> {
     let config = SidecarRuntimeConfig::load();
+    let sandbox_id = sandbox_id_override
+        .map(ToString::to_string)
+        .unwrap_or_else(next_sandbox_id);
+    let previous_store_entry = existing_store_entry_for_override(&sandbox_id)?;
 
-    // Enforce per-operator sandbox count limit to prevent resource exhaustion.
-    if config.sandbox_max_count > 0 {
-        let current = sandboxes()?.values()?.len();
-        if current >= config.sandbox_max_count {
-            return Err(SandboxError::Validation(format!(
-                "Sandbox limit reached ({current}/{max}). Delete unused sandboxes before creating new ones.",
-                max = config.sandbox_max_count,
-            )));
-        }
-    }
+    // Recreating an existing sandbox reuses its existing store slot.
+    enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
 
     let builder = docker_builder().await?;
 
@@ -1335,12 +2209,9 @@ async fn create_sidecar_docker(
         request.image.clone()
     };
 
-    ensure_image_pulled(builder, &effective_image).await?;
+    ensure_image_pulled(&builder, &effective_image).await?;
     let original_image = effective_image.clone();
 
-    let sandbox_id = sandbox_id_override
-        .map(ToString::to_string)
-        .unwrap_or_else(next_sandbox_id);
     let token = match token_override {
         Some(t) if !t.trim().is_empty() => t.to_string(),
         _ => crate::auth::generate_token(),
@@ -1392,26 +2263,86 @@ async fn create_sidecar_docker(
         .to_string();
 
     let finish = async {
-        let inspect = docker_timeout(
-            "inspect_container",
-            builder
-                .client()
-                .inspect_container(&container_id, None::<InspectContainerOptions>),
-        )
-        .await?;
+        let extra_port_seed = extra_ports
+            .iter()
+            .copied()
+            .map(|port| (port, 0u16))
+            .collect::<HashMap<_, _>>();
+        let (sidecar_url, sidecar_port, ssh_port, extra_port_map) =
+            retry_port_mapping_lookup_inner(
+                "create endpoint resolution",
+                &container_id,
+                PORT_MAPPING_RETRY_ATTEMPTS,
+                PORT_MAPPING_RETRY_DELAY_MS,
+                || {
+                    refresh_port_mapping(
+                        builder.client(),
+                        &container_id,
+                        config.container_port,
+                        request.ssh_enabled,
+                        &config.public_host,
+                        &extra_port_seed,
+                    )
+                },
+            )
+            .await?;
 
-        let use_host_network =
-            std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
-        let (sidecar_port, ssh_port, extra_port_map) = if use_host_network {
-            // Host network mode: container ports bind directly on the host.
-            // No Docker port mappings — use the container's internal ports.
-            (config.container_port, None, HashMap::new())
-        } else {
-            let (sp, ssh) = extract_ports(&inspect, config.container_port, request.ssh_enabled)?;
-            let epm = extract_extra_ports(&inspect, &extra_ports);
-            (sp, ssh, epm)
-        };
-        let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
+        // Repair workspace ownership before the sidecar spawns OpenCode as the
+        // agent user (uid 1000).  Without this, /home/agent dirs may be root-owned
+        // and the demoted process crashes with EACCES on mkdir .local.
+        match docker_exec_as_user(
+            &container_id,
+            "root",
+            "chown -R agent:agent /home/agent 2>/dev/null || true",
+        )
+        .await
+        {
+            Ok(r) if r.exit_code != 0 => {
+                tracing::warn!(
+                    sandbox_id,
+                    exit_code = r.exit_code,
+                    stderr = %r.stderr,
+                    "workspace ownership repair returned non-zero (continuing)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    sandbox_id,
+                    error = %e,
+                    "workspace ownership repair failed (continuing)"
+                );
+            }
+            _ => {}
+        }
+
+        // Pre-create directories that the sidecar's root process will try to
+        // mkdir before demoting to uid 1000.  Without DAC_OVERRIDE the root
+        // process cannot write to agent-owned /home/agent, so we create them
+        // as the agent user who legitimately owns the parent directory.
+        match docker_exec_as_user(
+            &container_id,
+            "agent",
+            "mkdir -p /home/agent/.opencode-home/.config",
+        )
+        .await
+        {
+            Ok(r) if r.exit_code != 0 => {
+                tracing::warn!(
+                    sandbox_id,
+                    exit_code = r.exit_code,
+                    stderr = %r.stderr,
+                    "opencode-home pre-creation returned non-zero (continuing)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    sandbox_id,
+                    error = %e,
+                    "opencode-home pre-creation failed (continuing)"
+                );
+            }
+            _ => {}
+        }
 
         let now = crate::util::now_ts();
         let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
@@ -1449,22 +2380,32 @@ async fn create_sidecar_docker(
             disk_gb: request.disk_gb,
             stack: request.stack.clone(),
             owner: request.owner.clone(),
+            service_id: request.service_id,
             tee_config: None,
             extra_ports: extra_port_map,
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         let mut sealed = record.clone();
         seal_record(&mut sealed)?;
-        sandboxes()?.insert(sandbox_id, sealed)?;
+        sandboxes()?.insert(sandbox_id.clone(), sealed)?;
+
+        let ready_record = if request.ssh_enabled {
+            ensure_ssh_ready(&record).await?
+        } else {
+            record.clone()
+        };
 
         crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
 
-        Ok(record)
+        Ok(ready_record)
     }
     .await;
 
     if finish.is_err() {
-        cleanup_orphaned_container(builder, &container_id).await;
+        let _ = restore_previous_store_entry(&sandbox_id, previous_store_entry);
+        cleanup_orphaned_container(&builder, &container_id).await;
     }
     finish
 }
@@ -1539,6 +2480,86 @@ async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
     ready.is_ok()
 }
 
+async fn refresh_port_mapping_with_retry(
+    operation: &str,
+    client: std::sync::Arc<docktopus::bollard::Docker>,
+    container_id: &str,
+    container_port: u16,
+    ssh_enabled: bool,
+    public_host: &str,
+    prev_extra_ports: &HashMap<u16, u16>,
+) -> Result<(String, u16, Option<u16>, HashMap<u16, u16>)> {
+    retry_port_mapping_lookup_inner(
+        operation,
+        container_id,
+        PORT_MAPPING_RETRY_ATTEMPTS,
+        PORT_MAPPING_RETRY_DELAY_MS,
+        || {
+            refresh_port_mapping(
+                client.clone(),
+                container_id,
+                container_port,
+                ssh_enabled,
+                public_host,
+                prev_extra_ports,
+            )
+        },
+    )
+    .await
+}
+
+/// Re-inspect a running Docker-backed sandbox and persist its current host port mappings.
+///
+/// This is the authoritative recovery path for stale localhost port bindings
+/// after Docker restart/start operations.
+pub async fn refresh_docker_sandbox_endpoint(record: &SandboxRecord) -> Result<SandboxRecord> {
+    if !supports_docker_endpoint_refresh(record) {
+        return Err(SandboxError::Validation(format!(
+            "Sandbox {} does not use Docker-backed dynamic port refresh",
+            record.id
+        )));
+    }
+
+    let builder = docker_builder().await?;
+    let config = SidecarRuntimeConfig::load();
+    let (sidecar_url, sidecar_port, ssh_port, extra_ports) = refresh_port_mapping_with_retry(
+        "refresh endpoint resolution",
+        builder.client(),
+        &record.container_id,
+        config.container_port,
+        record.ssh_port.is_some(),
+        &config.public_host,
+        &record.extra_ports,
+    )
+    .await?;
+
+    let updated = sandboxes()?.update(&record.id, |r| {
+        r.sidecar_url = sidecar_url.clone();
+        r.sidecar_port = sidecar_port;
+        r.ssh_port = ssh_port;
+        r.extra_ports = extra_ports.clone();
+    })?;
+
+    if !updated {
+        return Err(SandboxError::NotFound(format!(
+            "Sandbox '{}' not found while refreshing endpoint",
+            record.id
+        )));
+    }
+
+    get_sandbox_by_id(&record.id)
+}
+
+async fn stop_started_container(
+    client: std::sync::Arc<docktopus::bollard::Docker>,
+    container_id: &str,
+) -> Result<()> {
+    let mut container =
+        docker_timeout("load_container", Container::from_id(client, container_id)).await?;
+    docker_timeout("stop_container", container.stop()).await?;
+    Ok(())
+}
+
 /// Resume a stopped sandbox, restoring from container, snapshot image, or S3 as available.
 pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
     if record.state == SandboxState::Running {
@@ -1556,6 +2577,13 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         })?;
         let sidecar_port =
             parse_url_port(&sidecar_url).unwrap_or(SidecarRuntimeConfig::load().container_port);
+        if !wait_for_sidecar_health(&sidecar_url, 30).await {
+            let _ = crate::firecracker::stop(&record.container_id).await;
+            return Err(SandboxError::Unavailable(format!(
+                "Resume failed: firecracker sidecar for sandbox {} did not become healthy",
+                record.id
+            )));
+        }
         let now = crate::util::now_ts();
         let _ = sandboxes()?.update(&record.id, |r| {
             r.state = SandboxState::Running;
@@ -1564,13 +2592,6 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
             r.sidecar_url = sidecar_url.clone();
             r.sidecar_port = sidecar_port;
         });
-
-        if !wait_for_sidecar_health(&sidecar_url, 30).await {
-            blueprint_sdk::info!(
-                "resume: firecracker sidecar slow to respond for sandbox {}",
-                record.id
-            );
-        }
         return Ok(());
     }
 
@@ -1597,53 +2618,52 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         };
         match try_start.await {
             Ok(()) => {
-                // Re-read port mappings — Docker may assign new host ports after restart.
-                let config = SidecarRuntimeConfig::load();
-                let sidecar_url = match refresh_port_mapping(
-                    builder.client(),
-                    effective_container_id,
-                    config.container_port,
-                    record.ssh_port.is_some(),
-                    &config.public_host,
-                    &record.extra_ports,
-                )
-                .await
+                let (resumed_record, sidecar_ready) = match refresh_docker_sandbox_endpoint(record)
+                    .await
                 {
-                    Ok((url, sidecar_port, ssh_port, extra_ports)) => {
-                        let now = crate::util::now_ts();
-                        let _ = sandboxes()?.update(&record.id, |r| {
-                            r.state = SandboxState::Running;
-                            r.stopped_at = None;
-                            r.last_activity_at = now;
-                            r.sidecar_url = url.clone();
-                            r.sidecar_port = sidecar_port;
-                            r.ssh_port = ssh_port;
-                            r.extra_ports = extra_ports;
-                        });
-                        url
-                    }
+                    Ok(updated) => (updated, false),
                     Err(err) => {
                         blueprint_sdk::info!(
                             "resume: could not refresh port mapping for sandbox {}: {err}",
                             record.id
                         );
-                        // Fall back to stored URL
-                        let now = crate::util::now_ts();
-                        let _ = sandboxes()?.update(&record.id, |r| {
-                            r.state = SandboxState::Running;
-                            r.stopped_at = None;
-                            r.last_activity_at = now;
-                        });
-                        record.sidecar_url.clone()
+                        if wait_for_sidecar_health(&record.sidecar_url, 30).await {
+                            blueprint_sdk::info!(
+                                "resume: using stored sidecar URL for sandbox {} after refresh failure",
+                                record.id
+                            );
+                            (record.clone(), true)
+                        } else {
+                            let _ =
+                                stop_started_container(builder.client(), effective_container_id)
+                                    .await;
+                            return Err(SandboxError::Unavailable(format!(
+                                "Resume failed: could not refresh sidecar URL for sandbox {}",
+                                record.id
+                            )));
+                        }
                     }
                 };
 
-                if !wait_for_sidecar_health(&sidecar_url, 30).await {
-                    blueprint_sdk::info!(
-                        "resume: hot start sidecar slow to respond for sandbox {}",
-                        record.id
-                    );
+                if !sidecar_ready && !wait_for_sidecar_health(&resumed_record.sidecar_url, 30).await
+                {
+                    let _ = stop_started_container(builder.client(), effective_container_id).await;
+                    return Err(SandboxError::Unavailable(format!(
+                        "Resume failed: sidecar for sandbox {} did not become healthy at {}",
+                        record.id, resumed_record.sidecar_url
+                    )));
                 }
+
+                if resumed_record.ssh_port.is_some() {
+                    let _ = restore_ssh_access(&resumed_record).await?;
+                }
+
+                let now = crate::util::now_ts();
+                let _ = sandboxes()?.update(&record.id, |r| {
+                    r.state = SandboxState::Running;
+                    r.stopped_at = None;
+                    r.last_activity_at = now;
+                });
                 return Ok(());
             }
             Err(err) => {
@@ -1657,20 +2677,13 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
 
     // Tier 2 (Warm): container gone, snapshot image exists -> create from image
     if record.snapshot_image_id.is_some() {
-        let updated = create_from_snapshot_image(record).await?;
-        if !wait_for_sidecar_health(&updated.sidecar_url, 30).await {
-            blueprint_sdk::info!(
-                "resume: warm start sidecar slow to respond for sandbox {}",
-                record.id
-            );
-        }
+        create_from_snapshot_image(record).await?;
         return Ok(());
     }
 
     // Tier 3 (Cold): no image, S3 snapshot exists -> create from base + restore
     if record.snapshot_s3_url.is_some() {
-        let updated = create_and_restore_from_s3(record).await?;
-        let _ = updated;
+        create_and_restore_from_s3(record).await?;
         return Ok(());
     }
 
@@ -1746,7 +2759,6 @@ pub async fn recreate_sidecar_with_env(
         let _ = stop_sidecar(&old).await;
     }
     delete_sidecar(&old, tee).await?;
-    sandboxes()?.remove(sandbox_id)?;
 
     // Rebuild creation params faithfully from the stored record
     let image = if old.original_image.is_empty() {
@@ -1773,14 +2785,29 @@ pub async fn recreate_sidecar_with_env(
         memory_mb: old.memory_mb,
         disk_gb: if old.disk_gb > 0 { old.disk_gb } else { 10 },
         owner: old.owner.clone(),
+        service_id: old.service_id,
         tee_config: old.tee_config.clone(),
         port_mappings: old.extra_ports.keys().copied().collect(),
     };
 
     // Preserve the original token so existing workflows/references keep working.
-    let (new_record, _attestation) =
+    let (_new_record, _attestation) =
         create_sidecar_with_token(&params, tee, Some(&old_token), Some(&old.id)).await?;
-    Ok(new_record)
+    let updated = sandboxes()?.update(&old.id, |record| {
+        record.ssh_login_user = old.ssh_login_user.clone();
+        record.ssh_authorized_keys = old.ssh_authorized_keys.clone();
+    })?;
+    if !updated {
+        return Err(SandboxError::NotFound(format!(
+            "Sandbox '{}' not found while restoring SSH state",
+            old.id
+        )));
+    }
+    if old.ssh_port.is_some() {
+        restore_ssh_access(&get_sandbox_by_id(&old.id)?).await
+    } else {
+        Ok(get_sandbox_by_id(&old.id)?)
+    }
 }
 
 async fn delete_sidecar_docker(record: &SandboxRecord) -> Result<()> {
@@ -1880,22 +2907,23 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .to_string();
 
     let finish = async {
-        let inspect = docker_timeout(
-            "inspect_container",
-            builder
-                .client()
-                .inspect_container(&container_id, None::<InspectContainerOptions>),
+        let (sidecar_url, sidecar_port, ssh_port, extra_ports) = refresh_port_mapping_with_retry(
+            "warm restore endpoint resolution",
+            builder.client(),
+            &container_id,
+            config.container_port,
+            ssh_enabled,
+            &config.public_host,
+            &record.extra_ports,
         )
         .await?;
 
-        let use_host_network =
-            std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
-        let (sidecar_port, ssh_port) = if use_host_network {
-            (config.container_port, None)
-        } else {
-            extract_ports(&inspect, config.container_port, ssh_enabled)?
-        };
-        let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
+        if !wait_for_sidecar_health(&sidecar_url, 30).await {
+            return Err(SandboxError::Unavailable(format!(
+                "Resume failed: warm sidecar for sandbox {} did not become healthy at {}",
+                record.id, sidecar_url
+            )));
+        }
 
         let now = crate::util::now_ts();
         let mut updated = record.clone();
@@ -1908,16 +2936,21 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         updated.last_activity_at = now;
         updated.container_removed_at = None;
         updated.snapshot_image_id = None;
+        updated.extra_ports = extra_ports;
 
         let mut sealed = updated.clone();
         seal_record(&mut sealed)?;
         sandboxes()?.insert(record.id.clone(), sealed)?;
-        Ok(updated)
+        if ssh_enabled {
+            restore_ssh_access(&updated).await
+        } else {
+            Ok(updated)
+        }
     }
     .await;
 
     if finish.is_err() {
-        cleanup_orphaned_container(builder, &container_id).await;
+        cleanup_orphaned_container(&builder, &container_id).await;
     }
     finish
 }
@@ -1938,7 +2971,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         &record.original_image
     };
 
-    ensure_image_pulled(builder, image).await?;
+    ensure_image_pulled(&builder, image).await?;
 
     let ssh_enabled = record.ssh_port.is_some();
     let effective_env = record.effective_env_json();
@@ -1967,28 +3000,23 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         .to_string();
 
     let finish = async {
-        let inspect = docker_timeout(
-            "inspect_container",
-            builder
-                .client()
-                .inspect_container(&container_id, None::<InspectContainerOptions>),
+        let (sidecar_url, sidecar_port, ssh_port, extra_ports) = refresh_port_mapping_with_retry(
+            "cold restore endpoint resolution",
+            builder.client(),
+            &container_id,
+            config.container_port,
+            ssh_enabled,
+            &config.public_host,
+            &record.extra_ports,
         )
         .await?;
-
-        let use_host_network =
-            std::env::var("SIDECAR_NETWORK_HOST").is_ok_and(|v| v == "true" || v == "1");
-        let (sidecar_port, ssh_port) = if use_host_network {
-            (config.container_port, None)
-        } else {
-            extract_ports(&inspect, config.container_port, ssh_enabled)?
-        };
-        let sidecar_url = format!("http://{}:{}", config.public_host, sidecar_port);
         let token = &record.token;
 
         if !wait_for_sidecar_health(&sidecar_url, 30).await {
-            blueprint_sdk::info!(
-                "S3 restore: sidecar slow to start, proceeding with restore anyway"
-            );
+            return Err(SandboxError::Unavailable(format!(
+                "Resume failed: cold sidecar for sandbox {} did not become healthy at {}",
+                record.id, sidecar_url
+            )));
         }
 
         // Restore workspace from S3 snapshot
@@ -2018,17 +3046,22 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         updated.last_activity_at = now;
         updated.container_removed_at = None;
         updated.image_removed_at = None;
+        updated.extra_ports = extra_ports;
         updated.snapshot_s3_url = None;
 
         let mut sealed = updated.clone();
         seal_record(&mut sealed)?;
         sandboxes()?.insert(record.id.clone(), sealed)?;
-        Ok(updated)
+        if ssh_enabled {
+            restore_ssh_access(&updated).await
+        } else {
+            Ok(updated)
+        }
     }
     .await;
 
     if finish.is_err() {
-        cleanup_orphaned_container(builder, &container_id).await;
+        cleanup_orphaned_container(&builder, &container_id).await;
     }
     finish
 }
@@ -2099,9 +3132,15 @@ fn extract_host_port(
         .first()
         .and_then(|binding| binding.host_port.as_ref())
         .ok_or_else(|| SandboxError::Docker(format!("Missing host port for {key}")))?;
-    host_port
+    let parsed = host_port
         .parse::<u16>()
-        .map_err(|_| SandboxError::Docker(format!("Invalid host port for {key}")))
+        .map_err(|_| SandboxError::Docker(format!("Invalid host port for {key}")))?;
+    if parsed == 0 {
+        return Err(SandboxError::Docker(format!(
+            "Host port for {key} is not assigned yet"
+        )));
+    }
+    Ok(parsed)
 }
 
 /// Parse extra port mappings from metadata_json and explicit port_mappings field.
@@ -2282,6 +3321,42 @@ mod port_mapping_tests {
         // Only sidecar port should be exposed (no SSH since ssh_enabled=false)
         assert_eq!(exposed.len(), 1);
         assert!(exposed.contains_key(&format!("{}/tcp", config.container_port)));
+    }
+
+    #[test]
+    fn build_docker_config_adds_ssh_caps_when_enabled() {
+        init();
+        let config = SidecarRuntimeConfig::load();
+        let docker_config = build_docker_config(config, true, 1, 512, None, &[]);
+
+        let caps = docker_config.host_config.unwrap().cap_add.unwrap();
+        assert!(caps.contains(&"CHOWN".to_string()));
+        assert!(caps.contains(&"NET_BIND_SERVICE".to_string()));
+        assert!(caps.contains(&"SYS_CHROOT".to_string()));
+    }
+
+    #[test]
+    fn docker_ssh_bootstrap_unlocks_login_user() {
+        let command = build_docker_ssh_bootstrap_command("agent");
+        assert!(command.contains("passwd -u \"$user\""));
+        assert!(command.contains("AllowUsers agent"));
+    }
+
+    #[test]
+    fn select_docker_ssh_login_user_prefers_sidecar_then_agent() {
+        let selected = select_docker_ssh_login_user(|candidate| candidate == "agent");
+        assert_eq!(selected, Some("agent"));
+
+        let selected = select_docker_ssh_login_user(|candidate| {
+            candidate == SSH_DEFAULT_LOGIN_USER || candidate == SSH_FALLBACK_LOGIN_USER
+        });
+        assert_eq!(selected, Some(SSH_DEFAULT_LOGIN_USER));
+    }
+
+    #[test]
+    fn select_docker_ssh_login_user_returns_none_when_no_compatible_user_exists() {
+        let selected = select_docker_ssh_login_user(|_| false);
+        assert_eq!(selected, None);
     }
 
     #[test]
@@ -2590,8 +3665,11 @@ mod seal_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             extra_ports: HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         seal_record(&mut record).unwrap();
@@ -2750,6 +3828,14 @@ mod core_logic_tests {
     }
 
     #[test]
+    fn adjusted_sandbox_count_reuses_existing_slot() {
+        assert_eq!(adjusted_sandbox_count_for_limit(0, false), 0);
+        assert_eq!(adjusted_sandbox_count_for_limit(1, false), 1);
+        assert_eq!(adjusted_sandbox_count_for_limit(1, true), 0);
+        assert_eq!(adjusted_sandbox_count_for_limit(5, true), 4);
+    }
+
+    #[test]
     fn effective_idle_timeout_zero_and_clamped() {
         let cfg = test_config();
         assert_eq!(cfg.effective_idle_timeout(0), 1800, "zero → default");
@@ -2797,6 +3883,41 @@ mod core_logic_tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn env_vars_preserve_explicit_ai_env() {
+        let vars = build_env_vars(r#"{"ZAI_API_KEY":"user-key"}"#, "tok", 8080).unwrap();
+        assert!(vars.contains(&"ZAI_API_KEY=user-key".to_string()));
+        assert!(!vars.contains(&"OPENCODE_MODEL_API_KEY=user-key".to_string()));
+    }
+
+    #[test]
+    fn workflow_runtime_credentials_available_requires_sandbox_env() {
+        assert!(!workflow_runtime_credentials_available("{}").unwrap());
+    }
+
+    #[test]
+    fn workflow_runtime_credentials_available_rejects_incomplete_explicit_ai_env() {
+        let old = std::env::var("ZAI_API_KEY").ok();
+        // SAFETY: test scopes environment mutation and restores the prior value.
+        unsafe {
+            std::env::set_var("ZAI_API_KEY", "operator-key");
+        }
+        assert!(
+            !workflow_runtime_credentials_available(
+                r#"{"OPENCODE_MODEL_PROVIDER":"zai-coding-plan"}"#
+            )
+            .unwrap()
+        );
+
+        // SAFETY: restore previous process environment for the next test.
+        unsafe {
+            match old {
+                Some(value) => std::env::set_var("ZAI_API_KEY", value),
+                None => std::env::remove_var("ZAI_API_KEY"),
+            }
+        }
+    }
+
     // ── extract_host_port ───────────────────────────────────────────────
 
     fn make_port_map(port: u16, host_port: &str) -> HashMap<String, Option<Vec<PortBinding>>> {
@@ -2828,6 +3949,13 @@ mod core_logic_tests {
     #[test]
     fn extract_host_port_invalid_number() {
         let ports = make_port_map(3000, "not-a-number");
+        let result = extract_host_port(&ports, 3000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_host_port_zero_is_not_ready() {
+        let ports = make_port_map(3000, "0");
         let result = extract_host_port(&ports, 3000);
         assert!(result.is_err());
     }
@@ -2887,6 +4015,86 @@ mod core_logic_tests {
         };
         let result = extract_ports(&inspect, 3000, false);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn retry_port_mapping_lookup_inner_retries_until_success() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = retry_port_mapping_lookup_inner("test resolution", "ctr-1", 3, 0, {
+            let attempts = attempts.clone();
+            move || {
+                let attempts = attempts.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if attempt < 2 {
+                        Err(SandboxError::Docker(
+                            "Host port for 3000/tcp is not assigned yet".into(),
+                        ))
+                    } else {
+                        Ok(49000u16)
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result, 49000);
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_port_mapping_lookup_inner_stops_on_non_retryable_error() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result =
+            retry_port_mapping_lookup_inner::<u16, _, _>("test resolution", "ctr-2", 3, 0, {
+                let attempts = attempts.clone();
+                move || {
+                    let attempts = attempts.clone();
+                    async move {
+                        attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Err(SandboxError::Docker(
+                            "Failed to connect to Docker: daemon unavailable".into(),
+                        ))
+                    }
+                }
+            })
+            .await;
+
+        let err = result.expect_err("expected non-retryable error to bubble up");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            err.to_string().contains("daemon unavailable"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_port_mapping_lookup_inner_wraps_exhausted_transient_error() {
+        let result = retry_port_mapping_lookup_inner::<u16, _, _>(
+            "test resolution",
+            "ctr-3",
+            2,
+            0,
+            || async {
+                Err(SandboxError::Docker(
+                    "Missing host port for 3000/tcp".into(),
+                ))
+            },
+        )
+        .await;
+
+        let err = result.expect_err("expected retries to exhaust");
+        assert!(
+            err.to_string().contains(
+                "test resolution failed: Docker did not publish sidecar port for container ctr-3 after 2 attempts"
+            ),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("Missing host port for 3000/tcp"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── SandboxState ────────────────────────────────────────────────────

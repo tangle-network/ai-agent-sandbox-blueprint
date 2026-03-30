@@ -49,7 +49,11 @@ pub use reporting::{
     report_local_provision, retry_pending_provision_report_once,
     spawn_pending_provision_report_worker, try_report_local_deprovision,
 };
-pub use workflows::bootstrap_workflows_from_chain;
+pub use workflows::{
+    WorkflowDetail, WorkflowRuntimeStatus, WorkflowStatusError, WorkflowSummary,
+    bootstrap_workflows_from_chain, list_workflows_for_owner, workflow_detail_for_owner,
+    workflow_runtime_status_for_owner,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Job IDs — must match the sequential indices in RegisterBlueprint.s.sol.
@@ -96,6 +100,31 @@ sol! {
         string metadata_json;
         bool ssh_enabled;
         string ssh_public_key;
+        /// Deprecated: retained only for ABI compatibility and ignored by the product/runtime.
+        bool web_terminal_enabled;
+        uint64 max_lifetime_seconds;
+        uint64 idle_timeout_seconds;
+        uint64 cpu_cores;
+        uint64 memory_mb;
+        uint64 disk_gb;
+        /// TEE required flag.
+        bool tee_required;
+        /// TEE type: 0=None, 1=Tdx, 2=Nitro, 3=Sev.
+        uint8 tee_type;
+    }
+
+    /// Legacy instance provision request retained for decoding older
+    /// service configs that still encoded the deprecated `sidecar_token`.
+    struct LegacyProvisionRequest {
+        string name;
+        string image;
+        string stack;
+        string agent_identifier;
+        string env_json;
+        string metadata_json;
+        bool ssh_enabled;
+        string ssh_public_key;
+        /// Deprecated: retained only for ABI compatibility and ignored by the product/runtime.
         bool web_terminal_enabled;
         uint64 max_lifetime_seconds;
         uint64 idle_timeout_seconds;
@@ -103,9 +132,7 @@ sol! {
         uint64 memory_mb;
         uint64 disk_gb;
         string sidecar_token;
-        /// TEE required flag.
         bool tee_required;
-        /// TEE type: 0=None, 1=Tdx, 2=Nitro, 3=Sev.
         uint8 tee_type;
     }
 
@@ -148,6 +175,9 @@ sol! {
         string trigger_type;
         string trigger_config;
         string sandbox_config_json;
+        uint8 target_kind;
+        string target_sandbox_id;
+        uint64 target_service_id;
     }
 
     struct WorkflowControlRequest {
@@ -239,9 +269,33 @@ impl From<&ProvisionRequest> for CreateSandboxParams {
             memory_mb: r.memory_mb,
             disk_gb: r.disk_gb,
             owner: String::new(), // Set by the job handler from Caller extractor
+            service_id: None,
             tee_config,
             user_env_json: String::new(),
             port_mappings: Vec::new(), // Parsed from metadata_json at runtime
+        }
+    }
+}
+
+impl From<LegacyProvisionRequest> for ProvisionRequest {
+    fn from(r: LegacyProvisionRequest) -> Self {
+        Self {
+            name: r.name,
+            image: r.image,
+            stack: r.stack,
+            agent_identifier: r.agent_identifier,
+            env_json: r.env_json,
+            metadata_json: r.metadata_json,
+            ssh_enabled: r.ssh_enabled,
+            ssh_public_key: r.ssh_public_key,
+            web_terminal_enabled: r.web_terminal_enabled,
+            max_lifetime_seconds: r.max_lifetime_seconds,
+            idle_timeout_seconds: r.idle_timeout_seconds,
+            cpu_cores: r.cpu_cores,
+            memory_mb: r.memory_mb,
+            disk_gb: r.disk_gb,
+            tee_required: r.tee_required,
+            tee_type: r.tee_type,
         }
     }
 }

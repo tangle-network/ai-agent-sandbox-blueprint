@@ -3,7 +3,6 @@ import { cn } from '@tangle-network/blueprint-ui';
 import {
   useProvisionProgress,
   getPhaseLabel,
-  isTerminalPhase,
   type ProvisionPhase,
 } from '@tangle-network/blueprint-ui';
 
@@ -46,9 +45,10 @@ interface ProvisionProgressProps {
   apiUrl?: string;
   className?: string;
   onReady?: (sandboxId: string, sidecarUrl: string) => void;
+  onFailed?: (message: string) => void;
 }
 
-export function ProvisionProgress({ callId, apiUrl, className, onReady }: ProvisionProgressProps) {
+export function ProvisionProgress({ callId, apiUrl, className, onReady, onFailed }: ProvisionProgressProps) {
   const { status, phase, progressPct, message, isReady, isFailed, sandboxId, sidecarUrl } =
     useProvisionProgress({ callId, apiUrl });
 
@@ -64,7 +64,7 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
 
   // Start / stop the elapsed-time ticker.
   useEffect(() => {
-    if (!callId || isTerminal) {
+    if (callId == null || isTerminal) {
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -113,7 +113,14 @@ export function ProvisionProgress({ callId, apiUrl, className, onReady }: Provis
     }
   }, [isReady, sandboxId, sidecarUrl, onReady]);
 
-  if (!callId) return null;
+  useEffect(() => {
+    if (isFailed && onFailed && !firedRef.current) {
+      firedRef.current = true;
+      onFailed(message || 'Provisioning failed');
+    }
+  }, [isFailed, message, onFailed]);
+
+  if (callId == null) return null;
 
   const currentIdx = phase ? phaseIndex(phase) : -1;
   const showTimeout = isTimedOut && !isReady && !isFailed;

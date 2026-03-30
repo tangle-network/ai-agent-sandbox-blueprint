@@ -70,6 +70,7 @@ sol! {
         string metadata_json;
         bool ssh_enabled;
         string ssh_public_key;
+        /// Deprecated: retained only for ABI compatibility and ignored by the product/runtime.
         bool web_terminal_enabled;
         uint64 max_lifetime_seconds;
         uint64 idle_timeout_seconds;
@@ -216,6 +217,9 @@ sol! {
         string trigger_type;
         string trigger_config;
         string sandbox_config_json;
+        uint8 target_kind;
+        string target_sandbox_id;
+        uint64 target_service_id;
     }
 
     /// Workflow control request.
@@ -277,6 +281,7 @@ impl From<&SandboxCreateRequest> for CreateSandboxParams {
             memory_mb: r.memory_mb,
             disk_gb: r.disk_gb,
             owner: String::new(), // Set by the job handler from Caller extractor
+            service_id: None,
             tee_config,
             user_env_json: String::new(),
             port_mappings: Vec::new(), // Parsed from metadata_json at runtime

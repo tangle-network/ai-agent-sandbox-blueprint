@@ -71,6 +71,9 @@ export const WORKFLOW_CREATE_ABI: AbiParamDef[] = [
   { name: 'trigger_type', type: 'string' },
   { name: 'trigger_config', type: 'string' },
   { name: 'sandbox_config_json', type: 'string' },
+  { name: 'target_kind', type: 'uint8' },
+  { name: 'target_sandbox_id', type: 'string' },
+  { name: 'target_service_id', type: 'uint64' },
 ];
 
 /** WorkflowControlRequest */
@@ -78,7 +81,7 @@ export const WORKFLOW_CONTROL_ABI: AbiParamDef[] = [
   { name: 'workflow_id', type: 'uint64' },
 ];
 
-/** ProvisionRequest — includes sidecar_token before TEE fields */
+/** ProvisionRequest — canonical instance shape without sidecar_token */
 export const INSTANCE_PROVISION_ABI: AbiParamDef[] = [
   { name: 'name', type: 'string' },
   { name: 'image', type: 'string' },
@@ -94,7 +97,6 @@ export const INSTANCE_PROVISION_ABI: AbiParamDef[] = [
   { name: 'cpu_cores', type: 'uint64' },
   { name: 'memory_mb', type: 'uint64' },
   { name: 'disk_gb', type: 'uint64' },
-  { name: 'sidecar_token', type: 'string' },
   { name: 'tee_required', type: 'bool' },
   { name: 'tee_type', type: 'uint8' },
 ];
@@ -109,7 +111,7 @@ export const JSON_REQUEST_ABI: AbiParamDef[] = [
 /** Sandbox create form values matching all 16 fields */
 export const SANDBOX_CREATE_VALUES: Record<string, unknown> = {
   name: 'test-sandbox',
-  image: 'ubuntu:22.04',
+  image: 'agent-dev:latest',
   stack: 'default',
   agentIdentifier: 'agent-1',
   envJson: '{"KEY":"val"}',
@@ -126,11 +128,10 @@ export const SANDBOX_CREATE_VALUES: Record<string, unknown> = {
   teeType: '0',
 };
 
-/** Instance provision form values (includes sidecarToken as internal) */
+/** Instance provision form values */
 export const INSTANCE_PROVISION_VALUES: Record<string, unknown> = {
   ...SANDBOX_CREATE_VALUES,
   name: 'test-instance',
-  sidecarToken: '',
 };
 
 /** Workflow create form values */
@@ -139,7 +140,10 @@ export const WORKFLOW_CREATE_VALUES: Record<string, unknown> = {
   workflowJson: '{"steps":[]}',
   triggerType: 'cron',
   triggerConfig: '0 */6 * * *',
-  sandboxConfigJson: '{"image":"ubuntu:22.04"}',
+  sandboxConfigJson: '{"image":"agent-dev:latest"}',
+  targetKind: '0',
+  targetSandboxId: 'sb-test-001',
+  targetServiceId: 1,
 };
 
 /** Context with sandbox_id */

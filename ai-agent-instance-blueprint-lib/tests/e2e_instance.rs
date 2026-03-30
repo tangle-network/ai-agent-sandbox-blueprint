@@ -54,6 +54,29 @@ async fn spawn_harness() -> Result<Option<BlueprintHarness>> {
     }
 }
 
+async fn detect_ssh_user(api_url: &str, auth: &str) -> Result<String> {
+    let body = api_get(api_url, "/api/sandbox/ssh/user", auth).await?;
+    body["username"]
+        .as_str()
+        .map(str::to_string)
+        .context("ssh user response missing username")
+}
+
+async fn ssh_key_presence(api_url: &str, auth: &str, username: &str, key: &str) -> Result<bool> {
+    let body = api_post(
+        api_url,
+        "/api/sandbox/exec",
+        auth,
+        json!({
+            "command": format!(
+                "sh -lc \"home=$(getent passwd \\\"{username}\\\" | cut -d: -f6); if grep -qxF \\\"{key}\\\" \\\"\\$home/.ssh/authorized_keys\\\" 2>/dev/null; then echo PRESENT; else echo ABSENT; fi\""
+            )
+        }),
+    )
+    .await?;
+    Ok(body["stdout"].as_str().unwrap_or("").contains("PRESENT"))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test: Full instance lifecycle with on-chain verification (28 steps)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,7 +119,6 @@ async fn instance_full_lifecycle() -> Result<()> {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_gb: 20,
-            sidecar_token: String::new(),
             tee_required: false,
             tee_type: 0,
         };
@@ -261,30 +283,48 @@ async fn instance_full_lifecycle() -> Result<()> {
         eprintln!("  Snapshot OK (result returned)");
 
         // ─── Step 13: SSH provision ──────────────────────────────────────
-        e2e_step!(13, "SSH provision via instance endpoint...");
+        e2e_step!(13, "SSH user detection + provision via instance endpoint...");
         let ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp9pDAVl8TpDBLVnpXjAIRxMf3K+m6UPlv3VBMbRp2o e2e-test";
-        assert_api_status(
+        let ssh_user = detect_ssh_user(&api_url, &auth).await?;
+        let body = api_post(
             &api_url,
-            "POST",
             "/api/sandbox/ssh",
             &auth,
-            json!({"username": "agent", "public_key": ssh_key}),
-            200,
+            json!({"public_key": ssh_key}),
         )
-        .await;
+        .await?;
+        assert_eq!(body["success"], true, "ssh response: {body}");
+        assert_eq!(body["username"], ssh_user, "ssh response: {body}");
+        assert!(
+            ssh_key_presence(&api_url, &auth, &ssh_user, ssh_key).await?,
+            "key should be present after provision"
+        );
         eprintln!("  SSH provisioned");
+
+        let wrong_user_resp = http()
+            .post(format!("{api_url}/api/sandbox/ssh"))
+            .header("authorization", &auth)
+            .json(&json!({"username": "no-such-user", "public_key": ssh_key}))
+            .send()
+            .await?;
+        assert_eq!(wrong_user_resp.status(), 422, "wrong user should fail");
 
         // ─── Step 14: SSH revoke ─────────────────────────────────────────
         e2e_step!(14, "SSH revoke via instance endpoint...");
-        assert_api_status(
-            &api_url,
-            "DELETE",
-            "/api/sandbox/ssh",
-            &auth,
-            json!({"username": "agent", "public_key": ssh_key}),
-            200,
-        )
-        .await;
+        let resp = http()
+            .delete(format!("{api_url}/api/sandbox/ssh"))
+            .header("authorization", &auth)
+            .json(&json!({"public_key": ssh_key}))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), 200, "ssh revoke should succeed");
+        let body: Value = resp.json().await?;
+        assert_eq!(body["success"], true, "ssh revoke response: {body}");
+        assert_eq!(body["username"], ssh_user, "ssh revoke response: {body}");
+        assert!(
+            !ssh_key_presence(&api_url, &auth, &ssh_user, ssh_key).await?,
+            "key should be absent after revoke"
+        );
         eprintln!("  SSH revoked");
 
         // ─── Step 15: Secrets inject + verify ────────────────────────────

@@ -1,9 +1,9 @@
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use reqwest::{Method, StatusCode, Url};
+use reqwest::{Client, Method, StatusCode, Url};
 use serde_json::Value;
 
 use crate::error::{Result, SandboxError};
-use crate::util::http_client;
+use crate::util::{http_client, http_client_no_timeout};
 
 pub fn build_url(base: &str, path: &str) -> Result<Url> {
     let base_url =
@@ -24,13 +24,13 @@ pub fn auth_headers(token: &str) -> Result<HeaderMap> {
     Ok(headers)
 }
 
-pub async fn send_json(
+async fn send_json_with_client(
+    client: &Client,
     method: Method,
     url: Url,
     body: Option<Value>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, String)> {
-    let client = http_client()?;
     let mut request = client.request(method, url).headers(headers);
     if let Some(body) = body {
         request = request.json(&body);
@@ -53,6 +53,16 @@ pub async fn send_json(
     Ok((status, text))
 }
 
+pub async fn send_json(
+    method: Method,
+    url: Url,
+    body: Option<Value>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, String)> {
+    let client = http_client()?;
+    send_json_with_client(client, method, url, body, headers).await
+}
+
 pub async fn sidecar_post_json(
     sidecar_url: &str,
     path: &str,
@@ -71,6 +81,43 @@ pub async fn sidecar_post_json(
     }
 
     let (_, body) = send_json(Method::POST, url, Some(payload), headers).await?;
+    serde_json::from_str(&body)
+        .map_err(|err| SandboxError::Http(format!("Invalid sidecar response JSON: {err}")))
+}
+
+pub async fn sidecar_post_json_without_timeout(
+    sidecar_url: &str,
+    path: &str,
+    token: &str,
+    payload: Value,
+) -> Result<Value> {
+    let url = build_url(sidecar_url, path)?;
+    let mut headers = auth_headers(token)?;
+
+    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
+        if let Ok(val) = HeaderValue::from_str(&rid) {
+            headers.insert("x-request-id", val);
+        }
+    }
+
+    let client = http_client_no_timeout()?;
+    let (_, body) =
+        send_json_with_client(client, Method::POST, url, Some(payload), headers).await?;
+    serde_json::from_str(&body)
+        .map_err(|err| SandboxError::Http(format!("Invalid sidecar response JSON: {err}")))
+}
+
+pub async fn sidecar_get_json(sidecar_url: &str, path: &str, token: &str) -> Result<Value> {
+    let url = build_url(sidecar_url, path)?;
+    let mut headers = auth_headers(token)?;
+
+    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
+        if let Ok(val) = HeaderValue::from_str(&rid) {
+            headers.insert("x-request-id", val);
+        }
+    }
+
+    let (_, body) = send_json(Method::GET, url, None, headers).await?;
     serde_json::from_str(&body)
         .map_err(|err| SandboxError::Http(format!("Invalid sidecar response JSON: {err}")))
 }

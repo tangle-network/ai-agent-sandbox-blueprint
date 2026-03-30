@@ -24,7 +24,9 @@ import {
   SANDBOX_ID_ABI,
   WORKFLOW_CREATE_ABI,
   WORKFLOW_CONTROL_ABI,
+  INSTANCE_PROVISION_ABI,
   SANDBOX_CREATE_VALUES,
+  INSTANCE_PROVISION_VALUES,
   WORKFLOW_CREATE_VALUES,
   SANDBOX_ID_CONTEXT,
 } from '~/test/fixtures';
@@ -64,7 +66,7 @@ describe('Sandbox Blueprint ABI Integration', () => {
     const decoded = encodeAndDecode(BP, JOB_IDS.SANDBOX_CREATE, SANDBOX_CREATE_VALUES, undefined, SANDBOX_CREATE_ABI);
     const d = decoded as readonly unknown[];
     expect(d[0]).toBe('test-sandbox');       // name
-    expect(d[1]).toBe('ubuntu:22.04');       // image
+    expect(d[1]).toBe('agent-dev:latest');   // image
     expect(d[2]).toBe('default');            // stack
     expect(d[3]).toBe('agent-1');            // agent_identifier
     expect(d[4]).toBe('{"KEY":"val"}');      // env_json
@@ -93,7 +95,10 @@ describe('Sandbox Blueprint ABI Integration', () => {
     expect(d[1]).toBe('{"steps":[]}');
     expect(d[2]).toBe('cron');
     expect(d[3]).toBe('0 */6 * * *');
-    expect(d[4]).toBe('{"image":"ubuntu:22.04"}');
+    expect(d[4]).toBe('{"image":"agent-dev:latest"}');
+    expect(d[5]).toBe(0);
+    expect(d[6]).toBe('sb-test-001');
+    expect(d[7]).toBe(1n);
   });
 
   it('workflow_trigger encodes WorkflowControlRequest', () => {
@@ -120,6 +125,21 @@ describe('Sandbox Blueprint ABI Integration', () => {
 
 describe('Instance Blueprint ABI Integration', () => {
   const BP = 'ai-agent-instance-blueprint';
+
+  it('instance_provision encodes the canonical 16-field request shape', () => {
+    const decoded = encodeAndDecode(
+      BP,
+      INSTANCE_JOB_IDS.PROVISION,
+      INSTANCE_PROVISION_VALUES,
+      undefined,
+      INSTANCE_PROVISION_ABI,
+    );
+    const d = decoded as readonly unknown[];
+    expect(d[0]).toBe('test-instance');
+    expect(d[13]).toBe(10n);
+    expect(d[14]).toBe(false);
+    expect(d[15]).toBe(0);
+  });
 
   it('all 3 on-chain jobs exist and are encodable', () => {
     for (const id of [
@@ -169,8 +189,12 @@ describe('Cross-Blueprint Consistency', () => {
     const sandboxCreate = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.SANDBOX_CREATE)!;
     expect(sandboxCreate.fields.filter(f => f.abiType).length).toBe(16);
 
-    // WorkflowCreateRequest: 5 fields
+    // ProvisionRequest: 16 fields
+    const instanceProvision = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
+    expect(instanceProvision.fields.filter(f => f.abiType).length).toBe(16);
+
+    // WorkflowCreateRequest: 8 fields
     const instanceWorkflowCreate = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;
-    expect(instanceWorkflowCreate.fields.filter(f => f.abiType).length).toBe(5);
+    expect(instanceWorkflowCreate.fields.filter(f => f.abiType).length).toBe(8);
   });
 });

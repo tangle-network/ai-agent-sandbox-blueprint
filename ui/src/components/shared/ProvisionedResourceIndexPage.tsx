@@ -14,6 +14,7 @@ interface ProvisionedResourceIndexPageProps<T> {
   subtitle: string;
   createTo: string;
   createLabel: string;
+  headerActions?: ReactNode;
   items: T[];
   getKey: (item: T) => string;
   renderItem: (item: T) => ReactNode;
@@ -29,6 +30,7 @@ export function ProvisionedResourceIndexPage<T>({
   subtitle,
   createTo,
   createLabel,
+  headerActions,
   items,
   getKey,
   renderItem,
@@ -45,12 +47,15 @@ export function ProvisionedResourceIndexPage<T>({
           <h1 className="text-2xl font-display font-bold text-cloud-elements-textPrimary">{title}</h1>
           <p className="text-sm text-cloud-elements-textSecondary mt-1">{subtitle}</p>
         </div>
-        <Link to={createTo}>
-          <Button>
-            <div className="i-ph:plus text-base" />
-            {createLabel}
-          </Button>
-        </Link>
+        <div className="flex items-center gap-3">
+          {headerActions}
+          <Link to={createTo}>
+            <Button>
+              <div className="i-ph:plus text-base" />
+              {createLabel}
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {items.length > 0 ? (

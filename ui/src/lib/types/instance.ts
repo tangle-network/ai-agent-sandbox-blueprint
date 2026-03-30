@@ -4,6 +4,7 @@
  * operator API instead of on-chain jobs.
  */
 export const INSTANCE_JOB_IDS = {
+  PROVISION: 0,
   WORKFLOW_CREATE: 2,
   WORKFLOW_TRIGGER: 3,
   WORKFLOW_CANCEL: 4,

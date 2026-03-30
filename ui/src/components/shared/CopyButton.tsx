@@ -37,7 +37,7 @@ export function CopyButton({ value, className }: CopyButtonProps) {
         'shrink-0 p-0.5 rounded transition-colors',
         copied
           ? 'text-teal-400'
-          : 'text-cloud-elements-textTertiary opacity-0 group-hover:opacity-100 hover:text-cloud-elements-textSecondary',
+          : 'text-cloud-elements-textTertiary hover:text-cloud-elements-textSecondary',
         className,
       )}
       title={copied ? 'Copied!' : 'Copy to clipboard'}

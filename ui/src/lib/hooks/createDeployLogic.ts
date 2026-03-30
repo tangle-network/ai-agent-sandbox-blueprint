@@ -23,14 +23,20 @@ export function deriveMode(blueprintId: string | undefined): DeployMode {
   return blueprintId === 'ai-agent-sandbox-blueprint' ? 'sandbox' : 'instance';
 }
 
-/** Derive whether a new service must be created (Path B) */
+/**
+ * Derive whether the create wizard should open a new service.
+ *
+ * Sandbox deploys target an existing service via `submitJob`.
+ * Instance deploys create a fresh service request; instance lifecycle is not
+ * an on-chain `submitJob` target.
+ */
 export function deriveIsNewService(
   mode: DeployMode,
-  serviceActive: boolean,
-  servicePermitted: boolean,
-  serviceId: string,
+  _serviceActive: boolean,
+  _servicePermitted: boolean,
+  _serviceId: string,
 ): boolean {
-  return mode === 'instance' && !(serviceActive && servicePermitted && serviceId);
+  return mode === 'instance';
 }
 
 /** Compute unified deploy status from Path A and Path B signals */
@@ -70,6 +76,7 @@ export function computeCanDeploy(opts: {
   isNewService: boolean;
   operatorCount: number;
   operatorsLoading: boolean;
+  capacity?: number | bigint;
 }): boolean {
   return !!(
     opts.job &&
@@ -79,6 +86,7 @@ export function computeCanDeploy(opts: {
     opts.contractsDeployed &&
     opts.correctChain &&
     (opts.mode === 'sandbox' ? opts.hasValidService : true) &&
+    (opts.mode === 'sandbox' ? (opts.capacity === undefined || Number(opts.capacity) > 0) : true) &&
     (!opts.isNewService || (opts.operatorCount > 0 && !opts.operatorsLoading))
   );
 }

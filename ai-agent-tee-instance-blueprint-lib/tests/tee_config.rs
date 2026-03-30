@@ -28,7 +28,6 @@ fn make_provision_request(name: &str, tee_required: bool, tee_type: u8) -> Provi
         cpu_cores: 0,
         memory_mb: 0,
         disk_gb: 0,
-        sidecar_token: String::new(),
         tee_required,
         tee_type,
     }
@@ -73,7 +72,6 @@ fn decode_provision_config_tee_required_tdx() {
         cpu_cores: 2,
         memory_mb: 4096,
         disk_gb: 50,
-        sidecar_token: String::new(),
         tee_required: true,
         tee_type: 1, // Tdx
     };
@@ -271,11 +269,14 @@ fn tee_fields_persistence_roundtrip() {
         disk_gb: 50,
         stack: String::new(),
         owner: "0xdeadbeef00000000000000000000000000000001".into(),
+        service_id: None,
         tee_config: Some(TeeConfig {
             required: true,
             tee_type: TeeType::Tdx,
         }),
         extra_ports: std::collections::HashMap::new(),
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
 
     set_instance_sandbox(record).unwrap();

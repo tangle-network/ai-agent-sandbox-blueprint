@@ -184,6 +184,19 @@ where
         };
         Ok(Some(f(chat)))
     }
+
+    #[cfg(test)]
+    pub fn clear_all_for_testing(&self) -> Result<(), String> {
+        self.terminals
+            .lock()
+            .map_err(|e| format!("terminal session lock poisoned: {e}"))?
+            .clear();
+        self.chats
+            .lock()
+            .map_err(|e| format!("chat session lock poisoned: {e}"))?
+            .clear();
+        Ok(())
+    }
 }
 
 /// Convert a terminal broadcast receiver into an SSE response.

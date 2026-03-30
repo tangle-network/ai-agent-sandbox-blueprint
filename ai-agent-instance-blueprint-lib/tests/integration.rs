@@ -12,8 +12,9 @@
 
 use ai_agent_instance_blueprint_lib::auto_provision::decode_provision_config;
 use ai_agent_instance_blueprint_lib::workflows::{
-    WorkflowEntry, apply_workflow_execution, resolve_next_run, run_workflow, workflow_key,
-    workflow_tick, workflows,
+    WorkflowEntry, WorkflowTargetStatus, apply_workflow_execution, list_workflows_for_owner,
+    resolve_next_run, run_workflow, workflow_detail_for_owner, workflow_key,
+    workflow_runtime_status_for_owner, workflow_tick, workflows,
 };
 use ai_agent_instance_blueprint_lib::*;
 use blueprint_sdk::alloy::sol_types::SolValue;
@@ -90,8 +91,61 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 disk_gb: 0,
                 stack: String::new(),
                 owner: String::new(),
+                service_id: None,
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
+                ssh_login_user: None,
+                ssh_authorized_keys: Vec::new(),
+            },
+        )
+        .unwrap();
+    id
+}
+
+fn insert_ssh_sandbox(url: &str, token: &str) -> String {
+    init();
+    let id = uid();
+    runtime::sandboxes()
+        .unwrap()
+        .insert(
+            id.clone(),
+            SandboxRecord {
+                id: id.clone(),
+                container_id: format!("ctr-{id}"),
+                sidecar_url: url.to_string(),
+                sidecar_port: 0,
+                ssh_port: Some(22),
+                token: token.to_string(),
+                created_at: util::now_ts(),
+                cpu_cores: 2,
+                memory_mb: 4096,
+                state: Default::default(),
+                idle_timeout_seconds: 0,
+                max_lifetime_seconds: 0,
+                last_activity_at: util::now_ts(),
+                stopped_at: None,
+                snapshot_image_id: None,
+                snapshot_s3_url: None,
+                container_removed_at: None,
+                image_removed_at: None,
+                original_image: String::new(),
+                base_env_json: String::new(),
+                user_env_json: String::new(),
+                snapshot_destination: None,
+                tee_deployment_id: None,
+                tee_metadata_json: None,
+                tee_attestation_json: None,
+                name: String::new(),
+                agent_identifier: String::new(),
+                metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
+                disk_gb: 0,
+                stack: String::new(),
+                owner: String::new(),
+                service_id: None,
+                tee_config: None,
+                extra_ports: std::collections::HashMap::new(),
+                ssh_login_user: None,
+                ssh_authorized_keys: Vec::new(),
             },
         )
         .unwrap();
@@ -485,6 +539,7 @@ mod ssh_tests {
             .mount(&server)
             .await;
 
+        let id = insert_ssh_sandbox(&server.uri(), "tok");
         let result = provision_key(
             &server.uri(),
             "root",
@@ -493,6 +548,7 @@ mod ssh_tests {
         )
         .await;
 
+        rm(&id);
         assert!(result.is_ok());
     }
 
@@ -506,6 +562,7 @@ mod ssh_tests {
             .mount(&server)
             .await;
 
+        let id = insert_ssh_sandbox(&server.uri(), "tok");
         let result = revoke_key(
             &server.uri(),
             "root",
@@ -514,13 +571,15 @@ mod ssh_tests {
         )
         .await;
 
+        rm(&id);
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn ssh_provision_rejects_invalid_username() {
         let server = MockServer::start().await;
-        // No mock needed — should fail before HTTP call.
+        let id = insert_ssh_sandbox(&server.uri(), "tok");
+        // No mock needed — should fail before any sidecar call.
         let result = provision_key(
             &server.uri(),
             "root; rm -rf /",
@@ -529,6 +588,7 @@ mod ssh_tests {
         )
         .await;
 
+        rm(&id);
         assert!(result.is_err());
     }
 }
@@ -775,8 +835,11 @@ mod instance_state_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -825,8 +888,11 @@ mod instance_state_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -945,7 +1011,6 @@ mod abi_tests {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_gb: 10,
-            sidecar_token: "token".to_string(),
             tee_required: true,
             tee_type: 2, // Nitro
         };
@@ -1028,7 +1093,6 @@ mod conversion_tests {
             cpu_cores: 4,
             memory_mb: 8192,
             disk_gb: 50,
-            sidecar_token: "my-token".to_string(),
             tee_required: true,
             tee_type: 1, // Tdx
         };
@@ -1063,7 +1127,6 @@ mod conversion_tests {
             cpu_cores: 1,
             memory_mb: 512,
             disk_gb: 5,
-            sidecar_token: String::new(),
             tee_required: false,
             tee_type: 0,
         };
@@ -1096,7 +1159,6 @@ mod conversion_tests {
                 cpu_cores: 0,
                 memory_mb: 0,
                 disk_gb: 0,
-                sidecar_token: String::new(),
                 tee_required: true,
                 tee_type: tee_type_id,
             };
@@ -1460,8 +1522,11 @@ mod provision_guard_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         set_instance_sandbox(record).unwrap();
 
@@ -1512,8 +1577,11 @@ mod provision_guard_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         set_instance_sandbox(record).unwrap();
         assert!(get_instance_sandbox().unwrap().is_some());
@@ -1566,8 +1634,11 @@ mod provision_guard_tests {
             disk_gb: 50,
             stack: "python".to_string(),
             owner: "0xdeadbeef".to_string(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -1634,8 +1705,11 @@ mod provision_guard_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         let record_b = SandboxRecord {
@@ -1670,8 +1744,11 @@ mod provision_guard_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         set_instance_sandbox(record_a).unwrap();
@@ -1726,8 +1803,11 @@ mod provision_guard_tests {
             disk_gb: 0,
             stack: String::new(),
             owner: String::new(),
+            service_id: None,
             tee_config: None,
             extra_ports: std::collections::HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
         set_instance_sandbox(record).unwrap();
 
@@ -1762,7 +1842,7 @@ mod provision_guard_tests {
 
 /// Helper: create a SandboxRecord in the instance store pointing at wiremock.
 /// Must be called inside INSTANCE_LOCK scope.
-fn set_instance_for_test(url: &str, token: &str) -> String {
+fn set_instance_for_test_with_owner(url: &str, token: &str, owner: &str) -> String {
     init();
     let id = uid();
     // Also insert into runtime store (run_workflow → run_instance_task touches it).
@@ -1797,13 +1877,16 @@ fn set_instance_for_test(url: &str, token: &str) -> String {
                 tee_metadata_json: None,
                 tee_attestation_json: None,
                 name: String::new(),
-                agent_identifier: String::new(),
+                agent_identifier: "default".into(),
                 metadata_json: String::new(),
                 disk_gb: 0,
                 stack: String::new(),
-                owner: String::new(),
+                owner: owner.to_string(),
+                service_id: Some(1),
                 tee_config: None,
                 extra_ports: std::collections::HashMap::new(),
+                ssh_login_user: None,
+                ssh_authorized_keys: Vec::new(),
             },
         )
         .unwrap();
@@ -1835,16 +1918,23 @@ fn set_instance_for_test(url: &str, token: &str) -> String {
         tee_metadata_json: None,
         tee_attestation_json: None,
         name: String::new(),
-        agent_identifier: String::new(),
+        agent_identifier: "default".into(),
         metadata_json: String::new(),
         disk_gb: 0,
         stack: String::new(),
-        owner: String::new(),
+        owner: owner.to_string(),
+        service_id: Some(1),
         tee_config: None,
         extra_ports: std::collections::HashMap::new(),
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
     };
     set_instance_sandbox(record).unwrap();
     id
+}
+
+fn set_instance_for_test(url: &str, token: &str) -> String {
+    set_instance_for_test_with_owner(url, token, "")
 }
 
 fn clear_instance_for_test(sandbox_id: &str) {
@@ -1861,6 +1951,9 @@ fn wf(id: u64) -> WorkflowEntry {
         trigger_type: "cron".to_string(),
         trigger_config: "0 * * * * *".to_string(),
         sandbox_config_json: "{}".to_string(),
+        target_kind: 1,
+        target_sandbox_id: String::new(),
+        target_service_id: 1,
         active: true,
         next_run_at: Some(1), // past = due immediately
         last_run_at: None,
@@ -2059,6 +2152,9 @@ mod workflow_tests {
             trigger_type: "manual".to_string(),
             trigger_config: String::new(),
             sandbox_config_json: "{}".to_string(),
+            target_kind: 1,
+            target_sandbox_id: String::new(),
+            target_service_id: 1,
             active: true,
             next_run_at: None,
             last_run_at: None,
@@ -2080,6 +2176,9 @@ mod workflow_tests {
             trigger_type: "cron".to_string(),
             trigger_config: "0 * * * * *".to_string(),
             sandbox_config_json: "{}".to_string(),
+            target_kind: 1,
+            target_sandbox_id: String::new(),
+            target_service_id: 1,
             active: true,
             next_run_at: Some(1),
             last_run_at: None,
@@ -2130,6 +2229,35 @@ mod workflow_tests {
         clear_instance_for_test(&sid);
     }
 
+    #[test]
+    fn orphaned_workflow_remains_visible_to_owner() {
+        let owner = "0x123400000000000000000000000000000000abcd";
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test_with_owner("http://instance-orphaned", "wf-tok", owner);
+        let key = workflow_key(80018);
+        let mut entry = wf(80018);
+        entry.owner = owner.to_string();
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+
+        clear_instance_for_test(&sid);
+
+        let summaries = list_workflows_for_owner(owner).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].target_status, WorkflowTargetStatus::Missing);
+        assert!(!summaries[0].runnable);
+        assert!(summaries[0].next_run_at.is_none());
+
+        let detail = workflow_detail_for_owner(80018, owner).unwrap();
+        assert_eq!(detail.target_status, WorkflowTargetStatus::Missing);
+        assert!(!detail.runnable);
+
+        let status = workflow_runtime_status_for_owner(80018, owner).unwrap();
+        assert_eq!(status.target_status, WorkflowTargetStatus::Missing);
+        assert!(!status.runnable);
+
+        workflows().unwrap().remove(&key).unwrap();
+    }
+
     #[tokio::test]
     async fn tick_skips_inactive_workflows() {
         let srv = MockServer::start().await;
@@ -2149,6 +2277,26 @@ mod workflow_tests {
 
         workflows().unwrap().remove(&key).unwrap();
         clear_instance_for_test(&sid);
+    }
+
+    #[tokio::test]
+    async fn tick_skips_missing_target_workflows() {
+        let owner = "0x123400000000000000000000000000000000abcd";
+        let _guard = INSTANCE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sid = set_instance_for_test_with_owner("http://instance-missing", "skip-tok", owner);
+        let key = workflow_key(80019);
+        let mut entry = wf(80019);
+        entry.owner = owner.to_string();
+        workflows().unwrap().insert(key.clone(), entry).unwrap();
+        clear_instance_for_test(&sid);
+
+        let result = workflow_tick().await.unwrap();
+
+        assert_eq!(result["count"], 0);
+        let stored = workflows().unwrap().get(&key).unwrap().unwrap();
+        assert!(stored.last_run_at.is_none());
+
+        workflows().unwrap().remove(&key).unwrap();
     }
 
     #[tokio::test]
@@ -2226,6 +2374,9 @@ mod workflow_tests {
             trigger_type: "manual".to_string(),
             trigger_config: String::new(),
             sandbox_config_json: "{}".to_string(),
+            target_kind: 1,
+            target_sandbox_id: String::new(),
+            target_service_id: 1,
             active: true,
             next_run_at: None,
             last_run_at: None,
@@ -2356,6 +2507,9 @@ mod reporting_tests {
             trigger_type: "cron".to_string(),
             trigger_config: "0 * * * * *".to_string(),
             sandbox_config_json: r#"{"image":"ubuntu"}"#.to_string(),
+            target_kind: 1,
+            target_sandbox_id: String::new(),
+            target_service_id: 1,
         };
 
         let encoded = request.abi_encode();
@@ -2444,7 +2598,6 @@ mod auto_provision_tests {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_gb: 20,
-            sidecar_token: String::new(),
             tee_required: false,
             tee_type: 0,
         };

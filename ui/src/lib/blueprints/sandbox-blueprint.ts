@@ -1,6 +1,7 @@
 import { JOB_IDS } from '~/lib/types/sandbox';
 import { type BlueprintDefinition, type JobDefinition, registerBlueprint } from '@tangle-network/blueprint-ui';
 import type { Address } from 'viem';
+import { BUNDLED_SANDBOX_IMAGE_VALUES } from '~/lib/agents';
 
 /**
  * AI Agent Sandbox Blueprint — the default Tangle sandbox provisioning blueprint.
@@ -31,6 +32,13 @@ export const RUNTIME_BACKEND_OPTIONS = [
   { label: 'TEE (confidential)', value: 'tee' },
 ];
 
+export const SIDECAR_IMAGE_OPTIONS = [
+  { label: 'Local: agent-dev:latest', value: BUNDLED_SANDBOX_IMAGE_VALUES[0] },
+  { label: 'Local: agent-dev', value: BUNDLED_SANDBOX_IMAGE_VALUES[1] },
+  { label: 'Local: tangle-sidecar:local', value: BUNDLED_SANDBOX_IMAGE_VALUES[2] },
+  { label: 'Registry: ghcr.io/tangle-network/sidecar:latest', value: BUNDLED_SANDBOX_IMAGE_VALUES[3] },
+];
+
 // ── Jobs ──
 
 const SANDBOX_JOBS: JobDefinition[] = [
@@ -49,17 +57,9 @@ const SANDBOX_JOBS: JobDefinition[] = [
     requiresSandbox: false,
     fields: [
       { name: 'name', label: 'Sandbox Name', type: 'text', placeholder: 'my-agent-sandbox', required: true, abiType: 'string' },
-      { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'ubuntu:22.04', required: true, defaultValue: 'ubuntu:22.04', abiType: 'string',
-        options: [
-          { label: 'Ubuntu 22.04', value: 'ubuntu:22.04' },
-          { label: 'Ubuntu 24.04', value: 'ubuntu:24.04' },
-          { label: 'Debian Bookworm', value: 'debian:bookworm' },
-          { label: 'Python 3.12', value: 'python:3.12' },
-          { label: 'Node 22', value: 'node:22' },
-          { label: 'Rust (latest)', value: 'rust:latest' },
-          { label: 'Alpine 3.20', value: 'alpine:3.20' },
-        ],
-        helperText: 'Select a preset or enter any Docker Hub image' },
+      { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'agent-dev:latest', required: true, defaultValue: 'agent-dev:latest', abiType: 'string',
+        options: SIDECAR_IMAGE_OPTIONS,
+        helperText: 'Use a sidecar-compatible image that already runs the sandbox server on port 8080. Plain base images like ubuntu:22.04 will not work here.' },
       { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: RUNTIME_BACKEND_OPTIONS,
         helperText: 'Merged into metadata_json.runtime_backend for operator-side routing' },
       { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', abiType: 'string', options: [
@@ -68,12 +68,13 @@ const SANDBOX_JOBS: JobDefinition[] = [
         { label: 'Node.js', value: 'nodejs' },
         { label: 'Rust', value: 'rust' },
       ] },
-      { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', placeholder: 'agent-1', helperText: 'Set to enable AI chat. Leave empty for plain compute sandboxes.', abiType: 'string', abiParam: 'agent_identifier' },
+      { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', placeholder: 'default', helperText: 'Internal ABI field. The product UI renders its own validated agent selector.', abiType: 'string', abiParam: 'agent_identifier', internal: true },
       { name: 'envJson', label: 'Environment Variables (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'env_json' },
       { name: 'metadataJson', label: 'Metadata (JSON)', type: 'json', placeholder: '{}', defaultValue: '{}', abiType: 'string', abiParam: 'metadata_json' },
       { name: 'sshEnabled', label: 'Enable SSH', type: 'boolean', defaultValue: false, abiType: 'bool', abiParam: 'ssh_enabled' },
       { name: 'sshPublicKey', label: 'SSH Public Key', type: 'textarea', placeholder: 'ssh-ed25519 AAAA...', helperText: 'Required if SSH is enabled', abiType: 'string', abiParam: 'ssh_public_key' },
-      { name: 'webTerminalEnabled', label: 'Web Terminal', type: 'boolean', defaultValue: true, abiType: 'bool', abiParam: 'web_terminal_enabled' },
+      // Deprecated compatibility slot: keep encoding the ABI field, but do not expose it in the product UI.
+      { name: 'webTerminalEnabled', label: 'Web Terminal', type: 'boolean', defaultValue: true, abiType: 'bool', abiParam: 'web_terminal_enabled', internal: true },
       { name: 'maxLifetimeSeconds', label: 'Max Lifetime (hours)', type: 'number', defaultValue: 86400, min: 0, step: 3600, helperText: 'Value in seconds — 3600 = 1h, 86400 = 24h, 0 = unlimited', abiType: 'uint64', abiParam: 'max_lifetime_seconds' },
       { name: 'idleTimeoutSeconds', label: 'Idle Timeout (minutes)', type: 'number', defaultValue: 3600, min: 0, step: 300, helperText: 'Value in seconds — 300 = 5min, 3600 = 1h, 0 = disabled', abiType: 'uint64', abiParam: 'idle_timeout_seconds' },
       { name: 'cpuCores', label: 'CPU Cores', type: 'number', defaultValue: 2, min: 1, max: 16, helperText: '1\u20134 for dev, 8\u201316 for production', abiType: 'uint64', abiParam: 'cpu_cores' },
@@ -119,6 +120,9 @@ const SANDBOX_JOBS: JobDefinition[] = [
       ] },
       { name: 'triggerConfig', label: 'Trigger Config', type: 'text', placeholder: '0 */6 * * *', helperText: 'Cron expression or webhook URL', abiType: 'string', abiParam: 'trigger_config' },
       { name: 'sandboxConfigJson', label: 'Sandbox Config (JSON)', type: 'json', placeholder: '{}', abiType: 'string', abiParam: 'sandbox_config_json' },
+      { name: 'targetKind', label: 'Target Kind', type: 'number', defaultValue: 0, abiType: 'uint8', abiParam: 'target_kind', internal: true },
+      { name: 'targetSandboxId', label: 'Target Sandbox ID', type: 'text', defaultValue: '', abiType: 'string', abiParam: 'target_sandbox_id', internal: true },
+      { name: 'targetServiceId', label: 'Target Service ID', type: 'number', defaultValue: 0, abiType: 'uint64', abiParam: 'target_service_id', internal: true },
     ],
   },
   {

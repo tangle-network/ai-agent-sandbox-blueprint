@@ -7,6 +7,10 @@ use ai_agent_instance_blueprint_lib::{
     JOB_WORKFLOW_TICK, bootstrap_workflows_from_chain, router,
     spawn_pending_provision_report_worker,
 };
+use axum::extract::Path;
+use axum::http::StatusCode;
+use axum::routing::get;
+use axum::{Json, Router as HttpRouter};
 use blueprint_producers_extra::cron::CronJob;
 use blueprint_sdk::contexts::tangle::TangleClientContext;
 use blueprint_sdk::runner::BlueprintRunner;
@@ -14,6 +18,117 @@ use blueprint_sdk::runner::config::BlueprintEnvironment;
 use blueprint_sdk::runner::tangle::config::TangleConfig;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
 use blueprint_sdk::{error, info, warn};
+
+fn workflow_status_error(
+    error: ai_agent_instance_blueprint_lib::workflows::WorkflowStatusError,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let status = match &error {
+        ai_agent_instance_blueprint_lib::workflows::WorkflowStatusError::NotFound(_) => {
+            StatusCode::NOT_FOUND
+        }
+        ai_agent_instance_blueprint_lib::workflows::WorkflowStatusError::Forbidden(_) => {
+            StatusCode::FORBIDDEN
+        }
+        ai_agent_instance_blueprint_lib::workflows::WorkflowStatusError::Internal(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    };
+
+    (
+        status,
+        Json(serde_json::json!({
+            "error": error.message(),
+        })),
+    )
+}
+
+async fn workflow_status_handler(
+    sandbox_runtime::session_auth::SessionAuth(caller): sandbox_runtime::session_auth::SessionAuth,
+    Path(workflow_id): Path<u64>,
+) -> Result<
+    Json<ai_agent_instance_blueprint_lib::workflows::WorkflowRuntimeStatus>,
+    (StatusCode, Json<serde_json::Value>),
+> {
+    ai_agent_instance_blueprint_lib::workflows::workflow_runtime_status_for_owner(
+        workflow_id,
+        caller.as_str(),
+    )
+    .map(Json)
+    .map_err(workflow_status_error)
+}
+
+async fn workflow_list_handler(
+    sandbox_runtime::session_auth::SessionAuth(caller): sandbox_runtime::session_auth::SessionAuth,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    ai_agent_instance_blueprint_lib::workflows::list_workflows_for_owner(caller.as_str())
+        .map(|workflows| {
+            Json(serde_json::json!({
+                "workflows": workflows
+                    .into_iter()
+                    .map(|workflow| serde_json::json!({
+                        "scope": "instance",
+                        "workflowId": workflow.workflow_id,
+                        "name": workflow.name,
+                        "triggerType": workflow.trigger_type,
+                        "triggerConfig": workflow.trigger_config,
+                        "targetKind": workflow.target_kind,
+                        "targetSandboxId": workflow.target_sandbox_id,
+                        "targetServiceId": workflow.target_service_id,
+                        "active": workflow.active,
+                        "targetStatus": workflow.target_status,
+                        "runnable": workflow.runnable,
+                        "running": workflow.running,
+                        "lastRunAt": workflow.last_run_at,
+                        "nextRunAt": workflow.next_run_at,
+                        "latestExecution": workflow.latest_execution,
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+        })
+        .map_err(workflow_status_error)
+}
+
+async fn workflow_detail_handler(
+    sandbox_runtime::session_auth::SessionAuth(caller): sandbox_runtime::session_auth::SessionAuth,
+    Path(workflow_id): Path<u64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    ai_agent_instance_blueprint_lib::workflows::workflow_detail_for_owner(
+        workflow_id,
+        caller.as_str(),
+    )
+    .map(|workflow| {
+        Json(serde_json::json!({
+            "scope": "instance",
+            "workflowId": workflow.workflow_id,
+            "name": workflow.name,
+            "workflowJson": workflow.workflow_json,
+            "triggerType": workflow.trigger_type,
+            "triggerConfig": workflow.trigger_config,
+            "sandboxConfigJson": workflow.sandbox_config_json,
+            "targetKind": workflow.target_kind,
+            "targetSandboxId": workflow.target_sandbox_id,
+            "targetServiceId": workflow.target_service_id,
+            "active": workflow.active,
+            "targetStatus": workflow.target_status,
+            "runnable": workflow.runnable,
+            "running": workflow.running,
+            "lastRunAt": workflow.last_run_at,
+            "nextRunAt": workflow.next_run_at,
+            "latestExecution": workflow.latest_execution,
+        }))
+    })
+    .map_err(workflow_status_error)
+}
+
+fn workflow_status_router() -> HttpRouter {
+    HttpRouter::new()
+        .route("/api/workflows", get(workflow_list_handler))
+        .route("/api/workflows/{workflow_id}", get(workflow_status_handler))
+        .route(
+            "/api/workflows/{workflow_id}/detail",
+            get(workflow_detail_handler),
+        )
+}
 
 #[tokio::main]
 #[allow(clippy::result_large_err)]
@@ -66,7 +181,10 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     let api_shutdown = tokio::sync::watch::channel(());
     let api_shutdown_tx = api_shutdown.0;
     let api_handle = {
-        let router = sandbox_runtime::operator_api::operator_api_router();
+        let router = sandbox_runtime::operator_api::operator_api_router_with_tee_and_routes(
+            None,
+            workflow_status_router(),
+        );
         let addr = std::net::SocketAddr::from(([0, 0, 0, 0u8], api_port));
         info!("Starting operator API on {addr}");
 
@@ -96,6 +214,17 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
         service_id,
         api_shutdown_tx.subscribe(),
     );
+
+    let workflow_api_only = is_test_mode
+        && std::env::var("WORKFLOW_API_ONLY")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+    if workflow_api_only {
+        warn!(
+            "WORKFLOW_API_ONLY enabled in test mode — serving operator API without attaching the Tangle runner"
+        );
+        std::future::pending::<()>().await;
+    }
 
     // Auto-provision: read service config from BSM and provision sandbox on startup.
     // Track the JoinHandle so we can abort it during shutdown if it's still running.
@@ -307,6 +436,12 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 
     if let Err(e) = result {
         error!("Runner failed: {e:?}");
+        if is_test_mode {
+            warn!(
+                "Test mode: keeping operator API alive for local inspection after runner failure"
+            );
+            std::future::pending::<()>().await;
+        }
     }
 
     Ok(())

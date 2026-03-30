@@ -22,6 +22,7 @@ export const TEE_INSTANCE_BLUEPRINT: BlueprintDefinition = {
     ),
   }),
   categories: [
+    { key: 'lifecycle', label: 'Instance Lifecycle', icon: 'i-ph:hard-drives' },
     { key: 'workflow', label: 'Workflows', icon: 'i-ph:flow-arrow' },
   ],
 };

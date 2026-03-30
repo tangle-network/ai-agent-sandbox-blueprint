@@ -49,12 +49,7 @@ contract InstanceBlueprintTestSetup is Test {
     // JOB SIMULATION HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function simulateJobCall(
-        uint64 serviceId,
-        uint8 jobIndex,
-        uint64 callId,
-        bytes memory inputs
-    ) internal {
+    function simulateJobCall(uint64 serviceId, uint8 jobIndex, uint64 callId, bytes memory inputs) internal {
         vm.prank(tangleCore);
         instance.onJobCall(serviceId, jobIndex, callId, inputs);
     }
@@ -90,6 +85,24 @@ contract InstanceBlueprintTestSetup is Test {
         return abi.encode(json);
     }
 
+    /// @dev Encode workflow create inputs in the same flat ABI shape the UI/operator submit.
+    function encodeWorkflowCreateInputs(AgentSandboxBlueprint.WorkflowCreateRequest memory request)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(
+            request.name,
+            request.workflow_json,
+            request.trigger_type,
+            request.trigger_config,
+            request.sandbox_config_json,
+            request.target_kind,
+            request.target_sandbox_id,
+            request.target_service_id
+        );
+    }
+
     /// @dev Full provision flow via operator-direct lifecycle reporting.
     function _provisionOperator(address operator) internal {
         _provisionOperatorFull(operator, "http://sidecar:8080", 2222, "");
@@ -105,11 +118,7 @@ contract InstanceBlueprintTestSetup is Test {
         setServiceOperator(testServiceId, operator, true);
         vm.prank(operator);
         instance.reportProvisioned(
-            testServiceId,
-            string(abi.encodePacked("sb-", vm.toString(operator))),
-            sidecarUrl,
-            sshPort,
-            attestation
+            testServiceId, string(abi.encodePacked("sb-", vm.toString(operator))), sidecarUrl, sshPort, attestation
         );
     }
 
@@ -146,12 +155,7 @@ contract TeeInstanceBlueprintTestSetup is Test {
         tangleMock.setServiceOperator(serviceId, operator, active);
     }
 
-    function simulateJobCall(
-        uint64 serviceId,
-        uint8 jobIndex,
-        uint64 callId,
-        bytes memory inputs
-    ) internal {
+    function simulateJobCall(uint64 serviceId, uint8 jobIndex, uint64 callId, bytes memory inputs) internal {
         vm.prank(tangleCore);
         teeInstance.onJobCall(serviceId, jobIndex, callId, inputs);
     }
@@ -195,11 +199,7 @@ contract TeeInstanceBlueprintTestSetup is Test {
         setServiceOperator(testServiceId, operator, true);
         vm.prank(operator);
         teeInstance.reportProvisioned(
-            testServiceId,
-            string(abi.encodePacked("sb-", vm.toString(operator))),
-            sidecarUrl,
-            sshPort,
-            attestation
+            testServiceId, string(abi.encodePacked("sb-", vm.toString(operator))), sidecarUrl, sshPort, attestation
         );
     }
 

@@ -46,6 +46,10 @@ pub use ai_agent_instance_blueprint_lib::{
     SandboxState,
     TeeConfig,
     TeeType,
+    WorkflowDetail,
+    WorkflowRuntimeStatus,
+    WorkflowStatusError,
+    WorkflowSummary,
     // Modules (runtime, store, reaper, etc.)
     auth,
     // Core functions (for composition)
@@ -64,6 +68,7 @@ pub use ai_agent_instance_blueprint_lib::{
     http,
     // Instance state
     instance_store,
+    list_workflows_for_owner,
     metrics,
     parse_agent_response,
     provision_core,
@@ -84,6 +89,8 @@ pub use ai_agent_instance_blueprint_lib::{
     util,
     workflow_cancel,
     workflow_create,
+    workflow_detail_for_owner,
+    workflow_runtime_status_for_owner,
     workflow_tick_job,
     workflow_trigger,
 };

@@ -6,6 +6,7 @@ import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
+import { Input, Select } from '@tangle-network/blueprint-ui/components';
 import { InfrastructureModal, InfraBar } from '~/components/shared/InfrastructureModal';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { infraStore, updateInfra } from '@tangle-network/blueprint-ui';
@@ -26,6 +27,13 @@ import { BlueprintBadgeInline } from '~/components/shared/InfraSummaryBits';
 import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { EnvEditor } from '~/components/shared/EnvEditor';
+import {
+  BUNDLED_AGENT_OPTIONS,
+  BUNDLED_NO_AGENT_VALUE,
+  isBundledSandboxImage,
+  normalizeAgentIdentifier,
+  sanitizeBundledAgentIdentifier,
+} from '~/lib/agents';
 
 // ── Blueprint → on-chain ID mapping from env vars ──
 
@@ -46,14 +54,20 @@ const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }
 
 // ── Form sections for provision/create jobs (organized layout) ──
 
-const PROVISION_SECTIONS: FormSection[] = [
-  { label: 'Identity', fields: ['name', 'agentIdentifier'] },
-  { label: 'Image & Stack', fields: ['image', 'runtimeBackend', 'stack'] },
-  { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
-  { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
-  { label: 'Features', fields: ['sshEnabled', 'sshPublicKey', 'webTerminalEnabled'] },
-  { label: 'Advanced Options', fields: ['metadataJson', 'teeRequired', 'teeType'], collapsed: true },
+const PRE_AGENT_SECTIONS: FormSection[] = [
+  { label: 'Identity', fields: ['name'] },
+  { label: 'Image', fields: ['image'] },
 ];
+
+function getPostAgentSections(isTee: boolean): FormSection[] {
+  return [
+    { label: 'Runtime & Stack', fields: ['runtimeBackend', 'stack'] },
+    { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
+    { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
+    { label: 'Features', fields: ['sshEnabled', 'sshPublicKey'] },
+    { label: 'Advanced Options', fields: isTee ? ['metadataJson', 'teeRequired', 'teeType'] : ['metadataJson'], collapsed: true },
+  ];
+}
 
 // ── Wizard Steps ──
 
@@ -135,10 +149,30 @@ export default function CreatePage() {
 
   const { values, errors, onChange, validate, reset: resetForm } = useJobForm(createJob);
 
+  const isTeeBlueprint = selectedBlueprint?.id === 'ai-agent-tee-instance-blueprint';
+  const postAgentSections = useMemo(() => getPostAgentSections(isTeeBlueprint), [isTeeBlueprint]);
+
+  // For non-TEE blueprints, hide the TEE runtime backend option from the form.
+  const displayJob = useMemo<JobDefinition | null>(() => {
+    if (!createJob || isTeeBlueprint) return createJob;
+    return {
+      ...createJob,
+      fields: createJob.fields.map((f) =>
+        f.name === 'runtimeBackend' && f.options
+          ? { ...f, options: f.options.filter((o) => o.value !== 'tee') }
+          : f,
+      ),
+    };
+  }, [createJob, isTeeBlueprint]);
+
   // Extra ports input (not an ABI field — merged into metadataJson before deploy)
   const [portsInput, setPortsInput] = useState('');
   const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
   const supportsMetadataPorts = runtimeBackend !== 'firecracker';
+  const selectedImage = String(values.image || '');
+  const supportsAgentConfiguration = !!createJob?.fields.some((field) => field.name === 'agentIdentifier');
+  const usesBundledAgentSelector = supportsAgentConfiguration && isBundledSandboxImage(selectedImage);
+  const configuredAgentIdentifier = normalizeAgentIdentifier(values.agentIdentifier);
 
   // Keep TEE controls in sync with runtime backend selection.
   useEffect(() => {
@@ -162,6 +196,13 @@ export default function CreatePage() {
       setPortsInput('');
     }
   }, [supportsMetadataPorts, portsInput]);
+
+  useEffect(() => {
+    if (!usesBundledAgentSelector) return;
+    const sanitized = sanitizeBundledAgentIdentifier(values.agentIdentifier);
+    if (sanitized === configuredAgentIdentifier) return;
+    onChange('agentIdentifier', sanitized);
+  }, [usesBundledAgentSelector, values.agentIdentifier, configuredAgentIdentifier, onChange]);
 
   // Merge runtime backend + ports into metadataJson.
   const mergedValues = useMemo(() => {
@@ -187,6 +228,8 @@ export default function CreatePage() {
     const nextValues: Record<string, unknown> = {
       ...values,
       metadataJson: JSON.stringify(metadata),
+      // Keep the deprecated ABI field pinned for backward-compatible encoding.
+      webTerminalEnabled: true,
     };
     if (runtimeBackend === 'tee') {
       nextValues.teeRequired = true;
@@ -199,7 +242,7 @@ export default function CreatePage() {
   }, [runtimeBackend, supportsMetadataPorts, values, portsInput]);
 
   // Unified deploy hook — manages both submitJob and requestService paths
-  const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values: mergedValues, infra, validate });
+  const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values: mergedValues, infra, validate, capacity });
   const { reset: deployReset } = deploy;
 
   const isSandbox = deploy.mode === 'sandbox';
@@ -259,6 +302,8 @@ export default function CreatePage() {
               infra={infra}
               operators={deploy.operators}
               operatorsLoading={deploy.operatorsLoading}
+              operatorsError={deploy.operatorsError}
+              operatorCount={deploy.operatorCount}
               hasValidService={deploy.hasValidService}
               onOpenModal={() => setShowInfra(true)}
             />
@@ -295,7 +340,7 @@ export default function CreatePage() {
       {step === 'blueprint' && <BlueprintSelector onSelect={handleSelectBlueprint} />}
 
       {/* Step 2: Configure */}
-      {step === 'configure' && createJob && (
+      {step === 'configure' && createJob && displayJob && (
         <div className="space-y-4">
           <Card>
             <CardHeader>
@@ -307,11 +352,36 @@ export default function CreatePage() {
             </CardHeader>
             <CardContent>
               <BlueprintJobForm
-                job={createJob}
+                job={displayJob}
                 values={values}
                 onChange={onChange}
                 errors={errors}
-                sections={PROVISION_SECTIONS}
+                sections={PRE_AGENT_SECTIONS}
+              />
+
+              {supportsAgentConfiguration && (
+                <AgentConfigurationField
+                  image={selectedImage}
+                  value={configuredAgentIdentifier}
+                  usesBundledSelector={usesBundledAgentSelector}
+                  onChange={(next) => onChange('agentIdentifier', next)}
+                />
+              )}
+
+              {configuredAgentIdentifier && (
+                <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                  <p className="text-xs text-amber-300">
+                    This agent needs AI credentials to chat. You can add them now in Environment Variables below, or inject them later in the Secrets tab.
+                  </p>
+                </div>
+              )}
+
+              <BlueprintJobForm
+                job={displayJob}
+                values={values}
+                onChange={onChange}
+                errors={errors}
+                sections={postAgentSections}
               />
 
               {/* Environment variables — key-value editor instead of raw JSON */}
@@ -360,10 +430,10 @@ export default function CreatePage() {
       )}
 
       {/* Step 3: Review & Deploy */}
-      {step === 'deploy' && createJob && selectedBlueprint && (
+      {step === 'deploy' && createJob && displayJob && selectedBlueprint && (
         <DeployStep
           blueprint={selectedBlueprint}
-          job={createJob}
+          job={displayJob}
           values={values}
           ports={supportsMetadataPorts ? parsePortsInput(portsInput) : []}
           infra={infra}
@@ -379,14 +449,22 @@ export default function CreatePage() {
           serviceError={serviceError}
           onBack={() => { setStep('configure'); deployReset(); }}
           onDeploy={deploy.deploy}
-          onViewList={() => navigate(isSandbox ? '/sandboxes' : '/instances')}
+          onViewDetail={() => {
+            const key = isSandbox
+              ? deploy.sandboxDraftKey
+              : String(values.name || '');
+            if (key) navigate(`/${isSandbox ? 'sandboxes' : 'instances'}/${encodeURIComponent(key)}`);
+            else navigate(isSandbox ? '/sandboxes' : '/instances');
+          }}
           onOpenInfra={() => setShowInfra(true)}
           onProvisionReady={(sandboxId, sidecarUrl) => {
-            const name = String(values.name || '');
             if (isSandbox) {
-              updateSandboxStatus(name, 'running', { id: sandboxId, sidecarUrl });
+              if (deploy.sandboxDraftKey) {
+                updateSandboxStatus(deploy.sandboxDraftKey, 'running', { sandboxId, sidecarUrl });
+              }
             } else {
-              updateInstanceStatus(name, 'running', { id: sandboxId, sidecarUrl });
+              const name = String(values.name || '');
+              updateInstanceStatus(name, 'running', { sandboxId, sidecarUrl });
             }
           }}
         />
@@ -395,17 +473,69 @@ export default function CreatePage() {
   );
 }
 
+function AgentConfigurationField({
+  image,
+  value,
+  usesBundledSelector,
+  onChange,
+}: {
+  image: string;
+  value: string;
+  usesBundledSelector: boolean;
+  onChange: (value: string) => void;
+}) {
+  const helpText = usesBundledSelector
+    ? 'Choose an agent already bundled in this image. “None” keeps the resource compute-only and hides chat.'
+    : 'Custom images must already register this agent identifier internally. Typing a new name here does not create a new agent.';
+  const selectValue = value || BUNDLED_NO_AGENT_VALUE;
+
+  return (
+    <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
+      <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+        Agent
+      </label>
+      {usesBundledSelector ? (
+        <Select
+          value={selectValue}
+          onValueChange={(next) => onChange(sanitizeBundledAgentIdentifier(next))}
+          options={BUNDLED_AGENT_OPTIONS}
+        />
+      ) : (
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={image ? 'default' : 'Choose an image first'}
+          className="font-data text-sm"
+        />
+      )}
+      <p className="text-[11px] text-cloud-elements-textTertiary">
+        {helpText}
+      </p>
+    </div>
+  );
+}
+
 // ── Instance Infra Bar ──
 
 function InstanceInfraBar({
-  infra, operators, operatorsLoading, hasValidService, onOpenModal,
+  infra, operators, operatorsLoading, operatorsError, operatorCount, hasValidService, onOpenModal,
 }: {
   infra: { blueprintId: string; serviceId: string };
   operators: DiscoveredOperator[];
   operatorsLoading: boolean;
+  operatorsError?: Error | null;
+  operatorCount: bigint;
   hasValidService: boolean;
   onOpenModal: () => void;
 }) {
+  const operatorSummary = operatorsLoading
+    ? 'Discovering...'
+    : operatorsError
+      ? operatorCount > 0n
+        ? `${operatorCount.toString()} registered (verification failed)`
+        : 'Lookup failed'
+      : `${operators.length} operators`;
+
   return (
     <div className="glass-card rounded-lg p-3 flex items-center justify-between mb-6">
       <div className="flex items-center gap-4">
@@ -413,13 +543,13 @@ function InstanceInfraBar({
         <div className="flex items-center gap-2">
           <div className="i-ph:users-three text-sm text-cloud-elements-textTertiary" />
           <span className="text-xs text-cloud-elements-textTertiary">
-            {operatorsLoading ? 'Discovering...' : `${operators.length} operators`}
+            {operatorSummary}
           </span>
         </div>
         {hasValidService && (
           <div className="flex items-center gap-2">
-            <div className="i-ph:check-circle text-sm text-teal-400" />
-            <span className="text-xs text-teal-400">Service #{infra.serviceId}</span>
+            <div className="i-ph:info text-sm text-cloud-elements-textTertiary" />
+            <span className="text-xs text-cloud-elements-textTertiary">Verified service #{infra.serviceId} available</span>
           </div>
         )}
       </div>
@@ -464,21 +594,7 @@ function BlueprintSelector({ onSelect }: { onSelect: (bp: BlueprintDefinition) =
                 <h3 className="text-lg font-display font-semibold text-cloud-elements-textPrimary">{bp.name}</h3>
                 <Badge variant="secondary">v{bp.version}</Badge>
               </div>
-              <p className="text-sm text-cloud-elements-textSecondary mb-3">{bp.description}</p>
-              <div className="flex items-center gap-4 text-xs text-cloud-elements-textTertiary">
-                <span className="flex items-center gap-1">
-                  <div className="i-ph:briefcase text-sm" />
-                  {bp.jobs.length} jobs
-                </span>
-                <span className="flex items-center gap-1">
-                  <div className="i-ph:folder text-sm" />
-                  {bp.categories.length} categories
-                </span>
-                <span className="flex items-center gap-1">
-                  <div className="i-ph:tag text-sm" />
-                  {bp.jobs[0]?.pricingMultiplier}x&ndash;{Math.max(...bp.jobs.map((j) => j.pricingMultiplier))}x
-                </span>
-              </div>
+              <p className="text-sm text-cloud-elements-textSecondary">{bp.description}</p>
             </div>
             <div className="i-ph:arrow-right text-lg text-cloud-elements-textTertiary" />
           </div>
@@ -508,7 +624,7 @@ interface DeployStepProps {
   serviceError: string | null;
   onBack: () => void;
   onDeploy: () => void;
-  onViewList: () => void;
+  onViewDetail: () => void;
   onOpenInfra: () => void;
   onProvisionReady: (sandboxId: string, sidecarUrl: string) => void;
 }
@@ -518,11 +634,12 @@ function DeployStep({
   capacity, provisionEstimate, provisionPriceFormatted,
   hasProvisionRfq, priceLoading,
   serviceInfo, serviceValidating, serviceError,
-  onBack, onDeploy, onViewList, onOpenInfra, onProvisionReady,
+  onBack, onDeploy, onViewDetail, onOpenInfra, onProvisionReady,
 }: DeployStepProps) {
   const { address, isConnected, status: walletStatus } = useAccount();
   const isReconnecting = walletStatus === 'reconnecting';
   const [showAllJobs, setShowAllJobs] = useState(false);
+  const [provisionError, setProvisionError] = useState<string | null>(null);
 
   const name = String(values.name || '');
   const image = String(values.image || '');
@@ -537,10 +654,30 @@ function DeployStep({
   const memoryMb = Number(values.memoryMb) || 2048;
   const diskGb = Number(values.diskGb) || 10;
   const costDisplay = hasProvisionRfq ? provisionPriceFormatted : `~${formatCost(provisionEstimate)}`;
-  const { status, txHash, error, isNewService, isInstanceMode, hasValidService, operators, operatorsLoading, provision, callId, contractsDeployed } = deploy;
+  const {
+    status,
+    txHash,
+    error,
+    isNewService,
+    isInstanceMode,
+    hasValidService,
+    operators,
+    operatorsLoading,
+    operatorsError,
+    operatorCount,
+    provision,
+    callId,
+    contractsDeployed,
+    sandboxDraftKey,
+  } = deploy;
   const isSandbox = !isInstanceMode;
   const isActive = status !== 'idle';
   const isComplete = status === 'confirmed' || status === 'ready';
+
+
+  useEffect(() => {
+    setProvisionError(null);
+  }, [callId, status]);
 
   // Separate config fields into key vs advanced
   const visibleFields = job.fields.filter((f) => !f.internal);
@@ -551,6 +688,7 @@ function DeployStep({
     if (f.type === 'boolean') return !!v;
     return v != null && v !== '' && v !== '{}' && v !== f.defaultValue;
   });
+  const configuredAgentIdentifier = normalizeAgentIdentifier(values.agentIdentifier);
 
   const otherJobs = blueprint.jobs.filter((j) => j.id !== job.id);
 
@@ -589,13 +727,12 @@ function DeployStep({
               serviceValidating={serviceValidating}
               serviceError={serviceError}
               isInstanceMode={isInstanceMode}
-              hasValidService={hasValidService}
             />
           </div>
         </div>
 
         {/* Active config options (non-default) */}
-        {activeExtras.length > 0 && (
+        {(activeExtras.length > 0 || configuredAgentIdentifier) && (
           <div className="mt-3 pt-3 border-t border-white/[0.04] flex flex-wrap gap-1.5">
             {activeExtras.map((f) => {
               const v = values[f.name];
@@ -611,6 +748,12 @@ function DeployStep({
                 </span>
               );
             })}
+            {configuredAgentIdentifier && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] text-[11px] font-data text-cloud-elements-textSecondary">
+                <div className="i-ph:robot text-[10px] text-teal-400" />
+                Agent: {configuredAgentIdentifier}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -644,12 +787,27 @@ function DeployStep({
       )}
 
       {/* ── Capacity ── */}
-      {capacity !== undefined && (
+      {capacity !== undefined && Number(capacity) > 0 && (
         <div className="flex items-center gap-2 px-1">
           <div className="i-ph:shield-check text-sm text-teal-400" />
           <span className="text-xs text-cloud-elements-textTertiary">
             <span className="font-data font-semibold text-cloud-elements-textSecondary">{String(capacity)}</span> capacity slots available
           </span>
+        </div>
+      )}
+      {capacity !== undefined && Number(capacity) === 0 && isSandbox && status === 'idle' && (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
+          <div className="flex items-center gap-3">
+            <div className="i-ph:warning-circle text-lg text-amber-400" />
+            <div className="flex-1">
+              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+                No capacity available
+              </p>
+              <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
+                All operator slots are in use. Delete unused sandboxes or try again later.
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
@@ -670,11 +828,26 @@ function DeployStep({
       )}
 
       {/* ── TX Status ── */}
-      {isActive && <TxStatusCard status={status} txHash={txHash} error={error ?? undefined} entityLabel={entityLabel} isNewService={isNewService} />}
+      {isActive && (
+        <TxStatusCard
+          status={provisionError ? 'failed' : status}
+          txHash={txHash}
+          error={provisionError ?? error ?? undefined}
+          entityLabel={entityLabel}
+          isNewService={isNewService}
+        />
+      )}
 
       {/* ── Provision Progress ── */}
-      {status === 'confirmed' && isSandbox && callId && (
-        <ProvisionProgress callId={callId} onReady={onProvisionReady} />
+      {status === 'confirmed' && isSandbox && callId != null && (
+        <ProvisionProgress
+          callId={callId}
+          onReady={onProvisionReady}
+          onFailed={(message) => {
+            setProvisionError(message);
+            if (sandboxDraftKey) updateSandboxStatus(sandboxDraftKey, 'error', { errorMessage: message });
+          }}
+        />
       )}
       {status === 'confirmed' && isInstanceMode && (
         <InstanceProvisionCard provision={provision} />
@@ -682,7 +855,13 @@ function DeployStep({
 
       {/* ── Operators (instance mode, new service, idle) ── */}
       {isNewService && status === 'idle' && (
-        <OperatorList operators={operators} operatorsLoading={operatorsLoading} blueprintId={infra.blueprintId} />
+        <OperatorList
+          operators={operators}
+          operatorsLoading={operatorsLoading}
+          operatorsError={operatorsError}
+          operatorCount={operatorCount}
+          blueprintId={infra.blueprintId}
+        />
       )}
 
       {/* ── Service warning (sandbox mode only) ── */}
@@ -741,9 +920,9 @@ function DeployStep({
       <div className="flex justify-between pt-1">
         <Button variant="secondary" onClick={onBack}>Back</Button>
         {isComplete ? (
-          <Button variant="success" onClick={onViewList}>
+          <Button variant="success" onClick={onViewDetail}>
             <div className="i-ph:check-bold text-sm" />
-            View {entityLabel}s
+            View {entityLabel}
           </Button>
         ) : (
           <DeployButton
@@ -764,14 +943,13 @@ function DeployStep({
 // ── Sub-components (extracted for readability) ──
 
 function ServiceStatusBadge({
-  infra, serviceInfo, serviceValidating, serviceError, isInstanceMode, hasValidService,
+  infra, serviceInfo, serviceValidating, serviceError, isInstanceMode,
 }: {
   infra: { serviceId: string };
   serviceInfo: { active: boolean; permitted: boolean } | null;
   serviceValidating: boolean;
   serviceError: string | null;
   isInstanceMode: boolean;
-  hasValidService: boolean;
 }) {
   if (serviceValidating) {
     return (
@@ -781,19 +959,19 @@ function ServiceStatusBadge({
       </>
     );
   }
+  if (isInstanceMode) {
+    return (
+      <>
+        <div className="i-ph:plus-circle text-sm text-violet-400" />
+        <span className="text-violet-400">New service</span>
+      </>
+    );
+  }
   if (serviceInfo?.active && serviceInfo?.permitted) {
     return (
       <>
         <div className="i-ph:check-circle-fill text-sm text-teal-400" />
         <span className="text-teal-400">Service #{infra.serviceId}</span>
-      </>
-    );
-  }
-  if (isInstanceMode && !hasValidService) {
-    return (
-      <>
-        <div className="i-ph:plus-circle text-sm text-violet-400" />
-        <span className="text-violet-400">New service</span>
       </>
     );
   }
@@ -930,19 +1108,51 @@ function InstanceProvisionCard({ provision }: { provision?: { sandboxId: string;
   );
 }
 
-function OperatorList({ operators, operatorsLoading, blueprintId }: { operators: DiscoveredOperator[]; operatorsLoading: boolean; blueprintId: string }) {
+function OperatorList({
+  operators,
+  operatorsLoading,
+  operatorsError,
+  operatorCount,
+  blueprintId,
+}: {
+  operators: DiscoveredOperator[];
+  operatorsLoading: boolean;
+  operatorsError?: Error | null;
+  operatorCount: bigint;
+  blueprintId: string;
+}) {
+  const titleCount = operatorsLoading
+    ? '...'
+    : operatorsError && operatorCount > 0n
+      ? operatorCount.toString()
+      : String(operators.length);
+
   return (
     <div className="glass-card rounded-xl p-4">
       <div className="flex items-center gap-2 mb-3">
         <div className="i-ph:users-three text-sm text-cloud-elements-textTertiary" />
         <span className="text-xs font-display font-medium text-cloud-elements-textSecondary">
-          Operators ({operatorsLoading ? '...' : operators.length})
+          Operators ({titleCount})
         </span>
       </div>
       {operatorsLoading ? (
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full border border-cloud-elements-textTertiary border-t-transparent animate-spin" />
           <span className="text-xs text-cloud-elements-textTertiary">Discovering operators for blueprint #{blueprintId}...</span>
+        </div>
+      ) : operatorsError ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="i-ph:warning-circle text-sm text-amber-400" />
+            <span className="text-xs text-amber-400">
+              {operatorCount > 0n
+                ? `Found ${operatorCount.toString()} registered operator${operatorCount === 1n ? '' : 's'} on-chain, but verification failed`
+                : 'Operator lookup failed for this blueprint'}
+            </span>
+          </div>
+          <p className="text-[11px] text-cloud-elements-textTertiary">
+            This is usually a local RPC or multicall issue. The app could not build a verified operator list for service creation.
+          </p>
         </div>
       ) : operators.length === 0 ? (
         <div className="flex items-center gap-2">

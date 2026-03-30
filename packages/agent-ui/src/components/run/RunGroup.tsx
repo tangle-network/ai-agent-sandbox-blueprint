@@ -81,6 +81,17 @@ export const RunGroup = memo(
       return parts;
     }, [run.messages, partMap]);
 
+    // Split into text parts (always visible) and collapsible parts (tool/thinking)
+    const textParts = useMemo(
+      () => allParts.filter(({ part }) => part.type === 'text' && !part.synthetic && part.text.trim()),
+      [allParts],
+    );
+    const collapsibleParts = useMemo(
+      () => allParts.filter(({ part }) => part.type === 'tool' || part.type === 'reasoning'),
+      [allParts],
+    );
+    const hasCollapsible = collapsibleParts.length > 0;
+
     const { stats, isStreaming } = run;
 
     return (
@@ -128,49 +139,46 @@ export const RunGroup = memo(
               </div>
             )}
 
-            {/* Collapse caret */}
-            <div
-              className={cn(
-                'w-3.5 h-3.5 text-neutral-400 dark:text-neutral-500 transition-transform shrink-0',
-                !collapsed ? 'i-ph:caret-down' : 'i-ph:caret-right',
-              )}
-            />
+            {/* Collapse caret — only when there are collapsible parts */}
+            {hasCollapsible && (
+              <div
+                className={cn(
+                  'w-3.5 h-3.5 text-neutral-400 dark:text-neutral-500 transition-transform shrink-0',
+                  !collapsed ? 'i-ph:caret-down' : 'i-ph:caret-right',
+                )}
+              />
+            )}
           </button>
         </Collapsible.Trigger>
 
-        {/* Summary text when collapsed */}
-        {collapsed && run.summaryText && (
-          <div className="px-3 py-2 text-xs text-neutral-500 dark:text-neutral-400 line-clamp-2">
-            {run.summaryText}
+        {/* Text parts — always visible, never collapsed */}
+        {textParts.length > 0 && (
+          <div className={cn('mt-1 space-y-0.5 rounded-lg p-2', branding.containerBgClass)}>
+            {textParts.map(({ part, msgId, index }) => (
+              <div key={`${msgId}-${index}`} className="px-3 py-2">
+                <Markdown>{part.text}</Markdown>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* Expanded content */}
-        <Collapsible.Content className="overflow-hidden data-[state=open]:animate-slideDown data-[state=closed]:animate-slideUp">
-          <div className={cn('mt-1 space-y-0.5 rounded-lg p-2', branding.containerBgClass)}>
-            {allParts.map(({ part, msgId, index }) => {
-              const key = `${msgId}-${index}`;
-
-              if (part.type === 'tool') {
-                return <InlineToolItem key={key} part={part as ToolPart} renderToolDetail={renderToolDetail} />;
-              }
-
-              if (part.type === 'reasoning') {
-                return <InlineThinkingItem key={key} part={part as ReasoningPart} />;
-              }
-
-              if (part.type === 'text' && !part.synthetic && part.text.trim()) {
-                return (
-                  <div key={key} className="px-3 py-2">
-                    <Markdown>{part.text}</Markdown>
-                  </div>
-                );
-              }
-
-              return null;
-            })}
-          </div>
-        </Collapsible.Content>
+        {/* Tool/thinking parts — collapsible */}
+        {hasCollapsible && (
+          <Collapsible.Content className="overflow-hidden data-[state=open]:animate-slideDown data-[state=closed]:animate-slideUp">
+            <div className={cn('mt-1 space-y-0.5 rounded-lg p-2', branding.containerBgClass)}>
+              {collapsibleParts.map(({ part, msgId, index }) => {
+                const key = `${msgId}-${index}`;
+                if (part.type === 'tool') {
+                  return <InlineToolItem key={key} part={part as ToolPart} renderToolDetail={renderToolDetail} />;
+                }
+                if (part.type === 'reasoning') {
+                  return <InlineThinkingItem key={key} part={part as ReasoningPart} />;
+                }
+                return null;
+              })}
+            </div>
+          </Collapsible.Content>
+        )}
       </Collapsible.Root>
     );
   },

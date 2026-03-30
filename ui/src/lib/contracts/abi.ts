@@ -217,6 +217,9 @@ export const agentSandboxBlueprintAbi = [
           { name: 'trigger_type', type: 'string' },
           { name: 'trigger_config', type: 'string' },
           { name: 'sandbox_config_json', type: 'string' },
+          { name: 'target_kind', type: 'uint8' },
+          { name: 'target_sandbox_id', type: 'string' },
+          { name: 'target_service_id', type: 'uint64' },
           { name: 'active', type: 'bool' },
           { name: 'created_at', type: 'uint64' },
           { name: 'updated_at', type: 'uint64' },
@@ -315,5 +318,58 @@ export const agentInstanceBlueprintAbi = [
       { name: 'sandboxId', type: 'string', indexed: false },
       { name: 'sidecarUrl', type: 'string', indexed: false },
     ],
+  },
+
+  // ── Instance-mode view functions ──
+  {
+    type: 'function',
+    name: 'isProvisioned',
+    inputs: [{ name: 'serviceId', type: 'uint64' }],
+    outputs: [{ type: 'bool' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'isOperatorProvisioned',
+    inputs: [
+      { name: 'serviceId', type: 'uint64' },
+      { name: 'operator', type: 'address' },
+    ],
+    outputs: [{ type: 'bool' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'getOperatorCount',
+    inputs: [{ name: 'serviceId', type: 'uint64' }],
+    outputs: [{ type: 'uint32' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'getAttestationHash',
+    inputs: [
+      { name: 'serviceId', type: 'uint64' },
+      { name: 'operator', type: 'address' },
+    ],
+    outputs: [{ type: 'bytes32' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'getOperatorEndpoints',
+    inputs: [{ name: 'serviceId', type: 'uint64' }],
+    outputs: [
+      { name: 'operators', type: 'address[]' },
+      { name: 'sidecarUrls', type: 'string[]' },
+    ],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'getServiceConfig',
+    inputs: [{ name: 'serviceId', type: 'uint64' }],
+    outputs: [{ type: 'bytes' }],
+    stateMutability: 'view',
   },
 ] as const;

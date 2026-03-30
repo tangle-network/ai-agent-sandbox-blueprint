@@ -211,8 +211,11 @@ mod tee_integration {
             disk_gb: 10,
             stack: String::new(),
             owner: "0xdead".into(),
+            service_id: None,
             tee_config: None,
             extra_ports: HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
         };
 
         // The idempotent path reads from record.tee_attestation_json

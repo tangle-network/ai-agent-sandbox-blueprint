@@ -4,6 +4,7 @@ import { StatusBadge } from './StatusBadge';
 interface ResourceIdentityProps {
   name: string;
   status: string;
+  statusLabel?: string;
   teeEnabled?: boolean;
   image: string;
   specs: string;
@@ -14,6 +15,7 @@ interface ResourceIdentityProps {
 export function ResourceIdentity({
   name,
   status,
+  statusLabel,
   teeEnabled,
   image,
   specs,
@@ -30,7 +32,7 @@ export function ResourceIdentity({
         >
           {name}
         </h3>
-        <StatusBadge status={status as any} />
+        <StatusBadge status={status as any} labelOverride={statusLabel} />
         {teeEnabled && teeStyle === 'pill' && (
           <span className="text-xs text-violet-700 dark:text-violet-400 font-data bg-violet-500/10 px-2 py-0.5 rounded-full">TEE</span>
         )}

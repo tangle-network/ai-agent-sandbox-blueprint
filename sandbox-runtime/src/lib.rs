@@ -6,6 +6,7 @@
 
 pub mod api_types;
 pub mod auth;
+pub mod chat_state;
 pub mod circuit_breaker;
 pub mod contracts;
 pub mod error;

@@ -38,6 +38,16 @@ struct BreakerEntry {
     probing: bool,
 }
 
+/// Read-only snapshot of breaker state for a sandbox (no side effects).
+pub struct BreakerStatus {
+    /// Whether the circuit breaker is currently active (open or half-open).
+    pub active: bool,
+    /// Seconds remaining in the cooldown period (None if not active).
+    pub remaining_secs: Option<u64>,
+    /// True when a half-open recovery probe is in flight.
+    pub probing: bool,
+}
+
 /// Map of sandbox ID -> breaker state.
 static UNHEALTHY: Lazy<Mutex<HashMap<String, BreakerEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -83,15 +93,17 @@ pub fn check_health(sandbox_id: &str) -> Result<()> {
         if elapsed < cooldown {
             // Open state — cooldown active.
             let remaining = cooldown - elapsed;
-            return Err(SandboxError::Unavailable(format!(
-                "Sidecar {sandbox_id} is in circuit-breaker cooldown ({remaining}s remaining)"
-            )));
+            return Err(SandboxError::CircuitBreaker {
+                remaining_secs: remaining,
+                probing: false,
+            });
         }
         // Cooldown expired. If a probe is already in flight, reject.
         if entry.probing {
-            return Err(SandboxError::Unavailable(format!(
-                "Sidecar {sandbox_id} is half-open (probe in progress)"
-            )));
+            return Err(SandboxError::CircuitBreaker {
+                remaining_secs: 0,
+                probing: true,
+            });
         }
         // Transition to half-open: allow this one probe through.
         entry.probing = true;
@@ -126,6 +138,43 @@ pub fn mark_healthy(sandbox_id: &str) {
 /// its circuit-breaker state.
 pub fn clear(sandbox_id: &str) {
     mark_healthy(sandbox_id);
+}
+
+#[cfg(test)]
+pub fn clear_all_for_testing() {
+    UNHEALTHY.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *LAST_GC.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+}
+
+/// Read-only query of the breaker state for `sandbox_id`.
+///
+/// Does **not** trigger GC, state transitions, or any side effects.
+pub fn query_status(sandbox_id: &str) -> BreakerStatus {
+    let cooldown = cooldown_secs();
+    let map = UNHEALTHY.lock().unwrap_or_else(|e| e.into_inner());
+    match map.get(sandbox_id) {
+        None => BreakerStatus {
+            active: false,
+            remaining_secs: None,
+            probing: false,
+        },
+        Some(entry) => {
+            let elapsed = entry.marked_at.elapsed().as_secs();
+            if elapsed < cooldown {
+                BreakerStatus {
+                    active: true,
+                    remaining_secs: Some(cooldown - elapsed),
+                    probing: false,
+                }
+            } else {
+                BreakerStatus {
+                    active: entry.probing,
+                    remaining_secs: Some(0),
+                    probing: entry.probing,
+                }
+            }
+        }
+    }
 }
 
 /// Number of currently tracked unhealthy sandboxes (for testing/metrics).
@@ -164,7 +213,7 @@ mod tests {
         assert!(err.is_err(), "unhealthy sandbox should be blocked");
         let msg = err.unwrap_err().to_string();
         assert!(
-            msg.contains("circuit-breaker cooldown"),
+            msg.contains("cooldown"),
             "error message should mention cooldown, got: {msg}"
         );
         // Clean up
@@ -207,8 +256,8 @@ mod tests {
         let err = check_health(&id);
         assert!(err.is_err(), "should reject while probe is in flight");
         assert!(
-            err.unwrap_err().to_string().contains("half-open"),
-            "error should mention half-open"
+            err.unwrap_err().to_string().contains("probe in progress"),
+            "error should mention probe in progress"
         );
         // Successful probe: mark_healthy clears completely
         mark_healthy(&id);

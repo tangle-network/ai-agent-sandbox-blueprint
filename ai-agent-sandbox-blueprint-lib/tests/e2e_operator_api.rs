@@ -60,6 +60,40 @@ async fn spawn_harness() -> Result<Option<BlueprintHarness>> {
     }
 }
 
+async fn detect_ssh_user(api_url: &str, auth: &str, sandbox_id: &str) -> Result<String> {
+    let body = api_get(
+        api_url,
+        &format!("/api/sandboxes/{sandbox_id}/ssh/user"),
+        auth,
+    )
+    .await?;
+    body["username"]
+        .as_str()
+        .map(str::to_string)
+        .context("ssh user response missing username")
+}
+
+async fn ssh_key_presence(
+    api_url: &str,
+    auth: &str,
+    sandbox_id: &str,
+    username: &str,
+    key: &str,
+) -> Result<bool> {
+    let body = api_post(
+        api_url,
+        &format!("/api/sandboxes/{sandbox_id}/exec"),
+        auth,
+        json!({
+            "command": format!(
+                "sh -lc \"home=$(getent passwd \\\"{username}\\\" | cut -d: -f6); if grep -qxF \\\"{key}\\\" \\\"\\$home/.ssh/authorized_keys\\\" 2>/dev/null; then echo PRESENT; else echo ABSENT; fi\""
+            )
+        }),
+    )
+    .await?;
+    Ok(body["stdout"].as_str().unwrap_or("").contains("PRESENT"))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test: Full sandbox lifecycle with on-chain verification (31 steps)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -323,26 +357,52 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         eprintln!("  Snapshot validation OK (http:// rejected)");
 
         // ─── Step 16: SSH provision + idempotency ────────────────────────
-        e2e_step!(16, "SSH provision + idempotency...");
+        e2e_step!(16, "SSH user detection + provision + idempotency...");
         let ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp9pDAVl8TpDBLVnpXjAIRxMf3K+m6UPlv3VBMbRp2o e2e-test";
-        let ssh_body = json!({"username": "agent", "public_key": ssh_key});
+        let ssh_user = detect_ssh_user(&api_url, &auth, &sandbox_id).await?;
+        assert!(!ssh_user.is_empty(), "ssh user should not be empty");
         let path = format!("/api/sandboxes/{sandbox_id}/ssh");
-        assert_api_status(&api_url, "POST", &path, &auth, ssh_body.clone(), 200).await;
+        let body = api_post(&api_url, &path, &auth, json!({"public_key": ssh_key})).await?;
+        assert_eq!(body["success"], true, "ssh response: {body}");
+        assert_eq!(body["username"], ssh_user, "ssh response: {body}");
+        assert!(
+            ssh_key_presence(&api_url, &auth, &sandbox_id, &ssh_user, ssh_key).await?,
+            "key should be present after provision"
+        );
         // Idempotent second call
-        assert_api_status(&api_url, "POST", &path, &auth, ssh_body, 200).await;
+        let body = api_post(&api_url, &path, &auth, json!({"public_key": ssh_key})).await?;
+        assert_eq!(body["success"], true, "ssh response: {body}");
+        assert_eq!(body["username"], ssh_user, "ssh response: {body}");
         eprintln!("  SSH provisioned (idempotent)");
+
+        let wrong_user_resp = http()
+            .post(format!("{api_url}{path}"))
+            .header("authorization", &auth)
+            .json(&json!({"username": "no-such-user", "public_key": ssh_key}))
+            .send()
+            .await?;
+        assert_eq!(wrong_user_resp.status(), 422, "wrong user should fail");
+        assert!(
+            ssh_key_presence(&api_url, &auth, &sandbox_id, &ssh_user, ssh_key).await?,
+            "wrong-user attempt should not remove the existing key"
+        );
 
         // ─── Step 17: SSH revoke ─────────────────────────────────────────
         e2e_step!(17, "SSH revoke...");
-        assert_api_status(
-            &api_url,
-            "DELETE",
-            &path,
-            &auth,
-            json!({"username": "agent", "public_key": ssh_key}),
-            200,
-        )
-        .await;
+        let resp = http()
+            .delete(format!("{api_url}{path}"))
+            .header("authorization", &auth)
+            .json(&json!({"public_key": ssh_key}))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), 200, "ssh revoke should succeed");
+        let body: Value = resp.json().await?;
+        assert_eq!(body["success"], true, "ssh revoke response: {body}");
+        assert_eq!(body["username"], ssh_user, "ssh revoke response: {body}");
+        assert!(
+            !ssh_key_presence(&api_url, &auth, &sandbox_id, &ssh_user, ssh_key).await?,
+            "key should be absent after revoke"
+        );
         eprintln!("  SSH revoked");
 
         // ─── Step 18: Secrets inject ─────────────────────────────────────
@@ -465,17 +525,17 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             .context("sandbox should still be in list")?;
         assert_eq!(sb["state"], "stopped");
 
-        // Exec on stopped sandbox → should fail (sidecar unreachable)
+        // Exec on stopped sandbox → should fail before reaching the sidecar
         assert_api_status(
             &api_url,
             "POST",
             &format!("/api/sandboxes/{sandbox_id}/exec"),
             &auth,
             json!({"command": "echo should-fail"}),
-            502,
+            409,
         )
         .await;
-        eprintln!("  Confirmed stopped, exec returns 502");
+        eprintln!("  Confirmed stopped, exec returns 409");
 
         // ─── Step 23: Stop idempotency ───────────────────────────────────
         e2e_step!(23, "Testing stop idempotency...");
@@ -751,8 +811,45 @@ async fn workflow_create_and_cancel() -> Result<()> {
             return Ok(());
         };
 
-        // ─── Step 2: Create workflow via Tangle ──────────────────────────
-        e2e_step!(2, "Submitting JOB_WORKFLOW_CREATE...");
+        // ─── Step 2: Provision sandbox via Tangle ────────────────────────
+        e2e_step!(2, "Submitting JOB_SANDBOX_CREATE for workflow target...");
+        let sandbox_payload = SandboxCreateRequest {
+            name: "workflow-target".to_string(),
+            image: "agent-dev".to_string(),
+            stack: "default".to_string(),
+            agent_identifier: "default-agent".to_string(),
+            env_json: "{}".to_string(),
+            metadata_json: "{}".to_string(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 3600,
+            idle_timeout_seconds: 900,
+            cpu_cores: 2,
+            memory_mb: 4096,
+            disk_gb: 20,
+            tee_required: false,
+            tee_type: 0,
+        }
+        .abi_encode();
+
+        let sandbox_sub = harness
+            .submit_job(JOB_SANDBOX_CREATE, Bytes::from(sandbox_payload))
+            .await?;
+        let sandbox_output = harness
+            .wait_for_job_result_with_deadline(sandbox_sub, JOB_RESULT_TIMEOUT)
+            .await
+            .context("workflow target sandbox result not received")?;
+        let sandbox_receipt = SandboxCreateOutput::abi_decode(&sandbox_output)
+            .context("failed to decode workflow target sandbox result")?;
+        let sandbox_id = sandbox_receipt.sandboxId.clone();
+        assert!(
+            !sandbox_id.is_empty(),
+            "workflow target sandbox_id should not be empty"
+        );
+
+        // ─── Step 3: Create workflow via Tangle ──────────────────────────
+        e2e_step!(3, "Submitting JOB_WORKFLOW_CREATE...");
         let create_payload = WorkflowCreateRequest {
             name: "e2e-test-workflow".to_string(),
             workflow_json: serde_json::to_string(&json!({
@@ -763,6 +860,9 @@ async fn workflow_create_and_cancel() -> Result<()> {
             trigger_type: "manual".to_string(),
             trigger_config: String::new(),
             sandbox_config_json: "{}".to_string(),
+            target_kind: 0,
+            target_sandbox_id: sandbox_id.clone(),
+            target_service_id: 1,
         }
         .abi_encode();
 
@@ -786,8 +886,8 @@ async fn workflow_create_and_cancel() -> Result<()> {
             .context("missing workflowId")?;
         eprintln!("  Workflow created: id={workflow_id}, status=active");
 
-        // ─── Step 3: Cancel workflow via Tangle ──────────────────────────
-        e2e_step!(3, "Submitting JOB_WORKFLOW_CANCEL...");
+        // ─── Step 4: Cancel workflow via Tangle ──────────────────────────
+        e2e_step!(4, "Submitting JOB_WORKFLOW_CANCEL...");
         let cancel_payload = WorkflowControlRequest { workflow_id }.abi_encode();
 
         let cancel_sub = harness
@@ -807,10 +907,10 @@ async fn workflow_create_and_cancel() -> Result<()> {
         );
         eprintln!("  Workflow canceled: {cancel_json}");
 
-        // ─── Step 4: Shutdown ────────────────────────────────────────────
-        e2e_step!(4, "Shutting down...");
+        // ─── Step 5: Shutdown ────────────────────────────────────────────
+        e2e_step!(5, "Shutting down...");
         harness.shutdown().await;
-        eprintln!("\n=== Workflow E2E tests passed (4 steps) ===");
+        eprintln!("\n=== Workflow E2E tests passed (5 steps) ===");
         Ok(())
     })
     .await

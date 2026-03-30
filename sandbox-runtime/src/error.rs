@@ -19,6 +19,8 @@ pub enum SandboxError {
     CloudProvider(String),
     /// Service temporarily unavailable (capacity exceeded, overloaded).
     Unavailable(String),
+    /// Circuit breaker is active for the sandbox sidecar.
+    CircuitBreaker { remaining_secs: u64, probing: bool },
 }
 
 impl fmt::Display for SandboxError {
@@ -32,6 +34,19 @@ impl fmt::Display for SandboxError {
             SandboxError::Storage(msg) => write!(f, "storage error: {msg}"),
             SandboxError::CloudProvider(msg) => write!(f, "cloud provider error: {msg}"),
             SandboxError::Unavailable(msg) => write!(f, "service unavailable: {msg}"),
+            SandboxError::CircuitBreaker {
+                remaining_secs,
+                probing,
+            } => {
+                if *probing {
+                    write!(f, "circuit breaker: recovery probe in progress")
+                } else {
+                    write!(
+                        f,
+                        "circuit breaker: cooldown active ({remaining_secs}s remaining)"
+                    )
+                }
+            }
         }
     }
 }

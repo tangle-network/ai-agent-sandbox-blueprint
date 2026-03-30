@@ -99,15 +99,11 @@ pub struct ExecApiResponse {
 
 #[derive(Debug, Serialize)]
 pub struct PromptApiResponse {
-    pub success: bool,
-    pub response: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub error: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub trace_id: String,
-    pub duration_ms: u64,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
+    pub accepted: bool,
+    pub run_id: String,
+    pub session_id: String,
+    pub status: String,
+    pub accepted_at: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,16 +133,11 @@ impl TaskApiRequest {
 
 #[derive(Debug, Serialize)]
 pub struct TaskApiResponse {
-    pub success: bool,
-    pub result: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub error: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub trace_id: String,
-    pub duration_ms: u64,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
+    pub accepted: bool,
+    pub run_id: String,
     pub session_id: String,
+    pub status: String,
+    pub accepted_at: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,32 +165,36 @@ pub struct SnapshotApiResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct SshProvisionApiRequest {
-    #[serde(default = "default_ssh_username")]
-    pub username: String,
+    #[serde(default)]
+    pub username: Option<String>,
     pub public_key: String,
-}
-
-fn default_ssh_username() -> String {
-    "agent".to_string()
 }
 
 impl SshProvisionApiRequest {
     pub fn validate(&self) -> Result<(), String> {
-        validate_username(&self.username)?;
+        if let Some(username) = self.username.as_deref() {
+            if !username.trim().is_empty() {
+                validate_username(username)?;
+            }
+        }
         validate_ssh_public_key(&self.public_key)
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct SshRevokeApiRequest {
-    #[serde(default = "default_ssh_username")]
-    pub username: String,
+    #[serde(default)]
+    pub username: Option<String>,
     pub public_key: String,
 }
 
 impl SshRevokeApiRequest {
     pub fn validate(&self) -> Result<(), String> {
-        validate_username(&self.username)?;
+        if let Some(username) = self.username.as_deref() {
+            if !username.trim().is_empty() {
+                validate_username(username)?;
+            }
+        }
         validate_ssh_public_key(&self.public_key)
     }
 }
@@ -207,7 +202,14 @@ impl SshRevokeApiRequest {
 #[derive(Debug, Serialize)]
 pub struct SshApiResponse {
     pub success: bool,
+    pub username: String,
     pub result: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SshUserApiResponse {
+    pub success: bool,
+    pub username: String,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -433,7 +435,7 @@ mod tests {
     #[test]
     fn ssh_provision_invalid_key() {
         let req = SshProvisionApiRequest {
-            username: "agent".into(),
+            username: Some("agent".into()),
             public_key: "not-a-key".into(),
         };
         assert!(req.validate().is_err());
@@ -442,7 +444,7 @@ mod tests {
     #[test]
     fn ssh_provision_invalid_username() {
         let req = SshProvisionApiRequest {
-            username: "bad user!".into(),
+            username: Some("bad user!".into()),
             public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest".into(),
         };
         assert!(req.validate().is_err());
@@ -451,7 +453,25 @@ mod tests {
     #[test]
     fn ssh_provision_valid() {
         let req = SshProvisionApiRequest {
-            username: "agent".into(),
+            username: Some("agent".into()),
+            public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest".into(),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn ssh_provision_blank_username_is_allowed() {
+        let req = SshProvisionApiRequest {
+            username: Some("   ".into()),
+            public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest".into(),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn ssh_provision_missing_username_is_allowed() {
+        let req = SshProvisionApiRequest {
+            username: None,
             public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest".into(),
         };
         assert!(req.validate().is_ok());
