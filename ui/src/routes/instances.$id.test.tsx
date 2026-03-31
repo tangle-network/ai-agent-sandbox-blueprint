@@ -57,7 +57,7 @@ vi.mock('@tangle-network/blueprint-ui', () => ({
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
 }));
 
-vi.mock('@tangle-network/agent-ui/primitives', () => ({
+vi.mock('~/lib/utils/truncate-address', () => ({
   truncateAddress: (value: string) => {
     if (!value || value.length <= 12) return value;
     return `${value.slice(0, 6)}...${value.slice(-4)}`;

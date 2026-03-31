@@ -7,13 +7,10 @@ import { numberToHex } from 'viem';
 import { networks } from '~/lib/contracts/chains';
 import { publicClient, selectedChainIdStore } from '@tangle-network/blueprint-ui';
 import { Identicon } from '@tangle-network/blueprint-ui/components';
-import {
-  ConnectWalletCta,
-  copyText,
-  truncateAddress,
-  useDropdownMenu,
-  useWalletEthBalance,
-} from '@tangle-network/agent-ui/primitives';
+import { ConnectWalletCta } from '@tangle-network/blueprint-ui/components';
+import { copyText, useDropdownMenu } from '@tangle-network/sandbox-ui';
+import { useWalletEthBalance } from '@tangle-network/blueprint-ui';
+import { truncateAddress } from '~/lib/utils/truncate-address';
 import { toast } from 'sonner';
 import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';

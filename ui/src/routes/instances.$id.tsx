@@ -22,7 +22,7 @@ import { useInstanceHydration } from '~/lib/hooks/useInstanceHydration';
 import { createProxiedInstanceClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
 import { cn } from '@tangle-network/blueprint-ui';
-import { truncateAddress } from '@tangle-network/agent-ui/primitives';
+import { truncateAddress } from '~/lib/utils/truncate-address';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';

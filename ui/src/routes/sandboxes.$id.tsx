@@ -33,7 +33,7 @@ import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
 import { useSandboxHydration } from '~/lib/hooks/useSandboxHydration';
 import { createProxiedClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { cn } from '@tangle-network/blueprint-ui';
-import { truncateAddress } from '@tangle-network/agent-ui/primitives';
+import { truncateAddress } from '~/lib/utils/truncate-address';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';

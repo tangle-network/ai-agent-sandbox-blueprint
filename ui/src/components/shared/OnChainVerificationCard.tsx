@@ -8,7 +8,7 @@ import {
 import { cn } from '@tangle-network/blueprint-ui';
 import { useOnChainVerification } from '~/lib/hooks/useInstanceReads';
 import { CopyButton } from './CopyButton';
-import { truncateAddress } from '@tangle-network/agent-ui/primitives';
+import { truncateAddress } from '~/lib/utils/truncate-address';
 
 const BYTES32_ZERO = '0x0000000000000000000000000000000000000000000000000000000000000000';
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { SessionMessage, SessionPart } from '@tangle-network/agent-ui';
+import type { SessionMessage, SessionPart } from '@tangle-network/sandbox-ui';
 import type { SandboxClient } from '~/lib/api/sandboxClient';
 import {
   applyChatStreamEvent,
