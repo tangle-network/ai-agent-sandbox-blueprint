@@ -14,8 +14,8 @@ import {
   type SessionPart,
   type ToolPart,
   type ReasoningPart,
-} from '@tangle-network/agent-ui';
-import type { TextPart } from '@tangle-network/agent-ui';
+  type TextPart,
+} from '@tangle-network/sandbox-ui';
 import type { SandboxClient } from '~/lib/api/sandboxClient';
 import {
   chatSessionsStore,
@@ -97,7 +97,7 @@ function AgentRunGroup({
   onToggle,
   branding,
 }: {
-  run: import('@tangle-network/agent-ui').Run;
+  run: import('@tangle-network/sandbox-ui').Run;
   partMap: Record<string, SessionPart[]>;
   collapsed: boolean;
   onToggle: () => void;

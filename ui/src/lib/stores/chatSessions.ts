@@ -1,5 +1,5 @@
 import { atom } from 'nanostores';
-import type { SessionMessage, SessionPart, TextPart } from '@tangle-network/agent-ui';
+import type { SessionMessage, SessionPart, TextPart } from '@tangle-network/sandbox-ui';
 import type {
   ChatStreamEvent,
   ChatRunSummary,
