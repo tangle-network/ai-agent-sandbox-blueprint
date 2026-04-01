@@ -159,9 +159,24 @@ const SHADCN_COLORS = {
 export default defineConfig({
   content: {
     pipeline: {
-      include: [/\.(tsx?|jsx?)$/, '../../blueprint-ui/src/**/*.{ts,tsx}', '../packages/agent-ui/src/**/*.{ts,tsx}'],
+      // Keep extraction focused on renderable component files. Scanning tests and
+      // plain TS sources can produce bogus utilities from regular code tokens.
+      include: [
+        'src/**/*.{jsx,tsx}',
+        '../packages/agent-ui/src/**/*.{jsx,tsx}',
+        '../../blueprint-ui/src/**/*.{jsx,tsx}',
+      ],
+      exclude: [
+        '**/*.test.{jsx,tsx}',
+        '**/*.spec.{jsx,tsx}',
+        '**/test/**',
+        '**/tests/**',
+      ],
     },
   },
+  // JSX placeholder text like "--" can be extracted as a token and compiled
+  // into invalid CSS (`__uno_hash_*{--:'';}`) by the default extractor.
+  blocklist: ['--', '?', '??'],
   shortcuts: {
     'cloud-ease': 'ease-[cubic-bezier(0.4,0,0.2,1)]',
     'transition-theme': 'transition-[background-color,border-color,color] duration-150 cloud-ease',

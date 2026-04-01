@@ -4,7 +4,7 @@
  */
 import type { Address } from 'viem';
 import {
-  createTangleLocalChain,
+  tangleLocal,
   tangleTestnet,
   tangleMainnet,
   rpcUrl,
@@ -13,11 +13,6 @@ import {
   sanitizeSelectedChainId,
   type CoreAddresses,
 } from '@tangle-network/blueprint-ui';
-
-export const tangleLocal = createTangleLocalChain({
-  chainId: Number(import.meta.env.VITE_CHAIN_ID ?? 31337),
-  rpcUrl: import.meta.env.VITE_RPC_URL,
-});
 
 /** Sandbox-specific addresses — extends CoreAddresses with blueprint BSM addresses. */
 export interface SandboxAddresses extends CoreAddresses {

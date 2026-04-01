@@ -55,6 +55,9 @@ ui/test-results/
 ui/playwright-report/
 ui/e2e-results/
 
+# Playwright MCP
+.playwright-mcp
+
 # Monorepo workspace (pnpm hoisted)
 node_modules/
 packages/*/node_modules/
