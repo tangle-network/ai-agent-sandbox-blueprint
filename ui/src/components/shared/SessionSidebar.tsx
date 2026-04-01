@@ -147,12 +147,6 @@ function AgentRunGroup({
             </span>
           )}
         </div>
-        {run.isStreaming && (
-          <div className="flex items-center gap-1.5">
-            <div className="i-ph:circle-notch w-3 h-3 text-teal-500 dark:text-teal-400 animate-spin" />
-            <span className="text-xs text-teal-500 dark:text-teal-400">Running</span>
-          </div>
-        )}
         {hasCollapsible && (
           <div
             className={cn(
@@ -535,8 +529,12 @@ export function SessionSidebar({
                   {s.title}
                 </span>
                 {s.activeRunId && (
-                  <span className="px-1.5 py-0.5 rounded bg-teal-500/10 text-[10px] font-medium text-teal-700 dark:text-teal-400 shrink-0">
-                    Live
+                  <span
+                    className="flex items-center justify-center w-4 h-4 shrink-0"
+                    title="Run in progress"
+                    aria-label="Run in progress"
+                  >
+                    <span className="i-ph:circle-notch text-[11px] text-teal-600 dark:text-teal-400 animate-spin" />
                   </span>
                 )}
                 <button
