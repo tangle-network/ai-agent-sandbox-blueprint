@@ -110,6 +110,24 @@ export default defineConfig({
   define: {
     global: 'globalThis',
   },
+  optimizeDeps: {
+    // blueprint-ui publishes raw TSX from node_modules. Force the dependency
+    // prebundle to use the automatic React runtime so esbuild does not emit
+    // bare React.createElement(...) calls for files that only import types.
+    include: [
+      '@tangle-network/blueprint-ui',
+      '@tangle-network/blueprint-ui/components',
+    ],
+    esbuildOptions: {
+      jsx: 'automatic',
+      jsxImportSource: 'react',
+      tsconfigRaw: {
+        compilerOptions: {
+          jsx: 'react-jsx',
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       '/rpc-proxy': {

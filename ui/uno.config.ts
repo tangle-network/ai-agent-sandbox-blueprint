@@ -1,8 +1,15 @@
+import path from 'node:path';
+import { createRequire } from 'node:module';
 import { icons as phIcons } from '@iconify-json/ph';
 import { defineConfig, presetIcons, transformerDirectives } from 'unocss';
 import { bpThemeTokens } from '@tangle-network/blueprint-ui/preset';
 import { presetAnimations } from 'unocss-preset-animations';
 import { presetWind4 } from 'unocss/preset-wind4';
+
+const cjsRequire = createRequire(import.meta.url);
+const blueprintUiSrcGlob = `${path
+  .dirname(cjsRequire.resolve('@tangle-network/blueprint-ui/preset'))
+  .replaceAll(path.sep, '/')}/**/*.{jsx,tsx}`;
 
 /*
  * TANGLE CLOUD — Design System
@@ -164,7 +171,7 @@ export default defineConfig({
       include: [
         'src/**/*.{jsx,tsx}',
         '../packages/agent-ui/src/**/*.{jsx,tsx}',
-        './node_modules/@tangle-network/blueprint-ui/src/**/*.{jsx,tsx}',
+        blueprintUiSrcGlob,
       ],
       exclude: [
         '**/*.test.{jsx,tsx}',
