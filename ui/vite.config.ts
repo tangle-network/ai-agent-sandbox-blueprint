@@ -89,7 +89,6 @@ function clientChunks(): Plugin {
                 manualChunks: {
                   'react-vendor': ['react', 'react-dom', 'react-router'],
                   'web3-vendor': ['wagmi', 'viem', '@tanstack/react-query', 'connectkit', 'framer-motion'],
-                  'terminal-vendor': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links'],
                 },
               },
             },
@@ -143,7 +142,6 @@ export default defineConfig({
       '@radix-ui/react-slot',
       '@radix-ui/react-tabs',
       '@tangle-network/agent-ui',
-      'blo',
       'class-variance-authority',
       'clsx',
       'framer-motion',

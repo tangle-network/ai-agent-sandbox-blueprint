@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useOperatorTerminalSession } from './useOperatorTerminalSession';
+import { useOperatorTerminalSession } from '@tangle-network/sandbox-ui';
 
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
