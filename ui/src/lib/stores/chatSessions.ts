@@ -1,5 +1,5 @@
 import { atom } from 'nanostores';
-import type { ReasoningPart, SessionMessage, SessionPart, TextPart, ToolPart } from '@tangle-network/sandbox-ui/types';
+import type { ReasoningPart, SessionPart, TextPart, ToolPart } from '@tangle-network/sandbox-ui/types';
 import type {
   ChatStreamEvent,
   ChatRunSummary,
@@ -7,6 +7,7 @@ import type {
   ChatSessionSummary,
   SandboxClient,
 } from '~/lib/api/sandboxClient';
+import type { AppSessionMessage } from '~/lib/types/chat';
 
 export interface ChatRunEntry {
   id: string;
@@ -38,7 +39,7 @@ export interface ChatSessionEntry {
   activeRunId?: string;
   runs: ChatRunEntry[];
   runProgress: ChatRunProgressEntry[];
-  messages: SessionMessage[];
+  messages: AppSessionMessage[];
   partMap: Record<string, SessionPart[]>;
   detailLoaded: boolean;
 }
@@ -68,13 +69,18 @@ function update(fn: (state: ChatSessionsState) => ChatSessionsState) {
 function mapServerMessage(
   msg: ChatSessionDetail['messages'][number],
   index: number,
-): { message: SessionMessage; parts: SessionPart[] } {
+): { message: AppSessionMessage; parts: SessionPart[] } {
   const createdAt = typeof msg.created_at === 'number' ? msg.created_at : Date.now();
   const parts = mapServerParts(msg.parts, msg.content ?? '');
+  const success = typeof msg.success === 'boolean' ? msg.success : msg.success === null ? null : undefined;
+  const error = typeof msg.error === 'string' ? msg.error : msg.error === null ? null : undefined;
   return {
     message: {
       id: msg.id ?? `server-${index}`,
       role: msg.role as 'user' | 'assistant' | 'system',
+      ...(typeof msg.run_id === 'string' ? { runId: msg.run_id } : {}),
+      ...(success !== undefined ? { success } : {}),
+      ...(error !== undefined ? { error } : {}),
       time: {
         created: createdAt,
         ...(typeof msg.completed_at === 'number' ? { completed: msg.completed_at } : {}),
@@ -483,11 +489,23 @@ function applyMessageUpdated(
     ? time.created
     : (typeof info.timestamp === 'number' ? info.timestamp : Date.now());
   const completedAt = typeof time.completed === 'number' ? time.completed : undefined;
+  const runId = typeof info.runID === 'string'
+    ? info.runID
+    : (typeof info.run_id === 'string' ? info.run_id : undefined);
+  const success = Object.prototype.hasOwnProperty.call(info, 'success')
+    ? (typeof info.success === 'boolean' ? info.success : null)
+    : undefined;
+  const error = Object.prototype.hasOwnProperty.call(info, 'error')
+    ? (typeof info.error === 'string' ? info.error : null)
+    : undefined;
   const existingIndex = session.messages.findIndex((entry) => entry.id === id);
   const nextMessages = [...session.messages];
-  const nextMessage: SessionMessage = {
+  const nextMessage: AppSessionMessage = {
     id,
-    role: role as SessionMessage['role'],
+    role: role as AppSessionMessage['role'],
+    ...(runId !== undefined ? { runId } : {}),
+    ...(success !== undefined ? { success } : {}),
+    ...(error !== undefined ? { error } : {}),
     time: {
       created: createdAt,
       ...(completedAt ? { completed: completedAt } : {}),

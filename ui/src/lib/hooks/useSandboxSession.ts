@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { SessionMessage, SessionPart } from '@tangle-network/sandbox-ui/types';
+import type { SessionPart } from '@tangle-network/sandbox-ui/types';
 import type { SandboxClient } from '~/lib/api/sandboxClient';
 import {
   applyChatStreamEvent,
@@ -11,6 +11,7 @@ import {
   type ChatRunProgressEntry,
   type ChatSessionEntry,
 } from '~/lib/stores/chatSessions';
+import type { AppSessionMessage } from '~/lib/types/chat';
 
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 15_000];
 
@@ -22,7 +23,7 @@ export interface UseSandboxSessionOptions {
 }
 
 export interface UseSandboxSessionResult {
-  messages: SessionMessage[];
+  messages: AppSessionMessage[];
   partMap: Record<string, SessionPart[]>;
   isStreaming: boolean;
   isReconnecting: boolean;

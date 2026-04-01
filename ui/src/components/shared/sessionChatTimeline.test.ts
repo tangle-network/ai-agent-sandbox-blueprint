@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { SessionMessage, SessionPart } from '@tangle-network/sandbox-ui/types';
+import type { SessionPart } from '@tangle-network/sandbox-ui/types';
+import type { AppSessionMessage } from '~/lib/types/chat';
 import { collectVisibleSessionTimelineParts } from './sessionChatTimeline';
 
-function makeMessage(id: string): SessionMessage {
+function makeMessage(id: string): AppSessionMessage {
   return {
     id,
     role: 'assistant',

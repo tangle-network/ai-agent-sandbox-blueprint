@@ -9,20 +9,20 @@
 use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::{
-    Json, Router,
     extract::Path,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{any, get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
@@ -38,13 +38,13 @@ use crate::http::{
     auth_headers, build_url, sidecar_get_json, sidecar_post_json, sidecar_post_json_without_timeout,
 };
 use crate::live_operator_sessions::{
-    LiveSessionStore, LiveTerminalSession, sse_from_json_events, sse_from_terminal_output,
+    sse_from_json_events, sse_from_terminal_output, LiveSessionStore, LiveTerminalSession,
 };
 use crate::metrics;
 use crate::provision_progress;
 use crate::rate_limit;
 use crate::runtime::{
-    self, SandboxRecord, SandboxState, sandboxes, workflow_runtime_credentials_available,
+    self, sandboxes, workflow_runtime_credentials_available, SandboxRecord, SandboxState,
 };
 use crate::secret_provisioning;
 use crate::session_auth::{self, SessionAuth};
@@ -317,6 +317,14 @@ struct AgentStreamOutcome {
     output_tokens: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LiveChatSidecarSessionSource {
+    None,
+    Request,
+    SessionUpdated,
+    ExecutionStarted,
+}
+
 #[derive(Debug)]
 struct SidecarSseEvent {
     event_type: String,
@@ -329,6 +337,9 @@ fn chat_message_info_payload(session_id: &str, message: &ChatMessageRecord) -> V
             "id": message.id,
             "role": message.role,
             "sessionID": session_id,
+            "runID": message.run_id,
+            "success": message.success,
+            "error": message.error,
             "timestamp": message.created_at,
             "time": {
                 "created": message.created_at,
@@ -361,7 +372,11 @@ fn emit_message_part_updated(session_id: &str, message_id: &str, part: Value) {
 }
 
 fn emit_session_idle(session_id: &str) {
-    let _ = chat_state::emit_event(session_id, "session.idle", json!({ "sessionID": session_id }));
+    let _ = chat_state::emit_event(
+        session_id,
+        "session.idle",
+        json!({ "sessionID": session_id }),
+    );
 }
 
 fn emit_session_error(session_id: &str, message: &str, code: Option<&str>) {
@@ -425,11 +440,7 @@ fn should_forward_stream_part(
     let request_text = request_text.trim();
     let is_exact_request_echo = !request_text.is_empty()
         && part.get("type").and_then(Value::as_str) == Some("text")
-        && part
-            .get("text")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            == Some(request_text);
+        && part.get("text").and_then(Value::as_str).map(str::trim) == Some(request_text);
 
     let upstream_message_id = part
         .get("messageID")
@@ -476,6 +487,49 @@ fn finalize_streamed_assistant_parts(parts: &mut [Value], completed_at: u64) {
     }
 }
 
+fn assistant_message_has_visible_text(parts: &[Value]) -> bool {
+    parts.iter().any(|part| {
+        let Some(object) = part.as_object() else {
+            return false;
+        };
+        object.get("type").and_then(Value::as_str) == Some("text")
+            && object
+                .get("text")
+                .and_then(Value::as_str)
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(false)
+    })
+}
+
+fn get_or_create_assistant_message(
+    session_id: &str,
+    assistant_message_id: &str,
+    run_id: &str,
+    assistant_started_at: u64,
+) -> ChatMessageRecord {
+    chat_state::get_session(session_id)
+        .ok()
+        .flatten()
+        .and_then(|session| {
+            session
+                .messages
+                .into_iter()
+                .find(|entry| entry.id == assistant_message_id)
+        })
+        .unwrap_or(ChatMessageRecord {
+            id: assistant_message_id.to_string(),
+            run_id: Some(run_id.to_string()),
+            role: "assistant".to_string(),
+            content: String::new(),
+            created_at: assistant_started_at,
+            completed_at: None,
+            parts: Vec::new(),
+            trace_id: None,
+            success: None,
+            error: None,
+        })
+}
+
 fn parse_agent_stream_result(parsed: &Value) -> AgentStreamOutcome {
     let final_text = parsed
         .get("finalText")
@@ -510,14 +564,31 @@ fn parse_agent_stream_result(parsed: &Value) -> AgentStreamOutcome {
             .and_then(Value::as_u64)
             .unwrap_or(0),
         input_tokens: token_usage
-            .and_then(|value| value.get("inputTokens").or_else(|| value.get("input_tokens")))
+            .and_then(|value| {
+                value
+                    .get("inputTokens")
+                    .or_else(|| value.get("input_tokens"))
+            })
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32,
         output_tokens: token_usage
-            .and_then(|value| value.get("outputTokens").or_else(|| value.get("output_tokens")))
+            .and_then(|value| {
+                value
+                    .get("outputTokens")
+                    .or_else(|| value.get("output_tokens"))
+            })
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32,
     }
+}
+
+fn extract_stream_session_id(data: &Value) -> Option<String> {
+    data.get("sessionId")
+        .or_else(|| data.get("sessionID"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn register_chat_run_abort(run_id: &str, abort_handle: AbortHandle) {
@@ -1949,7 +2020,7 @@ async fn translate_missing_agent_factory_error(
         return None;
     }
 
-    let message = err.1.0.error.as_str();
+    let message = err.1 .0.error.as_str();
     if message.contains("No factory registered for agent identifier") {
         // This is a semantic agent-selection error, not a transport failure.
         // Clear the unhealthy mark so a best-effort /agents lookup can enrich
@@ -1966,7 +2037,7 @@ async fn translate_missing_agent_factory_error(
 }
 
 fn agent_warmup_retryable(err: &(StatusCode, Json<ApiError>)) -> bool {
-    let message = err.1.0.error.as_str();
+    let message = err.1 .0.error.as_str();
     message.contains("OpenCode server is not responding")
         || message.contains("Failed to create OpenCode session")
 }
@@ -1976,7 +2047,7 @@ fn request_id_for_logs() -> Option<String> {
 }
 
 fn agents_endpoint_unsupported(err: &(StatusCode, Json<ApiError>)) -> bool {
-    let message = err.1.0.error.as_str();
+    let message = err.1 .0.error.as_str();
     message.contains("HTTP 404") || message.contains("HTTP 405") || message.contains("HTTP 501")
 }
 
@@ -2623,7 +2694,11 @@ fn finalize_cancelled_chat_run(
         "cancelled",
         "Run cancelled by user.",
     );
-    emit_session_error(session_id, "Execution cancelled by user", Some("EXECUTION_CANCELLED"));
+    emit_session_error(
+        session_id,
+        "Execution cancelled by user",
+        Some("EXECUTION_CANCELLED"),
+    );
     emit_session_idle(session_id);
     Ok(updated_run)
 }
@@ -2776,6 +2851,14 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
         emit_message_updated(&session_id, &assistant_message);
         let mut ignored_upstream_message_ids = HashSet::new();
         let mut assistant_upstream_message_ids = HashSet::new();
+        let mut authoritative_sidecar_session_id =
+            (!sidecar_session_id.trim().is_empty()).then(|| sidecar_session_id.clone());
+        let mut authoritative_sidecar_session_source = if authoritative_sidecar_session_id.is_some()
+        {
+            LiveChatSidecarSessionSource::Request
+        } else {
+            LiveChatSidecarSessionSource::None
+        };
 
         let result = agent_stream_on_sidecar(
             &record,
@@ -2786,6 +2869,31 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
             timeout_ms,
             max_turns,
             |event| {
+                let streamed_session = match event.event_type.as_str() {
+                    // execution.started carries the reusable sidecar session ID for
+                    // this live-chat flow. Later result metadata may use a different
+                    // backend-specific namespace, so do not let it override this.
+                    "execution.started" => extract_stream_session_id(&event.data)
+                        .map(|value| (value, LiveChatSidecarSessionSource::ExecutionStarted)),
+                    "session.updated" => extract_stream_session_id(&event.data)
+                        .map(|value| (value, LiveChatSidecarSessionSource::SessionUpdated)),
+                    _ => None,
+                };
+
+                if let Some((candidate_session_id, candidate_source)) = streamed_session {
+                    if candidate_source > authoritative_sidecar_session_source {
+                        authoritative_sidecar_session_source = candidate_source;
+                        authoritative_sidecar_session_id = Some(candidate_session_id.clone());
+                        let _ = chat_state::set_session_sidecar_session_id(
+                            &session_id,
+                            Some(candidate_session_id.clone()),
+                        );
+                        let _ = chat_state::update_run(&run_id, |run| {
+                            run.sidecar_session_id = Some(candidate_session_id.clone());
+                        });
+                    }
+                }
+
                 if event.event_type == "message.part.updated" {
                     if let Some(part) = event.data.get("part").and_then(normalize_stream_part) {
                         if !should_forward_stream_part(
@@ -2833,19 +2941,22 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
                 } else {
                     String::new()
                 };
+                let resolved_sidecar_session_id = authoritative_sidecar_session_id
+                    .clone()
+                    .or_else(|| (!ar.session_id.trim().is_empty()).then(|| ar.session_id.clone()));
 
-                if !ar.session_id.trim().is_empty() {
+                if let Some(sidecar_session_id) = resolved_sidecar_session_id.clone() {
                     let _ = chat_state::set_session_sidecar_session_id(
                         &session_id,
-                        Some(ar.session_id.clone()),
+                        Some(sidecar_session_id),
                     );
                 }
 
                 let _ = chat_state::update_run(&run_id, |run| {
                     run.status = final_status.clone();
                     run.completed_at = Some(completed_at);
-                    if !ar.session_id.trim().is_empty() {
-                        run.sidecar_session_id = Some(ar.session_id.clone());
+                    if let Some(sidecar_session_id) = resolved_sidecar_session_id.clone() {
+                        run.sidecar_session_id = Some(sidecar_session_id);
                     }
                     if !ar.trace_id.trim().is_empty() {
                         run.trace_id = Some(ar.trace_id.clone());
@@ -2859,27 +2970,12 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
                 });
                 let _ = chat_state::clear_session_active_run(&session_id);
 
-                let mut assistant_message = chat_state::get_session(&session_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|session| {
-                        session
-                            .messages
-                            .into_iter()
-                            .find(|entry| entry.id == assistant_message_id)
-                    })
-                    .unwrap_or(ChatMessageRecord {
-                        id: assistant_message_id.clone(),
-                        run_id: Some(run_id.clone()),
-                        role: "assistant".to_string(),
-                        content: String::new(),
-                        created_at: assistant_started_at,
-                        completed_at: None,
-                        parts: Vec::new(),
-                        trace_id: None,
-                        success: None,
-                        error: None,
-                    });
+                let mut assistant_message = get_or_create_assistant_message(
+                    &session_id,
+                    &assistant_message_id,
+                    &run_id,
+                    assistant_started_at,
+                );
                 if assistant_message.parts.is_empty() && !assistant_content.is_empty() {
                     assistant_message.parts.push(json!({
                         "id": format!("text-{}", uuid::Uuid::new_v4()),
@@ -2945,32 +3041,33 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
                 });
                 let _ = chat_state::clear_session_active_run(&session_id);
 
-                let assistant_message = ChatMessageRecord {
-                    id: assistant_message_id.clone(),
-                    run_id: Some(run_id.clone()),
-                    role: "assistant".to_string(),
-                    content: format!("Error: {error_text}"),
-                    created_at: assistant_started_at,
-                    completed_at: Some(completed_at),
-                    parts: vec![json!({
+                let mut assistant_message = get_or_create_assistant_message(
+                    &session_id,
+                    &assistant_message_id,
+                    &run_id,
+                    assistant_started_at,
+                );
+                if !assistant_message_has_visible_text(&assistant_message.parts) {
+                    assistant_message.parts.push(json!({
                         "id": format!("text-{}", uuid::Uuid::new_v4()),
                         "type": "text",
                         "text": format!("Error: {error_text}"),
-                    })],
-                    trace_id: None,
-                    success: Some(false),
-                    error: Some(error_text.clone()),
-                };
+                    }));
+                }
+                finalize_streamed_assistant_parts(&mut assistant_message.parts, completed_at);
+                if assistant_message.content.trim().is_empty() {
+                    assistant_message.content = format!("Error: {error_text}");
+                }
+                assistant_message.completed_at = Some(completed_at);
+                assistant_message.trace_id = None;
+                assistant_message.success = Some(false);
+                assistant_message.error = Some(error_text.clone());
                 let _ = chat_state::append_message(&session_id, assistant_message.clone());
                 emit_message_updated(&session_id, &assistant_message);
                 for part in &assistant_message.parts {
                     emit_message_part_updated(&session_id, &assistant_message.id, part.clone());
                 }
-                emit_session_error(
-                    &session_id,
-                    &error_text,
-                    api_error_body.0.code.as_deref(),
-                );
+                emit_session_error(&session_id, &error_text, api_error_body.0.code.as_deref());
                 emit_session_idle(&session_id);
 
                 if let Ok(Some(updated_run)) = chat_state::get_run(&run_id) {
@@ -3709,7 +3806,7 @@ pub fn extract_session_from_headers(
 /// - `"*"` → allow any origin (development mode only, must be explicit).
 /// - Unset → localhost-only with warning (safe default for production).
 pub fn build_cors_layer() -> CorsLayer {
-    use axum::http::{Method, header};
+    use axum::http::{header, Method};
 
     let allowed_methods = vec![
         Method::GET,
@@ -4901,11 +4998,9 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(
-            response
-                .headers()
-                .contains_key("access-control-allow-origin")
-        );
+        assert!(response
+            .headers()
+            .contains_key("access-control-allow-origin"));
     }
 
     #[tokio::test]
@@ -4933,11 +5028,9 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(
-            response
-                .headers()
-                .contains_key("access-control-allow-origin")
-        );
+        assert!(response
+            .headers()
+            .contains_key("access-control-allow-origin"));
     }
 
     // ── TEE sealed secrets API tests ──────────────────────────────────────
@@ -4952,7 +5045,7 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
     /// Insert a sandbox record with TEE fields into the store.
     fn insert_tee_sandbox(id: &str, deployment_id: &str, owner: &str) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        use crate::runtime::{sandboxes, seal_record, SandboxRecord, SandboxState};
         let mut record = SandboxRecord {
             id: id.to_string(),
             container_id: format!("tee-{deployment_id}"),
@@ -5006,7 +5099,7 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         state: crate::runtime::SandboxState,
     ) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        use crate::runtime::{sandboxes, seal_record, SandboxRecord, SandboxState};
         let stopped_at = (state != SandboxState::Running).then_some(1_700_000_001);
         let mut record = SandboxRecord {
             id: id.to_string(),
@@ -6321,7 +6414,9 @@ data: {\"finalText\":\"actual assistant reply\",\"metadata\":{\"sessionId\":\"mo
             .iter()
             .find(|message| message["role"] == "assistant")
             .expect("assistant message");
-        let assistant_parts = assistant_message["parts"].as_array().expect("assistant parts");
+        let assistant_parts = assistant_message["parts"]
+            .as_array()
+            .expect("assistant parts");
 
         assert!(
             assistant_parts.iter().all(|part| {
@@ -6345,6 +6440,273 @@ data: {\"finalText\":\"actual assistant reply\",\"metadata\":{\"sessionId\":\"mo
             }),
             "assistant text part should be preserved: {assistant_message}"
         );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_live_chat_prompt_failure_preserves_partial_streamed_content() {
+        init();
+        reset_test_state();
+
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        *sidecar_state
+            .stream_response_body
+            .lock()
+            .expect("stream response body lock") = Some(
+            "event: message.part.updated\n\
+data: {\"part\":{\"id\":\"reason-1\",\"messageID\":\"up-assistant-1\",\"type\":\"reasoning\",\"text\":\"Thinking through the answer\",\"time\":{\"start\":1}}}\n\n\
+event: message.part.updated\n\
+data: {\"part\":{\"id\":\"assistant-1\",\"messageID\":\"up-assistant-1\",\"type\":\"text\",\"text\":\"partial assistant reply\"}}\n\n\
+event: error\n\
+data: {\"message\":\"sidecar stream exploded\"}\n\n"
+                .to_string(),
+        );
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/live/chat/sessions")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({ "title": "Live Prompt" })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let create_json = body_json(create.into_body()).await;
+        let session_id = create_json["session_id"]
+            .as_str()
+            .expect("chat session_id")
+            .to_string();
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let stream = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/sandbox/live/chat/sessions/{session_id}/stream"
+                    ))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let prompt = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "message": "hello from live stream",
+                            "session_id": session_id,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prompt.status(), StatusCode::ACCEPTED);
+        let prompt_json = body_json(prompt.into_body()).await;
+        let run_id = prompt_json["run_id"].as_str().expect("run_id");
+        let run = wait_for_run_terminal(run_id).await;
+        assert_eq!(run.status, ChatRunStatus::Failed);
+        assert_eq!(run.error.as_deref(), Some("sidecar stream exploded"));
+
+        let stream_text = read_sse_until_idle(stream.into_body()).await;
+        assert!(stream_text.contains("partial assistant reply"));
+        assert!(stream_text.contains("event: session.error"));
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let detail = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sandbox/live/chat/sessions/{session_id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.status(), StatusCode::OK);
+        let detail_json = body_json(detail.into_body()).await;
+        let messages = detail_json["messages"].as_array().expect("messages array");
+        let assistant_message = messages
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("assistant message");
+        let assistant_parts = assistant_message["parts"]
+            .as_array()
+            .expect("assistant parts");
+
+        assert_eq!(assistant_message["success"], json!(false));
+        assert_eq!(assistant_message["error"], json!("sidecar stream exploded"));
+        assert!(
+            assistant_parts.iter().any(|part| {
+                part["type"] == "reasoning"
+                    && part["id"] == "reason-1"
+                    && part["time"]["end"].as_u64().is_some()
+            }),
+            "assistant reasoning part should be preserved and finalized: {assistant_message}"
+        );
+        assert!(
+            assistant_parts.iter().any(|part| {
+                part["type"] == "text"
+                    && part["id"] == "assistant-1"
+                    && part["text"] == "partial assistant reply"
+            }),
+            "assistant text part should preserve the streamed partial reply: {assistant_message}"
+        );
+        assert!(
+            assistant_parts.iter().all(|part| {
+                part["text"].as_str().unwrap_or_default() != "Error: sidecar stream exploded"
+            }),
+            "assistant message should not replace preserved streamed content with an error-only part: {assistant_message}"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_live_chat_prompt_reuses_execution_started_session_id() {
+        init();
+        reset_test_state();
+
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        *sidecar_state
+            .stream_response_body
+            .lock()
+            .expect("stream response body lock") = Some(
+            "event: execution.started\n\
+data: {\"executionId\":\"exec-1\",\"sessionId\":\"sidecar-stream-session\",\"timestamp\":1}\n\n\
+event: result\n\
+data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-result-session\",\"traceId\":\"trace-mock-1\"},\"tokenUsage\":{\"inputTokens\":2,\"outputTokens\":3}}\n\n"
+                .to_string(),
+        );
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/live/chat/sessions")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({ "title": "Live Prompt" })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let create_json = body_json(create.into_body()).await;
+        let session_id = create_json["session_id"]
+            .as_str()
+            .expect("chat session_id")
+            .to_string();
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let first_prompt = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "message": "remember this task",
+                            "session_id": session_id,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first_prompt.status(), StatusCode::ACCEPTED);
+        let first_prompt_json = body_json(first_prompt.into_body()).await;
+        let first_run_id = first_prompt_json["run_id"].as_str().expect("first run_id");
+        let first_run = wait_for_run_terminal(first_run_id).await;
+        assert_eq!(first_run.status, ChatRunStatus::Completed);
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let detail = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sandbox/live/chat/sessions/{session_id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.status(), StatusCode::OK);
+        let detail_json = body_json(detail.into_body()).await;
+        assert_eq!(
+            detail_json["sidecar_session_id"],
+            json!("sidecar-stream-session")
+        );
+        let runs = detail_json["runs"].as_array().expect("runs array");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0]["sidecar_session_id"],
+            json!("sidecar-stream-session")
+        );
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let second_prompt = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "message": "are you done?",
+                            "session_id": session_id,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second_prompt.status(), StatusCode::ACCEPTED);
+        let second_prompt_json = body_json(second_prompt.into_body()).await;
+        let second_run_id = second_prompt_json["run_id"]
+            .as_str()
+            .expect("second run_id");
+        let second_run = wait_for_run_terminal(second_run_id).await;
+        assert_eq!(second_run.status, ChatRunStatus::Completed);
+
+        let agent_payload = sidecar_state
+            .last_agent_payload
+            .lock()
+            .expect("agent payload lock")
+            .clone()
+            .expect("agent payload");
+        assert_eq!(agent_payload["message"], "are you done?");
+        assert_eq!(agent_payload["sessionId"], "sidecar-stream-session");
 
         server.abort();
     }
@@ -6452,7 +6814,7 @@ data: {\"finalText\":\"actual assistant reply\",\"metadata\":{\"sessionId\":\"mo
         ports: std::collections::HashMap<u16, u16>,
     ) {
         init();
-        use crate::runtime::{SandboxRecord, SandboxState, sandboxes, seal_record};
+        use crate::runtime::{sandboxes, seal_record, SandboxRecord, SandboxState};
         let mut record = SandboxRecord {
             id: id.to_string(),
             container_id: format!("ctr-{id}"),
@@ -7237,12 +7599,10 @@ data: {\"finalText\":\"actual assistant reply\",\"metadata\":{\"sessionId\":\"mo
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let payload = body_json(response.into_body()).await;
-        assert!(
-            !payload["session_id"]
-                .as_str()
-                .unwrap_or_default()
-                .is_empty()
-        );
+        assert!(!payload["session_id"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty());
         assert!(!payload["run_id"].as_str().unwrap_or_default().is_empty());
         server.abort();
     }

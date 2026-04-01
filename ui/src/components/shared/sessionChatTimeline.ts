@@ -1,4 +1,5 @@
-import type { SessionMessage, SessionPart, TextPart } from '@tangle-network/sandbox-ui/types';
+import type { SessionPart, TextPart } from '@tangle-network/sandbox-ui/types';
+import type { AppSessionMessage } from '~/lib/types/chat';
 
 export interface SessionTimelineEntry {
   part: SessionPart;
@@ -11,7 +12,7 @@ export function isRenderableTextPart(part: SessionPart): part is TextPart {
 }
 
 export function collectSessionTimelineParts(
-  messages: SessionMessage[],
+  messages: AppSessionMessage[],
   partMap: Record<string, SessionPart[]>,
 ): SessionTimelineEntry[] {
   const parts: SessionTimelineEntry[] = [];
@@ -31,7 +32,7 @@ export function collectSessionTimelineParts(
 }
 
 export function collectVisibleSessionTimelineParts(
-  messages: SessionMessage[],
+  messages: AppSessionMessage[],
   partMap: Record<string, SessionPart[]>,
   collapsed: boolean,
 ): SessionTimelineEntry[] {

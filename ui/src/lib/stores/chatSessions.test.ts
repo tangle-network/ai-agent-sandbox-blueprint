@@ -182,9 +182,12 @@ describe('loadSessionDetail', () => {
           },
           {
             id: 'm2',
+            run_id: 'run-1',
             role: 'assistant',
             content: 'hi',
             created_at: 222,
+            success: false,
+            error: 'Agent stream failed',
             parts: [
               { id: 'reason-1', type: 'reasoning', text: 'thinking', time: { start: 1, end: 2 } },
               { id: 'text-2', type: 'text', text: 'hi' },
@@ -228,6 +231,12 @@ describe('loadSessionDetail', () => {
     expect(session.partMap.m1?.[0]).toMatchObject({ type: 'text', id: 'text-1', text: 'hello' });
     expect(session.partMap.m2?.[0]).toMatchObject({ type: 'reasoning', id: 'reason-1', text: 'thinking' });
     expect(session.partMap.m2?.[1]).toMatchObject({ type: 'text', id: 'text-2', text: 'hi' });
+    expect(session.messages[1]).toMatchObject({
+      id: 'm2',
+      runId: 'run-1',
+      success: false,
+      error: 'Agent stream failed',
+    });
   });
 });
 
@@ -374,6 +383,61 @@ describe('applyChatStreamEvent', () => {
       type: 'text',
       id: 'text-1',
       text: 'hello world',
+    });
+  });
+
+  it('merges failure metadata onto an existing streamed assistant message', () => {
+    seedSession('sb-1', 's1', 'Live', true);
+
+    applyChatStreamEvent('sb-1', 's1', {
+      type: 'message.updated',
+      data: {
+        info: {
+          id: 'm1',
+          role: 'assistant',
+          runID: 'run-1',
+          time: { created: 10 },
+        },
+      },
+    });
+    applyChatStreamEvent('sb-1', 's1', {
+      type: 'message.part.updated',
+      data: {
+        part: {
+          id: 'text-1',
+          messageID: 'm1',
+          type: 'text',
+          text: 'partial reply',
+        },
+      },
+    });
+    applyChatStreamEvent('sb-1', 's1', {
+      type: 'message.updated',
+      data: {
+        info: {
+          id: 'm1',
+          role: 'assistant',
+          runID: 'run-1',
+          success: false,
+          error: 'Agent stream failed',
+          time: { created: 10, completed: 20 },
+        },
+      },
+    });
+
+    const session = getSessions('sb-1')[0];
+    expect(session.partMap.m1).toHaveLength(1);
+    expect(session.partMap.m1?.[0]).toMatchObject({
+      type: 'text',
+      id: 'text-1',
+      text: 'partial reply',
+    });
+    expect(session.messages[0]).toMatchObject({
+      id: 'm1',
+      runId: 'run-1',
+      success: false,
+      error: 'Agent stream failed',
+      time: { created: 10, completed: 20 },
     });
   });
 });

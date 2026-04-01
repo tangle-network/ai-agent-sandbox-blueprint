@@ -2,7 +2,6 @@ import { useState, useMemo, useCallback, useEffect, useRef, type FormEvent, type
 import { useStore } from '@nanostores/react';
 import {
   type AgentBranding,
-  type SessionMessage,
   type SessionPart,
   type Run,
 } from '@tangle-network/sandbox-ui/types';
@@ -25,6 +24,7 @@ import {
   loadSessionDetail,
 } from '~/lib/stores/chatSessions';
 import { useSandboxSession } from '~/lib/hooks/useSandboxSession';
+import type { AppSessionMessage } from '~/lib/types/chat';
 import { cn } from '@tangle-network/blueprint-ui';
 import { AppMarkdown, ReasoningRow, ToolRow, UserBubble } from './SessionChatParts';
 import { collectSessionTimelineParts, collectVisibleSessionTimelineParts } from './sessionChatTimeline';
@@ -71,12 +71,27 @@ function formatRunStatus(status: string): string {
   }
 }
 
+function getRunFailureState(run: Run): { errorText: string | null } | null {
+  for (let index = run.messages.length - 1; index >= 0; index -= 1) {
+    const message = run.messages[index] as AppSessionMessage;
+    if (message.role !== 'assistant') {
+      continue;
+    }
+    if (message.success === false || typeof message.error === 'string') {
+      return {
+        errorText: typeof message.error === 'string' ? message.error : null,
+      };
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // ChatArea — replaces ChatContainer with text-always-visible behavior
 // ---------------------------------------------------------------------------
 
 interface ChatAreaProps {
-  messages: SessionMessage[];
+  messages: AppSessionMessage[];
   partMap: Record<string, SessionPart[]>;
   isStreaming: boolean;
   onSend?: (text: string) => void;
@@ -116,8 +131,9 @@ function AgentRunGroup({
     [allParts],
   );
   const hasVisibleParts = visibleParts.length > 0;
+  const failureState = useMemo(() => getRunFailureState(run), [run]);
 
-  if (!hasVisibleParts && !run.isStreaming) {
+  if (!hasVisibleParts && !run.isStreaming && !failureState) {
     return null;
   }
 
@@ -141,6 +157,11 @@ function AgentRunGroup({
           {branding.label}
         </span>
         <div className="flex items-center gap-3 flex-1 min-w-0">
+          {failureState && (
+            <span className="rounded-full bg-crimson-500/10 px-2 py-0.5 text-[11px] font-medium text-crimson-600 dark:text-crimson-400">
+              Failed
+            </span>
+          )}
           {run.stats.toolCount > 0 && (
             <span className="text-xs text-neutral-400 dark:text-neutral-500">
               {run.stats.toolCount} tool{run.stats.toolCount !== 1 ? 's' : ''}
@@ -177,6 +198,18 @@ function AgentRunGroup({
             }
             return null;
           })}
+        </div>
+      )}
+      {failureState && (
+        <div className="mt-2 rounded-lg border border-crimson-500/20 bg-crimson-500/5 px-3 py-2">
+          <div className="text-xs font-medium text-crimson-600 dark:text-crimson-400">
+            Generation stopped due to an error. This response may be incomplete.
+          </div>
+          {failureState.errorText && (
+            <p className="mt-1 text-xs text-crimson-600/90 dark:text-crimson-400/90">
+              {failureState.errorText}
+            </p>
+          )}
         </div>
       )}
     </div>
