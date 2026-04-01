@@ -1,4 +1,4 @@
-import type { SessionMessage, SessionPart, TextPart } from '@tangle-network/sandbox-ui';
+import type { SessionMessage, SessionPart, TextPart } from '@tangle-network/sandbox-ui/types';
 
 export interface SessionTimelineEntry {
   part: SessionPart;

@@ -1,15 +1,17 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  type ReasoningPart,
+  type SessionPart,
+  type TextPart,
+  type ToolPart,
+} from '@tangle-network/sandbox-ui/types';
+import {
   formatDuration,
   getToolCategory,
   getToolDisplayMetadata,
   getToolErrorText,
   truncateText,
-  type ReasoningPart,
-  type SessionPart,
-  type TextPart,
-  type ToolPart,
-} from '@tangle-network/sandbox-ui';
+} from '@tangle-network/sandbox-ui/utils';
 import { cn } from '@tangle-network/blueprint-ui';
 
 const TOOL_CATEGORY_ICON_CLASS: Record<string, string> = {

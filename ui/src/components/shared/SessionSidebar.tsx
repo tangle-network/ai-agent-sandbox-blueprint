@@ -1,13 +1,16 @@
 import { useState, useMemo, useCallback, useEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
 import { useStore } from '@nanostores/react';
 import {
-  useRunGroups,
-  useRunCollapseState,
-  useAutoScroll,
   type AgentBranding,
   type SessionMessage,
   type SessionPart,
-} from '@tangle-network/sandbox-ui';
+  type Run,
+} from '@tangle-network/sandbox-ui/types';
+import {
+  useAutoScroll,
+  useRunCollapseState,
+  useRunGroups,
+} from '@tangle-network/sandbox-ui/hooks';
 import type { SandboxClient } from '~/lib/api/sandboxClient';
 import {
   chatSessionsStore,
@@ -94,7 +97,7 @@ function AgentRunGroup({
   onToggle,
   branding,
 }: {
-  run: import('@tangle-network/sandbox-ui').Run;
+  run: Run;
   partMap: Record<string, SessionPart[]>;
   collapsed: boolean;
   onToggle: () => void;

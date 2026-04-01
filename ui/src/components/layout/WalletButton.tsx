@@ -2,12 +2,14 @@ import { ConnectKitButton } from 'connectkit';
 import { useAccount, useDisconnect } from 'wagmi';
 import { useStore } from '@nanostores/react';
 import { useCallback } from 'react';
+import type { RefObject } from 'react';
 import type { Address } from 'viem';
 import { numberToHex } from 'viem';
 import { networks } from '~/lib/contracts/chains';
 import { publicClient, selectedChainIdStore, useWalletEthBalance } from '@tangle-network/blueprint-ui';
 import { ConnectWalletCta, Identicon } from '@tangle-network/blueprint-ui/components';
-import { copyText, useDropdownMenu } from '@tangle-network/sandbox-ui';
+import { useDropdownMenu } from '@tangle-network/sandbox-ui/hooks';
+import { copyText } from '@tangle-network/sandbox-ui/utils';
 import { truncateAddress } from '~/lib/utils/truncate-address';
 import { toast } from 'sonner';
 import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
@@ -64,6 +66,7 @@ function clearWagmiStorage() {
 
 export function WalletButton() {
   const { open, ref, toggle, close } = useDropdownMenu();
+  const dropdownRef = ref as RefObject<HTMLDivElement>;
   const { address, chainId, isConnected, status } = useAccount();
   const isReconnecting = status === 'reconnecting';
   const { disconnect } = useDisconnect();
@@ -188,7 +191,7 @@ export function WalletButton() {
               </button>
             )}
 
-            <div ref={ref} className="relative">
+            <div ref={dropdownRef} className="relative">
               <button onClick={toggle} className="flex items-center gap-2.5 px-3 py-2 rounded-lg glass-card hover:border-violet-500/20 transition-all">
                 {address && <Identicon address={address as Address} size={22} />}
                 <span className="text-sm font-data text-cloud-elements-textPrimary">{truncated}</span>

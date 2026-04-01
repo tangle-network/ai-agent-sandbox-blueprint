@@ -1,5 +1,5 @@
 import { atom } from 'nanostores';
-import type { ReasoningPart, SessionMessage, SessionPart, TextPart, ToolPart } from '@tangle-network/sandbox-ui';
+import type { ReasoningPart, SessionMessage, SessionPart, TextPart, ToolPart } from '@tangle-network/sandbox-ui/types';
 import type {
   ChatStreamEvent,
   ChatRunSummary,

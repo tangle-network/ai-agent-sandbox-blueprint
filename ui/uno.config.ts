@@ -164,7 +164,7 @@ export default defineConfig({
       include: [
         'src/**/*.{jsx,tsx}',
         '../packages/agent-ui/src/**/*.{jsx,tsx}',
-        '../../blueprint-ui/src/**/*.{jsx,tsx}',
+        './node_modules/@tangle-network/blueprint-ui/src/**/*.{jsx,tsx}',
       ],
       exclude: [
         '**/*.test.{jsx,tsx}',
