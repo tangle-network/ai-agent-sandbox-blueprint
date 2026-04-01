@@ -88,6 +88,9 @@ export function useSandboxSession({
         },
         onEvent: (event) => {
           applyChatStreamEvent(sandboxId, targetSessionId, event);
+          if (event.type === 'session.idle') {
+            void loadSessionDetail(client, sandboxId, targetSessionId);
+          }
         },
       });
 

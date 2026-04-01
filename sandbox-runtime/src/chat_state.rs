@@ -46,6 +46,10 @@ pub struct ChatMessageRecord {
     pub content: String,
     pub created_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub success: Option<bool>,
@@ -257,11 +261,81 @@ pub fn delete_session(session_id: &str) -> Result<(), String> {
 pub fn append_message(session_id: &str, message: ChatMessageRecord) -> Result<bool, String> {
     let updated = session_store()?
         .update(session_id, |session| {
-            session.messages.push(message.clone());
-            session.updated_at = message.created_at;
+            if let Some(existing) = session.messages.iter_mut().find(|entry| entry.id == message.id) {
+                *existing = message.clone();
+            } else {
+                session.messages.push(message.clone());
+            }
+            session.updated_at = message.completed_at.unwrap_or(message.created_at);
         })
         .map_err(|e| e.to_string())?;
     Ok(updated)
+}
+
+fn part_identity(part: &Value) -> Option<(Option<String>, Option<String>)> {
+    let object = part.as_object()?;
+    let part_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let part_id = object.get("id").and_then(Value::as_str).map(str::to_string);
+    Some((part_type, part_id))
+}
+
+fn matches_part(existing: &Value, incoming: &Value) -> bool {
+    let Some((incoming_type, incoming_id)) = part_identity(incoming) else {
+        return false;
+    };
+    let Some((existing_type, existing_id)) = part_identity(existing) else {
+        return false;
+    };
+
+    if incoming_id.is_some() && existing_id.is_some() {
+        return incoming_id == existing_id;
+    }
+
+    incoming_type == Some("text".to_string()) && existing_type == incoming_type
+}
+
+fn visible_text_from_parts(parts: &[Value]) -> String {
+    parts.iter()
+        .rev()
+        .find_map(|part| {
+            let object = part.as_object()?;
+            if object.get("type").and_then(Value::as_str) != Some("text") {
+                return None;
+            }
+            object.get("text").and_then(Value::as_str).map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+pub fn upsert_message_part(
+    session_id: &str,
+    message_id: &str,
+    part: Value,
+) -> Result<bool, String> {
+    let timestamp = now_ms();
+    session_store()?
+        .update(session_id, |session| {
+            let Some(message) = session.messages.iter_mut().find(|entry| entry.id == message_id) else {
+                return;
+            };
+
+            if let Some(index) = message.parts.iter().position(|existing| matches_part(existing, &part))
+            {
+                message.parts[index] = part.clone();
+            } else {
+                message.parts.push(part.clone());
+            }
+
+            let text_content = visible_text_from_parts(&message.parts);
+            if !text_content.is_empty() {
+                message.content = text_content;
+            }
+            session.updated_at = timestamp;
+        })
+        .map_err(|e| e.to_string())
 }
 
 pub fn create_run(

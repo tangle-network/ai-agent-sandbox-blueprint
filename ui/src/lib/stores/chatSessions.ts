@@ -1,5 +1,5 @@
 import { atom } from 'nanostores';
-import type { SessionMessage, SessionPart, TextPart } from '@tangle-network/sandbox-ui';
+import type { ReasoningPart, SessionMessage, SessionPart, TextPart, ToolPart } from '@tangle-network/sandbox-ui';
 import type {
   ChatStreamEvent,
   ChatRunSummary,
@@ -70,15 +70,76 @@ function mapServerMessage(
   index: number,
 ): { message: SessionMessage; parts: SessionPart[] } {
   const createdAt = typeof msg.created_at === 'number' ? msg.created_at : Date.now();
-  const part: TextPart = { type: 'text', text: msg.content ?? '' };
+  const parts = mapServerParts(msg.parts, msg.content ?? '');
   return {
     message: {
       id: msg.id ?? `server-${index}`,
       role: msg.role as 'user' | 'assistant' | 'system',
-      time: { created: createdAt },
+      time: {
+        created: createdAt,
+        ...(typeof msg.completed_at === 'number' ? { completed: msg.completed_at } : {}),
+      },
     },
-    parts: [part],
+    parts,
   };
+}
+
+function mapServerParts(
+  rawParts: Array<Record<string, unknown>> | undefined,
+  fallbackText: string,
+): SessionPart[] {
+  const mapped = (rawParts ?? [])
+    .map(mapSessionPart)
+    .filter((part): part is SessionPart => part !== null);
+  if (mapped.length > 0) {
+    return mapped;
+  }
+  if (!fallbackText) {
+    return [];
+  }
+  return [{ type: 'text', text: fallbackText } satisfies TextPart];
+}
+
+function mapToolState(state: Record<string, unknown> | undefined): ToolPart['state'] {
+  const status = state?.status === 'failed'
+    ? 'error'
+    : (state?.status as ToolPart['state']['status'] | undefined);
+  return {
+    status: status ?? 'running',
+    input: state?.input,
+    output: state?.output,
+    error: typeof state?.error === 'string' ? state.error : undefined,
+    metadata: (state?.metadata as Record<string, unknown> | undefined),
+    time: (state?.time as ToolPart['state']['time'] | undefined),
+  };
+}
+
+function mapSessionPart(rawPart: Record<string, unknown>): SessionPart | null {
+  const type = typeof rawPart.type === 'string' ? rawPart.type : '';
+  if (type === 'tool') {
+    return {
+      type: 'tool',
+      id: typeof rawPart.id === 'string' ? rawPart.id : `tool-${Date.now()}`,
+      tool: typeof rawPart.tool === 'string' ? rawPart.tool : 'unknown',
+      state: mapToolState(rawPart.state as Record<string, unknown> | undefined),
+    } satisfies ToolPart;
+  }
+  if (type === 'reasoning') {
+    return {
+      type: 'reasoning',
+      ...(rawPart.id && typeof rawPart.id === 'string' ? { id: rawPart.id } : {}),
+      text: typeof rawPart.text === 'string' ? rawPart.text : '',
+      time: rawPart.time as ReasoningPart['time'] | undefined,
+    } satisfies ReasoningPart;
+  }
+  if (type === 'text') {
+    return {
+      type: 'text',
+      text: typeof rawPart.text === 'string' ? rawPart.text : '',
+      ...(rawPart.id && typeof rawPart.id === 'string' ? { id: rawPart.id } : {}),
+    } as TextPart;
+  }
+  return null;
 }
 
 function mapRun(run: ChatRunSummary): ChatRunEntry {
@@ -406,6 +467,102 @@ function applyStreamMessage(
   };
 }
 
+function applyMessageUpdated(
+  session: ChatSessionEntry,
+  payload: Record<string, unknown>,
+): ChatSessionEntry {
+  const info = (payload.info as Record<string, unknown> | undefined) ?? payload;
+  const id = typeof info.id === 'string' ? info.id : '';
+  const role = typeof info.role === 'string' ? info.role : 'assistant';
+  if (!id) {
+    return session;
+  }
+
+  const time = (info.time as Record<string, unknown> | undefined) ?? {};
+  const createdAt = typeof time.created === 'number'
+    ? time.created
+    : (typeof info.timestamp === 'number' ? info.timestamp : Date.now());
+  const completedAt = typeof time.completed === 'number' ? time.completed : undefined;
+  const existingIndex = session.messages.findIndex((entry) => entry.id === id);
+  const nextMessages = [...session.messages];
+  const nextMessage: SessionMessage = {
+    id,
+    role: role as SessionMessage['role'],
+    time: {
+      created: createdAt,
+      ...(completedAt ? { completed: completedAt } : {}),
+    },
+  };
+  if (existingIndex >= 0) {
+    nextMessages[existingIndex] = {
+      ...nextMessages[existingIndex],
+      ...nextMessage,
+      time: nextMessage.time,
+    };
+  } else {
+    nextMessages.push(nextMessage);
+  }
+
+  return {
+    ...session,
+    messages: nextMessages,
+    detailLoaded: true,
+  };
+}
+
+function applyMessagePartUpdated(
+  session: ChatSessionEntry,
+  payload: Record<string, unknown>,
+): ChatSessionEntry {
+  const partPayload = (payload.part as Record<string, unknown> | undefined) ?? payload;
+  const messageId = typeof partPayload.messageID === 'string'
+    ? partPayload.messageID
+    : (typeof payload.messageID === 'string' ? payload.messageID : '');
+  if (!messageId) {
+    return session;
+  }
+
+  const part = mapSessionPart(partPayload);
+  if (!part) {
+    return session;
+  }
+
+  const existingParts = session.partMap[messageId] ?? [];
+  const nextParts = [...existingParts];
+  let replaceIndex = -1;
+  const partId = typeof partPayload.id === 'string' ? partPayload.id : undefined;
+
+  if (partId) {
+    replaceIndex = nextParts.findIndex((entry) => {
+      if (!('id' in entry)) return false;
+      return (entry as { id?: string }).id === partId;
+    });
+  } else if (part.type === 'tool') {
+    replaceIndex = nextParts.findIndex(
+      (entry) => entry.type === 'tool' && (entry as ToolPart).id === part.id,
+    );
+  } else if (part.type === 'text') {
+    replaceIndex = nextParts.findIndex((entry) => entry.type === 'text');
+  } else if (part.type === 'reasoning') {
+    replaceIndex = nextParts.findIndex((entry) => entry.type === 'reasoning');
+  }
+
+  if (replaceIndex >= 0) {
+    nextParts[replaceIndex] = part;
+  } else {
+    nextParts.push(part);
+  }
+
+  return {
+    ...session,
+    partMap: {
+      ...session.partMap,
+      [messageId]: nextParts,
+    },
+    detailLoaded: true,
+  };
+}
+
 function applyRunUpdate(
   session: ChatSessionEntry,
   payload: ChatRunSummary,
@@ -484,6 +641,20 @@ export function applyChatStreamEvent(
           return applyStreamMessage(
             session,
             event.data as ChatSessionDetail['messages'][number],
+          );
+        }
+
+        if (event.type === 'message.updated') {
+          return applyMessageUpdated(
+            session,
+            event.data as Record<string, unknown>,
+          );
+        }
+
+        if (event.type === 'message.part.updated') {
+          return applyMessagePartUpdated(
+            session,
+            event.data as Record<string, unknown>,
           );
         }
 

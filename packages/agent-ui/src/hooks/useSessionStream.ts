@@ -102,11 +102,12 @@ function mapApiMessage(msg: ApiMessage): { message: SessionMessage; parts: Sessi
     if (p.type === 'reasoning') {
       return {
         type: 'reasoning',
+        ...(p.id ? { id: p.id } : {}),
         text: p.text ?? '',
         time: p.time,
       } satisfies ReasoningPart;
     }
-    return { type: 'text', text: p.text ?? '' } satisfies TextPart;
+    return { type: 'text', ...(p.id ? { id: p.id } : {}), text: p.text ?? '' } satisfies TextPart;
   });
 
   return { message, parts };
@@ -286,9 +287,12 @@ export function useSessionStream({
         const updated = [...existing];
 
         if (partType === 'text') {
+          const partId = (props.id as string) ?? undefined;
           const text = (props.text as string) ?? (props.content as string) ?? '';
-          const idx = updated.findIndex((p) => p.type === 'text');
-          const textPart: TextPart = { type: 'text', text };
+          const idx = partId
+            ? updated.findIndex((p) => 'id' in p && (p as { id?: string }).id === partId)
+            : updated.findIndex((p) => p.type === 'text');
+          const textPart: TextPart = { type: 'text', ...(partId ? { id: partId } : {}), text };
           if (idx >= 0) {
             updated[idx] = textPart;
           } else {
@@ -318,9 +322,12 @@ export function useSessionStream({
             updated.push(toolPart);
           }
         } else if (partType === 'reasoning') {
+          const partId = (props.id as string) ?? undefined;
           const text = (props.text as string) ?? '';
-          const idx = updated.findIndex((p) => p.type === 'reasoning');
-          const reasoningPart: ReasoningPart = { type: 'reasoning', text };
+          const idx = partId
+            ? updated.findIndex((p) => 'id' in p && (p as { id?: string }).id === partId)
+            : updated.findIndex((p) => p.type === 'reasoning');
+          const reasoningPart: ReasoningPart = { type: 'reasoning', ...(partId ? { id: partId } : {}), text };
           if (idx >= 0) {
             updated[idx] = reasoningPart;
           } else {

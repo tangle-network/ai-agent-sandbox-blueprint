@@ -20,11 +20,12 @@ use serde_json::{Map, Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::task::AbortHandle;
+use tokio_stream::StreamExt;
 
 use crate::api_types::*;
 use crate::chat_state::{
@@ -33,7 +34,9 @@ use crate::chat_state::{
 };
 use crate::circuit_breaker;
 use crate::error::SandboxError;
-use crate::http::{sidecar_get_json, sidecar_post_json, sidecar_post_json_without_timeout};
+use crate::http::{
+    auth_headers, build_url, sidecar_get_json, sidecar_post_json, sidecar_post_json_without_timeout,
+};
 use crate::live_operator_sessions::{
     LiveSessionStore, LiveTerminalSession, sse_from_json_events, sse_from_terminal_output,
 };
@@ -300,6 +303,221 @@ fn publish_run_progress(
         return;
     };
     let _ = chat_state::emit_event(session_id, "run_progress", json!(progress));
+}
+
+#[derive(Debug, Default)]
+struct AgentStreamOutcome {
+    success: bool,
+    response: String,
+    error: String,
+    trace_id: String,
+    session_id: String,
+    duration_ms: u64,
+    input_tokens: u32,
+    output_tokens: u32,
+}
+
+#[derive(Debug)]
+struct SidecarSseEvent {
+    event_type: String,
+    data: Value,
+}
+
+fn chat_message_info_payload(session_id: &str, message: &ChatMessageRecord) -> Value {
+    json!({
+        "info": {
+            "id": message.id,
+            "role": message.role,
+            "sessionID": session_id,
+            "timestamp": message.created_at,
+            "time": {
+                "created": message.created_at,
+                "completed": message.completed_at,
+            }
+        }
+    })
+}
+
+fn emit_message_updated(session_id: &str, message: &ChatMessageRecord) {
+    let _ = chat_state::emit_event(
+        session_id,
+        "message.updated",
+        chat_message_info_payload(session_id, message),
+    );
+}
+
+fn emit_message_part_updated(session_id: &str, message_id: &str, part: Value) {
+    let mut part_object = match part {
+        Value::Object(map) => map,
+        _ => return,
+    };
+    part_object.insert("sessionID".into(), json!(session_id));
+    part_object.insert("messageID".into(), json!(message_id));
+    let _ = chat_state::emit_event(
+        session_id,
+        "message.part.updated",
+        json!({ "part": Value::Object(part_object) }),
+    );
+}
+
+fn emit_session_idle(session_id: &str) {
+    let _ = chat_state::emit_event(session_id, "session.idle", json!({ "sessionID": session_id }));
+}
+
+fn emit_session_error(session_id: &str, message: &str, code: Option<&str>) {
+    let _ = chat_state::emit_event(
+        session_id,
+        "session.error",
+        json!({
+            "sessionID": session_id,
+            "error": {
+                "message": message,
+                "code": code,
+            }
+        }),
+    );
+}
+
+fn parse_sse_event(frame: &str) -> Option<SidecarSseEvent> {
+    let mut event_type = "message".to_string();
+    let mut data_lines = Vec::new();
+
+    for line in frame.lines() {
+        if let Some(rest) = line.strip_prefix("event:") {
+            event_type = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data_lines.push(rest.trim_start());
+        }
+    }
+
+    if data_lines.is_empty() {
+        return None;
+    }
+
+    let raw = data_lines.join("\n");
+    let data = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!(raw));
+    Some(SidecarSseEvent { event_type, data })
+}
+
+fn normalize_stream_part(part: &Value) -> Option<Value> {
+    let mut object = part.as_object()?.clone();
+    if object.get("type").and_then(Value::as_str) == Some("image") {
+        return None;
+    }
+
+    if object.get("type").and_then(Value::as_str) == Some("tool") {
+        if let Some(state) = object.get_mut("state").and_then(Value::as_object_mut) {
+            if state.get("status").and_then(Value::as_str) == Some("failed") {
+                state.insert("status".into(), json!("error"));
+            }
+        }
+    }
+
+    Some(Value::Object(object))
+}
+
+fn should_forward_stream_part(
+    part: &Value,
+    request_text: &str,
+    ignored_upstream_message_ids: &mut HashSet<String>,
+    assistant_upstream_message_ids: &mut HashSet<String>,
+) -> bool {
+    let request_text = request_text.trim();
+    let is_exact_request_echo = !request_text.is_empty()
+        && part.get("type").and_then(Value::as_str) == Some("text")
+        && part
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            == Some(request_text);
+
+    let upstream_message_id = part
+        .get("messageID")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+
+    if is_exact_request_echo {
+        if let Some(upstream_message_id) = upstream_message_id {
+            ignored_upstream_message_ids.insert(upstream_message_id.to_string());
+        }
+        return false;
+    }
+
+    let Some(upstream_message_id) = upstream_message_id else {
+        return true;
+    };
+
+    if ignored_upstream_message_ids.contains(upstream_message_id) {
+        return false;
+    }
+    if assistant_upstream_message_ids.contains(upstream_message_id) {
+        return true;
+    }
+
+    assistant_upstream_message_ids.insert(upstream_message_id.to_string());
+    true
+}
+
+fn finalize_streamed_assistant_parts(parts: &mut [Value], completed_at: u64) {
+    for part in parts {
+        let Some(object) = part.as_object_mut() else {
+            continue;
+        };
+        if object.get("type").and_then(Value::as_str) != Some("reasoning") {
+            continue;
+        }
+
+        let Some(time) = object.get_mut("time").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if time.get("start").is_some() && time.get("end").is_none() {
+            time.insert("end".into(), json!(completed_at));
+        }
+    }
+}
+
+fn parse_agent_stream_result(parsed: &Value) -> AgentStreamOutcome {
+    let final_text = parsed
+        .get("finalText")
+        .or_else(|| parsed.get("response"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let metadata = parsed.get("metadata");
+    let session_id = metadata
+        .and_then(|meta| meta.get("sessionId"))
+        .or_else(|| parsed.get("sessionId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let trace_id = metadata
+        .and_then(|meta| meta.get("traceId"))
+        .or_else(|| parsed.get("traceId"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let token_usage = parsed.get("tokenUsage").or_else(|| parsed.get("usage"));
+    let timing = parsed.get("timing");
+
+    AgentStreamOutcome {
+        success: true,
+        response: final_text,
+        error: String::new(),
+        trace_id,
+        session_id,
+        duration_ms: timing
+            .and_then(|value| value.get("totalMs").or_else(|| value.get("duration_ms")))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        input_tokens: token_usage
+            .and_then(|value| value.get("inputTokens").or_else(|| value.get("input_tokens")))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        output_tokens: token_usage
+            .and_then(|value| value.get("outputTokens").or_else(|| value.get("output_tokens")))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+    }
 }
 
 fn register_chat_run_abort(run_id: &str, abort_handle: AbortHandle) {
@@ -1665,21 +1883,6 @@ fn build_agent_payload(
     Value::Object(payload)
 }
 
-/// Parsed agent response from the sidecar (used by both prompt and task).
-struct AgentResponse {
-    success: bool,
-    response: String,
-    error: String,
-    trace_id: String,
-    session_id: String,
-    /// Duration reported by the sidecar (milliseconds), if available.
-    duration_ms: u64,
-    /// Input tokens consumed, if reported by the sidecar.
-    input_tokens: u32,
-    /// Output tokens produced, if reported by the sidecar.
-    output_tokens: u32,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct AgentDescriptor {
     identifier: String,
@@ -1794,93 +1997,196 @@ fn parse_agent_descriptors(
         })
 }
 
-/// Parse agent response from sidecar (used by both prompt and task).
-///
-/// Extracts usage metrics (`duration_ms`, `input_tokens`, `output_tokens`)
-/// from the sidecar JSON when present, falling back to zero.
-fn parse_agent_response(parsed: &Value) -> AgentResponse {
-    let success = parsed
-        .get("success")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let response = parsed
-        .get("response")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            parsed
-                .get("data")
-                .and_then(|d| d.get("finalText"))
-                .and_then(Value::as_str)
-        })
-        .unwrap_or_default()
-        .to_string();
-    let error = parsed
-        .get("error")
-        .and_then(|e| {
-            e.get("message")
-                .and_then(Value::as_str)
-                .or_else(|| e.as_str())
-        })
-        .unwrap_or_default()
-        .to_string();
-    let trace_id = parsed
-        .get("traceId")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let session_id = parsed
-        .get("sessionId")
-        .or_else(|| {
-            parsed
-                .get("data")
-                .and_then(|d| d.get("metadata"))
-                .and_then(|m| m.get("sessionId"))
-        })
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-
-    // Extract usage metrics from the sidecar response.
-    // The sidecar may report these at the top level or nested under "usage"/"data.usage".
-    let usage = parsed
-        .get("usage")
-        .or_else(|| parsed.get("data").and_then(|d| d.get("usage")));
-
-    let duration_ms = parsed
-        .get("duration_ms")
-        .or_else(|| parsed.get("durationMs"))
-        .or_else(|| usage.and_then(|u| u.get("duration_ms")))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-
-    let input_tokens = usage
-        .and_then(|u| {
-            u.get("input_tokens")
-                .or_else(|| u.get("inputTokens"))
-                .or_else(|| u.get("prompt_tokens"))
-        })
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as u32;
-
-    let output_tokens = usage
-        .and_then(|u| {
-            u.get("output_tokens")
-                .or_else(|| u.get("outputTokens"))
-                .or_else(|| u.get("completion_tokens"))
-        })
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as u32;
-
-    AgentResponse {
-        success,
-        response,
-        error,
-        trace_id,
+async fn agent_stream_on_sidecar(
+    record: &SandboxRecord,
+    message: &str,
+    session_id: &str,
+    model: &str,
+    context_json: &str,
+    timeout_ms: u64,
+    max_turns: Option<u64>,
+    mut on_event: impl FnMut(&SidecarSseEvent),
+) -> Result<AgentStreamOutcome, (StatusCode, Json<ApiError>)> {
+    let payload = build_agent_payload(
+        message,
         session_id,
-        duration_ms,
-        input_tokens,
-        output_tokens,
+        model,
+        context_json,
+        resolve_agent_run_timeout_ms(timeout_ms, max_turns),
+        max_turns,
+        &record.agent_identifier,
+    );
+    let client = crate::util::http_client_no_timeout().map_err(|err| {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            format!("Unable to create sidecar stream client: {err}"),
+        )
+    })?;
+    let mut current_record = record.clone();
+    let mut last_retry_after_ms = None;
+
+    for attempt in 0..=AGENT_WARMUP_RETRY_DELAYS_MS.len() {
+        let url = build_url(&current_record.sidecar_url, "/agents/run/stream").map_err(|err| {
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                format!("Invalid sidecar stream URL: {err}"),
+            )
+        })?;
+        let mut headers = auth_headers(&current_record.token).map_err(|err| {
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                format!("Unable to build sidecar auth headers: {err}"),
+            )
+        })?;
+
+        if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&rid) {
+                headers.insert("x-request-id", value);
+            }
+        }
+
+        let response = client
+            .post(url)
+            .headers(headers)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| {
+                api_error(
+                    StatusCode::BAD_GATEWAY,
+                    format!("Agent stream request failed: {err}"),
+                )
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown stream error".to_string());
+            let parsed_body = serde_json::from_str::<Value>(&body).ok();
+            let message = parsed_body
+                .as_ref()
+                .and_then(|value| value.get("error"))
+                .and_then(|error| {
+                    error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .or_else(|| error.as_str())
+                })
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("HTTP {status}: {body}"));
+            let err = api_error(StatusCode::BAD_GATEWAY, message);
+            if let Some(translated) =
+                translate_missing_agent_factory_error(record, &record.agent_identifier, &err).await
+            {
+                return Err(translated);
+            }
+            if !agent_warmup_retryable(&err) {
+                return Err(err);
+            }
+
+            circuit_breaker::clear(&record.id);
+            if let Some(delay_ms) = AGENT_WARMUP_RETRY_DELAYS_MS.get(attempt).copied() {
+                tracing::warn!(
+                    request_id = ?request_id_for_logs(),
+                    sandbox_id = %record.id,
+                    sidecar_url = %current_record.sidecar_url,
+                    attempt = attempt + 1,
+                    retry_delay_ms = delay_ms,
+                    error = %err.1.0.error,
+                    "agent warmup detected; retrying prompt/task stream"
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                current_record = runtime::get_sandbox_by_id(&record.id)
+                    .unwrap_or_else(|_| current_record.clone());
+                last_retry_after_ms = Some(delay_ms);
+                continue;
+            }
+
+            tracing::warn!(
+                request_id = ?request_id_for_logs(),
+                sandbox_id = %record.id,
+                sidecar_url = %current_record.sidecar_url,
+                attempts = AGENT_WARMUP_RETRY_DELAYS_MS.len() + 1,
+                error = %err.1.0.error,
+                "agent warmup retries exhausted for streaming run"
+            );
+            return Err(api_error_with_details(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Sandbox agent is still starting up. Please retry shortly.",
+                Some(AGENT_WARMUP_ERROR_CODE),
+                last_retry_after_ms,
+            ));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut accumulated_text = String::new();
+        let mut outcome = AgentStreamOutcome::default();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| {
+                api_error(
+                    StatusCode::BAD_GATEWAY,
+                    format!("Agent stream read failed: {err}"),
+                )
+            })?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(index) = buffer.find("\n\n") {
+                let frame = buffer[..index].to_string();
+                buffer = buffer[index + 2..].to_string();
+
+                let Some(event) = parse_sse_event(&frame) else {
+                    continue;
+                };
+                match event.event_type.as_str() {
+                    "message.part.updated" => {
+                        if let Some(part) = event.data.get("part").and_then(normalize_stream_part) {
+                            if part.get("type").and_then(Value::as_str) == Some("text") {
+                                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                                    accumulated_text = text.to_string();
+                                }
+                            }
+                        }
+                        on_event(&event);
+                    }
+                    "result" => {
+                        outcome = parse_agent_stream_result(&event.data);
+                    }
+                    "error" => {
+                        let message = event
+                            .data
+                            .get("message")
+                            .or_else(|| {
+                                event
+                                    .data
+                                    .get("error")
+                                    .and_then(|value| value.get("message"))
+                            })
+                            .and_then(Value::as_str)
+                            .unwrap_or("Agent stream failed");
+                        return Err(api_error(StatusCode::BAD_GATEWAY, message));
+                    }
+                    _ => on_event(&event),
+                }
+            }
+        }
+
+        if outcome.response.is_empty() {
+            outcome.response = accumulated_text;
+        }
+        outcome.success = outcome.error.is_empty();
+        return Ok(outcome);
     }
+
+    Err(api_error_with_details(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Sandbox agent is still starting up. Please retry shortly.",
+        Some(AGENT_WARMUP_ERROR_CODE),
+        last_retry_after_ms,
+    ))
 }
 
 enum SidecarAttemptFailure {
@@ -2147,101 +2453,6 @@ async fn instance_agents_handler(SessionAuth(address): SessionAuth) -> impl Into
     ))
 }
 
-async fn agent_on_sidecar(
-    record: &SandboxRecord,
-    message: &str,
-    session_id: &str,
-    model: &str,
-    context_json: &str,
-    timeout_ms: u64,
-    max_turns: Option<u64>,
-) -> Result<AgentResponse, (StatusCode, Json<ApiError>)> {
-    let resolved_timeout_ms = resolve_agent_run_timeout_ms(timeout_ms, max_turns);
-    let resolved_timeout = resolve_agent_run_timeout(timeout_ms, max_turns);
-    // Prompt/task calls are latency-sensitive, so avoid paying an extra
-    // discovery round-trip here. Let /agents/run stay authoritative and
-    // translate invalid configured identifiers on the error path instead.
-    let payload = build_agent_payload(
-        message,
-        session_id,
-        model,
-        context_json,
-        resolved_timeout_ms,
-        max_turns,
-        &record.agent_identifier,
-    );
-    let mut current_record = record.clone();
-    let mut last_retry_after_ms = None;
-
-    for attempt in 0..=AGENT_WARMUP_RETRY_DELAYS_MS.len() {
-        let parsed = match sidecar_call(
-            &current_record,
-            "/agents/run",
-            payload.clone(),
-            resolved_timeout,
-            "agent",
-            false,
-        )
-        .await
-        {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                if let Some(translated) =
-                    translate_missing_agent_factory_error(record, &record.agent_identifier, &err)
-                        .await
-                {
-                    return Err(translated);
-                }
-                if !agent_warmup_retryable(&err) {
-                    return Err(err);
-                }
-
-                circuit_breaker::clear(&record.id);
-
-                if let Some(delay_ms) = AGENT_WARMUP_RETRY_DELAYS_MS.get(attempt).copied() {
-                    tracing::warn!(
-                        request_id = ?request_id_for_logs(),
-                        sandbox_id = %record.id,
-                        sidecar_url = %current_record.sidecar_url,
-                        attempt = attempt + 1,
-                        retry_delay_ms = delay_ms,
-                        error = %err.1.0.error,
-                        "agent warmup detected; retrying prompt/task"
-                    );
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                    current_record = runtime::get_sandbox_by_id(&record.id)
-                        .unwrap_or_else(|_| current_record.clone());
-                    last_retry_after_ms = Some(delay_ms);
-                    continue;
-                }
-
-                tracing::warn!(
-                    request_id = ?request_id_for_logs(),
-                    sandbox_id = %record.id,
-                    sidecar_url = %current_record.sidecar_url,
-                    attempts = AGENT_WARMUP_RETRY_DELAYS_MS.len() + 1,
-                    error = %err.1.0.error,
-                    "agent warmup retries exhausted"
-                );
-                return Err(api_error_with_details(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Sandbox agent is still starting up. Please retry shortly.",
-                    Some(AGENT_WARMUP_ERROR_CODE),
-                    last_retry_after_ms,
-                ));
-            }
-        };
-        return Ok(parse_agent_response(&parsed));
-    }
-
-    Err(api_error_with_details(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Sandbox agent is still starting up. Please retry shortly.",
-        Some(AGENT_WARMUP_ERROR_CODE),
-        last_retry_after_ms,
-    ))
-}
-
 // ── Exec ─────────────────────────────────────────────────────────────────
 
 async fn sandbox_exec_handler(
@@ -2303,10 +2514,6 @@ fn resolve_agent_run_timeout_ms(timeout_ms: u64, max_turns: Option<u64>) -> u64 
     } else {
         DEFAULT_PROMPT_RUN_TIMEOUT_MS
     }
-}
-
-fn resolve_agent_run_timeout(timeout_ms: u64, max_turns: Option<u64>) -> Duration {
-    Duration::from_millis(resolve_agent_run_timeout_ms(timeout_ms, max_turns))
 }
 
 fn resolve_or_create_chat_session(
@@ -2416,6 +2623,8 @@ fn finalize_cancelled_chat_run(
         "cancelled",
         "Run cancelled by user.",
     );
+    emit_session_error(session_id, "Execution cancelled by user", Some("EXECUTION_CANCELLED"));
+    emit_session_idle(session_id);
     Ok(updated_run)
 }
 
@@ -2457,11 +2666,25 @@ fn enqueue_chat_run(
         role: "user".to_string(),
         content: request_text.to_string(),
         created_at: chat_state::now_ms(),
+        completed_at: Some(chat_state::now_ms()),
+        parts: vec![json!({
+            "id": format!("text-{}", uuid::Uuid::new_v4()),
+            "type": "text",
+            "text": request_text.to_string(),
+        })],
         trace_id: None,
         success: None,
         error: None,
     };
     publish_chat_message(&session.id, user_message, "user_message");
+    if let Ok(Some(current_session)) = chat_state::get_session(&session.id) {
+        if let Some(message) = current_session.messages.last() {
+            emit_message_updated(&session.id, message);
+            for part in &message.parts {
+                emit_message_part_updated(&session.id, &message.id, part.clone());
+            }
+        }
+    }
     if let Ok(Some(queued_run)) = chat_state::get_run(&run.id) {
         publish_run_event(&session.id, "run_queued", &queued_run);
         return Ok((session, queued_run));
@@ -2535,7 +2758,26 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
             .and_then(|session| session.latest_sidecar_session_id)
             .unwrap_or_default();
 
-        let result = agent_on_sidecar(
+        let assistant_message_id = uuid::Uuid::new_v4().to_string();
+        let assistant_started_at = chat_state::now_ms();
+        let assistant_message = ChatMessageRecord {
+            id: assistant_message_id.clone(),
+            run_id: Some(run_id.clone()),
+            role: "assistant".to_string(),
+            content: String::new(),
+            created_at: assistant_started_at,
+            completed_at: None,
+            parts: Vec::new(),
+            trace_id: None,
+            success: None,
+            error: None,
+        };
+        let _ = chat_state::append_message(&session_id, assistant_message.clone());
+        emit_message_updated(&session_id, &assistant_message);
+        let mut ignored_upstream_message_ids = HashSet::new();
+        let mut assistant_upstream_message_ids = HashSet::new();
+
+        let result = agent_stream_on_sidecar(
             &record,
             &message,
             &sidecar_session_id,
@@ -2543,6 +2785,26 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
             &context_json,
             timeout_ms,
             max_turns,
+            |event| {
+                if event.event_type == "message.part.updated" {
+                    if let Some(part) = event.data.get("part").and_then(normalize_stream_part) {
+                        if !should_forward_stream_part(
+                            &part,
+                            &message,
+                            &mut ignored_upstream_message_ids,
+                            &mut assistant_upstream_message_ids,
+                        ) {
+                            return;
+                        }
+                        let _ = chat_state::upsert_message_part(
+                            &session_id,
+                            &assistant_message_id,
+                            part.clone(),
+                        );
+                        emit_message_part_updated(&session_id, &assistant_message_id, part);
+                    }
+                }
+            },
         )
         .await;
 
@@ -2597,25 +2859,54 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
                 });
                 let _ = chat_state::clear_session_active_run(&session_id);
 
-                let assistant_message = ChatMessageRecord {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    run_id: Some(run_id.clone()),
-                    role: "assistant".to_string(),
-                    content: assistant_content,
-                    created_at: completed_at,
-                    trace_id: if ar.trace_id.trim().is_empty() {
-                        None
-                    } else {
-                        Some(ar.trace_id.clone())
-                    },
-                    success: Some(ar.success),
-                    error: if ar.error.trim().is_empty() {
-                        None
-                    } else {
-                        Some(ar.error.clone())
-                    },
+                let mut assistant_message = chat_state::get_session(&session_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|session| {
+                        session
+                            .messages
+                            .into_iter()
+                            .find(|entry| entry.id == assistant_message_id)
+                    })
+                    .unwrap_or(ChatMessageRecord {
+                        id: assistant_message_id.clone(),
+                        run_id: Some(run_id.clone()),
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        created_at: assistant_started_at,
+                        completed_at: None,
+                        parts: Vec::new(),
+                        trace_id: None,
+                        success: None,
+                        error: None,
+                    });
+                if assistant_message.parts.is_empty() && !assistant_content.is_empty() {
+                    assistant_message.parts.push(json!({
+                        "id": format!("text-{}", uuid::Uuid::new_v4()),
+                        "type": "text",
+                        "text": assistant_content.clone(),
+                    }));
+                }
+                finalize_streamed_assistant_parts(&mut assistant_message.parts, completed_at);
+                assistant_message.content = assistant_content;
+                assistant_message.completed_at = Some(completed_at);
+                assistant_message.trace_id = if ar.trace_id.trim().is_empty() {
+                    None
+                } else {
+                    Some(ar.trace_id.clone())
                 };
-                publish_chat_message(&session_id, assistant_message, "assistant_message");
+                assistant_message.success = Some(ar.success);
+                assistant_message.error = if ar.error.trim().is_empty() {
+                    None
+                } else {
+                    Some(ar.error.clone())
+                };
+                let _ = chat_state::append_message(&session_id, assistant_message.clone());
+                emit_message_updated(&session_id, &assistant_message);
+                for part in &assistant_message.parts {
+                    emit_message_part_updated(&session_id, &assistant_message.id, part.clone());
+                }
+                emit_session_idle(&session_id);
 
                 if let Ok(Some(updated_run)) = chat_state::get_run(&run_id) {
                     publish_run_event(
@@ -2655,16 +2946,32 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
                 let _ = chat_state::clear_session_active_run(&session_id);
 
                 let assistant_message = ChatMessageRecord {
-                    id: uuid::Uuid::new_v4().to_string(),
+                    id: assistant_message_id.clone(),
                     run_id: Some(run_id.clone()),
                     role: "assistant".to_string(),
                     content: format!("Error: {error_text}"),
-                    created_at: completed_at,
+                    created_at: assistant_started_at,
+                    completed_at: Some(completed_at),
+                    parts: vec![json!({
+                        "id": format!("text-{}", uuid::Uuid::new_v4()),
+                        "type": "text",
+                        "text": format!("Error: {error_text}"),
+                    })],
                     trace_id: None,
                     success: Some(false),
-                    error: Some(error_text),
+                    error: Some(error_text.clone()),
                 };
-                publish_chat_message(&session_id, assistant_message, "assistant_message");
+                let _ = chat_state::append_message(&session_id, assistant_message.clone());
+                emit_message_updated(&session_id, &assistant_message);
+                for part in &assistant_message.parts {
+                    emit_message_part_updated(&session_id, &assistant_message.id, part.clone());
+                }
+                emit_session_error(
+                    &session_id,
+                    &error_text,
+                    api_error_body.0.code.as_deref(),
+                );
+                emit_session_idle(&session_id);
 
                 if let Ok(Some(updated_run)) = chat_state::get_run(&run_id) {
                     publish_run_event(&session_id, "run_failed", &updated_run);
@@ -3881,6 +4188,7 @@ mod tests {
         last_agent_payload: Arc<Mutex<Option<Value>>>,
         exec_response: Arc<Mutex<Value>>,
         agents_response: Arc<Mutex<Value>>,
+        stream_response_body: Arc<Mutex<Option<String>>>,
         remaining_agent_warmup_failures: Arc<AtomicU64>,
         agent_response_delay_ms: Arc<AtomicU64>,
         agent_invocations: Arc<AtomicU64>,
@@ -3985,6 +4293,95 @@ mod tests {
             .into_response()
     }
 
+    async fn mock_sidecar_agent_stream(
+        State(state): State<MockSidecarState>,
+        Json(payload): Json<Value>,
+    ) -> impl IntoResponse {
+        *state.last_agent_payload.lock().expect("agent lock") = Some(payload.clone());
+        state.agent_invocations.fetch_add(1, Ordering::Relaxed);
+        let delay_ms = state.agent_response_delay_ms.load(Ordering::Relaxed);
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        let identifier = payload
+            .get("identifier")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let known_identifier = state
+            .agents_response
+            .lock()
+            .expect("agents response lock")
+            .get("agents")
+            .and_then(Value::as_array)
+            .map(|agents| {
+                agents.iter().any(|agent| {
+                    agent
+                        .get("identifier")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        == identifier
+                })
+            })
+            .unwrap_or(false);
+        if !known_identifier {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "AGENT_EXECUTION_FAILED",
+                        "message": format!(
+                            "No factory registered for agent identifier {identifier}"
+                        )
+                    }
+                })),
+            )
+                .into_response();
+        }
+        let remaining = state
+            .remaining_agent_warmup_failures
+            .load(Ordering::Relaxed);
+        if remaining > 0 {
+            state
+                .remaining_agent_warmup_failures
+                .fetch_sub(1, Ordering::Relaxed);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "AGENT_EXECUTION_FAILED",
+                        "message": "OpenCode server is not responding (may have crashed). Cannot create session."
+                    }
+                })),
+            )
+                .into_response();
+        }
+        let session_id = payload
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("mock-agent-session");
+        let body = state
+            .stream_response_body
+            .lock()
+            .expect("stream response body lock")
+            .clone()
+            .unwrap_or_else(|| {
+                format!(
+                    "event: message.part.updated\n\
+data: {{\"part\":{{\"id\":\"part-1\",\"type\":\"text\",\"text\":\"mock-agent-response\"}}}}\n\n\
+event: result\n\
+data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{session_id}\",\"traceId\":\"trace-mock-1\"}},\"tokenUsage\":{{\"inputTokens\":2,\"outputTokens\":3}}}}\n\n"
+                )
+            });
+        (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            body,
+        )
+            .into_response()
+    }
+
     async fn mock_sidecar_run_cancel(State(state): State<MockSidecarState>) -> impl IntoResponse {
         state.cancel_invocations.fetch_add(1, Ordering::Relaxed);
         (
@@ -4030,6 +4427,7 @@ mod tests {
             .route("/terminals/commands", post(mock_sidecar_exec))
             .route("/agents", get(mock_sidecar_agents))
             .route("/agents/run", post(mock_sidecar_agent))
+            .route("/agents/run/stream", post(mock_sidecar_agent_stream))
             .route("/agents/run/cancel", post(mock_sidecar_run_cancel))
             .with_state(state.clone());
 
@@ -4104,6 +4502,35 @@ mod tests {
                     )
                 }),
             );
+        let app = app.route(
+            "/agents/run/stream",
+            post(|Json(payload): Json<Value>| async move {
+                let identifier = payload
+                    .get("identifier")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if identifier == "a1" {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "success": false,
+                            "error": {
+                                "code": "AGENT_EXECUTION_FAILED",
+                                "message": "No factory registered for agent identifier a1"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+
+                (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                    "event: result\ndata: {\"finalText\":\"ok\",\"metadata\":{\"sessionId\":\"mock-agent-session\",\"traceId\":\"trace-mock-compat\"}}\n\n".to_string(),
+                )
+                    .into_response()
+            }),
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -4146,6 +4573,34 @@ mod tests {
         .await
         .ok()
         .flatten()
+    }
+
+    async fn read_sse_until_idle(mut body: Body) -> String {
+        tokio::time::timeout(Duration::from_secs(3), async move {
+            let mut combined = String::new();
+            loop {
+                let Some(frame) = body.frame().await else {
+                    break;
+                };
+                let Ok(frame) = frame else {
+                    break;
+                };
+                let Ok(data) = frame.into_data() else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(&data).to_string();
+                if text.trim().is_empty() {
+                    continue;
+                }
+                combined.push_str(&text);
+                if combined.contains("event: session.idle") {
+                    break;
+                }
+            }
+            combined
+        })
+        .await
+        .unwrap_or_default()
     }
 
     async fn wait_for_run_terminal(run_id: &str) -> ChatRunRecord {
@@ -5562,6 +6017,80 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_should_forward_stream_part_filters_initial_user_echo() {
+        let mut ignored = HashSet::new();
+        let mut assistant = HashSet::new();
+        let echoed_user_part = json!({
+            "id": "echo-1",
+            "messageID": "up-user-1",
+            "type": "text",
+            "text": "hello from live stream",
+        });
+        let assistant_part = json!({
+            "id": "assistant-1",
+            "messageID": "up-assistant-1",
+            "type": "text",
+            "text": "actual assistant reply",
+        });
+
+        assert!(!should_forward_stream_part(
+            &echoed_user_part,
+            "hello from live stream",
+            &mut ignored,
+            &mut assistant,
+        ));
+        assert!(ignored.contains("up-user-1"));
+
+        assert!(should_forward_stream_part(
+            &assistant_part,
+            "hello from live stream",
+            &mut ignored,
+            &mut assistant,
+        ));
+        assert!(assistant.contains("up-assistant-1"));
+    }
+
+    #[test]
+    fn test_should_forward_stream_part_filters_exact_request_text_without_message_id() {
+        let mut ignored = HashSet::new();
+        let mut assistant = HashSet::new();
+        let echoed_user_part = json!({
+            "id": "echo-1",
+            "type": "text",
+            "text": "hello from live stream",
+        });
+
+        assert!(!should_forward_stream_part(
+            &echoed_user_part,
+            "hello from live stream",
+            &mut ignored,
+            &mut assistant,
+        ));
+    }
+
+    #[test]
+    fn test_finalize_streamed_assistant_parts_sets_reasoning_end_time() {
+        let mut parts = vec![
+            json!({
+                "id": "reason-1",
+                "type": "reasoning",
+                "text": "thinking",
+                "time": { "start": 5 }
+            }),
+            json!({
+                "id": "text-1",
+                "type": "text",
+                "text": "done"
+            }),
+        ];
+
+        finalize_streamed_assistant_parts(&mut parts, 42);
+
+        assert_eq!(parts[0]["time"]["end"], json!(42));
+        assert!(parts[1].get("time").is_none());
+    }
+
     #[tokio::test]
     async fn test_live_chat_prompt_updates_instance_stream_and_history() {
         init();
@@ -5681,6 +6210,142 @@ mod tests {
                     .unwrap_or_default()
                     .is_empty()
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_live_chat_prompt_filters_echoed_user_text_from_assistant_stream() {
+        init();
+        reset_test_state();
+
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        *sidecar_state
+            .stream_response_body
+            .lock()
+            .expect("stream response body lock") = Some(
+            "event: message.part.updated\n\
+data: {\"part\":{\"id\":\"echo-1\",\"messageID\":\"up-user-1\",\"type\":\"text\",\"text\":\"hello from live stream\"}}\n\n\
+event: message.part.updated\n\
+data: {\"part\":{\"id\":\"reason-1\",\"messageID\":\"up-assistant-1\",\"type\":\"reasoning\",\"text\":\"Thinking through the answer\",\"time\":{\"start\":1,\"end\":2}}}\n\n\
+event: message.part.updated\n\
+data: {\"part\":{\"id\":\"assistant-1\",\"messageID\":\"up-assistant-1\",\"type\":\"text\",\"text\":\"actual assistant reply\"}}\n\n\
+event: result\n\
+data: {\"finalText\":\"actual assistant reply\",\"metadata\":{\"sessionId\":\"mock-agent-session\",\"traceId\":\"trace-mock-1\"},\"tokenUsage\":{\"inputTokens\":2,\"outputTokens\":3}}\n\n"
+                .to_string(),
+        );
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/live/chat/sessions")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({ "title": "Live Prompt" })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let create_json = body_json(create.into_body()).await;
+        let session_id = create_json["session_id"]
+            .as_str()
+            .expect("chat session_id")
+            .to_string();
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let stream = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/sandbox/live/chat/sessions/{session_id}/stream"
+                    ))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let prompt = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandbox/prompt")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({
+                            "message": "hello from live stream",
+                            "session_id": session_id,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prompt.status(), StatusCode::ACCEPTED);
+        let prompt_json = body_json(prompt.into_body()).await;
+        let run_id = prompt_json["run_id"].as_str().expect("run_id");
+        let run = wait_for_run_terminal(run_id).await;
+        assert_eq!(run.status, ChatRunStatus::Completed);
+
+        let stream_text = read_sse_until_idle(stream.into_body()).await;
+        assert!(stream_text.contains("actual assistant reply"));
+        assert!(!stream_text.contains("\"id\":\"echo-1\""));
+        assert!(!stream_text.contains("\"messageID\":\"up-user-1\""));
+
+        insert_instance_sandbox_with_url("live-prompt-inst-1", OP_TEST_OWNER, &sidecar_url);
+        let detail = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sandbox/live/chat/sessions/{session_id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.status(), StatusCode::OK);
+        let detail_json = body_json(detail.into_body()).await;
+        let messages = detail_json["messages"].as_array().expect("messages array");
+        let assistant_message = messages
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("assistant message");
+        let assistant_parts = assistant_message["parts"].as_array().expect("assistant parts");
+
+        assert!(
+            assistant_parts.iter().all(|part| {
+                part["text"].as_str().unwrap_or_default() != "hello from live stream"
+            }),
+            "assistant message should not persist the echoed user prompt: {assistant_message}"
+        );
+        assert!(
+            assistant_parts.iter().any(|part| {
+                part["type"] == "reasoning"
+                    && part["id"] == "reason-1"
+                    && part["text"] == "Thinking through the answer"
+            }),
+            "assistant reasoning part should be preserved: {assistant_message}"
+        );
+        assert!(
+            assistant_parts.iter().any(|part| {
+                part["type"] == "text"
+                    && part["id"] == "assistant-1"
+                    && part["text"] == "actual assistant reply"
+            }),
+            "assistant text part should be preserved: {assistant_message}"
+        );
+
         server.abort();
     }
 
