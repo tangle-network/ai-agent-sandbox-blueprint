@@ -261,7 +261,11 @@ pub fn delete_session(session_id: &str) -> Result<(), String> {
 pub fn append_message(session_id: &str, message: ChatMessageRecord) -> Result<bool, String> {
     let updated = session_store()?
         .update(session_id, |session| {
-            if let Some(existing) = session.messages.iter_mut().find(|entry| entry.id == message.id) {
+            if let Some(existing) = session
+                .messages
+                .iter_mut()
+                .find(|entry| entry.id == message.id)
+            {
                 *existing = message.clone();
             } else {
                 session.messages.push(message.clone());
@@ -298,14 +302,18 @@ fn matches_part(existing: &Value, incoming: &Value) -> bool {
 }
 
 fn visible_text_from_parts(parts: &[Value]) -> String {
-    parts.iter()
+    parts
+        .iter()
         .rev()
         .find_map(|part| {
             let object = part.as_object()?;
             if object.get("type").and_then(Value::as_str) != Some("text") {
                 return None;
             }
-            object.get("text").and_then(Value::as_str).map(str::to_string)
+            object
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
         })
         .unwrap_or_default()
 }
@@ -318,11 +326,18 @@ pub fn upsert_message_part(
     let timestamp = now_ms();
     session_store()?
         .update(session_id, |session| {
-            let Some(message) = session.messages.iter_mut().find(|entry| entry.id == message_id) else {
+            let Some(message) = session
+                .messages
+                .iter_mut()
+                .find(|entry| entry.id == message_id)
+            else {
                 return;
             };
 
-            if let Some(index) = message.parts.iter().position(|existing| matches_part(existing, &part))
+            if let Some(index) = message
+                .parts
+                .iter()
+                .position(|existing| matches_part(existing, &part))
             {
                 message.parts[index] = part.clone();
             } else {
