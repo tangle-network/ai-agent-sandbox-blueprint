@@ -2068,23 +2068,27 @@ fn parse_agent_descriptors(
         })
 }
 
-async fn agent_stream_on_sidecar(
-    record: &SandboxRecord,
-    message: &str,
-    session_id: &str,
-    model: &str,
-    context_json: &str,
+struct AgentStreamRequest<'a> {
+    message: &'a str,
+    session_id: &'a str,
+    model: &'a str,
+    context_json: &'a str,
     timeout_ms: u64,
     max_turns: Option<u64>,
+}
+
+async fn agent_stream_on_sidecar(
+    record: &SandboxRecord,
+    request: AgentStreamRequest<'_>,
     mut on_event: impl FnMut(&SidecarSseEvent),
 ) -> Result<AgentStreamOutcome, (StatusCode, Json<ApiError>)> {
     let payload = build_agent_payload(
-        message,
-        session_id,
-        model,
-        context_json,
-        resolve_agent_run_timeout_ms(timeout_ms, max_turns),
-        max_turns,
+        request.message,
+        request.session_id,
+        request.model,
+        request.context_json,
+        resolve_agent_run_timeout_ms(request.timeout_ms, request.max_turns),
+        request.max_turns,
         &record.agent_identifier,
     );
     let client = crate::util::http_client_no_timeout().map_err(|err| {
@@ -2862,12 +2866,14 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
 
         let result = agent_stream_on_sidecar(
             &record,
-            &message,
-            &sidecar_session_id,
-            &model,
-            &context_json,
-            timeout_ms,
-            max_turns,
+            AgentStreamRequest {
+                message: &message,
+                session_id: &sidecar_session_id,
+                model: &model,
+                context_json: &context_json,
+                timeout_ms,
+                max_turns,
+            },
             |event| {
                 let streamed_session = match event.event_type.as_str() {
                     // execution.started carries the reusable sidecar session ID for
