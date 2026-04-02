@@ -110,10 +110,10 @@ importers:
         version: 7.13.0(react-router@7.13.0(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(typescript@5.9.3)
       '@tangle-network/blueprint-ui':
         specifier: ^0.1.1
-        version: 0.1.1(8008b8076c978d143a8143a7b24664f7)
+        version: 0.1.1(of73tgledij4sv5yntkxr5nwqe)
       '@tangle-network/sandbox-ui':
-        specifier: ^0.5.2
-        version: 0.5.2(@tanstack/react-query@5.90.21(react@19.0.0))(@types/react-dom@18.3.1)(@types/react@18.3.1)(@xterm/addon-fit@0.11.0)(@xterm/addon-web-links@0.12.0)(@xterm/xterm@6.0.0)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
+        specifier: ^0.6.1
+        version: 0.6.1(@tanstack/react-query@5.90.21(react@19.0.0))(@types/react-dom@18.3.1)(@types/react@18.3.1)(@xterm/addon-fit@0.11.0)(@xterm/addon-web-links@0.12.0)(@xterm/xterm@6.0.0)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
       '@tanstack/react-query':
         specifier: ^5.90.16
         version: 5.90.21(react@19.0.0)
@@ -174,6 +174,10 @@ importers:
       wagmi:
         specifier: ^3.3.2
         version: 3.4.4(@tanstack/query-core@5.90.20)(@tanstack/react-query@5.90.21(react@19.0.0))(@types/react@18.3.1)(ox@0.12.1(typescript@5.9.3)(zod@4.3.6))(react@19.0.0)(typescript@5.9.3)(viem@2.46.1(typescript@5.9.3)(zod@4.3.6))
+    optionalDependencies:
+      '@tangle-network/agent-browser-driver':
+        specifier: ^0.3.0
+        version: 0.3.0(@ai-sdk/anthropic@3.0.49(zod@4.3.6))(@ai-sdk/google@3.0.33(zod@4.3.6))(playwright@1.58.2)(zod@4.3.6)
     devDependencies:
       '@iconify-json/ph':
         specifier: ^1.1.13
@@ -226,10 +230,6 @@ importers:
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.3.0)(happy-dom@20.6.3)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@1.8.0)(canvas@3.2.3))(sass-embedded@1.97.3)(sass@1.97.3)
-    optionalDependencies:
-      '@tangle-network/agent-browser-driver':
-        specifier: ^0.3.0
-        version: 0.3.0(@ai-sdk/anthropic@3.0.49(zod@4.3.6))(@ai-sdk/google@3.0.33(zod@4.3.6))(playwright@1.58.2)(zod@4.3.6)
 
 packages:
 
@@ -1603,8 +1603,8 @@ packages:
       viem: ^2.31.0
       wagmi: ^3.3.0
 
-  '@tangle-network/sandbox-ui@0.5.2':
-    resolution: {integrity: sha512-Wpu+UmlatV6QRlEA0VtAM8anPrnBa67rNwtirDFdMna+0Px92g4Q32a06LMzomQvsDB5IQJCYA0i8gK9wAqkYg==}
+  '@tangle-network/sandbox-ui@0.6.1':
+    resolution: {integrity: sha512-Rr+ggc8nNDlGFnKF3n9po1pLLpGbUL7LUm6o4OCBwqbiRlXY84/dReASZfiXym5bGU8iZ7M8rM6LsTDkr1XtSQ==}
     peerDependencies:
       '@hocuspocus/provider': '*'
       '@tanstack/react-query': '*'
@@ -5239,7 +5239,7 @@ snapshots:
       - zod
     optional: true
 
-  '@tangle-network/blueprint-ui@0.1.1(8008b8076c978d143a8143a7b24664f7)':
+  '@tangle-network/blueprint-ui@0.1.1(of73tgledij4sv5yntkxr5nwqe)':
     dependencies:
       '@nanostores/react': 0.7.3(nanostores@0.10.3)(react@19.0.0)
       '@radix-ui/react-dialog': 1.1.15(@types/react-dom@18.3.1)(@types/react@18.3.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
@@ -5262,7 +5262,7 @@ snapshots:
       viem: 2.46.1(typescript@5.9.3)(zod@4.3.6)
       wagmi: 3.4.4(@tanstack/query-core@5.90.20)(@tanstack/react-query@5.90.21(react@19.0.0))(@types/react@18.3.1)(ox@0.12.1(typescript@5.9.3)(zod@4.3.6))(react@19.0.0)(typescript@5.9.3)(viem@2.46.1(typescript@5.9.3)(zod@4.3.6))
 
-  '@tangle-network/sandbox-ui@0.5.2(@tanstack/react-query@5.90.21(react@19.0.0))(@types/react-dom@18.3.1)(@types/react@18.3.1)(@xterm/addon-fit@0.11.0)(@xterm/addon-web-links@0.12.0)(@xterm/xterm@6.0.0)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)':
+  '@tangle-network/sandbox-ui@0.6.1(@tanstack/react-query@5.90.21(react@19.0.0))(@types/react-dom@18.3.1)(@types/react@18.3.1)(@xterm/addon-fit@0.11.0)(@xterm/addon-web-links@0.12.0)(@xterm/xterm@6.0.0)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)':
     dependencies:
       '@nanostores/react': 1.1.0(nanostores@1.2.0)(react@19.0.0)
       '@radix-ui/react-avatar': 1.1.11(@types/react-dom@18.3.1)(@types/react@18.3.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
