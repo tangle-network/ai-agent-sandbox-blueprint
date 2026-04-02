@@ -180,13 +180,13 @@ function AgentRunGroup({
 
       {/* Run timeline — text stays visible when collapsed, full chronology when expanded */}
       {visibleParts.length > 0 && (
-        <div className={cn('mt-1 space-y-3 rounded-lg p-2', branding.containerBgClass)}>
+        <div className={cn('mt-1 space-y-2.5 rounded-lg p-2', branding.containerBgClass)}>
           {visibleParts.map(({ part, msgId, index }) => {
             const key = `${msgId}-${index}`;
             if (part.type === 'text') {
               return (
                 <div key={key} className="px-3 py-2">
-                  <AppMarkdown>{part.text}</AppMarkdown>
+                  <AppMarkdown className="text-[14px] leading-6">{part.text}</AppMarkdown>
                 </div>
               );
             }

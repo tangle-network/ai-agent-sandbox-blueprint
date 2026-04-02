@@ -94,7 +94,7 @@ function renderTextWithBreaks(text: string) {
 
 function renderCodeBlock(code: string, language?: string) {
   return (
-    <pre className="overflow-x-auto rounded-2xl border border-white/8 bg-black/25 px-4 py-3 font-data text-sm leading-6 text-cloud-elements-textPrimary">
+    <pre className="overflow-x-auto rounded-xl border border-white/8 bg-black/25 px-3 py-2.5 font-data text-[11px] leading-5 text-cloud-elements-textPrimary">
       <code className={language ? `language-${language}` : undefined}>{code}</code>
     </pre>
   );
@@ -109,7 +109,7 @@ function LiveDuration({ startTime }: { startTime: number }) {
   }, []);
 
   return (
-    <span className="rounded-full border border-teal-400/20 bg-teal-500/10 px-2 py-0.5 text-[11px] font-data text-teal-600 dark:text-teal-300">
+    <span className="rounded-full border border-teal-400/20 bg-teal-500/10 px-1.5 py-0.5 text-[10px] font-data text-teal-600 dark:text-teal-300">
       {formatDuration(Math.max(0, now - startTime))}
     </span>
   );
@@ -122,14 +122,14 @@ function renderToolValue(value: unknown): ReactNode {
 
   if (typeof value === 'string') {
     return (
-      <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl bg-black/20 px-3 py-2 text-xs leading-6 text-cloud-elements-textSecondary">
+      <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/20 px-2.5 py-2 text-[11px] leading-5 text-cloud-elements-textSecondary">
         {value}
       </pre>
     );
   }
 
   return (
-    <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl bg-black/20 px-3 py-2 text-xs leading-6 text-cloud-elements-textSecondary">
+    <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/20 px-2.5 py-2 text-[11px] leading-5 text-cloud-elements-textSecondary">
       {JSON.stringify(value, null, 2)}
     </pre>
   );
@@ -147,7 +147,7 @@ function DetailSection({
   return (
     <div
       className={cn(
-        'rounded-2xl border px-3 py-3',
+        'rounded-xl border px-2.5 py-2.5',
         tone === 'error'
           ? 'border-crimson-500/20 bg-crimson-500/5'
           : 'border-cloud-elements-dividerColor/50 bg-cloud-elements-background-depth-2/60',
@@ -155,7 +155,7 @@ function DetailSection({
     >
       <div
         className={cn(
-          'mb-2 text-[11px] font-display font-semibold uppercase tracking-[0.14em]',
+          'mb-1.5 text-[10px] font-display font-semibold uppercase tracking-[0.12em]',
           tone === 'error' ? 'text-crimson-500/80' : 'text-cloud-elements-textTertiary',
         )}
       >
@@ -308,13 +308,11 @@ export function UserBubble({ parts }: { parts: SessionPart[] }) {
 
   return (
     <div className="flex justify-end">
-      <div className="flex max-w-[82%] flex-col items-end gap-2">
-        <div className="w-full rounded-2xl rounded-br-md border border-blue-400/20 bg-linear-to-br from-blue-500/12 via-violet-500/8 to-teal-500/10 px-4 py-3.5 shadow-[0_20px_45px_rgba(6,10,24,0.26)] backdrop-blur-sm">
-          <div className="mb-1.5 text-[11px] font-display font-semibold uppercase tracking-[0.14em] text-blue-300">
-            You
-          </div>
-          <AppMarkdown>{textContent}</AppMarkdown>
+      <div className="max-w-[85%] rounded-2xl rounded-br-md border border-blue-500/15 bg-blue-600/10 px-4 py-2.5 dark:border-blue-500/20 dark:bg-blue-600/20">
+        <div className="mb-1 text-[11px] font-display font-semibold uppercase tracking-[0.14em] text-blue-500 dark:text-blue-300">
+          You
         </div>
+        <AppMarkdown>{textContent}</AppMarkdown>
       </div>
     </div>
   );
@@ -335,69 +333,69 @@ export function ToolRow({ part }: { part: ToolPart }) {
   const iconClass = TOOL_CATEGORY_ICON_CLASS[category] ?? TOOL_CATEGORY_ICON_CLASS.other;
 
   return (
-    <div className="rounded-2xl border border-cloud-elements-dividerColor/50 bg-cloud-elements-background-depth-2/70">
+    <div className="rounded-xl border border-cloud-elements-dividerColor/50 bg-cloud-elements-background-depth-2/70">
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
         className={cn(
-          'w-full rounded-2xl px-3 py-3 text-left transition-colors',
+          'w-full rounded-xl px-2.5 py-2.5 text-left transition-colors',
           'hover:bg-cloud-elements-item-backgroundHover/60',
           open && 'bg-cloud-elements-item-backgroundHover/40',
         )}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
           <div
             className={cn(
-              'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border',
+              'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border',
               isRunning && 'border-teal-400/30 bg-teal-500/10 text-teal-300',
               isComplete && 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300',
               isError && 'border-crimson-400/25 bg-crimson-500/10 text-crimson-300',
               !isRunning && !isComplete && !isError && 'border-white/8 bg-white/5 text-cloud-elements-textTertiary',
             )}
           >
-            <div className={cn('h-4 w-4', isRunning ? 'i-ph:spinner-gap animate-spin' : iconClass)} />
+            <div className={cn('h-3.5 w-3.5', isRunning ? 'i-ph:spinner-gap animate-spin' : iconClass)} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="truncate text-sm font-display font-medium text-cloud-elements-textPrimary">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-[13px] font-display font-medium text-cloud-elements-textPrimary">
                 {meta.title}
               </span>
               {isRunning && (
-                <span className="rounded-full border border-teal-400/20 bg-teal-500/10 px-2 py-0.5 text-[11px] font-display font-semibold uppercase tracking-[0.08em] text-teal-300">
+                <span className="rounded-full border border-teal-400/20 bg-teal-500/10 px-1.5 py-0.5 text-[10px] font-display font-semibold uppercase tracking-[0.06em] text-teal-300">
                   Running
                 </span>
               )}
               {isError && (
-                <span className="rounded-full border border-crimson-400/20 bg-crimson-500/10 px-2 py-0.5 text-[11px] font-display font-semibold uppercase tracking-[0.08em] text-crimson-300">
+                <span className="rounded-full border border-crimson-400/20 bg-crimson-500/10 px-1.5 py-0.5 text-[10px] font-display font-semibold uppercase tracking-[0.06em] text-crimson-300">
                   Failed
                 </span>
               )}
             </div>
             {meta.description && (
-              <div className="mt-1 truncate text-xs font-data text-cloud-elements-textTertiary">
+              <div className="mt-0.5 truncate text-[11px] font-data text-cloud-elements-textTertiary">
                 {meta.description}
               </div>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1.5">
             {isRunning && startTime ? <LiveDuration startTime={startTime} /> : null}
             {!isRunning && durationMs != null ? (
-              <span className="rounded-full border border-white/8 bg-white/5 px-2 py-0.5 text-[11px] font-data text-cloud-elements-textTertiary">
+              <span className="rounded-full border border-white/8 bg-white/5 px-1.5 py-0.5 text-[10px] font-data text-cloud-elements-textTertiary">
                 {formatDuration(durationMs)}
               </span>
             ) : null}
-            <div className={cn('h-4 w-4 text-cloud-elements-textTertiary', open ? 'i-ph:caret-down' : 'i-ph:caret-right')} />
+            <div className={cn('h-3.5 w-3.5 text-cloud-elements-textTertiary', open ? 'i-ph:caret-down' : 'i-ph:caret-right')} />
           </div>
         </div>
         {errorText && !open && (
-          <div className="mt-3 rounded-xl border border-crimson-500/20 bg-crimson-500/5 px-3 py-2 text-xs text-crimson-300">
+          <div className="mt-2 rounded-lg border border-crimson-500/20 bg-crimson-500/5 px-2.5 py-2 text-[11px] text-crimson-300">
             {errorText}
           </div>
         )}
       </button>
 
       {open && (
-        <div className="space-y-3 border-t border-cloud-elements-dividerColor/50 px-3 py-3">
+        <div className="space-y-2.5 border-t border-cloud-elements-dividerColor/50 px-2.5 py-2.5">
           {part.state.input !== undefined && <DetailSection label="Input" value={part.state.input} />}
           {part.state.output !== undefined && <DetailSection label="Output" value={part.state.output} />}
           {errorText && <DetailSection label="Error" value={errorText} tone="error" />}
@@ -441,53 +439,53 @@ export function ReasoningRow({
   }, [durationMs, isActive]);
 
   return (
-    <div className="rounded-2xl border border-cloud-elements-dividerColor/50 bg-cloud-elements-background-depth-2/70">
+    <div className="rounded-xl border border-cloud-elements-dividerColor/50 bg-cloud-elements-background-depth-2/70">
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
         className={cn(
-          'w-full rounded-2xl px-3 py-3 text-left transition-colors',
+          'w-full rounded-xl px-2.5 py-2.5 text-left transition-colors',
           'hover:bg-cloud-elements-item-backgroundHover/60',
           open && 'bg-cloud-elements-item-backgroundHover/40',
         )}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
           <div
             className={cn(
-              'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border',
+              'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border',
               isActive
                 ? 'border-teal-400/30 bg-teal-500/10 text-teal-300 shadow-[0_0_20px_rgba(45,212,191,0.14)]'
                 : 'border-white/8 bg-white/5 text-cloud-elements-textTertiary',
             )}
           >
-            <div className={cn('i-ph:brain h-4 w-4', isActive && 'animate-pulse')} />
+            <div className={cn('i-ph:brain h-3.5 w-3.5', isActive && 'animate-pulse')} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[13px] font-display font-medium text-cloud-elements-textPrimary">
                 {isActive ? 'Thinking...' : 'Reasoning'}
               </span>
               {isActive && startTime ? <LiveDuration startTime={startTime} /> : null}
               {!isActive && durationMs != null ? (
-                <span className="rounded-full border border-white/8 bg-white/5 px-2 py-0.5 text-[11px] font-data text-cloud-elements-textTertiary">
+                <span className="rounded-full border border-white/8 bg-white/5 px-1.5 py-0.5 text-[10px] font-data text-cloud-elements-textTertiary">
                   {formatDuration(durationMs)}
                 </span>
               ) : null}
             </div>
             {preview && !open && (
-              <div className="mt-1 truncate text-xs text-cloud-elements-textSecondary">{preview}</div>
+              <div className="mt-0.5 truncate text-[11px] text-cloud-elements-textSecondary">{preview}</div>
             )}
           </div>
-          <div className={cn('h-4 w-4 text-cloud-elements-textTertiary', open ? 'i-ph:caret-down' : 'i-ph:caret-right')} />
+          <div className={cn('h-3.5 w-3.5 text-cloud-elements-textTertiary', open ? 'i-ph:caret-down' : 'i-ph:caret-right')} />
         </div>
       </button>
 
       {open && (
-        <div className="border-t border-cloud-elements-dividerColor/50 px-4 py-4">
+        <div className="border-t border-cloud-elements-dividerColor/50 px-3 py-3">
           {part.text ? (
-            <AppMarkdown className="text-sm leading-7 text-cloud-elements-textSecondary">{part.text}</AppMarkdown>
+            <AppMarkdown className="text-[13px] leading-6 text-cloud-elements-textSecondary">{part.text}</AppMarkdown>
           ) : (
-            <div className="text-sm text-cloud-elements-textTertiary">No reasoning text was provided.</div>
+            <div className="text-[13px] text-cloud-elements-textTertiary">No reasoning text was provided.</div>
           )}
         </div>
       )}
