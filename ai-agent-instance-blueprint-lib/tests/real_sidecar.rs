@@ -49,6 +49,38 @@ struct TestSidecar {
 
 static SIDECAR: OnceCell<TestSidecar> = OnceCell::const_new();
 
+async fn extract_host_port(builder: &DockerBuilder, container_id: &str) -> u16 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+    loop {
+        let inspect = builder
+            .client()
+            .inspect_container(container_id, None::<InspectContainerOptions>)
+            .await
+            .expect("Failed to inspect container");
+
+        if let Some(host_port) = inspect
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.ports.as_ref())
+            .and_then(|p| p.get(&format!("{CONTAINER_PORT}/tcp")))
+            .and_then(|v| v.as_ref())
+            .and_then(|v| v.first())
+            .and_then(|b| b.host_port.as_ref())
+            .and_then(|p| p.parse::<u16>().ok())
+            .filter(|port| *port > 0)
+        {
+            return host_port;
+        }
+
+        assert!(
+            tokio::time::Instant::now() <= deadline,
+            "Could not extract host port"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 async fn docker_builder() -> DockerBuilder {
     match DockerBuilder::new().await {
         Ok(b) => b,
@@ -141,22 +173,7 @@ async fn ensure_sidecar() -> &'static TestSidecar {
                 .expect("Container has no ID after start")
                 .to_string();
 
-            let inspect = builder
-                .client()
-                .inspect_container(&container_id, None::<InspectContainerOptions>)
-                .await
-                .expect("Failed to inspect container");
-
-            let host_port = inspect
-                .network_settings
-                .as_ref()
-                .and_then(|ns| ns.ports.as_ref())
-                .and_then(|p| p.get(&format!("{CONTAINER_PORT}/tcp")))
-                .and_then(|v| v.as_ref())
-                .and_then(|v| v.first())
-                .and_then(|b| b.host_port.as_ref())
-                .and_then(|p| p.parse::<u16>().ok())
-                .expect("Could not extract host port");
+            let host_port = extract_host_port(&builder, &container_id).await;
 
             let url = format!("http://127.0.0.1:{host_port}");
 
@@ -599,7 +616,7 @@ async fn terminal_create_list_get_delete() {
         .post(format!("{}/terminals", s.url))
         .header(AUTHORIZATION, auth_header())
         .header(CONTENT_TYPE, "application/json")
-        .json(&json!({"name": "instance-test-terminal"}))
+        .json(&json!({"name": "instance-test-terminal", "cwd": "/tmp"}))
         .send()
         .await
         .unwrap();
@@ -623,6 +640,7 @@ async fn terminal_create_list_get_delete() {
         create_body["data"]["streamUrl"].is_string(),
         "streamUrl: {create_body}"
     );
+    assert_eq!(create_body["data"]["cwd"], "/tmp");
 
     // List — should contain our terminal.
     let list_resp = http()
@@ -656,20 +674,23 @@ async fn terminal_create_list_get_delete() {
         "isRunning: {get_body}"
     );
 
-    // Execute a command in the session.
-    let exec_resp = http()
-        .post(format!("{}/terminals/{session_id}/execute", s.url))
+    // Write input into the session.
+    let input_resp = http()
+        .post(format!("{}/terminals/{session_id}/input", s.url))
         .header(AUTHORIZATION, auth_header())
         .header(CONTENT_TYPE, "application/json")
-        .json(&json!({"command": "echo session-exec-ok"}))
+        .json(&json!({"data": "echo session-input-ok\n"}))
         .send()
         .await
         .unwrap();
 
-    if exec_resp.status().is_success() {
-        let exec_body: Value = exec_resp.json().await.unwrap_or(json!({}));
-        eprintln!("session exec: {exec_body}");
-    }
+    assert!(
+        input_resp.status().is_success(),
+        "session input: {}",
+        input_resp.status()
+    );
+    let input_body: Value = input_resp.json().await.unwrap_or(json!({}));
+    eprintln!("session input: {input_body}");
 
     // Delete.
     let delete_resp = http()

@@ -1,5 +1,5 @@
 import '@xterm/xterm/css/xterm.css';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -41,7 +41,7 @@ const theme = {
   brightWhite: '#fafafa',
 };
 
-const prompt = '\x1b[38;5;48m$\x1b[0m ';
+const INPUT_FLUSH_DELAY_MS = 25;
 
 export function OperatorTerminalView({
   apiUrl,
@@ -55,7 +55,10 @@ export function OperatorTerminalView({
 }: OperatorTerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const lineBufferRef = useRef('');
+  const isConnectedRef = useRef(false);
+  const pendingInputRef = useRef('');
+  const inputFlushTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const [terminalSize, setTerminalSize] = useState<{ cols: number; rows: number } | null>(null);
 
   const formatBannerLine = useCallback((value: string) => {
     const normalized = value.trim();
@@ -81,43 +84,66 @@ export function OperatorTerminalView({
       term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${identity}\x1b[38;5;48m\u2502\x1b[0m`);
     }
     term.writeln(`\x1b[38;5;48m\u2570${'\u2500'.repeat(41)}\u256f\x1b[0m`);
-    term.write(prompt);
   }, [displayPath, displayUsername, formatBannerLine, subtitle, title]);
-
-  const writePromptOnNewLine = useCallback(() => {
-    termRef.current?.write(`\r\n${prompt}`);
-  }, []);
 
   const handleOutput = useCallback((data: string) => {
     if (!data) return;
     termRef.current?.write(data);
-    if (!data.endsWith('\n') && !data.endsWith('\r')) {
-      termRef.current?.write('\r\n');
-    }
   }, []);
 
-  const handleCommandComplete = useCallback(() => {
-    termRef.current?.write(prompt);
-  }, []);
-
-  const { isConnected, error, sendCommand, reconnect, newSession } = useOperatorTerminalSession({
+  const { isConnected, error, sendInput, reconnect, newSession } = useOperatorTerminalSession({
     apiUrl,
     resourcePath,
     token,
     initialCwd,
+    terminalSize,
     onOutput: handleOutput,
-    onCommandComplete: handleCommandComplete,
   });
+
+  useEffect(() => {
+    isConnectedRef.current = isConnected;
+  }, [isConnected]);
 
   const handleNewSession = useCallback(() => {
     const term = termRef.current;
     if (term) {
-      lineBufferRef.current = '';
-      term.clear();
+      // reset() performs a full RIS, which returns the cursor to home before
+      // we redraw the banner. clear() preserved the prompt line position and
+      // caused the box frame to be written mid-line.
+      term.reset();
       writeBanner();
+    }
+    pendingInputRef.current = '';
+    if (inputFlushTimerRef.current) {
+      clearTimeout(inputFlushTimerRef.current);
+      inputFlushTimerRef.current = undefined;
     }
     newSession();
   }, [newSession, writeBanner]);
+
+  const syncTerminalSize = useCallback((term: Terminal, fitAddon: FitAddon) => {
+    fitAddon.fit();
+    setTerminalSize((current) => {
+      if (current?.cols === term.cols && current?.rows === term.rows) {
+        return current;
+      }
+      return { cols: term.cols, rows: term.rows };
+    });
+  }, []);
+
+  const flushPendingInput = useCallback(() => {
+    inputFlushTimerRef.current = undefined;
+    const data = pendingInputRef.current;
+    if (!data || !isConnectedRef.current) {
+      pendingInputRef.current = '';
+      return;
+    }
+    pendingInputRef.current = '';
+    const term = termRef.current;
+    sendInput(data).catch((err) => {
+      term?.writeln(`\x1b[31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m`);
+    });
+  }, [sendInput]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -142,60 +168,41 @@ export function OperatorTerminalView({
     term.open(containerRef.current);
 
     requestAnimationFrame(() => {
-      fitAddon.fit();
+      syncTerminalSize(term, fitAddon);
     });
 
     termRef.current = term;
     writeBanner();
 
     term.onData((data) => {
-      const code = data.charCodeAt(0);
-
-      if (data === '\r') {
-        const command = lineBufferRef.current;
-        lineBufferRef.current = '';
-        term.write('\r\n');
-
-        if (command.trim()) {
-          sendCommand(command).catch((err) => {
-            term.writeln(`\x1b[31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m`);
-            term.write(prompt);
-          });
-        } else {
-          term.write(prompt);
-        }
-      } else if (data === '\x7f' || data === '\b') {
-        if (lineBufferRef.current.length > 0) {
-          lineBufferRef.current = lineBufferRef.current.slice(0, -1);
-          term.write('\b \b');
-        }
-      } else if (data === '\x03') {
-        lineBufferRef.current = '';
-        term.write('^C');
-        writePromptOnNewLine();
-      } else if (data === '\x0c') {
-        lineBufferRef.current = '';
-        term.clear();
-        term.write(prompt);
-      } else if (code >= 32) {
-        lineBufferRef.current += data;
-        term.write(data);
+      if (!isConnectedRef.current) {
+        return;
       }
+      pendingInputRef.current += data;
+      if (inputFlushTimerRef.current) {
+        return;
+      }
+      inputFlushTimerRef.current = setTimeout(flushPendingInput, INPUT_FLUSH_DELAY_MS);
     });
 
     const resizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => {
-        fitAddon.fit();
+        syncTerminalSize(term, fitAddon);
       });
     });
     resizeObserver.observe(containerRef.current);
 
     return () => {
       resizeObserver.disconnect();
+      if (inputFlushTimerRef.current) {
+        clearTimeout(inputFlushTimerRef.current);
+        inputFlushTimerRef.current = undefined;
+      }
+      pendingInputRef.current = '';
       term.dispose();
       termRef.current = null;
     };
-  }, [sendCommand, writeBanner, writePromptOnNewLine]);
+  }, [flushPendingInput, syncTerminalSize, writeBanner]);
 
   return (
     <div className="relative h-full w-full group">

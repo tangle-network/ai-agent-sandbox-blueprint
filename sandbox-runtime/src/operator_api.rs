@@ -10,10 +10,11 @@ use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::{
     Json, Router,
+    body::Body,
     extract::Path,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{any, get, post},
+    routing::{any, get, patch, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -37,9 +38,7 @@ use crate::error::SandboxError;
 use crate::http::{
     auth_headers, build_url, sidecar_get_json, sidecar_post_json, sidecar_post_json_without_timeout,
 };
-use crate::live_operator_sessions::{
-    LiveSessionStore, LiveTerminalSession, sse_from_json_events, sse_from_terminal_output,
-};
+use crate::live_operator_sessions::sse_from_json_events;
 use crate::metrics;
 use crate::provision_progress;
 use crate::rate_limit;
@@ -63,16 +62,13 @@ const CHAT_CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout for other sidecar calls (snapshot, SSH provisioning, etc.).
 const SIDECAR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Live terminal session output ring-buffer size.
-const LIVE_TERMINAL_OUTPUT_BUFFER: usize = 512;
 const AGENT_WARMUP_ERROR_CODE: &str = "AGENT_WARMING_UP";
+const TERMINAL_UNSUPPORTED_ERROR_CODE: &str = "TERMINAL_UNSUPPORTED";
 #[cfg(not(test))]
 const AGENT_WARMUP_RETRY_DELAYS_MS: &[u64] = &[250, 500, 1_000, 2_000, 4_000, 4_000, 4_000];
 #[cfg(test)]
 const AGENT_WARMUP_RETRY_DELAYS_MS: &[u64] = &[5, 5, 5];
 
-/// Shared in-memory live chat/terminal sessions.
-static LIVE_SESSIONS: Lazy<LiveSessionStore<Value>> = Lazy::new(LiveSessionStore::default);
 static CHAT_RUN_ABORTS: Lazy<Mutex<HashMap<String, AbortHandle>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static CHAT_RUN_ENQUEUE_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -242,6 +238,13 @@ struct CancelChatRunResponse {
     cancelled_at: u64,
 }
 
+#[derive(Debug, Clone)]
+struct TerminalSessionDescriptor {
+    session_id: String,
+    title: String,
+    stream_path: Option<String>,
+}
+
 fn live_scope_sandbox(sandbox_id: &str) -> String {
     format!("sandbox:{sandbox_id}")
 }
@@ -250,28 +253,8 @@ fn live_scope_instance(record: &SandboxRecord) -> String {
     format!("instance:{}", record.id)
 }
 
-fn terminal_session_matches(session: &LiveTerminalSession, scope: &str, owner: &str) -> bool {
-    session.scope_id == scope && session.owner.eq_ignore_ascii_case(owner)
-}
-
 fn chat_session_matches(session: &ChatSessionRecord, scope: &str, owner: &str) -> bool {
     chat_state::session_matches(session, scope, owner)
-}
-
-fn publish_terminal_output(scope: &str, owner: &str, session_id: &str, stdout: &str, stderr: &str) {
-    if session_id.trim().is_empty() {
-        return;
-    }
-    let session = match LIVE_SESSIONS.get_terminal(session_id) {
-        Ok(Some(s)) if terminal_session_matches(&s, scope, owner) => s,
-        _ => return,
-    };
-    if !stdout.is_empty() {
-        let _ = session.output_tx.send(stdout.to_string());
-    }
-    if !stderr.is_empty() {
-        let _ = session.output_tx.send(format!("[stderr] {stderr}"));
-    }
 }
 
 fn publish_chat_message(session_id: &str, message: ChatMessageRecord, event_type: &str) {
@@ -910,81 +893,213 @@ async fn revoke_session(headers: HeaderMap) -> impl IntoResponse {
 // Live chat / terminal session endpoints
 // ---------------------------------------------------------------------------
 
-fn create_terminal_session(
-    scope_id: String,
-    owner: &str,
-) -> Result<LiveSessionSummary, (StatusCode, Json<ApiError>)> {
-    let session =
-        LiveTerminalSession::new(scope_id, owner.to_string(), LIVE_TERMINAL_OUTPUT_BUFFER);
-    let summary = LiveSessionSummary {
-        session_id: session.id.clone(),
-        title: String::new(),
-        active_run_id: None,
-    };
-    LIVE_SESSIONS
-        .insert_terminal(session)
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok(summary)
+fn parse_terminal_session_descriptor(value: &Value) -> Option<TerminalSessionDescriptor> {
+    let session_id = value
+        .get("sessionId")
+        .or_else(|| value.get("session_id"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let title = value
+        .get("title")
+        .or_else(|| value.get("name"))
+        .or_else(|| value.get("description"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let stream_path = value
+        .get("streamUrl")
+        .or_else(|| value.get("stream_url"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    Some(TerminalSessionDescriptor {
+        session_id,
+        title,
+        stream_path,
+    })
 }
 
-fn list_terminal_sessions(
-    scope_id: &str,
-    owner: &str,
+fn terminal_session_summary(descriptor: &TerminalSessionDescriptor) -> LiveSessionSummary {
+    LiveSessionSummary {
+        session_id: descriptor.session_id.clone(),
+        title: descriptor.title.clone(),
+        active_run_id: None,
+    }
+}
+
+fn parse_terminal_session_summary(value: &Value) -> Option<LiveSessionSummary> {
+    parse_terminal_session_descriptor(value).map(|descriptor| terminal_session_summary(&descriptor))
+}
+
+fn parse_terminal_session_response(
+    parsed: &Value,
+) -> Result<TerminalSessionDescriptor, (StatusCode, Json<ApiError>)> {
+    parse_terminal_session_descriptor(parsed.get("data").ok_or_else(|| {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            "Missing sidecar terminal session data",
+        )
+    })?)
+    .ok_or_else(|| {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            "Invalid sidecar terminal session response",
+        )
+    })
+}
+
+async fn fetch_terminal_session_descriptor(
+    record: &SandboxRecord,
+    session_id: &str,
+) -> Result<TerminalSessionDescriptor, (StatusCode, Json<ApiError>)> {
+    let parsed = terminal_sidecar_get_call(
+        record,
+        &format!("/terminals/{session_id}"),
+        SIDECAR_DEFAULT_TIMEOUT,
+        "terminal detail",
+    )
+    .await?;
+    parse_terminal_session_response(&parsed)
+}
+
+async fn resolve_terminal_stream_path(
+    record: &SandboxRecord,
+    session_id: &str,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    let descriptor = fetch_terminal_session_descriptor(record, session_id).await?;
+    Ok(descriptor
+        .stream_path
+        .unwrap_or_else(|| format!("/terminals/{session_id}/stream")))
+}
+
+async fn create_terminal_session(
+    record: &SandboxRecord,
+    req: &CreateLiveTerminalSessionRequest,
+) -> Result<LiveSessionSummary, (StatusCode, Json<ApiError>)> {
+    require_running(record)?;
+    let mut payload = Map::new();
+    let cwd = req.cwd.trim();
+    if !cwd.is_empty() {
+        payload.insert("cwd".into(), json!(cwd));
+    }
+    if let Some(cols) = req.cols {
+        payload.insert("cols".into(), json!(cols));
+    }
+    if let Some(rows) = req.rows {
+        payload.insert("rows".into(), json!(rows));
+    }
+    let parsed = terminal_sidecar_call(
+        record,
+        "/terminals",
+        Value::Object(payload),
+        SIDECAR_DEFAULT_TIMEOUT,
+        "terminal create",
+        true,
+    )
+    .await?;
+    Ok(terminal_session_summary(&parse_terminal_session_response(
+        &parsed,
+    )?))
+}
+
+async fn list_terminal_sessions(
+    record: &SandboxRecord,
 ) -> Result<Vec<LiveSessionSummary>, (StatusCode, Json<ApiError>)> {
-    LIVE_SESSIONS
-        .list_terminals()
+    let parsed = terminal_sidecar_get_call(
+        record,
+        "/terminals",
+        SIDECAR_DEFAULT_TIMEOUT,
+        "terminal list",
+    )
+    .await?;
+    Ok(parsed
+        .get("data")
+        .and_then(Value::as_array)
         .map(|sessions| {
             sessions
-                .into_iter()
-                .filter(|s| terminal_session_matches(s, scope_id, owner))
-                .map(|s| LiveSessionSummary {
-                    session_id: s.id,
-                    title: String::new(),
-                    active_run_id: None,
-                })
+                .iter()
+                .filter_map(parse_terminal_session_summary)
                 .collect()
         })
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))
+        .unwrap_or_default())
 }
 
-fn stream_terminal_session(
-    scope_id: &str,
-    owner: &str,
+async fn stream_terminal_session(
+    record: &SandboxRecord,
     session_id: &str,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
-    let session = LIVE_SESSIONS
-        .get_terminal(session_id)
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Terminal session not found"))?;
-    if !terminal_session_matches(&session, scope_id, owner) {
-        return Err(api_error(
-            StatusCode::NOT_FOUND,
-            "Terminal session not found",
-        ));
-    }
-    let rx = session.output_tx.subscribe();
-    Ok(sse_from_terminal_output(rx).into_response())
+    let stream_path = resolve_terminal_stream_path(record, session_id).await?;
+    let response = terminal_sidecar_stream_call(
+        record,
+        &stream_path,
+        SIDECAR_DEFAULT_TIMEOUT,
+        "terminal stream",
+    )
+    .await?;
+
+    let mut proxied = axum::response::Response::new(Body::from_stream(
+        response
+            .bytes_stream()
+            .map(|result| result.map_err(std::io::Error::other)),
+    ));
+    *proxied.status_mut() = StatusCode::OK;
+    proxied.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    Ok(proxied)
 }
 
-fn delete_terminal_session(
-    scope_id: &str,
-    owner: &str,
+async fn delete_terminal_session(
+    record: &SandboxRecord,
     session_id: &str,
 ) -> Result<serde_json::Value, (StatusCode, Json<ApiError>)> {
-    let session = LIVE_SESSIONS
-        .get_terminal(session_id)
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Terminal session not found"))?;
-    if !terminal_session_matches(&session, scope_id, owner) {
-        return Err(api_error(
-            StatusCode::NOT_FOUND,
-            "Terminal session not found",
-        ));
-    }
-    let _ = LIVE_SESSIONS
-        .remove_terminal(session_id)
-        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    terminal_sidecar_delete_call(
+        record,
+        &format!("/terminals/{session_id}"),
+        SIDECAR_DEFAULT_TIMEOUT,
+        "terminal delete",
+    )
+    .await?;
+
     Ok(json!({ "deleted": true, "session_id": session_id }))
+}
+
+async fn send_terminal_input_to_sidecar(
+    record: &SandboxRecord,
+    session_id: &str,
+    data: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    terminal_sidecar_call(
+        record,
+        &format!("/terminals/{session_id}/input"),
+        json!({ "data": data }),
+        SIDECAR_DEFAULT_TIMEOUT,
+        "terminal input",
+        true,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn resize_terminal_session_on_sidecar(
+    record: &SandboxRecord,
+    session_id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    terminal_sidecar_patch_call(
+        record,
+        &format!("/terminals/{session_id}"),
+        json!({
+            "cols": cols,
+            "rows": rows,
+        }),
+        SIDECAR_DEFAULT_TIMEOUT,
+        "terminal resize",
+    )
+    .await?;
+    Ok(())
 }
 
 fn create_chat_session(
@@ -1161,10 +1276,11 @@ async fn cancel_chat_run(
 async fn sandbox_terminal_session_create_handler(
     SessionAuth(address): SessionAuth,
     Path(sandbox_id): Path<String>,
+    req: Option<Json<CreateLiveTerminalSessionRequest>>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    require_running(&record)?;
-    let summary = create_terminal_session(live_scope_sandbox(&record.id), &address)?;
+    let req = req.map(|Json(body)| body).unwrap_or_default();
+    let summary = create_terminal_session(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
 
@@ -1173,7 +1289,7 @@ async fn sandbox_terminal_session_list_handler(
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    let sessions = list_terminal_sessions(&live_scope_sandbox(&record.id), &address)?;
+    let sessions = list_terminal_sessions(&record).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "sessions": sessions }))))
 }
 
@@ -1182,7 +1298,7 @@ async fn sandbox_terminal_session_stream_handler(
     Path((sandbox_id, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    stream_terminal_session(&live_scope_sandbox(&record.id), &address, &session_id)
+    stream_terminal_session(&record, &session_id).await
 }
 
 async fn sandbox_terminal_session_delete_handler(
@@ -1190,8 +1306,32 @@ async fn sandbox_terminal_session_delete_handler(
     Path((sandbox_id, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    let resp = delete_terminal_session(&live_scope_sandbox(&record.id), &address, &session_id)?;
+    let resp = delete_terminal_session(&record, &session_id).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
+async fn sandbox_terminal_session_resize_handler(
+    SessionAuth(address): SessionAuth,
+    Path((sandbox_id, session_id)): Path<(String, String)>,
+    Json(req): Json<TerminalResizeApiRequest>,
+) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    resize_terminal_session_on_sidecar(&record, &session_id, req.cols, req.rows).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "success": true }))))
+}
+
+async fn sandbox_terminal_session_input_handler(
+    SessionAuth(address): SessionAuth,
+    Path((sandbox_id, session_id)): Path<(String, String)>,
+    Json(req): Json<TerminalInputApiRequest>,
+) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    let record = resolve_sandbox(&sandbox_id, &address)?;
+    send_terminal_input_to_sidecar(&record, &session_id, &req.data).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "success": true }))))
 }
 
 async fn sandbox_chat_session_create_handler(
@@ -1258,10 +1398,11 @@ async fn sandbox_chat_run_cancel_handler(
 
 async fn instance_terminal_session_create_handler(
     SessionAuth(address): SessionAuth,
+    req: Option<Json<CreateLiveTerminalSessionRequest>>,
 ) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
-    require_running(&record)?;
-    let summary = create_terminal_session(live_scope_instance(&record), &address)?;
+    let req = req.map(|Json(body)| body).unwrap_or_default();
+    let summary = create_terminal_session(&record, &req).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(summary)))
 }
 
@@ -1269,7 +1410,7 @@ async fn instance_terminal_session_list_handler(
     SessionAuth(address): SessionAuth,
 ) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
-    let sessions = list_terminal_sessions(&live_scope_instance(&record), &address)?;
+    let sessions = list_terminal_sessions(&record).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "sessions": sessions }))))
 }
 
@@ -1278,7 +1419,7 @@ async fn instance_terminal_session_stream_handler(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
-    stream_terminal_session(&live_scope_instance(&record), &address, &session_id)
+    stream_terminal_session(&record, &session_id).await
 }
 
 async fn instance_terminal_session_delete_handler(
@@ -1286,8 +1427,32 @@ async fn instance_terminal_session_delete_handler(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
-    let resp = delete_terminal_session(&live_scope_instance(&record), &address, &session_id)?;
+    let resp = delete_terminal_session(&record, &session_id).await?;
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
+}
+
+async fn instance_terminal_session_resize_handler(
+    SessionAuth(address): SessionAuth,
+    Path(session_id): Path<String>,
+    Json(req): Json<TerminalResizeApiRequest>,
+) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    let record = resolve_instance(&address)?;
+    resize_terminal_session_on_sidecar(&record, &session_id, req.cols, req.rows).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "success": true }))))
+}
+
+async fn instance_terminal_session_input_handler(
+    SessionAuth(address): SessionAuth,
+    Path(session_id): Path<String>,
+    Json(req): Json<TerminalInputApiRequest>,
+) -> impl IntoResponse {
+    req.validate()
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    let record = resolve_instance(&address)?;
+    send_terminal_input_to_sidecar(&record, &session_id, &req.data).await?;
+    Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(json!({ "success": true }))))
 }
 
 async fn instance_chat_session_create_handler(
@@ -2273,6 +2438,88 @@ fn is_retryable_transport_error(err: &SandboxError) -> bool {
     matches!(err, SandboxError::Http(msg) if msg.contains("error sending request for url"))
 }
 
+fn extract_http_status_code(message: &str) -> Option<u16> {
+    let (_, tail) = message.split_once("HTTP ")?;
+    tail.split_whitespace().next()?.parse::<u16>().ok()
+}
+
+fn terminal_api_error_status(err: &SandboxError) -> Option<u16> {
+    match err {
+        SandboxError::Http(message) => extract_http_status_code(message),
+        _ => None,
+    }
+}
+
+fn terminal_api_error_status_from_response(err: &(StatusCode, Json<ApiError>)) -> Option<u16> {
+    extract_http_status_code(err.1.0.error.as_str())
+}
+
+fn terminal_sidecar_error_code(message: &str) -> Option<&'static str> {
+    if message.contains("SESSION_NOT_FOUND") {
+        return Some("SESSION_NOT_FOUND");
+    }
+    if message.contains("SESSION_NOT_RUNNING") {
+        return Some("SESSION_NOT_RUNNING");
+    }
+    None
+}
+
+fn terminal_api_error_response(
+    op_name: &str,
+    status: u16,
+    message: Option<&str>,
+) -> (StatusCode, Json<ApiError>) {
+    if op_name == "terminal detail" && status == 404 {
+        return api_error(StatusCode::NOT_FOUND, "Terminal session not found");
+    }
+
+    if let Some(message) = message {
+        match terminal_sidecar_error_code(message) {
+            Some("SESSION_NOT_FOUND") => {
+                return api_error(StatusCode::NOT_FOUND, "Terminal session not found");
+            }
+            Some("SESSION_NOT_RUNNING") => {
+                return api_error(StatusCode::CONFLICT, "Terminal session is not running");
+            }
+            _ => {}
+        }
+    }
+
+    api_error_with_details(
+        StatusCode::BAD_GATEWAY,
+        "Sidecar PTY terminal API is not supported by this sandbox image/runtime.",
+        Some(TERMINAL_UNSUPPORTED_ERROR_CODE),
+        None,
+    )
+}
+
+fn terminal_api_error(err: &SandboxError, op_name: &str) -> Option<(StatusCode, Json<ApiError>)> {
+    let status = terminal_api_error_status(err)?;
+    if (400..500).contains(&status) || status == 501 {
+        let message = match err {
+            SandboxError::Http(message) => Some(message.as_str()),
+            _ => None,
+        };
+        return Some(terminal_api_error_response(op_name, status, message));
+    }
+    None
+}
+
+fn terminal_api_error_from_response(
+    err: &(StatusCode, Json<ApiError>),
+    op_name: &str,
+) -> Option<(StatusCode, Json<ApiError>)> {
+    let status = terminal_api_error_status_from_response(err)?;
+    if (400..500).contains(&status) || status == 501 {
+        return Some(terminal_api_error_response(
+            op_name,
+            status,
+            Some(err.1.0.error.as_str()),
+        ));
+    }
+    None
+}
+
 async fn try_refresh_stale_endpoint(
     record: &SandboxRecord,
     op_name: &str,
@@ -2335,6 +2582,53 @@ async fn run_sidecar_get_json_attempt(
     }
 }
 
+async fn run_sidecar_patch_json_attempt(
+    record: &SandboxRecord,
+    path: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> std::result::Result<Value, SidecarAttemptFailure> {
+    let path = path.to_string();
+    let payload = payload.clone();
+    let sidecar_url = record.sidecar_url.clone();
+    let token = record.token.clone();
+
+    match tokio::time::timeout(timeout, async move {
+        let url = build_url(&sidecar_url, &path)?;
+        let mut headers = auth_headers(&token)?;
+        if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&rid) {
+                headers.insert("x-request-id", value);
+            }
+        }
+
+        let response = crate::util::http_client()?
+            .patch(url)
+            .headers(headers)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|err| SandboxError::Http(format!("HTTP request failed: {err}")))?;
+
+        let status = response.status();
+        let parsed = response
+            .json::<Value>()
+            .await
+            .map_err(|err| SandboxError::Http(format!("invalid JSON response: {err}")))?;
+        if !status.is_success() {
+            return Err(SandboxError::Http(format!("HTTP {status}: {parsed}")));
+        }
+
+        Ok(parsed)
+    })
+    .await
+    {
+        Err(_) => Err(SidecarAttemptFailure::Timeout),
+        Ok(Err(err)) => Err(SidecarAttemptFailure::Error(err)),
+        Ok(Ok(parsed)) => Ok(parsed),
+    }
+}
+
 /// Call a sidecar endpoint with circuit-breaker integration and timeout.
 ///
 /// This is the single entry point for all sidecar HTTP calls. It:
@@ -2378,6 +2672,67 @@ async fn sidecar_call(
                             ));
                         }
                         Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
+                        }
+                    }
+                }
+            }
+
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(StatusCode::BAD_GATEWAY, err.to_string()))
+        }
+        Ok(parsed) => {
+            circuit_breaker::mark_healthy(&record.id);
+            runtime::touch_sandbox(&record.id);
+            Ok(parsed)
+        }
+    }
+}
+
+async fn terminal_sidecar_call(
+    record: &SandboxRecord,
+    path: &str,
+    payload: Value,
+    timeout: Duration,
+    op_name: &str,
+    allow_transport_retry: bool,
+) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    require_running(record)?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
+
+    match run_sidecar_json_attempt(record, path, &payload, timeout).await {
+        Err(SidecarAttemptFailure::Timeout) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+            ))
+        }
+        Err(SidecarAttemptFailure::Error(err)) => {
+            if let Some(api_err) = terminal_api_error(&err, op_name) {
+                return Err(api_err);
+            }
+
+            if allow_transport_retry && is_retryable_transport_error(&err) {
+                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
+                    match run_sidecar_json_attempt(&refreshed, path, &payload, timeout).await {
+                        Ok(parsed) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+                            return Ok(parsed);
+                        }
+                        Err(SidecarAttemptFailure::Timeout) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
+                        }
+                        Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
+                                return Err(api_err);
+                            }
                             circuit_breaker::mark_unhealthy(&record.id);
                             return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
                         }
@@ -2455,6 +2810,376 @@ async fn sidecar_get_call(
             circuit_breaker::mark_healthy(&record.id);
             runtime::touch_sandbox(&record.id);
             Ok(parsed)
+        }
+    }
+}
+
+async fn terminal_sidecar_get_call(
+    record: &SandboxRecord,
+    path: &str,
+    timeout: Duration,
+    op_name: &str,
+) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    require_running(record)?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
+
+    match run_sidecar_get_json_attempt(record, path, timeout).await {
+        Err(SidecarAttemptFailure::Timeout) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+            ))
+        }
+        Err(SidecarAttemptFailure::Error(err)) => {
+            if let Some(api_err) = terminal_api_error(&err, op_name) {
+                return Err(api_err);
+            }
+
+            if is_retryable_transport_error(&err) {
+                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
+                    match run_sidecar_get_json_attempt(&refreshed, path, timeout).await {
+                        Ok(parsed) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+                            return Ok(parsed);
+                        }
+                        Err(SidecarAttemptFailure::Timeout) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
+                        }
+                        Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
+                                return Err(api_err);
+                            }
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
+                        }
+                    }
+                }
+            }
+
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(StatusCode::BAD_GATEWAY, err.to_string()))
+        }
+        Ok(parsed) => {
+            circuit_breaker::mark_healthy(&record.id);
+            runtime::touch_sandbox(&record.id);
+            Ok(parsed)
+        }
+    }
+}
+
+async fn terminal_sidecar_patch_call(
+    record: &SandboxRecord,
+    path: &str,
+    payload: Value,
+    timeout: Duration,
+    op_name: &str,
+) -> Result<Value, (StatusCode, Json<ApiError>)> {
+    require_running(record)?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
+
+    match run_sidecar_patch_json_attempt(record, path, &payload, timeout).await {
+        Err(SidecarAttemptFailure::Timeout) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+            ))
+        }
+        Err(SidecarAttemptFailure::Error(err)) => {
+            if let Some(api_err) = terminal_api_error(&err, op_name) {
+                return Err(api_err);
+            }
+
+            if is_retryable_transport_error(&err) {
+                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
+                    match run_sidecar_patch_json_attempt(&refreshed, path, &payload, timeout).await
+                    {
+                        Ok(parsed) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+                            return Ok(parsed);
+                        }
+                        Err(SidecarAttemptFailure::Timeout) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
+                        }
+                        Err(SidecarAttemptFailure::Error(retry_err)) => {
+                            if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
+                                return Err(api_err);
+                            }
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
+                        }
+                    }
+                }
+            }
+
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(StatusCode::BAD_GATEWAY, err.to_string()))
+        }
+        Ok(parsed) => {
+            circuit_breaker::mark_healthy(&record.id);
+            runtime::touch_sandbox(&record.id);
+            Ok(parsed)
+        }
+    }
+}
+
+async fn open_sidecar_stream_attempt(
+    record: &SandboxRecord,
+    path: &str,
+) -> std::result::Result<reqwest::Response, SidecarAttemptFailure> {
+    let url = match build_url(&record.sidecar_url, path) {
+        Ok(url) => url,
+        Err(err) => return Err(SidecarAttemptFailure::Error(err)),
+    };
+    let mut headers = match auth_headers(&record.token) {
+        Ok(headers) => headers,
+        Err(err) => return Err(SidecarAttemptFailure::Error(err)),
+    };
+
+    if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(&rid) {
+            headers.insert("x-request-id", value);
+        }
+    }
+
+    let client = match crate::util::http_client_no_timeout() {
+        Ok(client) => client,
+        Err(err) => return Err(SidecarAttemptFailure::Error(err)),
+    };
+
+    let response = client
+        .get(url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|err| {
+            SidecarAttemptFailure::Error(SandboxError::Http(format!("HTTP request failed: {err}")))
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "unknown stream error".to_string());
+        return Err(SidecarAttemptFailure::Error(SandboxError::Http(format!(
+            "HTTP {status}: {body}"
+        ))));
+    }
+
+    Ok(response)
+}
+
+async fn terminal_sidecar_stream_call(
+    record: &SandboxRecord,
+    path: &str,
+    timeout: Duration,
+    op_name: &str,
+) -> Result<reqwest::Response, (StatusCode, Json<ApiError>)> {
+    require_running(record)?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
+
+    match tokio::time::timeout(timeout, open_sidecar_stream_attempt(record, path)).await {
+        Err(_) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+            ))
+        }
+        Ok(Err(err)) => {
+            if let SidecarAttemptFailure::Error(ref inner) = err {
+                if let Some(api_err) = terminal_api_error(inner, op_name) {
+                    return Err(api_err);
+                }
+
+                if is_retryable_transport_error(inner) {
+                    if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
+                        match tokio::time::timeout(
+                            timeout,
+                            open_sidecar_stream_attempt(&refreshed, path),
+                        )
+                        .await
+                        {
+                            Err(_) => {
+                                circuit_breaker::mark_unhealthy(&record.id);
+                                return Err(api_error(
+                                    StatusCode::GATEWAY_TIMEOUT,
+                                    format!(
+                                        "Sidecar {op_name} timed out after {}s",
+                                        timeout.as_secs()
+                                    ),
+                                ));
+                            }
+                            Ok(Ok(response)) => {
+                                circuit_breaker::mark_healthy(&record.id);
+                                runtime::touch_sandbox(&record.id);
+                                return Ok(response);
+                            }
+                            Ok(Err(SidecarAttemptFailure::Error(retry_err))) => {
+                                if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
+                                    return Err(api_err);
+                                }
+                                circuit_breaker::mark_unhealthy(&record.id);
+                                return Err(api_error(
+                                    StatusCode::BAD_GATEWAY,
+                                    retry_err.to_string(),
+                                ));
+                            }
+                            Ok(Err(SidecarAttemptFailure::Timeout)) => {
+                                circuit_breaker::mark_unhealthy(&record.id);
+                                return Err(api_error(
+                                    StatusCode::GATEWAY_TIMEOUT,
+                                    format!(
+                                        "Sidecar {op_name} timed out after {}s",
+                                        timeout.as_secs()
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
+            circuit_breaker::mark_unhealthy(&record.id);
+            match err {
+                SidecarAttemptFailure::Timeout => Err(api_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                )),
+                SidecarAttemptFailure::Error(inner) => {
+                    Err(api_error(StatusCode::BAD_GATEWAY, inner.to_string()))
+                }
+            }
+        }
+        Ok(Ok(response)) => {
+            circuit_breaker::mark_healthy(&record.id);
+            runtime::touch_sandbox(&record.id);
+            Ok(response)
+        }
+    }
+}
+
+async fn terminal_sidecar_delete_call(
+    record: &SandboxRecord,
+    path: &str,
+    timeout: Duration,
+    op_name: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    require_running(record)?;
+    circuit_breaker::check_health(&record.id).map_err(circuit_breaker_api_error)?;
+
+    let path = path.to_string();
+    let run_delete = |sidecar_url: String, token: String| {
+        let path = path.clone();
+        async move {
+            let url = build_url(&sidecar_url, &path)
+                .map_err(|err| api_error(StatusCode::BAD_GATEWAY, err.to_string()))?;
+            let mut headers = auth_headers(&token)
+                .map_err(|err| api_error(StatusCode::BAD_GATEWAY, err.to_string()))?;
+            if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
+                if let Ok(value) = reqwest::header::HeaderValue::from_str(&rid) {
+                    headers.insert("x-request-id", value);
+                }
+            }
+
+            let client = crate::util::http_client()
+                .map_err(|err| api_error(StatusCode::BAD_GATEWAY, err.to_string()))?
+                .delete(url)
+                .headers(headers)
+                .send()
+                .await
+                .map_err(|err| {
+                    api_error(
+                        StatusCode::BAD_GATEWAY,
+                        format!("HTTP request failed: {err}"),
+                    )
+                })?;
+            if !client.status().is_success() {
+                let status = client.status();
+                let body = client
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "unknown delete error".to_string());
+                return Err(api_error(
+                    StatusCode::BAD_GATEWAY,
+                    format!("HTTP {status}: {body}"),
+                ));
+            }
+            Ok(())
+        }
+    };
+
+    match tokio::time::timeout(
+        timeout,
+        run_delete(record.sidecar_url.clone(), record.token.clone()),
+    )
+    .await
+    {
+        Err(_) => {
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+            ))
+        }
+        Ok(Err(err)) => {
+            if let Some(api_err) = terminal_api_error_from_response(&err, op_name) {
+                return Err(api_err);
+            }
+
+            let err_text = err.1.0.error.clone();
+            if err_text.contains("error sending request for url") {
+                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
+                    match tokio::time::timeout(
+                        timeout,
+                        run_delete(refreshed.sidecar_url.clone(), refreshed.token.clone()),
+                    )
+                    .await
+                    {
+                        Err(_) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
+                        }
+                        Ok(Ok(())) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+                            return Ok(());
+                        }
+                        Ok(Err(retry_err)) => {
+                            if let Some(api_err) =
+                                terminal_api_error_from_response(&retry_err, op_name)
+                            {
+                                return Err(api_err);
+                            }
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(retry_err);
+                        }
+                    }
+                }
+            }
+
+            circuit_breaker::mark_unhealthy(&record.id);
+            Err(err)
+        }
+        Ok(Ok(())) => {
+            circuit_breaker::mark_healthy(&record.id);
+            runtime::touch_sandbox(&record.id);
+            Ok(())
         }
     }
 }
@@ -2538,15 +3263,7 @@ async fn sandbox_exec_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_sandbox(&sandbox_id, &address)?;
-    let scope = live_scope_sandbox(&record.id);
     let resp = exec_on_sidecar(&record, &req).await?;
-    publish_terminal_output(
-        &scope,
-        &address,
-        &req.session_id,
-        &resp.stdout,
-        &resp.stderr,
-    );
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
@@ -2557,15 +3274,7 @@ async fn instance_exec_handler(
     req.validate()
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
     let record = resolve_instance(&address)?;
-    let scope = live_scope_instance(&record);
     let resp = exec_on_sidecar(&record, &req).await?;
-    publish_terminal_output(
-        &scope,
-        &address,
-        &req.session_id,
-        &resp.stdout,
-        &resp.stderr,
-    );
     Ok::<_, (StatusCode, Json<ApiError>)>((StatusCode::OK, Json(resp)))
 }
 
@@ -4047,6 +4756,27 @@ pub fn operator_api_router_with_tee_and_routes(
         )
         .layer(middleware::from_fn(rate_limit::write_rate_limit));
 
+    let terminal_interactive_routes = Router::new()
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/terminal/sessions/{session_id}",
+            patch(sandbox_terminal_session_resize_handler),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/live/terminal/sessions/{session_id}/input",
+            post(sandbox_terminal_session_input_handler),
+        )
+        .route(
+            "/api/sandbox/live/terminal/sessions/{session_id}",
+            patch(instance_terminal_session_resize_handler),
+        )
+        .route(
+            "/api/sandbox/live/terminal/sessions/{session_id}/input",
+            post(instance_terminal_session_input_handler),
+        )
+        .layer(middleware::from_fn(
+            rate_limit::terminal_interactive_rate_limit,
+        ));
+
     // Sandbox-scoped operation endpoints (authenticated, write-rate-limited)
     let sandbox_op_routes = Router::new()
         .route(
@@ -4137,6 +4867,7 @@ pub fn operator_api_router_with_tee_and_routes(
         .merge(infra_routes)
         .merge(read_routes)
         .merge(write_routes)
+        .merge(terminal_interactive_routes)
         .merge(sandbox_op_routes)
         .merge(instance_op_routes)
         .merge(auth_routes);
@@ -4187,6 +4918,7 @@ mod tests {
     use axum::body::Body;
     use axum::extract::State;
     use axum::http::Request;
+    use axum::response::Response;
     use http_body_util::BodyExt;
     use tower::util::ServiceExt;
 
@@ -4210,9 +4942,6 @@ mod tests {
         crate::session_auth::clear_all_for_testing();
         crate::circuit_breaker::clear_all_for_testing();
         crate::provision_progress::clear_all_for_testing().expect("clear provision state");
-        LIVE_SESSIONS
-            .clear_all_for_testing()
-            .expect("clear live sessions");
         crate::chat_state::clear_all_for_testing().expect("clear chat state");
         sandboxes()
             .unwrap()
@@ -4224,6 +4953,7 @@ mod tests {
             .expect("clear instance store");
         rate_limit::read_limiter().reset();
         rate_limit::write_limiter().reset();
+        rate_limit::terminal_interactive_limiter().reset();
         rate_limit::auth_limiter().reset();
     }
 
@@ -4271,6 +5001,7 @@ mod tests {
         // 60-second window, which exhausts the write limiter (30 req/min).
         rate_limit::read_limiter().reset();
         rate_limit::write_limiter().reset();
+        rate_limit::terminal_interactive_limiter().reset();
         rate_limit::auth_limiter().reset();
         operator_api_router()
     }
@@ -4285,13 +5016,28 @@ mod tests {
         format!("Bearer {token}")
     }
 
+    #[derive(Clone)]
+    struct MockTerminalSession {
+        tx: tokio::sync::broadcast::Sender<String>,
+        cwd: String,
+        cols: u16,
+        rows: u16,
+    }
+
     #[derive(Clone, Default)]
     struct MockSidecarState {
         last_exec_payload: Arc<Mutex<Option<Value>>>,
+        last_terminal_create_payload: Arc<Mutex<Option<Value>>>,
+        last_terminal_input_payload: Arc<Mutex<Option<Value>>>,
+        last_terminal_input_session_id: Arc<Mutex<Option<String>>>,
+        last_terminal_resize_payload: Arc<Mutex<Option<Value>>>,
+        last_terminal_resize_session_id: Arc<Mutex<Option<String>>>,
         last_agent_payload: Arc<Mutex<Option<Value>>>,
         exec_response: Arc<Mutex<Value>>,
         agents_response: Arc<Mutex<Value>>,
         stream_response_body: Arc<Mutex<Option<String>>>,
+        terminal_sessions: Arc<Mutex<std::collections::HashMap<String, MockTerminalSession>>>,
+        next_terminal_session_id: Arc<AtomicU64>,
         remaining_agent_warmup_failures: Arc<AtomicU64>,
         agent_response_delay_ms: Arc<AtomicU64>,
         agent_invocations: Arc<AtomicU64>,
@@ -4310,6 +5056,287 @@ mod tests {
             .expect("exec response lock")
             .clone();
         Json(response)
+    }
+
+    async fn mock_sidecar_terminal_create(
+        State(state): State<MockSidecarState>,
+        Json(payload): Json<Value>,
+    ) -> Json<Value> {
+        *state
+            .last_terminal_create_payload
+            .lock()
+            .expect("terminal create lock") = Some(payload.clone());
+
+        let session_id = format!(
+            "mock-term-{}",
+            state
+                .next_terminal_session_id
+                .fetch_add(1, Ordering::Relaxed)
+                + 1
+        );
+        let (tx, _) = tokio::sync::broadcast::channel(32);
+        let cwd = payload
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or("/sidecar")
+            .to_string();
+        let cols = payload
+            .get("cols")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .unwrap_or(80);
+        let rows = payload
+            .get("rows")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .unwrap_or(24);
+        state
+            .terminal_sessions
+            .lock()
+            .expect("terminal sessions lock")
+            .insert(
+                session_id.clone(),
+                MockTerminalSession {
+                    tx,
+                    cwd: cwd.clone(),
+                    cols,
+                    rows,
+                },
+            );
+
+        Json(json!({
+            "success": true,
+            "data": {
+                "sessionId": session_id,
+                "shell": "bash",
+                "cwd": cwd,
+                "cols": cols,
+                "rows": rows,
+                "streamUrl": format!("/terminals/{session_id}/stream"),
+            }
+        }))
+    }
+
+    async fn mock_sidecar_terminal_list(State(state): State<MockSidecarState>) -> Json<Value> {
+        let sessions = state
+            .terminal_sessions
+            .lock()
+            .expect("terminal sessions lock")
+            .iter()
+            .map(|(session_id, session)| {
+                json!({
+                    "sessionId": session_id,
+                    "cols": session.cols,
+                    "rows": session.rows,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Json(json!({
+            "success": true,
+            "data": sessions,
+        }))
+    }
+
+    async fn mock_sidecar_terminal_get(
+        Path(session_id): Path<String>,
+        State(state): State<MockSidecarState>,
+    ) -> Response {
+        let sessions = state
+            .terminal_sessions
+            .lock()
+            .expect("terminal sessions lock");
+        let Some(session) = sessions.get(&session_id) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "SESSION_NOT_FOUND",
+                        "message": "not found"
+                    }
+                })),
+            )
+                .into_response();
+        };
+
+        Json(json!({
+            "success": true,
+            "data": {
+                "sessionId": session_id.clone(),
+                "isRunning": true,
+                "cwd": session.cwd.clone(),
+                "cols": session.cols,
+                "rows": session.rows,
+                "streamUrl": format!("/terminals/{session_id}/stream"),
+            }
+        }))
+        .into_response()
+    }
+
+    async fn mock_sidecar_terminal_stream(
+        Path(session_id): Path<String>,
+        State(state): State<MockSidecarState>,
+    ) -> Response {
+        let Some(tx) = state
+            .terminal_sessions
+            .lock()
+            .expect("terminal sessions lock")
+            .get(&session_id)
+            .map(|session| session.tx.clone())
+        else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "SESSION_NOT_FOUND",
+                        "message": "not found"
+                    }
+                })),
+            )
+                .into_response();
+        };
+
+        crate::live_operator_sessions::sse_from_terminal_output(tx.subscribe()).into_response()
+    }
+
+    async fn mock_sidecar_terminal_input(
+        Path(session_id): Path<String>,
+        State(state): State<MockSidecarState>,
+        Json(payload): Json<Value>,
+    ) -> Response {
+        *state
+            .last_terminal_input_payload
+            .lock()
+            .expect("terminal input lock") = Some(payload.clone());
+        *state
+            .last_terminal_input_session_id
+            .lock()
+            .expect("terminal input session lock") = Some(session_id.clone());
+
+        let tx = {
+            let sessions = state
+                .terminal_sessions
+                .lock()
+                .expect("terminal sessions lock");
+            sessions.get(&session_id).map(|session| session.tx.clone())
+        };
+
+        let Some(tx) = tx else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "SESSION_NOT_FOUND",
+                        "message": "not found"
+                    }
+                })),
+            )
+                .into_response();
+        };
+
+        let data = payload
+            .get("data")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !data.is_empty() {
+            let stdout = state
+                .exec_response
+                .lock()
+                .expect("exec response lock")
+                .get("result")
+                .and_then(|result| result.get("stdout"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if !stdout.is_empty() {
+                let _ = tx.send(stdout);
+            }
+        }
+
+        (
+            StatusCode::OK,
+            Json(json!({
+                "success": true
+            })),
+        )
+            .into_response()
+    }
+
+    async fn mock_sidecar_terminal_patch(
+        Path(session_id): Path<String>,
+        State(state): State<MockSidecarState>,
+        Json(payload): Json<Value>,
+    ) -> Response {
+        *state
+            .last_terminal_resize_payload
+            .lock()
+            .expect("terminal resize lock") = Some(payload.clone());
+        *state
+            .last_terminal_resize_session_id
+            .lock()
+            .expect("terminal resize session lock") = Some(session_id.clone());
+
+        let mut sessions = state
+            .terminal_sessions
+            .lock()
+            .expect("terminal sessions lock");
+        let Some(session) = sessions.get_mut(&session_id) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "success": false,
+                    "error": {
+                        "code": "SESSION_NOT_FOUND",
+                        "message": "not found"
+                    }
+                })),
+            )
+                .into_response();
+        };
+
+        if let Some(cols) = payload
+            .get("cols")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+        {
+            session.cols = cols;
+        }
+        if let Some(rows) = payload
+            .get("rows")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+        {
+            session.rows = rows;
+        }
+
+        Json(json!({
+            "success": true,
+            "data": {
+                "sessionId": session_id,
+                "isRunning": true,
+                "cols": session.cols,
+                "rows": session.rows,
+                "streamUrl": format!("/terminals/{session_id}/stream"),
+            }
+        }))
+        .into_response()
+    }
+
+    async fn mock_sidecar_terminal_delete(
+        Path(session_id): Path<String>,
+        State(state): State<MockSidecarState>,
+    ) -> Json<Value> {
+        state
+            .terminal_sessions
+            .lock()
+            .expect("terminal sessions lock")
+            .remove(&session_id);
+        Json(json!({
+            "success": true
+        }))
     }
 
     async fn mock_sidecar_agent(
@@ -4526,6 +5553,24 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             .route(
                 "/health",
                 get(|| async { (StatusCode::OK, Json(json!({"status":"ok"}))) }),
+            )
+            .route(
+                "/terminals",
+                get(mock_sidecar_terminal_list).post(mock_sidecar_terminal_create),
+            )
+            .route(
+                "/terminals/{session_id}/stream",
+                get(mock_sidecar_terminal_stream),
+            )
+            .route(
+                "/terminals/{session_id}/input",
+                post(mock_sidecar_terminal_input),
+            )
+            .route(
+                "/terminals/{session_id}",
+                get(mock_sidecar_terminal_get)
+                    .patch(mock_sidecar_terminal_patch)
+                    .delete(mock_sidecar_terminal_delete),
             )
             .route("/terminals/commands", post(mock_sidecar_exec))
             .route("/agents", get(mock_sidecar_agents))
@@ -5710,8 +6755,14 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
 
     #[tokio::test]
     async fn test_live_terminal_session_sandbox_crud_and_stream() {
-        insert_plain_sandbox("live-term-1", OP_TEST_OWNER);
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("live-term-1", OP_TEST_OWNER, &sidecar_url);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+        let create_body = json!({
+            "cwd": "/home/sidecar",
+            "cols": 132,
+            "rows": 40,
+        });
 
         let create = app()
             .oneshot(
@@ -5719,7 +6770,8 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
                     .method("POST")
                     .uri("/api/sandboxes/live-term-1/live/terminal/sessions")
                     .header("authorization", &auth)
-                    .body(Body::empty())
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&create_body).unwrap()))
                     .unwrap(),
             )
             .await
@@ -5782,6 +6834,23 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::OK);
+
+        let create_payload = sidecar_state
+            .last_terminal_create_payload
+            .lock()
+            .expect("terminal create payload lock")
+            .clone()
+            .expect("terminal create payload");
+        assert_eq!(
+            create_payload,
+            json!({
+                "cwd": "/home/sidecar",
+                "cols": 132,
+                "rows": 40,
+            })
+        );
+
+        server.abort();
     }
 
     #[tokio::test]
@@ -5882,7 +6951,7 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
     }
 
     #[tokio::test]
-    async fn test_live_terminal_stream_receives_exec_output() {
+    async fn test_live_terminal_stream_receives_input_output() {
         let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
         insert_plain_sandbox_with_url("live-exec-1", OP_TEST_OWNER, &sidecar_url);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
@@ -5919,25 +6988,26 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             .unwrap();
         assert_eq!(stream.status(), StatusCode::OK);
 
-        let exec_body = json!({
-            "command": "echo hello",
-            "session_id": session_id,
+        let input_body = json!({
+            "data": "echo hello\n"
         });
-        let exec = app()
+        let input = app()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/sandboxes/live-exec-1/exec")
+                    .uri(format!(
+                        "/api/sandboxes/live-exec-1/live/terminal/sessions/{session_id}/input"
+                    ))
                     .header("authorization", &auth)
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_string(&exec_body).unwrap()))
+                    .body(Body::from(serde_json::to_string(&input_body).unwrap()))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(exec.status(), StatusCode::OK);
-        let exec_json = body_json(exec.into_body()).await;
-        assert_eq!(exec_json["stdout"], "mock-exec-stdout");
+        assert_eq!(input.status(), StatusCode::OK);
+        let input_json = body_json(input.into_body()).await;
+        assert_eq!(input_json["success"], true);
 
         let frame = read_first_sse_frame(stream.into_body())
             .await
@@ -5947,13 +7017,249 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             "expected terminal stream to include exec output, got: {frame}"
         );
 
-        let exec_payload = sidecar_state
-            .last_exec_payload
+        let input_payload = sidecar_state
+            .last_terminal_input_payload
             .lock()
-            .expect("exec payload lock")
+            .expect("terminal input payload lock")
             .clone()
-            .expect("exec payload");
-        assert_eq!(exec_payload["command"], "echo hello");
+            .expect("terminal input payload");
+        assert_eq!(input_payload["data"], "echo hello\n");
+        let input_session_id = sidecar_state
+            .last_terminal_input_session_id
+            .lock()
+            .expect("terminal input session id lock")
+            .clone()
+            .expect("terminal input session id");
+        assert_eq!(input_session_id, session_id);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_live_terminal_resize_proxies_to_sidecar() {
+        let (sidecar_url, sidecar_state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("live-resize-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/live-resize-1/live/terminal/sessions")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+        let create_json = body_json(create.into_body()).await;
+        let session_id = create_json["session_id"]
+            .as_str()
+            .expect("session_id")
+            .to_string();
+
+        let resize = app()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/sandboxes/live-resize-1/live/terminal/sessions/{session_id}"
+                    ))
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&json!({"cols": 140, "rows": 48})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resize.status(), StatusCode::OK);
+        let resize_json = body_json(resize.into_body()).await;
+        assert_eq!(resize_json["success"], true);
+
+        let resize_payload = sidecar_state
+            .last_terminal_resize_payload
+            .lock()
+            .expect("terminal resize payload lock")
+            .clone()
+            .expect("terminal resize payload");
+        assert_eq!(resize_payload, json!({"cols": 140, "rows": 48}));
+        let resize_session_id = sidecar_state
+            .last_terminal_resize_session_id
+            .lock()
+            .expect("terminal resize session id lock")
+            .clone()
+            .expect("terminal resize session id");
+        assert_eq!(resize_session_id, session_id);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_terminal_stream_uses_sidecar_reported_stream_url() {
+        let custom_sidecar = Router::new()
+            .route(
+                "/health",
+                get(|| async { (StatusCode::OK, Json(json!({"status":"ok"}))) }),
+            )
+            .route(
+                "/terminals",
+                post(|| async {
+                    Json(json!({
+                        "success": true,
+                        "data": {
+                            "sessionId": "streamurl-1",
+                            "shell": "bash",
+                            "streamUrl": "/pty/streamurl-1/events",
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/terminals/streamurl-1",
+                get(|| async {
+                    Json(json!({
+                        "success": true,
+                        "data": {
+                            "sessionId": "streamurl-1",
+                            "isRunning": true,
+                            "streamUrl": "/pty/streamurl-1/events",
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/pty/streamurl-1/events",
+                get(|| async move {
+                    let mut response =
+                        axum::response::Response::new(Body::from("data: alt-stream\r\n\r\n"));
+                    *response.status_mut() = StatusCode::OK;
+                    response.headers_mut().insert(
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_static("text/event-stream"),
+                    );
+                    response
+                }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind streamurl sidecar");
+        let addr = listener.local_addr().expect("streamurl sidecar addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, custom_sidecar)
+                .await
+                .expect("serve streamurl sidecar");
+        });
+        let sidecar_url = format!("http://{addr}");
+        let health_url = format!("{sidecar_url}/health");
+        for _ in 0..20 {
+            if let Ok(resp) = reqwest::get(&health_url).await {
+                if resp.status().is_success() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        insert_plain_sandbox_with_url("live-streamurl-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let create = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/live-streamurl-1/live/terminal/sessions")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+
+        let stream = app()
+            .oneshot(
+                Request::builder()
+                    .uri(
+                        "/api/sandboxes/live-streamurl-1/live/terminal/sessions/streamurl-1/stream",
+                    )
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+        let frame = read_first_sse_frame(stream.into_body())
+            .await
+            .expect("streamurl sse frame");
+        assert!(
+            frame.contains("alt-stream"),
+            "expected streamUrl-backed output, got: {frame}"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_terminal_unsupported_does_not_trip_circuit_breaker() {
+        let custom_sidecar = Router::new().route(
+            "/health",
+            get(|| async { (StatusCode::OK, Json(json!({"status":"ok"}))) }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind unsupported sidecar");
+        let addr = listener.local_addr().expect("unsupported sidecar addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, custom_sidecar)
+                .await
+                .expect("serve unsupported sidecar");
+        });
+        let sidecar_url = format!("http://{addr}");
+        let health_url = format!("{sidecar_url}/health");
+        for _ in 0..20 {
+            if let Ok(resp) = reqwest::get(&health_url).await {
+                if resp.status().is_success() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        insert_plain_sandbox_with_url("term-unsupported-1", OP_TEST_OWNER, &sidecar_url);
+        let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
+
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/sandboxes/term-unsupported-1/live/terminal/sessions")
+                .header("authorization", &auth)
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let first = app().oneshot(request()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::BAD_GATEWAY);
+        let first_json = body_json(first.into_body()).await;
+        assert_eq!(
+            first_json["code"].as_str(),
+            Some(TERMINAL_UNSUPPORTED_ERROR_CODE)
+        );
+
+        let second = app().oneshot(request()).await.unwrap();
+        assert_eq!(second.status(), StatusCode::BAD_GATEWAY);
+        let second_json = body_json(second.into_body()).await;
+        assert_eq!(
+            second_json["code"].as_str(),
+            Some(TERMINAL_UNSUPPORTED_ERROR_CODE)
+        );
+        assert!(
+            !circuit_breaker::query_status("term-unsupported-1").active,
+            "terminal 4xx/501 responses should not trip the circuit breaker"
+        );
+
         server.abort();
     }
 
@@ -7245,8 +8551,10 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
 
     #[tokio::test]
     async fn test_terminal_session_cross_sandbox_isolation() {
-        insert_plain_sandbox("iso-term-a", OP_TEST_OWNER);
-        insert_plain_sandbox("iso-term-b", OP_TEST_OWNER);
+        let (sidecar_url_a, _state_a, server_a) = spawn_mock_sidecar().await;
+        let (sidecar_url_b, _state_b, server_b) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("iso-term-a", OP_TEST_OWNER, &sidecar_url_a);
+        insert_plain_sandbox_with_url("iso-term-b", OP_TEST_OWNER, &sidecar_url_b);
         let auth = format!("Bearer {}", session_auth::create_test_token(OP_TEST_OWNER));
 
         // Create terminal session on sandbox A
@@ -7281,13 +8589,17 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
             sessions.is_empty(),
             "sandbox B should not see sandbox A's terminal sessions"
         );
+
+        server_a.abort();
+        server_b.abort();
     }
 
     #[tokio::test]
     async fn test_terminal_session_cross_owner_isolation() {
         const OWNER_A: &str = "0xISOOWNER00000000000000000000000000000A1";
         const OWNER_B: &str = "0xISOOWNER00000000000000000000000000000B1";
-        insert_plain_sandbox("iso-owner-term-1", OWNER_A);
+        let (sidecar_url, _state, server) = spawn_mock_sidecar().await;
+        insert_plain_sandbox_with_url("iso-owner-term-1", OWNER_A, &sidecar_url);
         let auth_a = format!("Bearer {}", session_auth::create_test_token(OWNER_A));
         let auth_b = format!("Bearer {}", session_auth::create_test_token(OWNER_B));
 
@@ -7318,6 +8630,7 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
             .unwrap();
         // Owner B is not owner of this sandbox, so FORBIDDEN
         assert_eq!(list.status(), StatusCode::FORBIDDEN);
+        server.abort();
     }
 
     #[test]

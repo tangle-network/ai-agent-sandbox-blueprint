@@ -67,6 +67,50 @@ impl ExecApiRequest {
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct CreateLiveTerminalSessionRequest {
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub cols: Option<u16>,
+    #[serde(default)]
+    pub rows: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TerminalInputApiRequest {
+    pub data: String,
+}
+
+impl TerminalInputApiRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.data.len() > MAX_TEXT_LEN {
+            return Err(format!(
+                "data exceeds maximum length ({MAX_TEXT_LEN} bytes)"
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TerminalResizeApiRequest {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl TerminalResizeApiRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.cols == 0 || self.cols > 1_000 {
+            return Err("cols must be between 1 and 1000".to_string());
+        }
+        if self.rows == 0 || self.rows > 1_000 {
+            return Err("rows must be between 1 and 1000".to_string());
+        }
+        Ok(())
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Prompt
 // ─────────────────────────────────────────────────────────────────────────────

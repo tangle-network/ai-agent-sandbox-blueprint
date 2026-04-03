@@ -6,6 +6,7 @@
 //! Two static limiters are provided:
 //! - `read_limiter()`: 120 req/min — for GET endpoints
 //! - `write_limiter()`: 30 req/min — for POST/DELETE endpoints
+//! - `terminal_interactive_limiter()`: 2400 req/min — for PTY input/resize
 //!
 //! Usage in operator_api router:
 //! ```ignore
@@ -135,6 +136,9 @@ static READ_LIMITER: once_cell::sync::Lazy<RateLimiter> =
 static WRITE_LIMITER: once_cell::sync::Lazy<RateLimiter> =
     once_cell::sync::Lazy::new(|| RateLimiter::new(RateLimitConfig::new(30, 60)));
 
+static TERMINAL_INTERACTIVE_LIMITER: once_cell::sync::Lazy<RateLimiter> =
+    once_cell::sync::Lazy::new(|| RateLimiter::new(RateLimitConfig::new(2_400, 60)));
+
 static AUTH_LIMITER: once_cell::sync::Lazy<RateLimiter> =
     once_cell::sync::Lazy::new(|| RateLimiter::new(RateLimitConfig::new(10, 60)));
 
@@ -146,6 +150,11 @@ pub fn read_limiter() -> &'static RateLimiter {
 /// Access the write-tier (30 req/min) limiter.
 pub fn write_limiter() -> &'static RateLimiter {
     &WRITE_LIMITER
+}
+
+/// Access the high-frequency PTY input/resize limiter.
+pub fn terminal_interactive_limiter() -> &'static RateLimiter {
+    &TERMINAL_INTERACTIVE_LIMITER
 }
 
 /// Access the auth-tier (10 req/min) limiter.
@@ -224,6 +233,23 @@ pub async fn read_rate_limit(request: Request, next: Next) -> Response {
 pub async fn write_rate_limit(request: Request, next: Next) -> Response {
     let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
     if !write_limiter().check(ip) {
+        metrics::rate_limit_rejections().fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", "60")],
+            "Rate limit exceeded",
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+/// Rate-limiting middleware for interactive PTY endpoints.
+/// Allows 2400 requests per minute per IP so terminal input and resize traffic
+/// does not get throttled like normal writes.
+pub async fn terminal_interactive_rate_limit(request: Request, next: Next) -> Response {
+    let ip = extract_client_ip(&request).unwrap_or(UNKNOWN_IP);
+    if !terminal_interactive_limiter().check(ip) {
         metrics::rate_limit_rejections().fetch_add(1, Ordering::Relaxed);
         return (
             StatusCode::TOO_MANY_REQUESTS,
