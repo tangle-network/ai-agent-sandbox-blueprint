@@ -660,8 +660,8 @@ export default function InstanceDetail() {
                     apiUrl={operatorUrl}
                     resourcePath="/api/sandbox"
                     token={operatorToken}
-                    title="Instance Terminal"
-                    subtitle="Connected through the operator API"
+                    title="Instance Shell"
+                    subtitle="Secure shell via operator relay"
                     initialCwd={terminalPath}
                     displayUsername={terminalUsername}
                     displayPath={terminalPath}

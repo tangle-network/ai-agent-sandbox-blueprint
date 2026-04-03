@@ -100,8 +100,8 @@ describe('OperatorTerminalView', () => {
         apiUrl="http://operator:9090"
         resourcePath="/api/sandboxes/sb-1"
         token="token-1"
-        title="Sandbox Terminal"
-        subtitle="Connected through the operator API"
+        title="Sandbox Shell"
+        subtitle="Secure shell via operator relay"
         initialCwd="/home/agent"
         displayUsername="agent"
         displayPath="/home/agent"
@@ -117,5 +117,28 @@ describe('OperatorTerminalView', () => {
     expect(terminal.reset).toHaveBeenCalledTimes(1);
     expect(terminal.clear).not.toHaveBeenCalled();
     expect(newSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the banner with clear shell metadata', () => {
+    render(
+      <OperatorTerminalView
+        apiUrl="http://operator:9090"
+        resourcePath="/api/sandboxes/sb-1"
+        token="token-1"
+        title="Sandbox Shell"
+        subtitle="Secure shell via operator relay"
+        initialCwd="/home/agent"
+        displayUsername="agent"
+        displayPath="/home/agent"
+      />,
+    );
+
+    const terminal = mockState.terminalInstances[0];
+    const bannerWrites = terminal.writeln.mock.calls.map(([value]) => String(value));
+
+    expect(bannerWrites.some((line) => line.includes('Sandbox Shell'))).toBe(true);
+    expect(bannerWrites.some((line) => line.includes('Secure shell via operator relay'))).toBe(true);
+    expect(bannerWrites.some((line) => line.includes('User: agent'))).toBe(true);
+    expect(bannerWrites.some((line) => line.includes('Start dir: /home/agent'))).toBe(true);
   });
 });

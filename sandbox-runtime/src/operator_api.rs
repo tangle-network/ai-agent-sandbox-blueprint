@@ -64,6 +64,7 @@ const SIDECAR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 const AGENT_WARMUP_ERROR_CODE: &str = "AGENT_WARMING_UP";
 const TERMINAL_UNSUPPORTED_ERROR_CODE: &str = "TERMINAL_UNSUPPORTED";
+const TERMINAL_PROMPT: &str = r"\u:\w\$ ";
 #[cfg(not(test))]
 const AGENT_WARMUP_RETRY_DELAYS_MS: &[u64] = &[250, 500, 1_000, 2_000, 4_000, 4_000, 4_000];
 #[cfg(test)]
@@ -978,6 +979,13 @@ async fn create_terminal_session(
 ) -> Result<LiveSessionSummary, (StatusCode, Json<ApiError>)> {
     require_running(record)?;
     let mut payload = Map::new();
+    payload.insert(
+        "env".into(),
+        json!({
+            "PS1": TERMINAL_PROMPT,
+            "PROMPT_DIRTRIM": "0",
+        }),
+    );
     let cwd = req.cwd.trim();
     if !cwd.is_empty() {
         payload.insert("cwd".into(), json!(cwd));
@@ -6844,6 +6852,10 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         assert_eq!(
             create_payload,
             json!({
+                "env": {
+                    "PS1": "\\u:\\w\\$ ",
+                    "PROMPT_DIRTRIM": "0",
+                },
                 "cwd": "/home/sidecar",
                 "cols": 132,
                 "rows": 40,

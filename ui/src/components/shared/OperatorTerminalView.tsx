@@ -47,8 +47,8 @@ export function OperatorTerminalView({
   apiUrl,
   resourcePath,
   token,
-  title = 'Terminal',
-  subtitle = 'Connected through the operator API',
+  title = 'Shell',
+  subtitle = 'Secure shell via operator relay',
   initialCwd = '',
   displayUsername = '',
   displayPath = '',
@@ -71,18 +71,18 @@ export function OperatorTerminalView({
     const term = termRef.current;
     if (!term) return;
 
-    const padTitle = formatBannerLine(title);
-    const padSubtitle = formatBannerLine(subtitle);
-    const identity = displayUsername && displayPath
-      ? formatBannerLine(`${displayUsername} | ${displayPath}`)
-      : '';
+    const bannerLines = [
+      formatBannerLine(title),
+      formatBannerLine(subtitle),
+      displayUsername ? formatBannerLine(`User: ${displayUsername}`) : '',
+      displayPath ? formatBannerLine(`Start dir: ${displayPath}`) : '',
+    ].filter(Boolean);
 
     term.writeln(`\x1b[38;5;48m\u256d${'\u2500'.repeat(41)}\u256e\x1b[0m`);
-    term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  \x1b[1m${padTitle}\x1b[0m\x1b[38;5;48m\u2502\x1b[0m`);
-    term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${padSubtitle}\x1b[38;5;48m\u2502\x1b[0m`);
-    if (identity) {
-      term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${identity}\x1b[38;5;48m\u2502\x1b[0m`);
-    }
+    bannerLines.forEach((line, index) => {
+      const content = index === 0 ? `\x1b[1m${line}\x1b[0m` : line;
+      term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${content}\x1b[38;5;48m\u2502\x1b[0m`);
+    });
     term.writeln(`\x1b[38;5;48m\u2570${'\u2500'.repeat(41)}\u256f\x1b[0m`);
   }, [displayPath, displayUsername, formatBannerLine, subtitle, title]);
 
