@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react';
 import { txListStore, pendingCount, clearTxs, type TrackedTx } from '@tangle-network/blueprint-ui';
-import { timeAgo, useDropdownMenu } from '@tangle-network/sandbox-ui';
+import { useDropdownMenu } from '@tangle-network/sandbox-ui/hooks';
+import { timeAgo } from '@tangle-network/sandbox-ui/utils';
+import type { RefObject } from 'react';
 
 function StatusIcon({ status }: { status: TrackedTx['status'] }) {
   if (status === 'pending') return <div className="w-4 h-4 rounded-full border-2 border-violet-500/40 border-t-violet-400 animate-spin shrink-0" />;
@@ -10,11 +12,12 @@ function StatusIcon({ status }: { status: TrackedTx['status'] }) {
 
 export function TxDropdown() {
   const { open, ref, toggle, close } = useDropdownMenu({ closeOnEsc: true });
+  const dropdownRef = ref as RefObject<HTMLDivElement>;
   const txs = useStore(txListStore);
   const pending = useStore(pendingCount);
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={dropdownRef} className="relative">
       <button type="button" onClick={toggle} className="relative p-2.5 rounded-lg glass-card hover:border-violet-500/20 transition-all" title="Transaction history">
         <div className="i-ph:receipt text-base text-cloud-elements-textSecondary" />
         {pending > 0 && (

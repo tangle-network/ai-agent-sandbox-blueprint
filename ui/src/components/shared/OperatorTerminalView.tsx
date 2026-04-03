@@ -1,11 +1,11 @@
 import '@xterm/xterm/css/xterm.css';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useOperatorTerminalSession } from '~/lib/hooks/useOperatorTerminalSession';
 
-interface OperatorTerminalViewProps {
+export interface OperatorTerminalViewProps {
   apiUrl: string;
   resourcePath: string;
   token: string;
@@ -41,21 +41,24 @@ const theme = {
   brightWhite: '#fafafa',
 };
 
-const prompt = '\x1b[38;5;48m$\x1b[0m ';
+const INPUT_FLUSH_DELAY_MS = 25;
 
 export function OperatorTerminalView({
   apiUrl,
   resourcePath,
   token,
-  title = 'Terminal',
-  subtitle = 'Connected through the operator API',
+  title = 'Shell',
+  subtitle = 'Secure shell via operator relay',
   initialCwd = '',
   displayUsername = '',
   displayPath = '',
 }: OperatorTerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const lineBufferRef = useRef('');
+  const isConnectedRef = useRef(false);
+  const pendingInputRef = useRef('');
+  const inputFlushTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const [terminalSize, setTerminalSize] = useState<{ cols: number; rows: number } | null>(null);
 
   const formatBannerLine = useCallback((value: string) => {
     const normalized = value.trim();
@@ -67,61 +70,80 @@ export function OperatorTerminalView({
   const writeBanner = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
-    const padTitle = formatBannerLine(title);
-    const padSubtitle = formatBannerLine(subtitle);
-    const identity = displayUsername && displayPath
-      ? formatBannerLine(`${displayUsername} | ${displayPath}`)
-      : '';
-    term.writeln(`\x1b[38;5;48m\u256d${'─'.repeat(41)}\u256e\x1b[0m`);
-    term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  \x1b[1m${padTitle}\x1b[0m\x1b[38;5;48m\u2502\x1b[0m`);
-    term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${padSubtitle}\x1b[38;5;48m\u2502\x1b[0m`);
-    if (identity) {
-      term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${identity}\x1b[38;5;48m\u2502\x1b[0m`);
-    }
-    term.writeln(`\x1b[38;5;48m\u2570${'─'.repeat(41)}\u256f\x1b[0m`);
-    term.write(prompt);
+
+    const bannerLines = [
+      formatBannerLine(title),
+      formatBannerLine(subtitle),
+      displayUsername ? formatBannerLine(`User: ${displayUsername}`) : '',
+      displayPath ? formatBannerLine(`Start dir: ${displayPath}`) : '',
+    ].filter(Boolean);
+
+    term.writeln(`\x1b[38;5;48m\u256d${'\u2500'.repeat(41)}\u256e\x1b[0m`);
+    bannerLines.forEach((line, index) => {
+      const content = index === 0 ? `\x1b[1m${line}\x1b[0m` : line;
+      term.writeln(`\x1b[38;5;48m\u2502\x1b[0m  ${content}\x1b[38;5;48m\u2502\x1b[0m`);
+    });
+    term.writeln(`\x1b[38;5;48m\u2570${'\u2500'.repeat(41)}\u256f\x1b[0m`);
   }, [displayPath, displayUsername, formatBannerLine, subtitle, title]);
 
-  const writePrompt = useCallback(() => {
-    termRef.current?.write(prompt);
-  }, []);
-
-  const writePromptOnNewLine = useCallback(() => {
-    termRef.current?.write(`\r\n${prompt}`);
-  }, []);
-
   const handleOutput = useCallback((data: string) => {
-    if (!data) {
-      return;
-    }
+    if (!data) return;
     termRef.current?.write(data);
-    if (!data.endsWith('\n') && !data.endsWith('\r')) {
-      termRef.current?.write('\r\n');
-    }
   }, []);
 
-  const handleCommandComplete = useCallback(() => {
-    termRef.current?.write(prompt);
-  }, []);
-
-  const { isConnected, error, sendCommand, reconnect, newSession } = useOperatorTerminalSession({
+  const { isConnected, error, sendInput, reconnect, newSession } = useOperatorTerminalSession({
     apiUrl,
     resourcePath,
     token,
     initialCwd,
+    terminalSize,
     onOutput: handleOutput,
-    onCommandComplete: handleCommandComplete,
   });
+
+  useEffect(() => {
+    isConnectedRef.current = isConnected;
+  }, [isConnected]);
 
   const handleNewSession = useCallback(() => {
     const term = termRef.current;
     if (term) {
-      lineBufferRef.current = '';
-      term.clear();
+      // reset() performs a full RIS, which returns the cursor to home before
+      // we redraw the banner. clear() preserved the prompt line position and
+      // caused the box frame to be written mid-line.
+      term.reset();
       writeBanner();
+    }
+    pendingInputRef.current = '';
+    if (inputFlushTimerRef.current) {
+      clearTimeout(inputFlushTimerRef.current);
+      inputFlushTimerRef.current = undefined;
     }
     newSession();
   }, [newSession, writeBanner]);
+
+  const syncTerminalSize = useCallback((term: Terminal, fitAddon: FitAddon) => {
+    fitAddon.fit();
+    setTerminalSize((current) => {
+      if (current?.cols === term.cols && current?.rows === term.rows) {
+        return current;
+      }
+      return { cols: term.cols, rows: term.rows };
+    });
+  }, []);
+
+  const flushPendingInput = useCallback(() => {
+    inputFlushTimerRef.current = undefined;
+    const data = pendingInputRef.current;
+    if (!data || !isConnectedRef.current) {
+      pendingInputRef.current = '';
+      return;
+    }
+    pendingInputRef.current = '';
+    const term = termRef.current;
+    sendInput(data).catch((err) => {
+      term?.writeln(`\x1b[31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m`);
+    });
+  }, [sendInput]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -146,60 +168,41 @@ export function OperatorTerminalView({
     term.open(containerRef.current);
 
     requestAnimationFrame(() => {
-      fitAddon.fit();
+      syncTerminalSize(term, fitAddon);
     });
 
     termRef.current = term;
     writeBanner();
 
     term.onData((data) => {
-      const code = data.charCodeAt(0);
-
-      if (data === '\r') {
-        const command = lineBufferRef.current;
-        lineBufferRef.current = '';
-        term.write('\r\n');
-
-        if (command.trim()) {
-          sendCommand(command).catch((err) => {
-            term.writeln(`\x1b[31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m`);
-            term.write(prompt);
-          });
-        } else {
-          term.write(prompt);
-        }
-      } else if (data === '\x7f' || data === '\b') {
-        if (lineBufferRef.current.length > 0) {
-          lineBufferRef.current = lineBufferRef.current.slice(0, -1);
-          term.write('\b \b');
-        }
-      } else if (data === '\x03') {
-        lineBufferRef.current = '';
-        term.write('^C');
-        writePromptOnNewLine();
-      } else if (data === '\x0c') {
-        lineBufferRef.current = '';
-        term.clear();
-        term.write(prompt);
-      } else if (code >= 32) {
-        lineBufferRef.current += data;
-        term.write(data);
+      if (!isConnectedRef.current) {
+        return;
       }
+      pendingInputRef.current += data;
+      if (inputFlushTimerRef.current) {
+        return;
+      }
+      inputFlushTimerRef.current = setTimeout(flushPendingInput, INPUT_FLUSH_DELAY_MS);
     });
 
     const resizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => {
-        fitAddon.fit();
+        syncTerminalSize(term, fitAddon);
       });
     });
     resizeObserver.observe(containerRef.current);
 
     return () => {
       resizeObserver.disconnect();
+      if (inputFlushTimerRef.current) {
+        clearTimeout(inputFlushTimerRef.current);
+        inputFlushTimerRef.current = undefined;
+      }
+      pendingInputRef.current = '';
       term.dispose();
       termRef.current = null;
     };
-  }, [sendCommand, writeBanner, writePromptOnNewLine]);
+  }, [flushPendingInput, syncTerminalSize, writeBanner]);
 
   return (
     <div className="relative h-full w-full group">
@@ -209,36 +212,37 @@ export function OperatorTerminalView({
         style={{ backgroundColor: theme.background }}
       />
 
-      {/* New Session button — top-right, visible on hover */}
       {isConnected && (
         <button
           onClick={handleNewSession}
           className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-md text-xs
             bg-neutral-800/80 text-neutral-400 opacity-0 group-hover:opacity-100
-            hover:bg-neutral-700 hover:text-neutral-200 transition-all cursor-pointer"
-          title="New terminal session"
+            transition-opacity hover:text-neutral-100 hover:bg-neutral-700/80"
+          type="button"
         >
-          <span className="i-ph:plus text-xs" />
-          New Session
+          <span className="i-ph:arrows-clockwise text-sm" />
+          New session
         </button>
       )}
 
-      {(!isConnected || error) && (
-        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/60">
-          <div className="text-center px-6">
-            {error ? (
-              <>
-                <p className="mb-3 text-sm text-red-400">{error}</p>
-                <button
-                  onClick={reconnect}
-                  className="cursor-pointer text-sm text-emerald-400 underline hover:text-emerald-300"
-                >
-                  Retry connection
-                </button>
-              </>
-            ) : (
-              <p className="text-sm text-neutral-400">Connecting through operator...</p>
-            )}
+      {!isConnected && !error && (
+        <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-md text-xs bg-neutral-800/80 text-neutral-400">
+          <span className="i-ph:spinner-gap animate-spin text-sm" />
+          Connecting...
+        </div>
+      )}
+
+      {error && (
+        <div className="absolute inset-x-4 bottom-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+          <div className="flex items-center justify-between gap-3">
+            <span>{error}</span>
+            <button
+              onClick={reconnect}
+              className="rounded-md border border-red-500/30 px-2 py-1 text-xs hover:bg-red-500/10"
+              type="button"
+            >
+              Retry
+            </button>
           </div>
         </div>
       )}

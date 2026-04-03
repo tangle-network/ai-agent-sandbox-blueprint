@@ -840,8 +840,8 @@ export default function SandboxDetail() {
                   apiUrl={operatorUrl}
                   resourcePath={operatorResourcePath}
                   token={operatorToken}
-                  title="Sandbox Terminal"
-                  subtitle="Connected through the operator API"
+                  title="Sandbox Shell"
+                  subtitle="Secure shell via operator relay"
                   initialCwd={terminalPath}
                   displayUsername={terminalUsername}
                   displayPath={terminalPath}

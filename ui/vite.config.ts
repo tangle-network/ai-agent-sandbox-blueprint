@@ -89,7 +89,6 @@ function clientChunks(): Plugin {
                 manualChunks: {
                   'react-vendor': ['react', 'react-dom', 'react-router'],
                   'web3-vendor': ['wagmi', 'viem', '@tanstack/react-query', 'connectkit', 'framer-motion'],
-                  'terminal-vendor': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links'],
                 },
               },
             },
@@ -110,6 +109,24 @@ export default defineConfig({
   ],
   define: {
     global: 'globalThis',
+  },
+  optimizeDeps: {
+    // blueprint-ui publishes raw TSX from node_modules. Force the dependency
+    // prebundle to use the automatic React runtime so esbuild does not emit
+    // bare React.createElement(...) calls for files that only import types.
+    include: [
+      '@tangle-network/blueprint-ui',
+      '@tangle-network/blueprint-ui/components',
+    ],
+    esbuildOptions: {
+      jsx: 'automatic',
+      jsxImportSource: 'react',
+      tsconfigRaw: {
+        compilerOptions: {
+          jsx: 'react-jsx',
+        },
+      },
+    },
   },
   server: {
     proxy: {
@@ -143,7 +160,6 @@ export default defineConfig({
       '@radix-ui/react-slot',
       '@radix-ui/react-tabs',
       '@tangle-network/agent-ui',
-      'blo',
       'class-variance-authority',
       'clsx',
       'framer-motion',

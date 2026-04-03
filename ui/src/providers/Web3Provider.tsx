@@ -4,10 +4,9 @@ import { type ReactNode } from 'react';
 import {
   createTangleTransports,
   defaultConnectKitOptions,
-  getTangleWalletChains,
+  tangleWalletChains,
 } from '@tangle-network/blueprint-ui';
 import { Web3Shell } from '@tangle-network/blueprint-ui/components';
-import { tangleLocal } from '~/lib/contracts/chains';
 
 const appMetadata = {
   appName: 'Tangle Sandbox Cloud',
@@ -21,8 +20,8 @@ const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || 
 export function createWeb3Config(projectId = walletConnectProjectId) {
   return createConfig(
     getDefaultConfig({
-      chains: getTangleWalletChains(tangleLocal) as any,
-      transports: createTangleTransports(tangleLocal) as any,
+      chains: tangleWalletChains as any,
+      transports: createTangleTransports() as any,
       walletConnectProjectId: projectId,
       ...appMetadata,
     }),

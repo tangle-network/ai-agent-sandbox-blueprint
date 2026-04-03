@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { discoverOperatorsWithClient } from '../../../../../blueprint-ui/src/hooks/useOperators';
+import { discoverOperatorsWithClient } from '../../../node_modules/@tangle-network/blueprint-ui/src/hooks/useOperators';
 
 const SERVICES = '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9';
 const BLUEPRINT_ID = 2n;

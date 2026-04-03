@@ -47,6 +47,38 @@ struct TestSidecar {
 
 static SIDECAR: OnceCell<TestSidecar> = OnceCell::const_new();
 
+async fn extract_host_port(builder: &DockerBuilder, container_id: &str) -> u16 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+    loop {
+        let inspect = builder
+            .client()
+            .inspect_container(container_id, None::<InspectContainerOptions>)
+            .await
+            .expect("Failed to inspect container");
+
+        if let Some(host_port) = inspect
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.ports.as_ref())
+            .and_then(|p| p.get(&format!("{CONTAINER_PORT}/tcp")))
+            .and_then(|v| v.as_ref())
+            .and_then(|v| v.first())
+            .and_then(|b| b.host_port.as_ref())
+            .and_then(|p| p.parse::<u16>().ok())
+            .filter(|port| *port > 0)
+        {
+            return host_port;
+        }
+
+        assert!(
+            tokio::time::Instant::now() <= deadline,
+            "Could not extract host port"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 async fn docker_builder() -> DockerBuilder {
     match DockerBuilder::new().await {
         Ok(b) => b,
@@ -142,22 +174,7 @@ async fn ensure_sidecar() -> &'static TestSidecar {
                 .expect("Container has no ID after start")
                 .to_string();
 
-            let inspect = builder
-                .client()
-                .inspect_container(&container_id, None::<InspectContainerOptions>)
-                .await
-                .expect("Failed to inspect container");
-
-            let host_port = inspect
-                .network_settings
-                .as_ref()
-                .and_then(|ns| ns.ports.as_ref())
-                .and_then(|p| p.get(&format!("{CONTAINER_PORT}/tcp")))
-                .and_then(|v| v.as_ref())
-                .and_then(|v| v.first())
-                .and_then(|b| b.host_port.as_ref())
-                .and_then(|p| p.parse::<u16>().ok())
-                .expect("Could not extract host port");
+            let host_port = extract_host_port(&builder, &container_id).await;
 
             let url = format!("http://127.0.0.1:{host_port}");
 
@@ -1003,7 +1020,7 @@ async fn terminal_create_list_delete() {
         .post(format!("{}/terminals", s.url))
         .header(AUTHORIZATION, auth_header())
         .header(CONTENT_TYPE, "application/json")
-        .json(&json!({"name": "test-terminal"}))
+        .json(&json!({"name": "test-terminal", "cwd": "/tmp"}))
         .send()
         .await
         .unwrap();
@@ -1027,6 +1044,7 @@ async fn terminal_create_list_delete() {
         create_body["data"]["streamUrl"].is_string(),
         "streamUrl: {create_body}"
     );
+    assert_eq!(create_body["data"]["cwd"], "/tmp");
 
     // List.
     let list_resp = http()
@@ -2082,7 +2100,7 @@ async fn terminal_stream_emits_output() {
         .post(format!("{}/terminals", s.url))
         .header(AUTHORIZATION, auth_header())
         .header(CONTENT_TYPE, "application/json")
-        .json(&json!({"name": "stream-test-terminal"}))
+        .json(&json!({"name": "stream-test-terminal", "cwd": "/tmp"}))
         .send()
         .await
         .unwrap();
@@ -2115,30 +2133,24 @@ async fn terminal_stream_emits_output() {
     let stream_status = stream_resp.status();
     eprintln!("Terminal stream status: {stream_status}");
 
-    if !stream_status.is_success() {
-        eprintln!("Terminal stream not supported (status={stream_status}), skipping");
-        // Clean up.
-        let _ = http()
-            .delete(format!("{}/terminals/{session_id}", s.url))
-            .header(AUTHORIZATION, auth_header())
-            .send()
-            .await;
-        return;
-    }
+    assert!(
+        stream_status.is_success(),
+        "terminal stream: {stream_status}"
+    );
 
-    // Execute a command in the terminal (fire-and-forget, we'll read from stream).
+    // Write input to the terminal (fire-and-forget, we'll read from stream).
     let exec_url = s.url.clone();
     let sid = session_id.to_string();
-    tokio::spawn(async move {
+    let exec_task = tokio::spawn(async move {
         // Small delay to let stream connect.
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let _ = http()
-            .post(format!("{exec_url}/terminals/{sid}/execute"))
+        http()
+            .post(format!("{exec_url}/terminals/{sid}/input"))
             .header(AUTHORIZATION, auth_header())
             .header(CONTENT_TYPE, "application/json")
-            .json(&json!({"command": "echo stream-test-marker-xyz"}))
+            .json(&json!({"data": "echo stream-test-marker-xyz\n"}))
             .send()
-            .await;
+            .await
     });
 
     // Collect SSE events from the terminal stream.
@@ -2155,14 +2167,19 @@ async fn terminal_stream_emits_output() {
         eprintln!("  event[{i}]: type='{evt}', data={preview}");
     }
 
-    // Terminal stream should emit at least some data events.
-    // Even without the execute command, the shell prompt itself generates output.
-    // We're lenient here — if we get any events, the stream works.
-    if events.is_empty() {
-        eprintln!(
-            "Warning: no terminal stream events received (may need /terminals/{{id}}/execute endpoint)"
-        );
-    }
+    let exec_resp = exec_task
+        .await
+        .unwrap()
+        .expect("terminal input should succeed");
+    assert!(
+        exec_resp.status().is_success(),
+        "terminal input: {}",
+        exec_resp.status()
+    );
+    assert!(
+        !events.is_empty(),
+        "terminal stream produced no events after execute"
+    );
 
     // Clean up terminal.
     let _ = http()

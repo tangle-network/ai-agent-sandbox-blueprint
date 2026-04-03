@@ -5,6 +5,7 @@
 
 export interface TextPart {
   type: 'text';
+  id?: string;
   text: string;
   /** If true this text was synthesised client-side (e.g. echo of user input). */
   synthetic?: boolean;
@@ -42,6 +43,7 @@ export interface ToolPart {
 
 export interface ReasoningPart {
   type: 'reasoning';
+  id?: string;
   text: string;
   time?: ToolTime;
 }

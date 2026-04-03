@@ -1,8 +1,15 @@
+import path from 'node:path';
+import { createRequire } from 'node:module';
 import { icons as phIcons } from '@iconify-json/ph';
 import { defineConfig, presetIcons, transformerDirectives } from 'unocss';
 import { bpThemeTokens } from '@tangle-network/blueprint-ui/preset';
 import { presetAnimations } from 'unocss-preset-animations';
 import { presetWind4 } from 'unocss/preset-wind4';
+
+const cjsRequire = createRequire(import.meta.url);
+const blueprintUiSrcGlob = `${path
+  .dirname(cjsRequire.resolve('@tangle-network/blueprint-ui/preset'))
+  .replaceAll(path.sep, '/')}/**/*.{jsx,tsx}`;
 
 /*
  * TANGLE CLOUD — Design System
@@ -159,9 +166,24 @@ const SHADCN_COLORS = {
 export default defineConfig({
   content: {
     pipeline: {
-      include: [/\.(tsx?|jsx?)$/, '../../blueprint-ui/src/**/*.{ts,tsx}', '../packages/agent-ui/src/**/*.{ts,tsx}'],
+      // Keep extraction focused on renderable component files. Scanning tests and
+      // plain TS sources can produce bogus utilities from regular code tokens.
+      include: [
+        'src/**/*.{jsx,tsx}',
+        '../packages/agent-ui/src/**/*.{jsx,tsx}',
+        blueprintUiSrcGlob,
+      ],
+      exclude: [
+        '**/*.test.{jsx,tsx}',
+        '**/*.spec.{jsx,tsx}',
+        '**/test/**',
+        '**/tests/**',
+      ],
     },
   },
+  // JSX placeholder text like "--" can be extracted as a token and compiled
+  // into invalid CSS (`__uno_hash_*{--:'';}`) by the default extractor.
+  blocklist: ['--', '?', '??'],
   shortcuts: {
     'cloud-ease': 'ease-[cubic-bezier(0.4,0,0.2,1)]',
     'transition-theme': 'transition-[background-color,border-color,color] duration-150 cloud-ease',

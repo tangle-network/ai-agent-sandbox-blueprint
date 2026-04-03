@@ -61,6 +61,8 @@ export interface ChatSessionDetail {
     role: string;
     content: string;
     created_at?: number;
+    completed_at?: number | null;
+    parts?: Array<Record<string, unknown>>;
     trace_id?: string | null;
     success?: boolean | null;
     error?: string | null;

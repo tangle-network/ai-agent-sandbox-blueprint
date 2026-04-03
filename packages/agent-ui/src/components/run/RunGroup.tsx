@@ -3,7 +3,7 @@ import * as Collapsible from '@radix-ui/react-collapsible';
 import { cn } from '~/utils/cn';
 import { formatDuration } from '~/utils/format';
 import type { Run, ToolCategory } from '~/types/run';
-import type { SessionPart, ToolPart, ReasoningPart } from '~/types/parts';
+import type { ReasoningPart, SessionPart, TextPart, ToolPart } from '~/types/parts';
 import type { AgentBranding } from '~/types/branding';
 import type { CustomToolRenderer } from '~/types/tool-display';
 import { TOOL_CATEGORY_ICONS } from '~/utils/toolDisplay';
@@ -59,6 +59,10 @@ function CategoryBadges({ categories }: { categories: Set<ToolCategory> }) {
   );
 }
 
+function isRenderableTextPart(part: SessionPart): part is TextPart {
+  return part.type === 'text' && !part.synthetic && part.text.trim().length > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -83,7 +87,10 @@ export const RunGroup = memo(
 
     // Split into text parts (always visible) and collapsible parts (tool/thinking)
     const textParts = useMemo(
-      () => allParts.filter(({ part }) => part.type === 'text' && !part.synthetic && part.text.trim()),
+      () =>
+        allParts.flatMap(({ part, ...rest }) =>
+          isRenderableTextPart(part) ? [{ ...rest, part }] : [],
+        ),
       [allParts],
     );
     const collapsibleParts = useMemo(
