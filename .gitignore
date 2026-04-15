@@ -23,8 +23,9 @@ out/
 /broadcast/*/31337/
 /broadcast/**/dry-run/
 
-# Docs
-docs/
+# Bench output (keep the directory itself via .gitkeep)
+bench-results/*
+!bench-results/.gitkeep
 
 # Dotenv file
 .env

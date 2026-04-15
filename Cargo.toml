@@ -8,6 +8,7 @@ members = [
     "ai-agent-instance-blueprint-bin",
     "ai-agent-tee-instance-blueprint-lib",
     "ai-agent-tee-instance-blueprint-bin",
+    "bench-harness",
 ]
 
 [workspace.package]

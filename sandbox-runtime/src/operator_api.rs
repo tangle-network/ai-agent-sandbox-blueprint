@@ -2103,14 +2103,19 @@ fn build_agent_payload(
     if let Some(turns) = max_turns {
         if turns > 0 {
             let mut metadata = Map::new();
-            metadata.insert("maxTurns".into(), json!(turns));
+            // Extend from context_json FIRST, then insert maxTurns — so
+            // user-supplied context cannot override the operator-enforced
+            // turn limit.
             if !context_json.trim().is_empty() {
-                if let Ok(Some(Value::Object(ctx))) =
+                if let Ok(Some(Value::Object(mut ctx))) =
                     crate::util::parse_json_object(context_json, "context_json")
                 {
+                    // Strip any attempt to override protected keys
+                    ctx.remove("maxTurns");
                     metadata.extend(ctx);
                 }
             }
+            metadata.insert("maxTurns".into(), json!(turns));
             payload.insert("metadata".into(), Value::Object(metadata));
         }
     } else if !context_json.trim().is_empty() {
@@ -9475,5 +9480,60 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
             .get("nonexistent_key")
             .unwrap();
         assert!(record.is_none(), "missing key should return None");
+    }
+
+    // =====================================================================
+    // Adversarial: context_json cannot override maxTurns
+    // =====================================================================
+
+    #[test]
+    fn test_build_agent_payload_context_json_cannot_override_max_turns() {
+        // A malicious client sends context_json with a maxTurns override
+        // attempting to remove the operator-enforced turn limit.
+        let payload = build_agent_payload(
+            "hello",
+            "sess-1",
+            "",
+            r#"{"maxTurns": 999999, "custom_key": "safe"}"#,
+            60_000,
+            Some(5), // operator-enforced limit
+            "default",
+        );
+
+        let metadata = payload.get("metadata").expect("metadata should exist");
+        assert_eq!(
+            metadata.get("maxTurns").and_then(|v| v.as_u64()),
+            Some(5),
+            "CRITICAL: context_json overrode operator maxTurns! Attacker can bypass turn limits."
+        );
+        assert_eq!(
+            metadata.get("custom_key").and_then(|v| v.as_str()),
+            Some("safe"),
+            "non-protected context keys should still pass through"
+        );
+    }
+
+    #[test]
+    fn test_build_agent_payload_context_json_without_max_turns_override() {
+        // Normal case: context_json doesn't try to override maxTurns
+        let payload = build_agent_payload(
+            "hello",
+            "",
+            "gpt-4",
+            r#"{"user_context": "some data"}"#,
+            0,
+            Some(10),
+            "",
+        );
+
+        let metadata = payload.get("metadata").expect("metadata should exist");
+        assert_eq!(
+            metadata.get("maxTurns").and_then(|v| v.as_u64()),
+            Some(10),
+        );
+        assert_eq!(
+            metadata.get("user_context").and_then(|v| v.as_str()),
+            Some("some data"),
+        );
     }
 }

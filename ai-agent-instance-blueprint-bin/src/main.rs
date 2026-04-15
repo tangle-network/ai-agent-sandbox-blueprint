@@ -185,7 +185,19 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             None,
             workflow_status_router(),
         );
-        let addr = std::net::SocketAddr::from(([0, 0, 0, 0u8], api_port));
+        // Bind 127.0.0.1 by default (loopback only). Set BIND_ALL_INTERFACES=true
+        // to bind 0.0.0.0 (all interfaces) for environments where external access
+        // is intended and network-layer controls are in place.
+        let bind_all = std::env::var("BIND_ALL_INTERFACES")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+        let bind_ip: [u8; 4] = if bind_all {
+            warn!("BIND_ALL_INTERFACES=true — operator API is accessible on all network interfaces");
+            [0, 0, 0, 0]
+        } else {
+            [127, 0, 0, 1]
+        };
+        let addr = std::net::SocketAddr::from((bind_ip, api_port));
         info!("Starting operator API on {addr}");
 
         let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {

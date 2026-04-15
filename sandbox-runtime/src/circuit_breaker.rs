@@ -140,7 +140,7 @@ pub fn clear(sandbox_id: &str) {
     mark_healthy(sandbox_id);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub fn clear_all_for_testing() {
     UNHEALTHY.lock().unwrap_or_else(|e| e.into_inner()).clear();
     *LAST_GC.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();

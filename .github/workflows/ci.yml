@@ -325,6 +325,86 @@ jobs:
       - name: Run Firecracker real-path anvil E2E
         run: cargo test -p ai-agent-sandbox-blueprint-lib --test anvil runs_firecracker_jobs_end_to_end -- --nocapture --test-threads=1
 
+  bench:
+    name: Benchmarks (regression gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Run on PRs to detect regressions, and on main to refresh the baseline.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "true"
+          shared-key: bench
+
+      - uses: taiki-e/github-actions/free-device-space@main
+
+      - name: Build bench harness
+        run: cargo build -p bench-harness --release
+
+      - name: Build benches
+        run: cargo build -p sandbox-runtime --benches --features test-utils --release
+
+      - name: Run benches (quick mode)
+        run: ./scripts/run-benches.sh --quick
+        env:
+          SESSION_AUTH_SECRET: ci-bench-secret-do-not-use-in-production
+
+      - name: Download baseline (main branch)
+        if: github.event_name == 'pull_request'
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          workflow: ci.yml
+          branch: main
+          name: bench-baseline
+          path: bench-results/baseline/
+          if_no_artifact_found: warn
+
+      - name: Compare to baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -f bench-results/baseline/latest.json ]; then
+            cargo run -p bench-harness --release -- compare \
+              --baseline bench-results/baseline/latest.json \
+              --current  bench-results/latest.json \
+              --mean-threshold 0.10 \
+              --p99-threshold 0.15 \
+              --markdown-output bench-results/comparison.md
+          else
+            echo "No baseline available — skipping comparison (first run on this branch)."
+          fi
+
+      - name: Upload current run as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.sha }}
+          path: bench-results/
+          retention-days: 90
+
+      - name: Upload as new baseline (main branch only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-baseline
+          path: bench-results/latest.json
+          retention-days: 90
+
+      - name: Add comparison to PR summary
+        if: github.event_name == 'pull_request' && always()
+        run: |
+          if [ -f bench-results/comparison.md ]; then
+            cat bench-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest

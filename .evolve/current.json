@@ -1,0 +1,20 @@
+{
+  "mode": "evolve",
+  "generation": 1,
+  "activePursuit": null,
+  "activeHarden": "2026-04-15-report.md",
+  "activeBench": "2026-04-15-bench-infra.md",
+  "status": "converged",
+  "critical": 0,
+  "high": 4,
+  "medium": 9,
+  "evolve_results": {
+    "scoped_session_resolve_bearer_10k": {
+      "baseline_mean_ns": 22847,
+      "result_mean_ns": 259,
+      "improvement_pct": 98.87,
+      "target_met": true,
+      "change": "DashMap + time-gated GC"
+    }
+  }
+}

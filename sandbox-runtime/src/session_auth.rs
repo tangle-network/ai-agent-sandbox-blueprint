@@ -68,6 +68,13 @@ static CHALLENGES: Lazy<Mutex<HashMap<String, Challenge>>> =
 static SESSIONS: Lazy<Mutex<HashMap<String, SessionClaims>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Revocation blacklist — tokens removed from SESSIONS that must be rejected
+/// even when the PASETO fallback would otherwise accept them. Entries are
+/// `(token, expires_at)` tuples; GC prunes entries past their expiry since
+/// expired tokens are rejected by the PASETO expiration check anyway.
+static REVOKED: Lazy<Mutex<HashMap<String, u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -307,6 +314,15 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
         }
     }
 
+    // Check revocation blacklist before PASETO fallback — a revoked token
+    // must NOT authenticate even if cryptographically valid.
+    {
+        let revoked = REVOKED.lock().unwrap_or_else(|e| e.into_inner());
+        if revoked.contains_key(token) {
+            return Err(SandboxError::Auth("Session token has been revoked".into()));
+        }
+    }
+
     // Fall back to PASETO validation (for tokens surviving server restart)
     let validation = pasetors::token::UntrustedToken::try_from(token)
         .map_err(|e| SandboxError::Auth(format!("Invalid PASETO token: {e}")))?;
@@ -358,26 +374,53 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
     })
 }
 
-/// Revoke a specific session token, removing it from the in-memory store.
-/// Returns `true` if the token was found and removed.
+/// Revoke a specific session token, removing it from the in-memory store
+/// and adding it to the revocation blacklist so the PASETO fallback also
+/// rejects it. The blacklist entry is kept until the token's original
+/// expiration time, after which PASETO validation itself would reject it.
 pub fn revoke_session(token: &str) -> bool {
-    SESSIONS
+    let claims = SESSIONS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .remove(token)
-        .is_some()
+        .remove(token);
+
+    if let Some(c) = &claims {
+        REVOKED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(token.to_string(), c.expires_at);
+    } else {
+        // Token not in session store — still blacklist it with a 1-hour TTL
+        // in case it's a valid PASETO token we don't have claims for.
+        REVOKED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(token.to_string(), now_secs() + SESSION_TTL_SECS);
+    }
+
+    claims.is_some()
 }
 
 /// Revoke all sessions for a specific address.
 /// Returns the number of sessions revoked.
 pub fn revoke_sessions_for_address(address: &str) -> usize {
     let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
-    let before = sessions.len();
-    sessions.retain(|_, s| !s.address.eq_ignore_ascii_case(address));
-    before - sessions.len()
+    let mut revoked = REVOKED.lock().unwrap_or_else(|e| e.into_inner());
+
+    let mut count = 0usize;
+    sessions.retain(|token, claims| {
+        if claims.address.eq_ignore_ascii_case(address) {
+            revoked.insert(token.clone(), claims.expires_at);
+            count += 1;
+            false
+        } else {
+            true
+        }
+    });
+    count
 }
 
-/// Remove expired challenges and sessions.
+/// Remove expired challenges, sessions, and revocation blacklist entries.
 pub fn gc_sessions() {
     let now = now_secs();
     CHALLENGES
@@ -388,14 +431,20 @@ pub fn gc_sessions() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .retain(|_, s| s.expires_at > now);
+    REVOKED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, expires_at| *expires_at > now);
 }
 
-/// Clear all challenges and sessions. Test-only — prevents cross-test
-/// pollution when capacity tests fill the global maps.
-#[cfg(test)]
+/// Clear all challenges, sessions, and revocation blacklist entries.
+/// Test/bench-only — prevents cross-test pollution when capacity tests fill
+/// the global maps, and lets benches start from a clean slate.
+#[cfg(any(test, feature = "test-utils"))]
 pub fn clear_all_for_testing() {
     CHALLENGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
     SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    REVOKED.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 /// Shared lock backing both sync and async capacity-test guards.
@@ -888,5 +937,104 @@ mod tests {
         let claims = validate_session_token(&token).unwrap();
         assert_eq!(claims.address, addr);
         assert!(claims.expires_at > now_secs());
+    }
+
+    // ── Adversarial: Token Revocation Effectiveness ────────────────────
+
+    #[test]
+    fn revoked_token_rejected_via_paseto_fallback() {
+        let _guard = capacity_test_lock();
+        clear_all_for_testing();
+
+        let addr = "0x1111111111111111111111111111111111111111";
+        let token = create_test_token(addr);
+
+        // Token should validate before revocation
+        assert!(
+            validate_session_token(&token).is_ok(),
+            "token must validate before revocation"
+        );
+
+        // Revoke the token
+        let revoked = revoke_session(&token);
+        assert!(revoked, "revoke_session should return true for active token");
+
+        // Token must NOT validate after revocation — even though the PASETO
+        // is cryptographically valid, the revocation blacklist must block it.
+        let result = validate_session_token(&token);
+        assert!(
+            result.is_err(),
+            "CRITICAL: revoked token still validates! The PASETO fallback bypasses revocation."
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("revoked"),
+            "error should mention revocation: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn revoke_sessions_for_address_blocks_paseto_fallback() {
+        let _guard = capacity_test_lock();
+        clear_all_for_testing();
+
+        let addr = "0x2222222222222222222222222222222222222222";
+        let token1 = create_test_token(addr);
+        let token2 = create_test_token(addr);
+
+        // Both tokens should validate
+        assert!(validate_session_token(&token1).is_ok());
+        assert!(validate_session_token(&token2).is_ok());
+
+        // Revoke all sessions for this address
+        let count = revoke_sessions_for_address(addr);
+        assert_eq!(count, 2, "should revoke both sessions");
+
+        // Neither token should validate anymore
+        assert!(
+            validate_session_token(&token1).is_err(),
+            "token1 should be rejected after address-wide revocation"
+        );
+        assert!(
+            validate_session_token(&token2).is_err(),
+            "token2 should be rejected after address-wide revocation"
+        );
+    }
+
+    #[test]
+    fn revocation_blacklist_gc_removes_expired_entries() {
+        let _guard = capacity_test_lock();
+        clear_all_for_testing();
+
+        // Insert an already-expired entry directly into REVOKED
+        REVOKED.lock().unwrap().insert(
+            "expired-revoked-token".to_string(),
+            now_secs().saturating_sub(1),
+        );
+
+        assert!(REVOKED.lock().unwrap().contains_key("expired-revoked-token"));
+
+        gc_sessions();
+
+        assert!(
+            !REVOKED.lock().unwrap().contains_key("expired-revoked-token"),
+            "GC should remove expired revocation blacklist entries"
+        );
+    }
+
+    #[test]
+    fn revoke_unknown_token_still_blacklists() {
+        let _guard = capacity_test_lock();
+        clear_all_for_testing();
+
+        // Revoke a token that isn't in the session store
+        let revoked = revoke_session("v4.local.never-existed");
+        assert!(!revoked, "should return false for unknown token");
+
+        // But the token should still be in the blacklist
+        assert!(
+            REVOKED.lock().unwrap().contains_key("v4.local.never-existed"),
+            "unknown token should be blacklisted defensively"
+        );
     }
 }
