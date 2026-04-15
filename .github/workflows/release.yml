@@ -25,7 +25,7 @@ env:
   CARGO_TERM_COLOR: always
   # The binary name from [[bin]] in operator/Cargo.toml.
   # Override per repo if different.
-  BINARY_NAME: ${{ vars.BINARY_NAME || 'ai-agent-sandbox-blueprint' }}
+  BINARY_NAME: ${{ vars.BINARY_NAME || 'ai-agent-instance-blueprint' }}
 
 jobs:
   build:
@@ -49,6 +49,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -82,7 +90,7 @@ jobs:
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             BUILD_CMD="cross"
           fi
-          $BUILD_CMD build --release --target ${{ matrix.target }} --locked
+          $BUILD_CMD build --release --target ${{ matrix.target }}
 
       - name: Package archive
         run: |
