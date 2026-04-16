@@ -53,11 +53,7 @@ pub struct RustInfo {
 
 impl RunManifest {
     pub fn collect(records: Vec<BenchRecord>) -> Result<Self> {
-        let run_id = format!(
-            "{}-{}",
-            Utc::now().format("%Y%m%dT%H%M%SZ"),
-            uuid_short()
-        );
+        let run_id = format!("{}-{}", Utc::now().format("%Y%m%dT%H%M%SZ"), uuid_short());
 
         // Gather env vars relevant to reproducibility. We whitelist specific
         // keys rather than dump everything to avoid leaking secrets.
@@ -205,7 +201,12 @@ fn gather_rust_info() -> RustInfo {
     } else {
         "release".to_string()
     };
-    RunInfoBuilder { rustc_version, target_triple, profile }.build()
+    RunInfoBuilder {
+        rustc_version,
+        target_triple,
+        profile,
+    }
+    .build()
 }
 
 // Small helper so we can reuse fields by name without re-typing them

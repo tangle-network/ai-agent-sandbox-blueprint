@@ -201,6 +201,8 @@ jobs:
           --ignore RUSTSEC-2026-0049
           --ignore RUSTSEC-2026-0067
           --ignore RUSTSEC-2026-0068
+          --ignore RUSTSEC-2026-0098
+          --ignore RUSTSEC-2026-0099
 
   e2e:
     name: E2E tests

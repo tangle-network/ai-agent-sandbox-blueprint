@@ -3,7 +3,7 @@
 //! Scope: functions called during sandbox creation and each authentication
 //! challenge response.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use sandbox_runtime::auth::{generate_token, require_sidecar_token, token_from_request};
 

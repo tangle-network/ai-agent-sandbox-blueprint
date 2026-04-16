@@ -3,7 +3,7 @@
 //! `resolve_bearer` runs on every instance-mode API request and performs an
 //! unconditional full-map GC. Measure how badly this scales with session count.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 use sandbox_runtime::scoped_session_auth::{
     ScopedAuthConfig, ScopedAuthMode, ScopedAuthResource, ScopedAuthService,

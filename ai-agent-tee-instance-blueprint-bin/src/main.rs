@@ -195,7 +195,9 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or(false);
         let bind_ip: [u8; 4] = if bind_all {
-            warn!("BIND_ALL_INTERFACES=true — operator API is accessible on all network interfaces");
+            warn!(
+                "BIND_ALL_INTERFACES=true — operator API is accessible on all network interfaces"
+            );
             [0, 0, 0, 0]
         } else {
             [127, 0, 0, 1]

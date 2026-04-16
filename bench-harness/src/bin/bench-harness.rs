@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use bench_harness::{
-    compare::{compare, render_markdown, Threshold},
+    compare::{Threshold, compare, render_markdown},
     criterion_ingest::{collect_all, default_criterion_dir},
     manifest::RunManifest,
 };
@@ -219,9 +219,9 @@ fn report_cmd(manifest_path: PathBuf) -> Result<ExitCode> {
 }
 
 fn read_manifest(path: &std::path::Path) -> Result<RunManifest> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let manifest: RunManifest = serde_json::from_str(&text)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let manifest: RunManifest =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     Ok(manifest)
 }

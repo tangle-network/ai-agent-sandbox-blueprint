@@ -24,15 +24,14 @@ use tokio_stream::StreamExt;
 ///
 /// Uses DashMap<String, Arc<tokio::sync::Mutex<()>>> so that acquiring a
 /// lock for sandbox A does not block operations on sandbox B.
-static LIFECYCLE_LOCKS: once_cell::sync::Lazy<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>> =
-    once_cell::sync::Lazy::new(dashmap::DashMap::new);
+static LIFECYCLE_LOCKS: once_cell::sync::Lazy<
+    dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+> = once_cell::sync::Lazy::new(dashmap::DashMap::new);
 
 /// Acquire the per-sandbox lifecycle lock. The returned guard must be held
 /// for the entire duration of the lifecycle operation (state check → Docker
 /// call → store write). Dropping the guard releases the lock.
-pub async fn acquire_lifecycle_lock(
-    sandbox_id: &str,
-) -> tokio::sync::OwnedMutexGuard<()> {
+pub async fn acquire_lifecycle_lock(sandbox_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
     let mutex = LIFECYCLE_LOCKS
         .entry(sandbox_id.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))

@@ -1,7 +1,7 @@
 //! Micro-benchmarks for the HTTP helpers used on every sidecar call:
 //! URL construction and auth-header building.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use sandbox_runtime::http::{auth_headers, build_url};
 
@@ -9,11 +9,11 @@ fn bench_build_url(c: &mut Criterion) {
     let mut group = c.benchmark_group("http/build_url");
     let cases = [
         ("simple", ("http://localhost:8080", "/api/test")),
-        ("nested", ("https://example.com:9443", "/v1/sandboxes/create")),
         (
-            "path_prefix",
-            ("http://localhost:8080/prefix/", "api/test"),
+            "nested",
+            ("https://example.com:9443", "/v1/sandboxes/create"),
         ),
+        ("path_prefix", ("http://localhost:8080/prefix/", "api/test")),
     ];
     for (name, (base, path)) in cases {
         group.bench_with_input(BenchmarkId::from_parameter(name), &(base, path), |b, v| {

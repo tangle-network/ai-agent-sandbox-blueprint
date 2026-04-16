@@ -9536,10 +9536,7 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
         );
 
         let metadata = payload.get("metadata").expect("metadata should exist");
-        assert_eq!(
-            metadata.get("maxTurns").and_then(|v| v.as_u64()),
-            Some(10),
-        );
+        assert_eq!(metadata.get("maxTurns").and_then(|v| v.as_u64()), Some(10),);
         assert_eq!(
             metadata.get("user_context").and_then(|v| v.as_str()),
             Some("some data"),

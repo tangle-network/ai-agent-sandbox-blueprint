@@ -29,8 +29,8 @@ use docktopus::bollard::container::{
 };
 use docktopus::bollard::models::{HostConfig, PortBinding, PortMap};
 use docktopus::container::Container;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
@@ -40,7 +40,9 @@ use tokio::sync::OnceCell;
 // ---------------------------------------------------------------------------
 
 fn should_run() -> bool {
-    std::env::var("REAL_SIDECAR").map(|v| v == "1").unwrap_or(false)
+    std::env::var("REAL_SIDECAR")
+        .map(|v| v == "1")
+        .unwrap_or(false)
         && std::env::var("LIFECYCLE_BENCH")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
@@ -181,10 +183,7 @@ async fn ensure_sidecar() -> &'static RealSidecar {
                 .await
                 .unwrap_or_else(|e| panic!("Failed to start sidecar ({image}): {e}"));
 
-            let container_id = container
-                .id()
-                .expect("no container ID")
-                .to_string();
+            let container_id = container.id().expect("no container ID").to_string();
 
             let host_port = extract_host_port(&builder, &container_id).await;
             let url = format!("http://127.0.0.1:{host_port}");
@@ -270,7 +269,11 @@ fn compute_stats(samples_ms: &[f64]) -> OpStats {
         let rank = p * (n as f64 - 1.0);
         let lo = rank.floor() as usize;
         let hi = rank.ceil() as usize;
-        if lo == hi { sorted[lo] } else { sorted[lo] * (1.0 - rank.fract()) + sorted[hi] * rank.fract() }
+        if lo == hi {
+            sorted[lo]
+        } else {
+            sorted[lo] * (1.0 - rank.fract()) + sorted[hi] * rank.fract()
+        }
     };
     // Basic bootstrap CI
     let (ci_lower, ci_upper) = if n >= 3 {
@@ -351,18 +354,29 @@ fn write_report(report: &LifecycleReport) {
     std::fs::write(&path, &json).unwrap();
 
     eprintln!();
-    eprintln!("┌─────────────────────────────────────────┬──────────┬──────────┬──────────┬──────────┐");
-    eprintln!("│ Operation                               │ Mean     │ p50      │ p99      │ 95% CI   │");
-    eprintln!("├─────────────────────────────────────────┼──────────┼──────────┼──────────┼──────────┤");
+    eprintln!(
+        "┌─────────────────────────────────────────┬──────────┬──────────┬──────────┬──────────┐"
+    );
+    eprintln!(
+        "│ Operation                               │ Mean     │ p50      │ p99      │ 95% CI   │"
+    );
+    eprintln!(
+        "├─────────────────────────────────────────┼──────────┼──────────┼──────────┼──────────┤"
+    );
     for op in &report.operations {
         let s = &op.stats;
         eprintln!(
             "│ {:<39} │ {:>6.1}ms │ {:>6.1}ms │ {:>6.1}ms │ ±{:.1}ms │",
-            op.operation, s.mean_ms, s.median_ms, s.p99_ms,
+            op.operation,
+            s.mean_ms,
+            s.median_ms,
+            s.p99_ms,
             (s.ci_upper_ms - s.ci_lower_ms) / 2.0
         );
     }
-    eprintln!("└─────────────────────────────────────────┴──────────┴──────────┴──────────┴──────────┘");
+    eprintln!(
+        "└─────────────────────────────────────────┴──────────┴──────────┴──────────┴──────────┘"
+    );
     eprintln!();
     eprintln!("provision time: {:.2}ms", report.provision_time_ms);
     eprintln!("report: {}", path.display());
@@ -386,75 +400,99 @@ async fn lifecycle_bench() {
 
     // ── Health (real sidecar health check) ──
 
-    results.push(time_op("health", n, || {
-        let url = url.clone();
-        async move {
-            let resp = http().get(format!("{url}/health")).send().await.unwrap();
-            assert!(resp.status().is_success());
-            let _body: Value = resp.json().await.unwrap();
-        }
-    }).await);
+    results.push(
+        time_op("health", n, || {
+            let url = url.clone();
+            async move {
+                let resp = http().get(format!("{url}/health")).send().await.unwrap();
+                assert!(resp.status().is_success());
+                let _body: Value = resp.json().await.unwrap();
+            }
+        })
+        .await,
+    );
 
     // ── Auth rejection (real sidecar auth) ──
 
-    results.push(time_op("auth_reject_missing_token", n, || {
-        let url = url.clone();
-        async move {
-            let resp = http()
-                .post(format!("{url}/terminals/commands"))
-                .header(CONTENT_TYPE, "application/json")
-                .json(&json!({"command": "echo hi"}))
-                .send().await.unwrap();
-            assert_eq!(resp.status(), 401);
-        }
-    }).await);
+    results.push(
+        time_op("auth_reject_missing_token", n, || {
+            let url = url.clone();
+            async move {
+                let resp = http()
+                    .post(format!("{url}/terminals/commands"))
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(&json!({"command": "echo hi"}))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), 401);
+            }
+        })
+        .await,
+    );
 
-    results.push(time_op("auth_reject_wrong_token", n, || {
-        let url = url.clone();
-        async move {
-            let resp = http()
-                .post(format!("{url}/terminals/commands"))
-                .header(AUTHORIZATION, "Bearer wrong-token")
-                .header(CONTENT_TYPE, "application/json")
-                .json(&json!({"command": "echo hi"}))
-                .send().await.unwrap();
-            assert_eq!(resp.status(), 403);
-        }
-    }).await);
+    results.push(
+        time_op("auth_reject_wrong_token", n, || {
+            let url = url.clone();
+            async move {
+                let resp = http()
+                    .post(format!("{url}/terminals/commands"))
+                    .header(AUTHORIZATION, "Bearer wrong-token")
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(&json!({"command": "echo hi"}))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), 403);
+            }
+        })
+        .await,
+    );
 
     // ── Exec: real command in real container ──
 
-    results.push(time_op("exec_echo", n, || {
-        let url = url.clone();
-        async move {
-            let resp = http()
-                .post(format!("{url}/terminals/commands"))
-                .header(AUTHORIZATION, auth())
-                .header(CONTENT_TYPE, "application/json")
-                .json(&json!({"command": "echo lifecycle-bench-ok", "timeout": 10000}))
-                .send().await.unwrap();
-            assert!(resp.status().is_success(), "exec_echo: {}", resp.status());
-            let body: Value = resp.json().await.unwrap();
-            let stdout = body.pointer("/result/stdout")
-                .or_else(|| body.get("stdout"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            assert!(stdout.contains("lifecycle-bench-ok"), "stdout: {stdout}");
-        }
-    }).await);
+    results.push(
+        time_op("exec_echo", n, || {
+            let url = url.clone();
+            async move {
+                let resp = http()
+                    .post(format!("{url}/terminals/commands"))
+                    .header(AUTHORIZATION, auth())
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(&json!({"command": "echo lifecycle-bench-ok", "timeout": 10000}))
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(resp.status().is_success(), "exec_echo: {}", resp.status());
+                let body: Value = resp.json().await.unwrap();
+                let stdout = body
+                    .pointer("/result/stdout")
+                    .or_else(|| body.get("stdout"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                assert!(stdout.contains("lifecycle-bench-ok"), "stdout: {stdout}");
+            }
+        })
+        .await,
+    );
 
-    results.push(time_op("exec_ls", n, || {
-        let url = url.clone();
-        async move {
-            let resp = http()
-                .post(format!("{url}/terminals/commands"))
-                .header(AUTHORIZATION, auth())
-                .header(CONTENT_TYPE, "application/json")
-                .json(&json!({"command": "ls -la /", "timeout": 10000}))
-                .send().await.unwrap();
-            assert!(resp.status().is_success());
-        }
-    }).await);
+    results.push(
+        time_op("exec_ls", n, || {
+            let url = url.clone();
+            async move {
+                let resp = http()
+                    .post(format!("{url}/terminals/commands"))
+                    .header(AUTHORIZATION, auth())
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(&json!({"command": "ls -la /", "timeout": 10000}))
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(resp.status().is_success());
+            }
+        })
+        .await,
+    );
 
     results.push(time_op("exec_write_read_file", n, || {
         let url = url.clone();
@@ -476,91 +514,124 @@ async fn lifecycle_bench() {
         }
     }).await);
 
-    results.push(time_op("exec_env_vars", n, || {
-        let url = url.clone();
-        async move {
-            let resp = http()
-                .post(format!("{url}/terminals/commands"))
-                .header(AUTHORIZATION, auth())
-                .header(CONTENT_TYPE, "application/json")
-                .json(&json!({"command": "env | wc -l", "timeout": 10000}))
-                .send().await.unwrap();
-            assert!(resp.status().is_success());
-        }
-    }).await);
+    results.push(
+        time_op("exec_env_vars", n, || {
+            let url = url.clone();
+            async move {
+                let resp = http()
+                    .post(format!("{url}/terminals/commands"))
+                    .header(AUTHORIZATION, auth())
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(&json!({"command": "env | wc -l", "timeout": 10000}))
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(resp.status().is_success());
+            }
+        })
+        .await,
+    );
 
     // ── Terminal session lifecycle ──
 
-    results.push(time_op("terminal_create_destroy", n, || {
-        let url = url.clone();
-        async move {
-            // Create
-            let resp = http()
-                .post(format!("{url}/terminals"))
-                .header(AUTHORIZATION, auth())
-                .header(CONTENT_TYPE, "application/json")
-                .json(&json!({}))
-                .send().await.unwrap();
-            assert!(resp.status().is_success(), "terminal create: {}", resp.status());
-            let body: Value = resp.json().await.unwrap();
-            let session_id = body.pointer("/data/sessionId")
-                .or_else(|| body.get("sessionId"))
-                .and_then(Value::as_str)
-                .expect("terminal session ID");
+    results.push(
+        time_op("terminal_create_destroy", n, || {
+            let url = url.clone();
+            async move {
+                // Create
+                let resp = http()
+                    .post(format!("{url}/terminals"))
+                    .header(AUTHORIZATION, auth())
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(&json!({}))
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(
+                    resp.status().is_success(),
+                    "terminal create: {}",
+                    resp.status()
+                );
+                let body: Value = resp.json().await.unwrap();
+                let session_id = body
+                    .pointer("/data/sessionId")
+                    .or_else(|| body.get("sessionId"))
+                    .and_then(Value::as_str)
+                    .expect("terminal session ID");
 
-            // Delete
-            let resp = http()
-                .delete(format!("{url}/terminals/{session_id}"))
-                .header(AUTHORIZATION, auth())
-                .send().await.unwrap();
-            assert!(
-                resp.status().is_success() || resp.status() == 204,
-                "terminal delete: {}", resp.status()
-            );
-        }
-    }).await);
+                // Delete
+                let resp = http()
+                    .delete(format!("{url}/terminals/{session_id}"))
+                    .header(AUTHORIZATION, auth())
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(
+                    resp.status().is_success() || resp.status() == 204,
+                    "terminal delete: {}",
+                    resp.status()
+                );
+            }
+        })
+        .await,
+    );
 
     // ── Terminal list ──
 
-    results.push(time_op("terminal_list", n, || {
-        let url = url.clone();
-        async move {
-            let resp = http()
-                .get(format!("{url}/terminals"))
-                .header(AUTHORIZATION, auth())
-                .send().await.unwrap();
-            assert!(resp.status().is_success());
-            let _body: Value = resp.json().await.unwrap();
-        }
-    }).await);
+    results.push(
+        time_op("terminal_list", n, || {
+            let url = url.clone();
+            async move {
+                let resp = http()
+                    .get(format!("{url}/terminals"))
+                    .header(AUTHORIZATION, auth())
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(resp.status().is_success());
+                let _body: Value = resp.json().await.unwrap();
+            }
+        })
+        .await,
+    );
 
     // ── Agents listing (real sidecar agents) ──
 
-    results.push(time_op("agents_list", n, || {
-        let url = url.clone();
-        async move {
-            let resp = http()
-                .get(format!("{url}/agents"))
-                .header(AUTHORIZATION, auth())
-                .send().await.unwrap();
-            assert!(resp.status().is_success());
-            let _body: Value = resp.json().await.unwrap();
-        }
-    }).await);
+    results.push(
+        time_op("agents_list", n, || {
+            let url = url.clone();
+            async move {
+                let resp = http()
+                    .get(format!("{url}/agents"))
+                    .header(AUTHORIZATION, auth())
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(resp.status().is_success());
+                let _body: Value = resp.json().await.unwrap();
+            }
+        })
+        .await,
+    );
 
     // ── Health detailed ──
 
-    results.push(time_op("health_detailed", n, || {
-        let url = url.clone();
-        async move {
-            let resp = http()
-                .get(format!("{url}/health/detailed"))
-                .header(AUTHORIZATION, auth())
-                .send().await.unwrap();
-            assert!(resp.status().is_success());
-            let _body: Value = resp.json().await.unwrap();
-        }
-    }).await);
+    results.push(
+        time_op("health_detailed", n, || {
+            let url = url.clone();
+            async move {
+                let resp = http()
+                    .get(format!("{url}/health/detailed"))
+                    .header(AUTHORIZATION, auth())
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(resp.status().is_success());
+                let _body: Value = resp.json().await.unwrap();
+            }
+        })
+        .await,
+    );
 
     // ── Sequential exec burst (measures sidecar under load) ──
 
@@ -573,13 +644,19 @@ async fn lifecycle_bench() {
                 .header(AUTHORIZATION, auth())
                 .header(CONTENT_TYPE, "application/json")
                 .json(&json!({"command": format!("echo burst-{i}"), "timeout": 5000}))
-                .send().await.unwrap();
+                .send()
+                .await
+                .unwrap();
             assert!(resp.status().is_success());
         }
         let total_ms = start.elapsed().as_secs_f64() * 1000.0;
         let per_op_ms = total_ms / burst_n as f64;
-        eprintln!("  exec_burst_10: total={:.1}ms, per-op={:.1}ms, throughput={:.0}/s",
-            total_ms, per_op_ms, 1000.0 / per_op_ms);
+        eprintln!(
+            "  exec_burst_10: total={:.1}ms, per-op={:.1}ms, throughput={:.0}/s",
+            total_ms,
+            per_op_ms,
+            1000.0 / per_op_ms
+        );
         results.push(OpResult {
             operation: "exec_burst_10_sequential".to_string(),
             stats: OpStats {
@@ -599,10 +676,13 @@ async fn lifecycle_bench() {
     }
 
     let report = LifecycleReport {
-        timestamp: format!("{}Z", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()),
+        timestamp: format!(
+            "{}Z",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ),
         runs_per_op: n,
         provision_time_ms: sidecar.provision_time.as_secs_f64() * 1000.0,
         operations: results,

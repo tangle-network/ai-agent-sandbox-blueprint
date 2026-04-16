@@ -120,8 +120,7 @@ pub fn compare(
 
         // CI proof: current's lower bound must exceed baseline's upper bound
         // for a regression to be considered statistically real.
-        let ci_proven_regression =
-            current.summary.ci_lower_ns > baseline.summary.ci_upper_ns;
+        let ci_proven_regression = current.summary.ci_lower_ns > baseline.summary.ci_upper_ns;
 
         let verdict = match (mean_regressed, p99_regressed, mean_improved) {
             (true, true, _) if !threshold.require_ci_proof || ci_proven_regression => {
@@ -200,8 +199,12 @@ pub fn render_markdown(report: &ComparisonReport) -> String {
         report.removed.len(),
     ));
 
-    out.push_str("| Benchmark | Baseline mean (ns) | Current mean (ns) | Δ mean | Δ p99 | Verdict |\n");
-    out.push_str("|-----------|-------------------:|------------------:|-------:|------:|:--------|\n");
+    out.push_str(
+        "| Benchmark | Baseline mean (ns) | Current mean (ns) | Δ mean | Δ p99 | Verdict |\n",
+    );
+    out.push_str(
+        "|-----------|-------------------:|------------------:|-------:|------:|:--------|\n",
+    );
     for r in &report.results {
         let verdict_str = match r.verdict {
             Verdict::Ok => "OK",

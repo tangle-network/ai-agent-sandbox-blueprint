@@ -5,10 +5,10 @@
 //! primitives directly — the wrapper overhead is dominated by the AEAD.
 
 use chacha20poly1305::{
-    aead::{Aead, OsRng},
     AeadCore, ChaCha20Poly1305, KeyInit,
+    aead::{Aead, OsRng},
 };
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use hkdf::Hkdf;
 use sha2::Sha256;
 
@@ -35,19 +35,15 @@ fn bench_chacha_seal_open(c: &mut Criterion) {
         let payload = vec![0xABu8; size];
         group.throughput(Throughput::Bytes(size as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("seal", size),
-            &payload,
-            |b, data| {
-                b.iter(|| {
-                    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
-                    let ct = cipher
-                        .encrypt(&nonce, black_box(data.as_slice()))
-                        .expect("encrypt");
-                    black_box(ct);
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("seal", size), &payload, |b, data| {
+            b.iter(|| {
+                let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+                let ct = cipher
+                    .encrypt(&nonce, black_box(data.as_slice()))
+                    .expect("encrypt");
+                black_box(ct);
+            })
+        });
 
         let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
         let ct = cipher.encrypt(&nonce, payload.as_slice()).expect("encrypt");
@@ -56,7 +52,9 @@ fn bench_chacha_seal_open(c: &mut Criterion) {
             &(ct, nonce),
             |b, (ct, nonce)| {
                 b.iter(|| {
-                    let pt = cipher.decrypt(black_box(nonce), ct.as_slice()).expect("decrypt");
+                    let pt = cipher
+                        .decrypt(black_box(nonce), ct.as_slice())
+                        .expect("decrypt");
                     black_box(pt);
                 })
             },

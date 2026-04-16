@@ -4,7 +4,7 @@
 //! `std::env::var("CIRCUIT_BREAKER_COOLDOWN_SECS")` on every invocation as a
 //! potential hot-path cost (C runtime lock in `getenv(3)`).
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 use sandbox_runtime::circuit_breaker::{
     check_health, clear_all_for_testing, mark_healthy, mark_unhealthy,

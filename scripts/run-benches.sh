@@ -45,7 +45,7 @@ else
         echo "============================================================"
         echo "  $bench"
         echo "============================================================"
-        cargo bench -p sandbox-runtime --bench "$bench" -- $CRIT_ARGS
+        cargo bench -p sandbox-runtime --features test-utils --bench "$bench" -- $CRIT_ARGS
     done
 fi
 
