@@ -1,7 +1,7 @@
 //! Micro-benchmarks for the util helpers: snapshot command construction,
 //! shell escaping, and JSON object parsing.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use sandbox_runtime::util::{build_snapshot_command, parse_json_object, shell_escape};
 
@@ -11,10 +11,7 @@ fn bench_shell_escape(c: &mut Criterion) {
         ("short_safe", "safe-string"),
         ("with_quotes", "it's a 'quote-heavy' string"),
         ("shell_meta", "hello; rm -rf /; echo `id`; $(whoami)"),
-        (
-            "long",
-            "a".repeat(1024).as_str(),
-        ),
+        ("long", "a".repeat(1024).as_str()),
     ] {
         group.bench_with_input(BenchmarkId::from_parameter(name), input, |b, s| {
             b.iter(|| black_box(shell_escape(black_box(s))));

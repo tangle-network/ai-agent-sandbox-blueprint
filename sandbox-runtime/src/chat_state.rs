@@ -545,7 +545,7 @@ pub fn run_event_payload(run: &ChatRunRecord) -> Value {
     json!(run)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub fn clear_all_for_testing() -> Result<(), String> {
     if let Some(store) = CHAT_SESSIONS.get() {
         store.replace(HashMap::new()).map_err(|e| e.to_string())?;

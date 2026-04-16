@@ -7,10 +7,37 @@ use once_cell::sync::OnceCell;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::env;
+use std::sync::Arc;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio::sync::OnceCell as AsyncOnceCell;
 use tokio_stream::StreamExt;
+
+// ---------------------------------------------------------------------------
+// Per-sandbox lifecycle lock
+// ---------------------------------------------------------------------------
+
+/// Striped per-sandbox mutex preventing concurrent lifecycle mutations
+/// (stop, resume, delete, recreate) on the same sandbox. Without this,
+/// concurrent stop+resume or double-inject can create orphaned containers
+/// or divergent state.
+///
+/// Uses DashMap<String, Arc<tokio::sync::Mutex<()>>> so that acquiring a
+/// lock for sandbox A does not block operations on sandbox B.
+static LIFECYCLE_LOCKS: once_cell::sync::Lazy<
+    dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+> = once_cell::sync::Lazy::new(dashmap::DashMap::new);
+
+/// Acquire the per-sandbox lifecycle lock. The returned guard must be held
+/// for the entire duration of the lifecycle operation (state check → Docker
+/// call → store write). Dropping the guard releases the lock.
+pub async fn acquire_lifecycle_lock(sandbox_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let mutex = LIFECYCLE_LOCKS
+        .entry(sandbox_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    mutex.lock_owned().await
+}
 
 use crate::error::{Result, SandboxError};
 use crate::util::{merge_metadata, parse_json_object, shell_escape};
@@ -583,6 +610,21 @@ fn adjusted_sandbox_count_for_limit(current: usize, reusing_existing_slot: bool)
     }
 }
 
+/// Global creation permit — serializes the count-check + container-create
+/// sequence to prevent TOCTOU races where N concurrent creates all pass the
+/// count limit check and then all succeed, exceeding the configured maximum.
+///
+/// The permit is held from count check through store insertion. Other
+/// lifecycle operations (stop, resume) use the per-sandbox lock and do NOT
+/// contend on this.
+static CREATION_PERMIT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Acquire the creation permit. Must be held across the count check AND the
+/// container creation + store insert sequence.
+pub async fn acquire_creation_permit() -> tokio::sync::MutexGuard<'static, ()> {
+    CREATION_PERMIT.lock().await
+}
+
 fn enforce_sandbox_count_limit(
     config: &SidecarRuntimeConfig,
     reusing_existing_slot: bool,
@@ -982,12 +1024,16 @@ pub async fn create_sidecar(
 }
 
 /// Internal: create sidecar with optional token override.
+///
+/// Acquires [`CREATION_PERMIT`] to serialize the count-check + create
+/// sequence and prevent TOCTOU races on the sandbox limit.
 async fn create_sidecar_with_token(
     request: &CreateSandboxParams,
     tee: Option<&dyn crate::tee::TeeBackend>,
     token_override: Option<&str>,
     sandbox_id_override: Option<&str>,
 ) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
+    let _creation_permit = acquire_creation_permit().await;
     match resolve_runtime_backend(request)? {
         RuntimeBackend::Tee => {
             let backend = tee.ok_or_else(|| {

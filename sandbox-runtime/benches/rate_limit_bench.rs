@@ -7,7 +7,7 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 use sandbox_runtime::rate_limit::{RateLimitConfig, RateLimiter};
 
@@ -51,17 +51,13 @@ fn bench_many_ips(c: &mut Criterion) {
             })
             .collect();
         let mut idx = 0usize;
-        group.bench_with_input(
-            BenchmarkId::from_parameter(ip_count),
-            &ip_count,
-            |b, _| {
-                b.iter(|| {
-                    let ip = ips[idx % ips.len()];
-                    idx = idx.wrapping_add(1);
-                    black_box(limiter.check(black_box(ip)));
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(ip_count), &ip_count, |b, _| {
+            b.iter(|| {
+                let ip = ips[idx % ips.len()];
+                idx = idx.wrapping_add(1);
+                black_box(limiter.check(black_box(ip)));
+            })
+        });
     }
     group.finish();
 }

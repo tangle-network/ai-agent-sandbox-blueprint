@@ -16,8 +16,8 @@
 //! GC implementation scaled at O(N) with session count (22.8µs at 10k sessions);
 //! the DashMap + time-gated variant is ~O(1) and benchmarked at <500ns.
 
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::Utc;
 use dashmap::DashMap;

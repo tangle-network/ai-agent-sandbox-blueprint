@@ -6,7 +6,7 @@
 //! (fallback to PASETO decrypt). We also measure the crypto primitives used
 //! by the challenge/response flow.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use k256::ecdsa::SigningKey;
 use rand::rngs::OsRng;
 
@@ -22,9 +22,7 @@ fn sign_eip191(signing_key: &SigningKey, message: &str) -> String {
     let mut hasher = Keccak::v256();
     hasher.update(prefixed.as_bytes());
     hasher.finalize(&mut digest);
-    let (sig, rid) = signing_key
-        .sign_prehash_recoverable(&digest)
-        .expect("sign");
+    let (sig, rid) = signing_key.sign_prehash_recoverable(&digest).expect("sign");
     let mut bytes = Vec::with_capacity(65);
     bytes.extend_from_slice(&sig.to_bytes());
     bytes.push(rid.to_byte() + 27);

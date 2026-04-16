@@ -1686,6 +1686,9 @@ async fn inject_secrets(
         return api_error(StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
 
+    // Lifecycle lock prevents concurrent inject/wipe from creating orphaned
+    // containers via the stop → delete → create sequence in recreate_sidecar_with_env.
+    let _lock = runtime::acquire_lifecycle_lock(&sandbox_id).await;
     match secret_provisioning::inject_secrets(&sandbox_id, body.env_json, None).await {
         Ok(record) => {
             let creds = workflow_runtime_credentials_available(&record.effective_env_json())
@@ -1712,6 +1715,7 @@ async fn wipe_secrets(
         return api_error(StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
 
+    let _lock = runtime::acquire_lifecycle_lock(&sandbox_id).await;
     match secret_provisioning::wipe_secrets(&sandbox_id, None).await {
         Ok(record) => {
             let creds = workflow_runtime_credentials_available(&record.effective_env_json())
@@ -4007,6 +4011,9 @@ async fn sandbox_stop_handler(
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    // Lifecycle lock prevents concurrent stop+resume or stop+stop from
+    // creating divergent container/store state (TOCTOU fix).
+    let _lock = runtime::acquire_lifecycle_lock(&record.id).await;
     let stop_result = tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::stop_sidecar(&record))
         .await
         .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Stop operation timed out"))?;
@@ -4026,11 +4033,11 @@ async fn sandbox_resume_handler(
     Path(sandbox_id): Path<String>,
 ) -> impl IntoResponse {
     let record = resolve_sandbox(&sandbox_id, &address)?;
+    let _lock = runtime::acquire_lifecycle_lock(&record.id).await;
     let resume_result = tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::resume_sidecar(&record))
         .await
         .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Resume operation timed out"))?;
     handle_lifecycle_outcome(resume_result, "already running")?;
-    // Resume transitions the sandbox back to service; clear any stale breaker state.
     circuit_breaker::mark_healthy(&record.id);
     Ok::<_, (StatusCode, Json<ApiError>)>((
         StatusCode::OK,
@@ -4045,6 +4052,7 @@ async fn sandbox_resume_handler(
 async fn instance_stop_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
     let id = record.id.clone();
+    let _lock = runtime::acquire_lifecycle_lock(&id).await;
     let stop_result = tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::stop_sidecar(&record))
         .await
         .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Stop operation timed out"))?;
@@ -4068,6 +4076,7 @@ async fn instance_stop_handler(SessionAuth(address): SessionAuth) -> impl IntoRe
 async fn instance_resume_handler(SessionAuth(address): SessionAuth) -> impl IntoResponse {
     let record = resolve_instance(&address)?;
     let id = record.id.clone();
+    let _lock = runtime::acquire_lifecycle_lock(&id).await;
     let resume_result = tokio::time::timeout(STOP_RESUME_TIMEOUT, runtime::resume_sidecar(&record))
         .await
         .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "Resume operation timed out"))?;
@@ -9527,10 +9536,7 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
         );
 
         let metadata = payload.get("metadata").expect("metadata should exist");
-        assert_eq!(
-            metadata.get("maxTurns").and_then(|v| v.as_u64()),
-            Some(10),
-        );
+        assert_eq!(metadata.get("maxTurns").and_then(|v| v.as_u64()), Some(10),);
         assert_eq!(
             metadata.get("user_context").and_then(|v| v.as_str()),
             Some("some data"),

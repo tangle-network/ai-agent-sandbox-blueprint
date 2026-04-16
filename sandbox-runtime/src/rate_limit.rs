@@ -115,9 +115,9 @@ impl RateLimiter {
         self.buckets.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    /// Clear all tracked buckets (test-only). Allows tests to reset rate limiter
+    /// Clear all tracked buckets. Allows tests and benches to reset rate limiter
     /// state so that test ordering doesn't cause spurious 429 failures.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn reset(&self) {
         self.buckets
             .lock()

@@ -72,8 +72,7 @@ static SESSIONS: Lazy<Mutex<HashMap<String, SessionClaims>>> =
 /// even when the PASETO fallback would otherwise accept them. Entries are
 /// `(token, expires_at)` tuples; GC prunes entries past their expiry since
 /// expired tokens are rejected by the PASETO expiration check anyway.
-static REVOKED: Lazy<Mutex<HashMap<String, u64>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static REVOKED: Lazy<Mutex<HashMap<String, u64>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -957,7 +956,10 @@ mod tests {
 
         // Revoke the token
         let revoked = revoke_session(&token);
-        assert!(revoked, "revoke_session should return true for active token");
+        assert!(
+            revoked,
+            "revoke_session should return true for active token"
+        );
 
         // Token must NOT validate after revocation — even though the PASETO
         // is cryptographically valid, the revocation blacklist must block it.
@@ -1012,12 +1014,20 @@ mod tests {
             now_secs().saturating_sub(1),
         );
 
-        assert!(REVOKED.lock().unwrap().contains_key("expired-revoked-token"));
+        assert!(
+            REVOKED
+                .lock()
+                .unwrap()
+                .contains_key("expired-revoked-token")
+        );
 
         gc_sessions();
 
         assert!(
-            !REVOKED.lock().unwrap().contains_key("expired-revoked-token"),
+            !REVOKED
+                .lock()
+                .unwrap()
+                .contains_key("expired-revoked-token"),
             "GC should remove expired revocation blacklist entries"
         );
     }
@@ -1033,7 +1043,10 @@ mod tests {
 
         // But the token should still be in the blacklist
         assert!(
-            REVOKED.lock().unwrap().contains_key("v4.local.never-existed"),
+            REVOKED
+                .lock()
+                .unwrap()
+                .contains_key("v4.local.never-existed"),
             "unknown token should be blacklisted defensively"
         );
     }

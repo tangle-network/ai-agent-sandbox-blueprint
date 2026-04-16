@@ -179,7 +179,9 @@ fn bootstrap_mean_ci(sorted: &[f64], iterations: usize, confidence: f64) -> (f64
     }
 
     // Deterministic LCG (Numerical Recipes)
-    let mut state: u64 = (n as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state: u64 = (n as u64)
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     let mut means: Vec<f64> = Vec::with_capacity(iterations);
 
     for _ in 0..iterations {

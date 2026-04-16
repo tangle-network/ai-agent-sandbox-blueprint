@@ -178,7 +178,7 @@ pub fn gc_provisions(max_age_secs: u64) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub fn clear_all_for_testing() -> Result<()> {
     provisions()?.replace(std::collections::HashMap::new())
 }

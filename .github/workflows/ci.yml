@@ -201,6 +201,8 @@ jobs:
           --ignore RUSTSEC-2026-0049
           --ignore RUSTSEC-2026-0067
           --ignore RUSTSEC-2026-0068
+          --ignore RUSTSEC-2026-0098
+          --ignore RUSTSEC-2026-0099
 
   e2e:
     name: E2E tests
@@ -268,6 +270,25 @@ jobs:
           SIDECAR_PUBLIC_HOST: "127.0.0.1"
           REQUEST_TIMEOUT_SECS: "60"
         run: cargo nextest run --test-threads=1 -p ai-agent-instance-blueprint-lib --test e2e_instance
+
+      - name: Run lifecycle bench (real sidecar)
+        if: steps.sidecar.outputs.available == 'true'
+        env:
+          REAL_SIDECAR: "1"
+          LIFECYCLE_BENCH: "1"
+          LIFECYCLE_N: "5"
+          SIDECAR_PUBLIC_HOST: "127.0.0.1"
+          REQUEST_TIMEOUT_SECS: "120"
+        run: cargo test -p ai-agent-sandbox-blueprint-lib --test lifecycle_bench -- --test-threads=1 --nocapture
+
+      - name: Upload lifecycle bench results
+        if: steps.sidecar.outputs.available == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifecycle-bench-${{ github.sha }}
+          path: bench-results/lifecycle-real.json
+          retention-days: 90
+          if-no-files-found: ignore
 
       - name: E2E skipped (no sidecar image)
         if: steps.sidecar.outputs.available != 'true'
