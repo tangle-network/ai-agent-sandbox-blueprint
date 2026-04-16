@@ -51,6 +51,7 @@ tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors", "timeout", "trace"] }
 
 [dev-dependencies]
+bench-harness = { path = "../bench-harness" }
 criterion = { version = "0.5", features = ["html_reports"] }
 http-body-util = "0.1"
 hyper = "1"

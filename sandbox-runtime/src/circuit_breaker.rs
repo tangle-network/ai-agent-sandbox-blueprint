@@ -55,12 +55,19 @@ static UNHEALTHY: Lazy<Mutex<HashMap<String, BreakerEntry>>> =
 /// Tracks the last time GC ran to avoid scanning on every call.
 static LAST_GC: Lazy<Mutex<Instant>> = Lazy::new(|| Mutex::new(Instant::now()));
 
-/// Read the configured cooldown in seconds.
-fn cooldown_secs() -> u64 {
+/// Cached cooldown value. Read from `CIRCUIT_BREAKER_COOLDOWN_SECS` env var
+/// once on first access, then reused for the lifetime of the process. Avoids
+/// calling `getenv(3)` (which acquires a C runtime lock) on every sidecar call.
+static COOLDOWN: once_cell::sync::Lazy<u64> = once_cell::sync::Lazy::new(|| {
     std::env::var("CIRCUIT_BREAKER_COOLDOWN_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(DEFAULT_COOLDOWN_SECS)
+});
+
+/// Read the configured cooldown in seconds.
+fn cooldown_secs() -> u64 {
+    *COOLDOWN
 }
 
 /// Check whether `sandbox_id` is healthy enough to accept a request.

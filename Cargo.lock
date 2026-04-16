@@ -8528,6 +8528,7 @@ dependencies = [
  "aws-sdk-ec2",
  "axum",
  "base64 0.22.1",
+ "bench-harness",
  "blueprint-sdk",
  "chacha20poly1305",
  "chrono",
