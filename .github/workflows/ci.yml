@@ -183,26 +183,17 @@ jobs:
         # RUSTSEC-2025-0055: tracing-subscriber — transitive dep via blueprint-sdk
         # RUSTSEC-2025-0111: tokio-tar — transitive dep, no fix available
         # Yanked crates (e.g. keccak 0.1.5) are warnings by default, not errors
-        # RUSTSEC-2026-0037: quinn-proto — transitive dep via libp2p, no fix available
-        # RUSTSEC-2026-0044..0048: aws-lc-sys 0.37.0 — transitive dep via rustls, no fix available
-        # RUSTSEC-2026-0049: rustls-webpki — transitive dep via rustls, no fix available
-        # RUSTSEC-2026-0067, 0068: tar 0.4.44 — transitive dep, no patched version
+        # RUSTSEC-2026-0049: rustls-webpki — transitive dep via rustls 0.21
+        # RUSTSEC-2026-0104: rustls-webpki — transitive dep via rustls 0.21
         run: >
           cargo audit
           --ignore RUSTSEC-2025-0009
           --ignore RUSTSEC-2025-0055
           --ignore RUSTSEC-2025-0111
-          --ignore RUSTSEC-2026-0037
-          --ignore RUSTSEC-2026-0044
-          --ignore RUSTSEC-2026-0045
-          --ignore RUSTSEC-2026-0046
-          --ignore RUSTSEC-2026-0047
-          --ignore RUSTSEC-2026-0048
           --ignore RUSTSEC-2026-0049
-          --ignore RUSTSEC-2026-0067
-          --ignore RUSTSEC-2026-0068
           --ignore RUSTSEC-2026-0098
           --ignore RUSTSEC-2026-0099
+          --ignore RUSTSEC-2026-0104
 
   e2e:
     name: E2E tests

@@ -1608,6 +1608,7 @@ mod abi {
             disk_gb: 5,
             tee_required,
             tee_type,
+            attestation_nonce: String::new(),
         }
     }
 

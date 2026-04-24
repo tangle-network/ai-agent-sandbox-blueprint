@@ -30,6 +30,7 @@ fn make_provision_request(name: &str, tee_required: bool, tee_type: u8) -> Provi
         disk_gb: 0,
         tee_required,
         tee_type,
+        attestation_nonce: String::new(),
     }
 }
 

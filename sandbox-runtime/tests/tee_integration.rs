@@ -216,7 +216,6 @@ mod tee_integration {
             service_id: None,
             tee_config: None,
             extra_ports: HashMap::new(),
-            attestation_report_data: None,
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
         };
