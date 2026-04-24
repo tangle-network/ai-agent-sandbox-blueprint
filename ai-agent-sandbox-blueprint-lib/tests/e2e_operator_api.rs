@@ -138,6 +138,7 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             disk_gb: 20,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         }
         .abi_encode();
 
@@ -830,6 +831,7 @@ async fn workflow_create_and_cancel() -> Result<()> {
             disk_gb: 20,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         }
         .abi_encode();
 

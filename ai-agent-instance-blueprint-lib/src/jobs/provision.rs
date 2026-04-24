@@ -36,6 +36,13 @@ pub async fn provision_core(
 
     let mut params = CreateSandboxParams::from(request);
     params.owner = owner.to_string();
+    if request.tee_required && !request.attestation_nonce.trim().is_empty() {
+        if let Some(cfg) = params.tee_config.as_mut() {
+            cfg.attestation_nonce = Some(crate::tee::decode_attestation_nonce_hex(
+                &request.attestation_nonce,
+            )?);
+        }
+    }
     let (record, attestation) = create_sidecar(&params, tee)
         .await
         .map_err(|e| e.to_string())?;

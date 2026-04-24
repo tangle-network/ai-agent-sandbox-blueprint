@@ -114,6 +114,7 @@ mod tee_integration {
             ssh_port: None,
             sidecar_token: "test-token".into(),
             extra_ports: vec![],
+            attestation_report_data: None,
         };
 
         // Deploy
@@ -148,6 +149,7 @@ mod tee_integration {
             ssh_port: None,
             sidecar_token: "test-token".into(),
             extra_ports: vec![3000, 9090],
+            attestation_report_data: None,
         };
 
         let deployment = backend.deploy(&params).await.unwrap();
@@ -214,6 +216,7 @@ mod tee_integration {
             service_id: None,
             tee_config: None,
             extra_ports: HashMap::new(),
+            attestation_report_data: None,
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
         };
@@ -245,6 +248,7 @@ mod tee_integration {
             ssh_port: None,
             sidecar_token: "tok".into(),
             extra_ports: vec![3000],
+            attestation_report_data: None,
         };
 
         let deployment = mock.deploy(&params).await.unwrap();

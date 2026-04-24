@@ -1041,6 +1041,7 @@ async fn create_sidecar_with_token(
                     "TEE runtime selected but no TEE backend configured".into(),
                 )
             })?;
+            validate_requested_tee_backend(request, backend)?;
             create_sidecar_tee(request, backend, token_override, sandbox_id_override).await
         }
         RuntimeBackend::Firecracker => {
@@ -1054,6 +1055,38 @@ async fn create_sidecar_with_token(
                 .map(|r| (r, None))
         }
     }
+}
+
+fn validate_requested_tee_backend(
+    request: &CreateSandboxParams,
+    backend: &dyn crate::tee::TeeBackend,
+) -> Result<()> {
+    let Some(config) = request.tee_config.as_ref() else {
+        return Ok(());
+    };
+
+    if let Some(nonce) = &config.attestation_nonce {
+        crate::tee::validate_attestation_nonce(nonce)?;
+        if !nonce.is_empty() && !backend.supports_attestation_report_data() {
+            return Err(SandboxError::Validation(format!(
+                "TEE backend {:?} does not support caller-supplied attestation nonces",
+                backend.tee_type()
+            )));
+        }
+    }
+
+    if config.required
+        && config.tee_type != crate::tee::TeeType::None
+        && config.tee_type != backend.tee_type()
+    {
+        return Err(SandboxError::Validation(format!(
+            "Requested TEE type {:?} is not available on configured backend {:?}",
+            config.tee_type,
+            backend.tee_type()
+        )));
+    }
+
+    Ok(())
 }
 
 async fn create_sidecar_tee(
@@ -3482,6 +3515,7 @@ mod runtime_backend_tests {
         request.tee_config = Some(crate::tee::TeeConfig {
             required: true,
             tee_type: crate::tee::TeeType::Tdx,
+            attestation_nonce: None,
         });
         let resolved = resolve_runtime_backend(&request).unwrap();
         assert_eq!(resolved, RuntimeBackend::Tee);
@@ -3493,6 +3527,7 @@ mod runtime_backend_tests {
         request.tee_config = Some(crate::tee::TeeConfig {
             required: true,
             tee_type: crate::tee::TeeType::Tdx,
+            attestation_nonce: None,
         });
         let err = resolve_runtime_backend(&request).unwrap_err().to_string();
         assert!(err.contains("incompatible"));
@@ -3525,6 +3560,7 @@ mod tee_tests {
             tee_config: Some(crate::tee::TeeConfig {
                 required: true,
                 tee_type: crate::tee::TeeType::Tdx,
+                attestation_nonce: None,
             }),
             owner: "0xabcdef".into(),
             cpu_cores: 2,
@@ -3579,7 +3615,8 @@ mod tee_tests {
     async fn create_sidecar_tee_stores_record() {
         init();
         let mock = crate::tee::mock::MockTeeBackend::new(crate::tee::TeeType::Nitro);
-        let params = tee_required_params();
+        let mut params = tee_required_params();
+        params.tee_config.as_mut().unwrap().tee_type = crate::tee::TeeType::None;
 
         let (record, _) = create_sidecar(&params, Some(&mock)).await.unwrap();
 

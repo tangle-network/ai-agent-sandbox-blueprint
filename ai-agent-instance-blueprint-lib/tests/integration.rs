@@ -1012,7 +1012,8 @@ mod abi_tests {
             memory_mb: 4096,
             disk_gb: 10,
             tee_required: true,
-            tee_type: 2, // Nitro
+            tee_type: 2,
+            attestation_nonce: String::new(), // Nitro
         };
 
         let encoded = request.abi_encode();
@@ -1094,7 +1095,8 @@ mod conversion_tests {
             memory_mb: 8192,
             disk_gb: 50,
             tee_required: true,
-            tee_type: 1, // Tdx
+            tee_type: 1,
+            attestation_nonce: String::new(), // Tdx
         };
 
         let params = CreateSandboxParams::from(&request);
@@ -1129,6 +1131,7 @@ mod conversion_tests {
             disk_gb: 5,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         };
 
         let params = CreateSandboxParams::from(&request);
@@ -1161,6 +1164,7 @@ mod conversion_tests {
                 disk_gb: 0,
                 tee_required: true,
                 tee_type: tee_type_id,
+                attestation_nonce: String::new(),
             };
 
             let params = CreateSandboxParams::from(&request);
@@ -2600,6 +2604,7 @@ mod auto_provision_tests {
             disk_gb: 20,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         };
 
         // abi_encode() produces tuple encoding (with outer offset prefix).

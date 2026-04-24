@@ -341,7 +341,11 @@ impl TeeBackend for GcpConfidentialSpaceBackend {
         })
     }
 
-    async fn attestation(&self, deployment_id: &str) -> Result<AttestationReport> {
+    async fn attestation(
+        &self,
+        deployment_id: &str,
+        _report_data: Option<[u8; 64]>,
+    ) -> Result<AttestationReport> {
         let (sidecar_url, token) = super::sidecar_info_for_deployment(deployment_id)?;
         super::fetch_sidecar_attestation(&sidecar_url, &token).await
     }

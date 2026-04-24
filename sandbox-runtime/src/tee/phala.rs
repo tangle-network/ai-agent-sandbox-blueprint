@@ -140,7 +140,11 @@ impl TeeBackend for PhalaBackend {
         })
     }
 
-    async fn attestation(&self, deployment_id: &str) -> Result<AttestationReport> {
+    async fn attestation(
+        &self,
+        deployment_id: &str,
+        _report_data: Option<[u8; 64]>,
+    ) -> Result<AttestationReport> {
         let att_resp = self
             .deployer
             .get_attestation(deployment_id)

@@ -81,6 +81,8 @@ sol! {
         bool tee_required;
         /// TEE type preference: 0=None (operator chooses), 1=Tdx, 2=Nitro, 3=Sev.
         uint8 tee_type;
+        /// Hex-encoded 32-64 byte caller nonce to embed in deploy-time attestation.
+        string attestation_nonce;
     }
 
     /// Sandbox identifier request.
@@ -260,6 +262,7 @@ impl From<&SandboxCreateRequest> for CreateSandboxParams {
                     3 => TeeType::Sev,
                     _ => TeeType::None,
                 },
+                attestation_nonce: None,
             })
         } else {
             None

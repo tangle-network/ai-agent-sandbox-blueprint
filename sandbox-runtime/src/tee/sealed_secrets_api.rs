@@ -6,6 +6,7 @@
 //! - `GET  /api/sandboxes/{id}/tee/public-key`      — fetch TEE-bound public key
 //! - `POST /api/sandboxes/{id}/tee/sealed-secrets`   — inject encrypted secrets
 //! - `GET  /api/sandboxes/{id}/tee/attestation`      — fetch fresh attestation
+//! - `POST /api/sandboxes/{id}/tee/attestation`      — fetch nonce-bound attestation
 //!
 //! This module is intentionally isolated — it can be removed without affecting
 //! the existing operator API or 2-phase plaintext secret provisioning.
@@ -158,6 +159,13 @@ struct AttestationResponse {
     attestation: AttestationReport,
 }
 
+/// Request body for `POST /api/sandboxes/{id}/tee/attestation`.
+#[derive(Deserialize)]
+pub struct AttestationChallengeRequest {
+    /// Hex-encoded 32-64 byte caller nonce. Accepted with or without `0x`.
+    attestation_nonce: String,
+}
+
 /// `GET /api/sandboxes/{sandbox_id}/tee/attestation`
 ///
 /// Returns a fresh attestation report from the TEE backend for the sandbox.
@@ -167,6 +175,36 @@ pub async fn get_tee_attestation(
     Path(sandbox_id): Path<String>,
     tee_backend: axum::Extension<Option<Arc<dyn TeeBackend>>>,
 ) -> impl IntoResponse {
+    tee_attestation_response(address, sandbox_id, tee_backend, None).await
+}
+
+/// `POST /api/sandboxes/{sandbox_id}/tee/attestation`
+///
+/// Returns a fresh attestation report bound to caller-supplied report data.
+/// This protects against replay when the selected backend supports native
+/// TDX/SEV-SNP report data.
+pub async fn post_tee_attestation(
+    SessionAuth(address): SessionAuth,
+    Path(sandbox_id): Path<String>,
+    tee_backend: axum::Extension<Option<Arc<dyn TeeBackend>>>,
+    Json(body): Json<AttestationChallengeRequest>,
+) -> impl IntoResponse {
+    let report_data = match super::decode_attestation_nonce_hex(&body.attestation_nonce)
+        .and_then(|nonce| super::pad_attestation_nonce(&nonce))
+    {
+        Ok(data) => data,
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+
+    tee_attestation_response(address, sandbox_id, tee_backend, report_data).await
+}
+
+async fn tee_attestation_response(
+    address: String,
+    sandbox_id: String,
+    tee_backend: axum::Extension<Option<Arc<dyn TeeBackend>>>,
+    report_data: Option<[u8; 64]>,
+) -> axum::response::Response {
     if let Err(e) = validate_secret_access(&sandbox_id, &address) {
         return api_error(StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
@@ -195,7 +233,18 @@ pub async fn get_tee_attestation(
         }
     };
 
-    match backend.attestation(&deployment_id).await {
+    if report_data.is_some() && !backend.supports_attestation_report_data() {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            format!(
+                "TEE backend {:?} does not support caller-supplied attestation nonces",
+                backend.tee_type()
+            ),
+        )
+        .into_response();
+    }
+
+    match backend.attestation(&deployment_id, report_data).await {
         Ok(att) => (
             StatusCode::OK,
             Json(AttestationResponse {

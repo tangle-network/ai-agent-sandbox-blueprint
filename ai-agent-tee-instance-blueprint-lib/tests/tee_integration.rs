@@ -78,6 +78,7 @@ fn tee_provision_idempotent_returns_stored_attestation() {
         tee_config: Some(TeeConfig {
             required: true,
             tee_type: TeeType::Tdx,
+            attestation_nonce: None,
         }),
         extra_ports: std::collections::HashMap::new(),
         ssh_login_user: None,
