@@ -125,7 +125,7 @@ jobs:
         run: cargo nextest run -p ai-agent-tee-instance-blueprint-lib
 
       - name: TEE binary compiles
-        run: cargo build -p ai-agent-tee-instance-blueprint --release 2>&1 | tail -1
+        run: cargo build -p ai-agent-tee-instance-blueprint-bin --release 2>&1 | tail -1
 
   ui:
     name: UI build & typecheck
