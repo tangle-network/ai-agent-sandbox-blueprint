@@ -30,12 +30,8 @@ Choose a TEE backend based on your infrastructure:
 ## Building
 
 ```bash
-# All backends
-cargo build -p ai-agent-tee-instance-blueprint-bin --features tee-all
-
-# Specific backend
-cargo build -p ai-agent-tee-instance-blueprint-bin --features tee-phala
-cargo build -p ai-agent-tee-instance-blueprint-bin --features tee-direct
+# TEE instance blueprint. This binary already enables sandbox-runtime/tee-all.
+cargo build -p ai-agent-tee-instance-blueprint-bin
 ```
 
 ## Configuration
@@ -108,6 +104,12 @@ The host must have the corresponding device node available:
 | SEV-SNP | `/dev/sev-guest` |
 | Nitro | `/dev/nsm` |
 
+Direct TDX currently uses Linux `TDX_CMD_GET_REPORT0`, which returns a local
+TDREPORT. That is useful for in-guest binding, but it is not a remotely
+verifiable DCAP quote and cannot carry caller nonce challenges in this runtime.
+Use SEV-SNP, Nitro, Phala, GCP, or Azure for nonce-bound client verification
+until direct TDX DCAP quote generation is added.
+
 ## Contract Deployment
 
 Deploy with `teeRequired=true`:
@@ -141,7 +143,8 @@ User                     Contract                  Operator
   |                         |     tee_public_key_json) |
   |                         |                         |
   |                         | _handleProvisionResult: |
-  |                         |   verify tee_attestation |
+  |                         |   require non-empty      |
+  |                         |   tee_attestation_json   |
   |                         |   store attestation hash |
   |                         |                         |
   |<-- service ready -------|                         |
@@ -162,6 +165,18 @@ Fetch fresh attestation from a running TEE sandbox.
   "evidence": [/* raw bytes */],
   "measurement": [/* raw bytes */],
   "timestamp": 1700000000
+}
+```
+
+### `POST /api/sandboxes/{id}/tee/attestation`
+
+Fetch fresh attestation bound to caller-provided report data. The runtime
+rejects this request when the selected backend cannot bind report data.
+
+**Request:**
+```json
+{
+  "attestation_nonce": "64-to-128 hex chars"
 }
 ```
 
@@ -268,9 +283,10 @@ require(expected == stored, "Attestation mismatch");
 The evidence format depends on the TEE type:
 
 **Intel TDX:**
-- Parse the TDREPORT (1024 bytes)
-- Extract MRTD at offset 512 (48 bytes, SHA-384)
-- Compare MRTD against the expected sidecar image measurement
+- A raw 1024-byte TDREPORT from `/dev/tdx_guest` is not remotely verifiable.
+- For client trust, verify a DCAP quote through Intel PCS/Trust Authority or a
+  provider backend that returns remotely verifiable TDX evidence.
+- Reject nonce-bound direct TDX until DCAP quote support is implemented.
 
 **AWS Nitro:**
 - Parse the NSM attestation document (CBOR-encoded)
@@ -280,6 +296,8 @@ The evidence format depends on the TEE type:
 - Parse the ATTESTATION_REPORT
 - Extract LAUNCH_DIGEST at offset 0x90 (48 bytes, SHA-384)
 - Compare against expected VM image measurement
+- Verify the report signature against AMD KDS/VCEK roots and ensure the caller
+  nonce is present in `report_data`.
 
 **Phala:**
 - `tcb_info` and `app_certificates` are Phala-specific
