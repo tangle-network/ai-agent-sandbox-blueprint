@@ -199,6 +199,12 @@ impl DirectTeeBackend {
 #[async_trait::async_trait]
 impl TeeBackend for DirectTeeBackend {
     async fn deploy(&self, params: &TeeDeployParams) -> Result<TeeDeployment> {
+        if params.attestation_report_data.is_some() && self.tee_type == TeeType::Tdx {
+            return Err(SandboxError::Validation(
+                "Direct TDX nonce-bound remote attestation requires a DCAP TD quote; /dev/tdx_guest TDX_CMD_GET_REPORT0 returns a local TDREPORT only".into(),
+            ));
+        }
+
         let builder = docker_builder().await?;
         let config = SidecarRuntimeConfig::load();
 
@@ -316,6 +322,12 @@ impl TeeBackend for DirectTeeBackend {
         deployment_id: &str,
         report_data: Option<[u8; 64]>,
     ) -> Result<AttestationReport> {
+        if report_data.is_some() && self.tee_type == TeeType::Tdx {
+            return Err(SandboxError::Validation(
+                "Direct TDX nonce-bound remote attestation requires a DCAP TD quote; /dev/tdx_guest TDX_CMD_GET_REPORT0 returns a local TDREPORT only".into(),
+            ));
+        }
+
         let nonce = report_data.unwrap_or_else(|| {
             let mut nonce = [0u8; 64];
             rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
@@ -376,7 +388,7 @@ impl TeeBackend for DirectTeeBackend {
     }
 
     fn supports_attestation_report_data(&self) -> bool {
-        matches!(self.tee_type, TeeType::Tdx | TeeType::Sev)
+        matches!(self.tee_type, TeeType::Sev)
     }
 
     // ── Sealed secrets ──────────────────────────────────────────────────────
@@ -422,6 +434,26 @@ mod tests {
             let backend = DirectTeeBackend::new(tt.clone());
             assert_eq!(backend.tee_type(), tt);
         }
+    }
+
+    #[test]
+    fn report_data_support_is_limited_to_remotely_verifiable_direct_backends() {
+        assert!(!DirectTeeBackend::new(TeeType::Tdx).supports_attestation_report_data());
+        assert!(DirectTeeBackend::new(TeeType::Sev).supports_attestation_report_data());
+        assert!(!DirectTeeBackend::new(TeeType::Nitro).supports_attestation_report_data());
+    }
+
+    #[tokio::test]
+    async fn direct_tdx_rejects_nonce_bound_attestation_without_dcap_quote() {
+        let backend = DirectTeeBackend::new(TeeType::Tdx);
+        let result = backend.attestation("missing", Some([7u8; 64])).await;
+
+        assert!(matches!(
+            result,
+            Err(SandboxError::Validation(message))
+                if message.contains("DCAP TD quote")
+                    && message.contains("TDREPORT")
+        ));
     }
 
     #[test]
