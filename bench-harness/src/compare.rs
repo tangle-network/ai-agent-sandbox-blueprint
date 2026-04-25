@@ -33,6 +33,10 @@ pub struct Threshold {
     pub mean_pct: f64,
     /// P99 regression threshold as a fraction.
     pub p99_pct: f64,
+    /// Minimum absolute mean delta in nanoseconds before a regression can fail CI.
+    pub mean_abs_ns: f64,
+    /// Minimum absolute p99 delta in nanoseconds before a regression can fail CI.
+    pub p99_abs_ns: f64,
     /// Require CI-bound proof of regression (current lower > baseline upper)
     /// before flagging. Reduces false positives on noisy CI runners.
     pub require_ci_proof: bool,
@@ -43,6 +47,8 @@ impl Default for Threshold {
         Threshold {
             mean_pct: 0.10,
             p99_pct: 0.15,
+            mean_abs_ns: 10.0,
+            p99_abs_ns: 10.0,
             require_ci_proof: true,
         }
     }
@@ -113,9 +119,13 @@ pub fn compare(
         };
         let mean_change_pct = rel_change(baseline.summary.mean_ns, current.summary.mean_ns);
         let p99_change_pct = rel_change(baseline.summary.p99_ns, current.summary.p99_ns);
+        let mean_delta_ns = current.summary.mean_ns - baseline.summary.mean_ns;
+        let p99_delta_ns = current.summary.p99_ns - baseline.summary.p99_ns;
 
-        let mean_regressed = mean_change_pct > threshold.mean_pct * 100.0;
-        let p99_regressed = p99_change_pct > threshold.p99_pct * 100.0;
+        let mean_regressed =
+            mean_change_pct > threshold.mean_pct * 100.0 && mean_delta_ns > threshold.mean_abs_ns;
+        let p99_regressed =
+            p99_change_pct > threshold.p99_pct * 100.0 && p99_delta_ns > threshold.p99_abs_ns;
         let mean_improved = mean_change_pct < -(threshold.mean_pct * 100.0);
 
         // CI proof: current's lower bound must exceed baseline's upper bound
@@ -184,11 +194,13 @@ pub fn render_markdown(report: &ComparisonReport) -> String {
     let mut out = String::new();
     out.push_str("# Benchmark Comparison\n\n");
     out.push_str(&format!(
-        "- Baseline: `{}`\n- Current:  `{}`\n- Threshold: mean ±{:.0}%, p99 ±{:.0}%, CI-proof: {}\n",
+        "- Baseline: `{}`\n- Current:  `{}`\n- Threshold: mean ±{:.0}% and >{:.1}ns, p99 ±{:.0}% and >{:.1}ns, CI-proof: {}\n",
         report.baseline_run_id,
         report.current_run_id,
         report.threshold.mean_pct * 100.0,
+        report.threshold.mean_abs_ns,
         report.threshold.p99_pct * 100.0,
+        report.threshold.p99_abs_ns,
         report.threshold.require_ci_proof,
     ));
     out.push_str(&format!(
@@ -333,6 +345,15 @@ mod tests {
             "CI overlap should prevent regression flag"
         );
         assert_eq!(report.results[0].verdict, Verdict::Noisy);
+    }
+
+    #[test]
+    fn ok_when_relative_change_is_large_but_absolute_delta_is_tiny() {
+        let baseline = manifest("base", vec![bench("a", 10.0, 20.0)]);
+        let current = manifest("curr", vec![bench("a", 11.5, 23.0)]);
+        let report = compare(&baseline, &current, Threshold::default());
+        assert_eq!(report.regressions, 0);
+        assert_eq!(report.results[0].verdict, Verdict::Ok);
     }
 
     #[test]
