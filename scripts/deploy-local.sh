@@ -19,6 +19,11 @@
 #   RPC_URL              — Anvil RPC URL (default: http://127.0.0.1:8645)
 #   ANVIL_PORT           — Anvil port (default: 8645, avoids 8545 used by trading blueprint)
 #   OPERATOR_API_PORT    — Operator 1 API port (default: 9100, avoids 9200 used by trading)
+#   TEE_OPERATOR_API_PORT — TEE instance operator API port (default: 9300)
+#   ENABLE_TEE_OPERATOR=1 — Request/start the TEE instance service locally
+#   TEE_BACKEND          — Required with ENABLE_TEE_OPERATOR=1: phala, nitro, gcp, azure, direct
+#   TEE_DIRECT_TYPE      — Required for TEE_BACKEND=direct: tdx or sev
+#   TEE_ATTESTATION_NONCE — Optional 32-64 byte hex deploy-time attestation nonce
 #   SIDECAR_IMAGE        — Docker image for sidecars (default: tangle-sidecar:local)
 #   SKIP_BUILD           — Set to 1 to skip cargo build
 #   BASE_RATE            — Per-job base rate in wei (default: 1e15 = 0.001 TNT)
@@ -31,10 +36,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SANDBOX_STATE_DIR="$ROOT_DIR/blueprint-state/sandbox-cloud"
 INSTANCE_STATE_DIR="$ROOT_DIR/blueprint-state/instance"
+TEE_INSTANCE_STATE_DIR="$ROOT_DIR/blueprint-state/tee-instance"
 SANDBOX_DATA_DIR="$SCRIPTS_DIR/data/operator1/data"
 INSTANCE_DATA_DIR="$SCRIPTS_DIR/data/operator2/data"
+TEE_INSTANCE_DATA_DIR="$SCRIPTS_DIR/data/operator-tee/data"
 SANDBOX_KEYSTORE_DIR="$SCRIPTS_DIR/data/operator1/keystore"
 INSTANCE_KEYSTORE_DIR="$SCRIPTS_DIR/data/operator2/keystore"
+TEE_INSTANCE_KEYSTORE_DIR="$SCRIPTS_DIR/data/operator-tee/keystore"
 
 # Ports are offset from the trading blueprint (8545/9200/9201) to allow
 # both stacks to run simultaneously.
@@ -43,6 +51,9 @@ RPC_URL="${RPC_URL:-http://127.0.0.1:$ANVIL_PORT}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-tangle-sidecar:local}"
 OPERATOR_API_PORT="${OPERATOR_API_PORT:-9100}"
 INSTANCE_OPERATOR_API_PORT="${INSTANCE_OPERATOR_API_PORT:-9200}"
+TEE_OPERATOR_API_PORT="${TEE_OPERATOR_API_PORT:-9300}"
+ENABLE_TEE_OPERATOR="${ENABLE_TEE_OPERATOR:-0}"
+TEE_TYPE_ID="${TEE_TYPE_ID:-1}" # 1=TDX, 2=Nitro, 3=SEV-SNP
 BASE_RATE="${BASE_RATE:-1000000000000000}" # 1e15 = 0.001 TNT
 DEPLOYMENT_FINGERPRINT="${DEPLOYMENT_FINGERPRINT:-local-$ANVIL_PORT-$(date +%s)-$$}"
 
@@ -84,6 +95,7 @@ cleanup() {
     [ -n "${ANVIL_PID:-}" ] && kill "$ANVIL_PID" 2>/dev/null || true
     [ -n "${OPERATOR_PID:-}" ] && kill "$OPERATOR_PID" 2>/dev/null || true
     [ -n "${INSTANCE_OPERATOR_PID:-}" ] && kill "$INSTANCE_OPERATOR_PID" 2>/dev/null || true
+    [ -n "${TEE_OPERATOR_PID:-}" ] && kill "$TEE_OPERATOR_PID" 2>/dev/null || true
     exit 0
 }
 trap cleanup INT TERM
@@ -91,7 +103,7 @@ trap cleanup INT TERM
 reset_local_runtime_state() {
     echo "[preflight] Resetting local sandbox runtime state..."
     rm -rf "$ROOT_DIR/blueprint-state"
-    rm -rf "$SANDBOX_DATA_DIR" "$INSTANCE_DATA_DIR"
+    rm -rf "$SANDBOX_DATA_DIR" "$INSTANCE_DATA_DIR" "$TEE_INSTANCE_DATA_DIR"
 
     if command -v docker >/dev/null 2>&1; then
         while IFS= read -r name; do
@@ -106,6 +118,7 @@ echo "RPC: $RPC_URL"
 echo "Tangle: $TANGLE"
 echo "Public host: $PUBLIC_HOST"
 echo "Deployment fingerprint: $DEPLOYMENT_FINGERPRINT"
+echo "TEE operator: $ENABLE_TEE_OPERATOR"
 echo ""
 
 reset_local_runtime_state
@@ -263,11 +276,11 @@ echo "  Sandbox service request #$SANDBOX_REQ_ID submitted"
 # The BSM contract stores this in serviceConfig[serviceId] after onServiceInitialized.
 NEXT_REQ=$((NEXT_REQ + 1))
 INSTANCE_CONFIG=$(cast abi-encode \
-    "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,string,bool,uint8)" \
+    "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,bool,uint8,string)" \
     "dev-sandbox" "agent-dev" "default" "default-agent" "{}" "{}" \
     true "" false \
     3600 900 2 4096 20 \
-    "" false 0)
+    false 0 "")
 if ! cast send "$TANGLE" \
     "requestService(uint64,address[],bytes,address[],uint64,address,uint256)" \
     "$INSTANCE_BLUEPRINT_ID" \
@@ -284,6 +297,38 @@ if ! cast send "$TANGLE" \
 fi
 INSTANCE_REQ_ID=$NEXT_REQ
 echo "  Instance service request #$INSTANCE_REQ_ID submitted (with config)"
+
+TEE_INSTANCE_REQ_ID=""
+if [[ "$ENABLE_TEE_OPERATOR" == "1" ]]; then
+    if [[ -z "${TEE_BACKEND:-}" ]]; then
+        echo "  ERROR: ENABLE_TEE_OPERATOR=1 requires TEE_BACKEND (phala, nitro, gcp, azure, direct)"
+        exit 1
+    fi
+
+    NEXT_REQ=$((NEXT_REQ + 1))
+    TEE_INSTANCE_CONFIG=$(cast abi-encode \
+        "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,bool,uint8,string)" \
+        "dev-tee-sandbox" "agent-dev" "default" "default-agent" "{}" "{}" \
+        true "" false \
+        3600 900 2 4096 20 \
+        true "$TEE_TYPE_ID" "${TEE_ATTESTATION_NONCE:-}")
+    if ! cast send "$TANGLE" \
+        "requestService(uint64,address[],bytes,address[],uint64,address,uint256)" \
+        "$TEE_INSTANCE_BLUEPRINT_ID" \
+        "[$OPERATOR1_ADDR,$OPERATOR2_ADDR]" \
+        "$TEE_INSTANCE_CONFIG" \
+        "[$USER_ADDR,$DEPLOYER_ADDR]" \
+        31536000 \
+        "0x0000000000000000000000000000000000000000" \
+        0 \
+        --gas-limit 3000000 \
+        --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" > /dev/null 2>&1; then
+        echo "  ERROR: TEE instance requestService failed"
+        exit 1
+    fi
+    TEE_INSTANCE_REQ_ID=$NEXT_REQ
+    echo "  TEE instance service request #$TEE_INSTANCE_REQ_ID submitted (TEE_BACKEND=$TEE_BACKEND, teeType=$TEE_TYPE_ID)"
+fi
 
 # ── [5/11] Operators approve services ────────────────────────────────
 echo "[5/11] Operators approving services..."
@@ -306,12 +351,23 @@ cast send "$TANGLE" "approveService(uint64,uint8)" "$INSTANCE_REQ_ID" 100 \
     --rpc-url "$RPC_URL" --private-key "$OPERATOR2_KEY" > /dev/null 2>&1
 echo "  Instance service: both operators approved"
 
+if [[ -n "$TEE_INSTANCE_REQ_ID" ]]; then
+    cast send "$TANGLE" "approveService(uint64,uint8)" "$TEE_INSTANCE_REQ_ID" 100 \
+        --gas-limit 10000000 \
+        --rpc-url "$RPC_URL" --private-key "$OPERATOR1_KEY" > /dev/null 2>&1
+    cast send "$TANGLE" "approveService(uint64,uint8)" "$TEE_INSTANCE_REQ_ID" 100 \
+        --gas-limit 10000000 \
+        --rpc-url "$RPC_URL" --private-key "$OPERATOR2_KEY" > /dev/null 2>&1
+    echo "  TEE instance service: both operators approved"
+fi
+
 # Discover service IDs by scanning from SVC_BEFORE to current count
 SVC_AFTER=$(cast call "$TANGLE" "serviceCount()(uint64)" --rpc-url "$RPC_URL" 2>&1 | awk '{print $1}')
 SVC_AFTER=$(echo "$SVC_AFTER" | sed 's/^0x//' | sed 's/^0*//' | sed 's/^$/0/')
 
 SANDBOX_SERVICE_ID=""
 INSTANCE_SERVICE_ID=""
+TEE_INSTANCE_SERVICE_ID=""
 for SVC_ID in $(seq "$SVC_BEFORE" "$((SVC_AFTER - 1))"); do
     # First 32-byte word of getService is blueprintId
     SVC_DATA=$(cast call "$TANGLE" "getService(uint64)" "$SVC_ID" --rpc-url "$RPC_URL" 2>/dev/null)
@@ -321,6 +377,8 @@ for SVC_ID in $(seq "$SVC_BEFORE" "$((SVC_AFTER - 1))"); do
         SANDBOX_SERVICE_ID=$SVC_ID
     elif [[ "$BP_NUM" == "$INSTANCE_BLUEPRINT_ID" ]]; then
         INSTANCE_SERVICE_ID=$SVC_ID
+    elif [[ "$BP_NUM" == "$TEE_INSTANCE_BLUEPRINT_ID" ]]; then
+        TEE_INSTANCE_SERVICE_ID=$SVC_ID
     fi
 done
 
@@ -332,9 +390,16 @@ if [[ -z "$INSTANCE_SERVICE_ID" ]]; then
     echo "  ERROR: Could not find instance service (blueprintId=$INSTANCE_BLUEPRINT_ID) in services $SVC_BEFORE..$((SVC_AFTER-1))"
     exit 1
 fi
+if [[ "$ENABLE_TEE_OPERATOR" == "1" && -z "$TEE_INSTANCE_SERVICE_ID" ]]; then
+    echo "  ERROR: Could not find TEE instance service (blueprintId=$TEE_INSTANCE_BLUEPRINT_ID) in services $SVC_BEFORE..$((SVC_AFTER-1))"
+    exit 1
+fi
 
 echo "  Sandbox service ID: $SANDBOX_SERVICE_ID (verified blueprintId=$SANDBOX_BLUEPRINT_ID)"
 echo "  Instance service ID: $INSTANCE_SERVICE_ID (verified blueprintId=$INSTANCE_BLUEPRINT_ID)"
+if [[ -n "$TEE_INSTANCE_SERVICE_ID" ]]; then
+    echo "  TEE instance service ID: $TEE_INSTANCE_SERVICE_ID (verified blueprintId=$TEE_INSTANCE_BLUEPRINT_ID)"
+fi
 
 # ── [6/11] Set operator capacity (Sandbox blueprint) ────────────────
 echo "[6/11] Setting operator capacity..."
@@ -362,7 +427,7 @@ echo "  Operator 2 capacity: $OP2_CAP"
 # ── [7/11] Setup keystores ──────────────────────────────────────────
 echo "[7/11] Setting up operator keystores..."
 
-mkdir -p "$SANDBOX_KEYSTORE_DIR" "$INSTANCE_KEYSTORE_DIR"
+mkdir -p "$SANDBOX_KEYSTORE_DIR" "$INSTANCE_KEYSTORE_DIR" "$TEE_INSTANCE_KEYSTORE_DIR"
 
 CARGO_TANGLE="${CARGO_TANGLE_BIN:-$(command -v cargo-tangle 2>/dev/null || echo "")}"
 if [[ -z "$CARGO_TANGLE" && -x "$ROOT_DIR/../blueprint/target/release/cargo-tangle" ]]; then
@@ -376,6 +441,9 @@ if [[ -n "$CARGO_TANGLE" && -x "$CARGO_TANGLE" ]]; then
     "$CARGO_TANGLE" tangle key import --key-type ecdsa \
         --secret "${OPERATOR2_KEY#0x}" \
         --keystore-path "$INSTANCE_KEYSTORE_DIR" 2>/dev/null || true
+    "$CARGO_TANGLE" tangle key import --key-type ecdsa \
+        --secret "${OPERATOR2_KEY#0x}" \
+        --keystore-path "$TEE_INSTANCE_KEYSTORE_DIR" 2>/dev/null || true
     echo "  Keys imported via cargo-tangle"
 else
     echo "  WARNING: cargo-tangle not found, skipping keystore import"
@@ -387,7 +455,14 @@ if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
     echo "[8/11] Skipping build (SKIP_BUILD=1)"
 else
     echo "[8/11] Building operator binaries..."
-    cargo build --release -p ai-agent-sandbox-blueprint-bin -p ai-agent-instance-blueprint-bin 2>&1 | tail -3
+    if [[ "$ENABLE_TEE_OPERATOR" == "1" ]]; then
+        cargo build --release \
+            -p ai-agent-sandbox-blueprint-bin \
+            -p ai-agent-instance-blueprint-bin \
+            -p ai-agent-tee-instance-blueprint-bin 2>&1 | tail -3
+    else
+        cargo build --release -p ai-agent-sandbox-blueprint-bin -p ai-agent-instance-blueprint-bin 2>&1 | tail -3
+    fi
     echo "  Binaries built"
 fi
 
@@ -459,6 +534,34 @@ until curl -s -o /dev/null -w '%{http_code}' "http://localhost:$INSTANCE_OPERATO
 done
 echo "  Instance operator running (PID: $INSTANCE_OPERATOR_PID)"
 
+if [[ "$ENABLE_TEE_OPERATOR" == "1" ]]; then
+    echo "[10b/11] Starting TEE instance operator..."
+
+    mkdir -p "$TEE_INSTANCE_DATA_DIR" "$TEE_INSTANCE_STATE_DIR"
+
+    OPERATOR_API_PORT="$TEE_OPERATOR_API_PORT" \
+    BLUEPRINT_ID="$TEE_INSTANCE_BLUEPRINT_ID" \
+    SERVICE_ID="$TEE_INSTANCE_SERVICE_ID" \
+    BSM_ADDRESS="$TEE_INSTANCE_BSM" \
+    DATA_DIR="$TEE_INSTANCE_DATA_DIR" \
+    KEYSTORE_URI="$TEE_INSTANCE_KEYSTORE_DIR" \
+    BLUEPRINT_STATE_DIR="$TEE_INSTANCE_STATE_DIR" \
+    TEE_BACKEND="$TEE_BACKEND" \
+    TEE_DIRECT_TYPE="${TEE_DIRECT_TYPE:-}" \
+    "$ROOT_DIR/target/release/ai-agent-tee-instance-blueprint" run --test-mode &
+    TEE_OPERATOR_PID=$!
+
+    DEADLINE=$((SECONDS + 30))
+    until curl -s -o /dev/null -w '%{http_code}' "http://localhost:$TEE_OPERATOR_API_PORT/api/sandboxes" 2>/dev/null | grep -q '401\|200'; do
+        if [ $SECONDS -ge $DEADLINE ]; then
+            echo "  WARNING: TEE instance operator API not ready within 30s (may still be starting)"
+            break
+        fi
+        sleep 1
+    done
+    echo "  TEE instance operator running (PID: $TEE_OPERATOR_PID)"
+fi
+
 # ── [11/11] Write env file ──────────────────────────────────────────
 echo "[11/11] Writing .env.local..."
 
@@ -485,6 +588,7 @@ TEE_INSTANCE_BLUEPRINT_ID=$TEE_INSTANCE_BLUEPRINT_ID
 # Service IDs
 SANDBOX_SERVICE_ID=$SANDBOX_SERVICE_ID
 INSTANCE_SERVICE_ID=$INSTANCE_SERVICE_ID
+TEE_INSTANCE_SERVICE_ID=$TEE_INSTANCE_SERVICE_ID
 
 # Orchestrator compatibility (agent-dev-container TangleDriver)
 ORCHESTRATOR_DRIVER=tangle
@@ -500,6 +604,11 @@ TANGLE_E2E_IMAGE=$SIDECAR_IMAGE
 # Operator
 OPERATOR_API_PORT=$OPERATOR_API_PORT
 INSTANCE_OPERATOR_API_PORT=$INSTANCE_OPERATOR_API_PORT
+TEE_OPERATOR_API_PORT=$TEE_OPERATOR_API_PORT
+ENABLE_TEE_OPERATOR=$ENABLE_TEE_OPERATOR
+TEE_BACKEND=${TEE_BACKEND:-}
+TEE_DIRECT_TYPE=${TEE_DIRECT_TYPE:-}
+TEE_ATTESTATION_NONCE=${TEE_ATTESTATION_NONCE:-}
 DEPLOYMENT_FINGERPRINT=$DEPLOYMENT_FINGERPRINT
 SESSION_AUTH_SECRET=dev-secret-key-do-not-use-in-production
 ALLOW_STANDALONE=true
@@ -531,8 +640,10 @@ VITE_INSTANCE_BLUEPRINT_ID=$INSTANCE_BLUEPRINT_ID
 VITE_TEE_INSTANCE_BLUEPRINT_ID=$TEE_INSTANCE_BLUEPRINT_ID
 VITE_SANDBOX_SERVICE_ID=$SANDBOX_SERVICE_ID
 VITE_INSTANCE_SERVICE_ID=$INSTANCE_SERVICE_ID
+VITE_TEE_INSTANCE_SERVICE_ID=$TEE_INSTANCE_SERVICE_ID
 VITE_OPERATOR_API_URL=http://127.0.0.1:$OPERATOR_API_PORT
 VITE_INSTANCE_OPERATOR_API_URL=http://127.0.0.1:$INSTANCE_OPERATOR_API_PORT
+VITE_TEE_OPERATOR_API_URL=http://127.0.0.1:$TEE_OPERATOR_API_PORT
 VITE_DEPLOYMENT_FINGERPRINT=$DEPLOYMENT_FINGERPRINT
 EOF
     echo "  Wrote ui/.env.local"
@@ -552,10 +663,16 @@ echo ""
 echo "  Services:"
 echo "    Sandbox:   service #$SANDBOX_SERVICE_ID  (2 operators, EventDriven)"
 echo "    Instance:  service #$INSTANCE_SERVICE_ID  (2 operators, Subscription)"
+if [[ -n "$TEE_INSTANCE_SERVICE_ID" ]]; then
+echo "    TEE Inst.: service #$TEE_INSTANCE_SERVICE_ID  (2 operators, Subscription, backend=$TEE_BACKEND)"
+fi
 echo ""
 echo "  Operators:"
 echo "    Sandbox:  http://$PUBLIC_HOST:$OPERATOR_API_PORT  (PID: $OPERATOR_PID)"
 echo "    Instance: http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT  (PID: $INSTANCE_OPERATOR_PID)"
+if [[ "$ENABLE_TEE_OPERATOR" == "1" ]]; then
+echo "    TEE Inst.: http://$PUBLIC_HOST:$TEE_OPERATOR_API_PORT  (PID: $TEE_OPERATOR_PID)"
+fi
 echo ""
 echo "  Accounts:"
 echo "    Deployer: $DEPLOYER_ADDR"
@@ -570,6 +687,13 @@ echo "  API endpoints (instance):"
 echo "    GET  http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT/api/sandboxes"
 echo "    POST http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT/api/sandbox/exec"
 echo "    POST http://$PUBLIC_HOST:$INSTANCE_OPERATOR_API_PORT/api/auth/challenge"
+if [[ "$ENABLE_TEE_OPERATOR" == "1" ]]; then
+echo ""
+echo "  API endpoints (TEE instance):"
+echo "    GET  http://$PUBLIC_HOST:$TEE_OPERATOR_API_PORT/api/sandboxes"
+echo "    POST http://$PUBLIC_HOST:$TEE_OPERATOR_API_PORT/api/sandboxes/{id}/tee/attestation"
+echo "    GET  http://$PUBLIC_HOST:$TEE_OPERATOR_API_PORT/api/sandboxes/{id}/tee/public-key"
+fi
 echo ""
 echo "  Next steps:"
 echo "    Start UI:  cd ui && pnpm dev    → http://$PUBLIC_HOST:1338"
