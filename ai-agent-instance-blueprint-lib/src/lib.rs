@@ -111,6 +111,28 @@ sol! {
         bool tee_required;
         /// TEE type: 0=None, 1=Tdx, 2=Nitro, 3=Sev.
         uint8 tee_type;
+        /// Hex-encoded 32-64 byte caller nonce to embed in deploy-time attestation.
+        string attestation_nonce;
+    }
+
+    /// Provision request shape before deploy-time attestation nonce was added.
+    struct ProvisionRequestV1 {
+        string name;
+        string image;
+        string stack;
+        string agent_identifier;
+        string env_json;
+        string metadata_json;
+        bool ssh_enabled;
+        string ssh_public_key;
+        bool web_terminal_enabled;
+        uint64 max_lifetime_seconds;
+        uint64 idle_timeout_seconds;
+        uint64 cpu_cores;
+        uint64 memory_mb;
+        uint64 disk_gb;
+        bool tee_required;
+        uint8 tee_type;
     }
 
     /// Legacy instance provision request retained for decoding older
@@ -248,6 +270,7 @@ impl From<&ProvisionRequest> for CreateSandboxParams {
                     3 => TeeType::Sev,
                     _ => TeeType::None,
                 },
+                attestation_nonce: None,
             })
         } else {
             None
@@ -296,6 +319,31 @@ impl From<LegacyProvisionRequest> for ProvisionRequest {
             disk_gb: r.disk_gb,
             tee_required: r.tee_required,
             tee_type: r.tee_type,
+            attestation_nonce: String::new(),
+        }
+    }
+}
+
+impl From<ProvisionRequestV1> for ProvisionRequest {
+    fn from(r: ProvisionRequestV1) -> Self {
+        Self {
+            name: r.name,
+            image: r.image,
+            stack: r.stack,
+            agent_identifier: r.agent_identifier,
+            env_json: r.env_json,
+            metadata_json: r.metadata_json,
+            ssh_enabled: r.ssh_enabled,
+            ssh_public_key: r.ssh_public_key,
+            web_terminal_enabled: r.web_terminal_enabled,
+            max_lifetime_seconds: r.max_lifetime_seconds,
+            idle_timeout_seconds: r.idle_timeout_seconds,
+            cpu_cores: r.cpu_cores,
+            memory_mb: r.memory_mb,
+            disk_gb: r.disk_gb,
+            tee_required: r.tee_required,
+            tee_type: r.tee_type,
+            attestation_nonce: String::new(),
         }
     }
 }

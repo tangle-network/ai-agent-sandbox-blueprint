@@ -48,6 +48,12 @@ pub struct TeeConfig {
     pub required: bool,
     /// Preferred TEE backend. If `None` (default), the operator chooses.
     pub tee_type: TeeType,
+    /// Optional caller-supplied attestation nonce/report data.
+    ///
+    /// TDX and SEV-SNP reports take exactly 64 bytes of report data. Callers
+    /// may supply 32-64 bytes; shorter values are right-padded with zeros.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_nonce: Option<Vec<u8>>,
 }
 
 /// Attestation report produced by a TEE runtime.
@@ -86,6 +92,8 @@ pub struct TeeDeployParams {
     pub sidecar_token: String,
     /// Extra container ports to expose (e.g. user web server on 3000).
     pub extra_ports: Vec<u16>,
+    /// Optional caller-supplied report data for deploy-time attestation.
+    pub attestation_report_data: Option<[u8; 64]>,
 }
 
 impl TeeDeployParams {
@@ -134,8 +142,75 @@ impl TeeDeployParams {
             },
             sidecar_token: token.to_string(),
             extra_ports: params.port_mappings.clone(),
+            attestation_report_data: params
+                .tee_config
+                .as_ref()
+                .and_then(|cfg| cfg.attestation_report_data()),
         }
     }
+}
+
+impl TeeConfig {
+    /// Normalize caller-supplied nonce bytes into 64-byte report data.
+    pub fn attestation_report_data(&self) -> Option<[u8; 64]> {
+        match self.attestation_nonce.as_ref() {
+            Some(nonce) => pad_attestation_nonce(nonce).ok().flatten(),
+            None => None,
+        }
+    }
+
+    /// Set attestation nonce bytes after validating length.
+    pub fn with_attestation_nonce(mut self, nonce: Option<Vec<u8>>) -> crate::error::Result<Self> {
+        if let Some(ref value) = nonce {
+            validate_attestation_nonce(value)?;
+        }
+        self.attestation_nonce = nonce;
+        Ok(self)
+    }
+}
+
+/// Decode a hex-encoded caller nonce. Accepts optional `0x` prefix.
+pub fn decode_attestation_nonce_hex(value: &str) -> crate::error::Result<Vec<u8>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+    if hex.len() % 2 != 0 {
+        return Err(crate::error::SandboxError::Validation(
+            "attestation_nonce must be even-length hex".into(),
+        ));
+    }
+    let bytes = hex::decode(hex).map_err(|e| {
+        crate::error::SandboxError::Validation(format!("attestation_nonce must be hex: {e}"))
+    })?;
+    validate_attestation_nonce(&bytes)?;
+    Ok(bytes)
+}
+
+/// Validate caller nonce size. Empty means "not supplied".
+pub fn validate_attestation_nonce(nonce: &[u8]) -> crate::error::Result<()> {
+    if nonce.is_empty() {
+        return Ok(());
+    }
+    if !(32..=64).contains(&nonce.len()) {
+        return Err(crate::error::SandboxError::Validation(format!(
+            "attestation_nonce must be 32-64 bytes, got {}",
+            nonce.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Convert caller nonce bytes into fixed-size TEE report data.
+pub fn pad_attestation_nonce(nonce: &[u8]) -> crate::error::Result<Option<[u8; 64]>> {
+    validate_attestation_nonce(nonce)?;
+    if nonce.is_empty() {
+        return Ok(None);
+    }
+    let mut report_data = [0u8; 64];
+    report_data[..nonce.len()].copy_from_slice(nonce);
+    Ok(Some(report_data))
 }
 
 /// Result of a successful TEE deployment.
@@ -165,7 +240,11 @@ pub trait TeeBackend: Send + Sync {
     async fn deploy(&self, params: &TeeDeployParams) -> crate::error::Result<TeeDeployment>;
 
     /// Retrieve fresh attestation for a running deployment.
-    async fn attestation(&self, deployment_id: &str) -> crate::error::Result<AttestationReport>;
+    async fn attestation(
+        &self,
+        deployment_id: &str,
+        report_data: Option<[u8; 64]>,
+    ) -> crate::error::Result<AttestationReport>;
 
     /// Stop a TEE deployment (may be resumable depending on backend).
     async fn stop(&self, deployment_id: &str) -> crate::error::Result<()>;
@@ -175,6 +254,12 @@ pub trait TeeBackend: Send + Sync {
 
     /// Which TEE type this backend provides.
     fn tee_type(&self) -> TeeType;
+
+    /// Whether this backend can embed caller-supplied report data in fresh
+    /// attestations. Freshness challenges must fail closed when unsupported.
+    fn supports_attestation_report_data(&self) -> bool {
+        false
+    }
 
     // ── Sealed secrets (optional, default: not supported) ────────────────
 
@@ -467,6 +552,7 @@ pub mod mock {
         async fn attestation(
             &self,
             _deployment_id: &str,
+            _report_data: Option<[u8; 64]>,
         ) -> crate::error::Result<AttestationReport> {
             self.attestation_count.fetch_add(1, Ordering::Relaxed);
             if self.should_fail.load(Ordering::Relaxed) {
@@ -499,6 +585,10 @@ pub mod mock {
 
         fn tee_type(&self) -> TeeType {
             self.tee_type.clone()
+        }
+
+        fn supports_attestation_report_data(&self) -> bool {
+            true
         }
 
         async fn derive_public_key(
@@ -650,6 +740,7 @@ mod tests {
             ssh_port: Some(2222),
             sidecar_token: "tok".into(),
             extra_ports: vec![],
+            attestation_report_data: None,
         };
 
         // Deploy
@@ -661,7 +752,7 @@ mod tests {
         assert_eq!(mock.deploy_count.load(Ordering::Relaxed), 1);
 
         // Attestation
-        let att = mock.attestation("mock-deploy-sb-test").await.unwrap();
+        let att = mock.attestation("mock-deploy-sb-test", None).await.unwrap();
         assert_eq!(att.tee_type, TeeType::Tdx);
         assert_eq!(mock.attestation_count.load(Ordering::Relaxed), 1);
 
@@ -689,10 +780,11 @@ mod tests {
             ssh_port: None,
             sidecar_token: "tok".into(),
             extra_ports: vec![],
+            attestation_report_data: None,
         };
 
         assert!(mock.deploy(&params).await.is_err());
-        assert!(mock.attestation("x").await.is_err());
+        assert!(mock.attestation("x", None).await.is_err());
         assert!(mock.stop("x").await.is_err());
         assert!(mock.destroy("x").await.is_err());
     }

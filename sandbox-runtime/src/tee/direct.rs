@@ -274,8 +274,11 @@ impl TeeBackend for DirectTeeBackend {
         .await?;
 
         // Try native attestation first, fall back to sidecar.
-        let mut nonce = [0u8; 64];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        let nonce = params.attestation_report_data.unwrap_or_else(|| {
+            let mut nonce = [0u8; 64];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+            nonce
+        });
         let attestation = match super::attestation::generate_native_attestation(
             &self.tee_type,
             &nonce,
@@ -285,6 +288,9 @@ impl TeeBackend for DirectTeeBackend {
                 att
             }
             Err(native_err) => {
+                if params.attestation_report_data.is_some() {
+                    return Err(native_err);
+                }
                 tracing::warn!(error = %native_err, "Native attestation unavailable, falling back to sidecar");
                 super::fetch_sidecar_attestation(&sidecar_url, &params.sidecar_token).await?
             }
@@ -305,12 +311,22 @@ impl TeeBackend for DirectTeeBackend {
         })
     }
 
-    async fn attestation(&self, deployment_id: &str) -> Result<AttestationReport> {
-        let mut nonce = [0u8; 64];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+    async fn attestation(
+        &self,
+        deployment_id: &str,
+        report_data: Option<[u8; 64]>,
+    ) -> Result<AttestationReport> {
+        let nonce = report_data.unwrap_or_else(|| {
+            let mut nonce = [0u8; 64];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+            nonce
+        });
         match super::attestation::generate_native_attestation(&self.tee_type, &nonce) {
             Ok(att) => Ok(att),
-            Err(_) => {
+            Err(err) => {
+                if report_data.is_some() {
+                    return Err(err);
+                }
                 let (sidecar_url, token) = super::sidecar_info_for_deployment(deployment_id)?;
                 super::fetch_sidecar_attestation(&sidecar_url, &token).await
             }
@@ -357,6 +373,10 @@ impl TeeBackend for DirectTeeBackend {
 
     fn tee_type(&self) -> TeeType {
         self.tee_type.clone()
+    }
+
+    fn supports_attestation_report_data(&self) -> bool {
+        matches!(self.tee_type, TeeType::Tdx | TeeType::Sev)
     }
 
     // ── Sealed secrets ──────────────────────────────────────────────────────
@@ -430,6 +450,7 @@ mod tests {
             ssh_port: Some(2222),
             sidecar_token: "tok".into(),
             extra_ports: vec![],
+            attestation_report_data: None,
         };
 
         let config = backend.build_config(&params);
@@ -480,6 +501,7 @@ mod tests {
             ssh_port: None,
             sidecar_token: "tok".into(),
             extra_ports: vec![],
+            attestation_report_data: None,
         };
 
         let config = backend.build_config(&params);

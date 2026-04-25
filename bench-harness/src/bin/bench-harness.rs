@@ -53,6 +53,12 @@ enum Cmd {
         /// p99 regression threshold as a fraction.
         #[arg(long, default_value_t = 0.15)]
         p99_threshold: f64,
+        /// Mean regression must also exceed this absolute nanosecond delta.
+        #[arg(long, default_value_t = 10.0)]
+        mean_abs_ns: f64,
+        /// P99 regression must also exceed this absolute nanosecond delta.
+        #[arg(long, default_value_t = 10.0)]
+        p99_abs_ns: f64,
         /// Require CI-bound proof (current lower > baseline upper) before flagging.
         #[arg(long, default_value_t = true)]
         require_ci_proof: bool,
@@ -101,18 +107,21 @@ fn run() -> Result<ExitCode> {
             current,
             mean_threshold,
             p99_threshold,
+            mean_abs_ns,
+            p99_abs_ns,
             require_ci_proof,
             markdown_output,
             no_fail,
-        } => compare_cmd(
-            baseline,
-            current,
-            mean_threshold,
-            p99_threshold,
-            require_ci_proof,
-            markdown_output,
-            no_fail,
-        ),
+        } => {
+            let threshold = Threshold {
+                mean_pct: mean_threshold,
+                p99_pct: p99_threshold,
+                mean_abs_ns,
+                p99_abs_ns,
+                require_ci_proof,
+            };
+            compare_cmd(baseline, current, threshold, markdown_output, no_fail)
+        }
         Cmd::Report { manifest } => report_cmd(manifest),
     }
 }
@@ -145,20 +154,13 @@ fn collect(workspace: PathBuf, output: PathBuf, jsonl: PathBuf) -> Result<ExitCo
 fn compare_cmd(
     baseline_path: PathBuf,
     current_path: PathBuf,
-    mean_threshold: f64,
-    p99_threshold: f64,
-    require_ci_proof: bool,
+    threshold: Threshold,
     markdown_output: Option<PathBuf>,
     no_fail: bool,
 ) -> Result<ExitCode> {
     let baseline: RunManifest = read_manifest(&baseline_path)?;
     let current: RunManifest = read_manifest(&current_path)?;
 
-    let threshold = Threshold {
-        mean_pct: mean_threshold,
-        p99_pct: p99_threshold,
-        require_ci_proof,
-    };
     let report = compare(&baseline, &current, threshold);
     let md = render_markdown(&report);
 

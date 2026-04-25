@@ -50,7 +50,8 @@ fn tee_provision_request() -> ProvisionRequest {
         memory_mb: 512,
         disk_gb: 10,
         tee_required: true,
-        tee_type: 1, // Tdx
+        tee_type: 1,
+        attestation_nonce: String::new(), // Tdx
     }
 }
 

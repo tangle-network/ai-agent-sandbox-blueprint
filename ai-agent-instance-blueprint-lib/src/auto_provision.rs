@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use crate::tee::TeeBackend;
 use crate::{
-    IBsmRead, LegacyProvisionRequest, ProvisionRequest, clear_instance_sandbox,
+    IBsmRead, LegacyProvisionRequest, ProvisionRequest, ProvisionRequestV1, clear_instance_sandbox,
     ensure_local_provision_reported, get_instance_sandbox, mark_pending_provision_report,
     provision_core, report_local_provision, set_instance_sandbox,
 };
@@ -138,6 +138,10 @@ pub fn decode_provision_config(config_bytes: &[u8]) -> Result<ProvisionRequest, 
         .or_else(|_| LegacyProvisionRequest::abi_decode(config_bytes).map(ProvisionRequest::from))
         .or_else(|_| ProvisionRequest::abi_decode_params(config_bytes))
         .or_else(|_| ProvisionRequest::abi_decode(config_bytes))
+        .or_else(|_| {
+            ProvisionRequestV1::abi_decode_params(config_bytes).map(ProvisionRequest::from)
+        })
+        .or_else(|_| ProvisionRequestV1::abi_decode(config_bytes).map(ProvisionRequest::from))
         .map_err(|e| format!("Failed to decode ProvisionRequest from service config: {e}"))
 }
 
@@ -510,6 +514,7 @@ mod tests {
             disk_gb: 20,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         };
 
         // On-chain config is stored as params encoding (flat tuple, no outer offset),
@@ -545,6 +550,7 @@ mod tests {
             disk_gb: 40,
             tee_required: true,
             tee_type: 1,
+            attestation_nonce: String::new(),
         };
 
         // abi_encode() produces tuple encoding (with outer offset prefix).
@@ -556,6 +562,40 @@ mod tests {
         assert_eq!(decoded.memory_mb, 8192);
         assert!(decoded.tee_required);
         assert_eq!(decoded.tee_type, 1);
+    }
+
+    #[test]
+    fn decode_provision_config_preserves_attestation_nonce() {
+        use blueprint_sdk::alloy::sol_types::SolValue;
+
+        let nonce = "11".repeat(32);
+        let request = ProvisionRequest {
+            name: "nonce-sandbox".to_string(),
+            image: "agent-dev".to_string(),
+            stack: "default".to_string(),
+            agent_identifier: "test-agent".to_string(),
+            env_json: "{}".to_string(),
+            metadata_json: "{}".to_string(),
+            ssh_enabled: false,
+            ssh_public_key: String::new(),
+            web_terminal_enabled: false,
+            max_lifetime_seconds: 3600,
+            idle_timeout_seconds: 900,
+            cpu_cores: 2,
+            memory_mb: 4096,
+            disk_gb: 20,
+            tee_required: true,
+            tee_type: 1,
+            attestation_nonce: nonce.clone(),
+        };
+
+        let encoded = request.abi_encode_params();
+        let decoded = decode_provision_config(&encoded).unwrap();
+
+        assert_eq!(decoded.name, "nonce-sandbox");
+        assert!(decoded.tee_required);
+        assert_eq!(decoded.tee_type, 1);
+        assert_eq!(decoded.attestation_nonce, nonce);
     }
 
     #[test]

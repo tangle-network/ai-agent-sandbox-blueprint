@@ -41,6 +41,13 @@ pub async fn sandbox_create(
     let mut params = CreateSandboxParams::from(&request);
     params.owner = super::caller_hex(&caller);
     params.service_id = Some(service_id);
+    if request.tee_required && !request.attestation_nonce.trim().is_empty() {
+        if let Some(cfg) = params.tee_config.as_mut() {
+            cfg.attestation_nonce = Some(crate::tee::decode_attestation_nonce_hex(
+                &request.attestation_nonce,
+            )?);
+        }
+    }
 
     let _ = provision_progress::update_provision(
         call_id,

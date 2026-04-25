@@ -4907,7 +4907,8 @@ pub fn operator_api_router_with_tee_and_routes(
             )
             .route(
                 "/api/sandboxes/{sandbox_id}/tee/attestation",
-                get(crate::tee::sealed_secrets_api::get_tee_attestation),
+                get(crate::tee::sealed_secrets_api::get_tee_attestation)
+                    .post(crate::tee::sealed_secrets_api::post_tee_attestation),
             )
             .layer(axum::Extension(
                 Some(backend) as Option<std::sync::Arc<dyn crate::tee::TeeBackend>>
@@ -6159,6 +6160,7 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             tee_config: Some(crate::tee::TeeConfig {
                 required: true,
                 tee_type: crate::tee::TeeType::Tdx,
+                attestation_nonce: None,
             }),
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
@@ -6292,6 +6294,7 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         record.tee_config = Some(crate::tee::TeeConfig {
             required: true,
             tee_type: crate::tee::TeeType::Tdx,
+            attestation_nonce: None,
         });
         seal_record(&mut record).unwrap();
         sandboxes()
@@ -6419,6 +6422,33 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         assert_eq!(json["sandbox_id"], "tee-ss-1");
         assert_eq!(json["success"], true);
         assert_eq!(json["secrets_count"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_tee_attestation_accepts_nonce_challenge() {
+        insert_tee_sandbox("tee-att-1", "deploy-att-1", TEE_TEST_OWNER);
+        let auth = format!("Bearer {}", session_auth::create_test_token(TEE_TEST_OWNER));
+        let nonce = "11".repeat(32);
+
+        let response = tee_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sandboxes/tee-att-1/tee/attestation")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "attestation_nonce": nonce }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response.into_body()).await;
+        assert_eq!(json["sandbox_id"], "tee-att-1");
+        assert!(json["attestation"]["tee_type"].is_string());
     }
 
     #[tokio::test]

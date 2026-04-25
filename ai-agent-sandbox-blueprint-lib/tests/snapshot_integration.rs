@@ -158,6 +158,7 @@ async fn create_test_sandbox() -> SandboxRecord {
         disk_gb: 0,
         tee_required: false,
         tee_type: 0,
+        attestation_nonce: String::new(),
     };
     create_sidecar(&CreateSandboxParams::from(&request), None)
         .await
@@ -185,6 +186,7 @@ async fn create_test_sandbox_with_destination(dest: &str) -> SandboxRecord {
         disk_gb: 0,
         tee_required: false,
         tee_type: 0,
+        attestation_nonce: String::new(),
     };
     create_sidecar(&CreateSandboxParams::from(&request), None)
         .await

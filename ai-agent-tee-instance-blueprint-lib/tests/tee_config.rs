@@ -30,6 +30,7 @@ fn make_provision_request(name: &str, tee_required: bool, tee_type: u8) -> Provi
         disk_gb: 0,
         tee_required,
         tee_type,
+        attestation_nonce: String::new(),
     }
 }
 
@@ -73,7 +74,8 @@ fn decode_provision_config_tee_required_tdx() {
         memory_mb: 4096,
         disk_gb: 50,
         tee_required: true,
-        tee_type: 1, // Tdx
+        tee_type: 1,
+        attestation_nonce: String::new(), // Tdx
     };
 
     let encoded = req.abi_encode_params();
@@ -179,6 +181,7 @@ fn tee_deploy_params_full_field_mapping() {
         tee_config: Some(TeeConfig {
             required: true,
             tee_type: TeeType::Tdx,
+            attestation_nonce: None,
         }),
         ..Default::default()
     };
@@ -273,6 +276,7 @@ fn tee_fields_persistence_roundtrip() {
         tee_config: Some(TeeConfig {
             required: true,
             tee_type: TeeType::Tdx,
+            attestation_nonce: None,
         }),
         extra_ports: std::collections::HashMap::new(),
         ssh_login_user: None,

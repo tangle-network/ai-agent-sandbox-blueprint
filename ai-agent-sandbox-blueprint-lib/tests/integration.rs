@@ -1409,6 +1409,7 @@ mod abi {
             disk_gb: 50,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         };
         let d = SandboxCreateRequest::abi_decode(&req.abi_encode()).unwrap();
         assert_eq!(d.name, "t");
@@ -1543,6 +1544,7 @@ mod abi {
                 disk_gb: 5,
                 tee_required: false,
                 tee_type: 0,
+                attestation_nonce: String::new(),
             },
             operators: vec![Address::ZERO],
             distribution: "round-robin".into(),
@@ -1606,6 +1608,7 @@ mod abi {
             disk_gb: 5,
             tee_required,
             tee_type,
+            attestation_nonce: String::new(),
         }
     }
 
@@ -1900,6 +1903,7 @@ mod docker {
             disk_gb: 1,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -1980,6 +1984,7 @@ mod docker {
             disk_gb: 1,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -2042,6 +2047,7 @@ mod docker {
             disk_gb: 1,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -2142,6 +2148,7 @@ mod docker {
             disk_gb: 1,
             tee_required: false,
             tee_type: 0,
+            attestation_nonce: String::new(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
