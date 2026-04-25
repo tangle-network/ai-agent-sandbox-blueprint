@@ -362,12 +362,30 @@ pub(crate) async fn fetch_sidecar_attestation(
     sidecar_url: &str,
     token: &str,
 ) -> crate::error::Result<AttestationReport> {
+    fetch_sidecar_attestation_with_report_data(sidecar_url, token, None).await
+}
+
+/// Fetch fresh attestation from a running sidecar, optionally bound to caller report data.
+#[allow(dead_code)] // Used by TEE backends
+pub(crate) async fn fetch_sidecar_attestation_with_report_data(
+    sidecar_url: &str,
+    token: &str,
+    report_data: Option<[u8; 64]>,
+) -> crate::error::Result<AttestationReport> {
     let url = crate::http::build_url(sidecar_url, "/tee/attestation")?;
     let headers = crate::http::auth_headers(token)?;
-    let (_status, body) = crate::http::send_json(reqwest::Method::GET, url, None, headers).await?;
-    let report: AttestationReport = serde_json::from_str(&body).map_err(|e| {
-        crate::error::SandboxError::Http(format!("Invalid attestation response: {e}"))
-    })?;
+    let method = if report_data.is_some() {
+        reqwest::Method::POST
+    } else {
+        reqwest::Method::GET
+    };
+    let body = report_data.map(|data| {
+        serde_json::json!({
+            "attestation_nonce": hex::encode(data),
+        })
+    });
+    let (_status, body) = crate::http::send_json(method, url, body, headers).await?;
+    let report = parse_sidecar_attestation_response(&body)?;
 
     // Basic sanity check — callers should also validate the TEE type matches.
     if report.evidence.is_empty() {
@@ -382,6 +400,15 @@ pub(crate) async fn fetch_sidecar_attestation(
     }
 
     Ok(report)
+}
+
+fn parse_sidecar_attestation_response(body: &str) -> crate::error::Result<AttestationReport> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|e| {
+        crate::error::SandboxError::Http(format!("Invalid attestation response: {e}"))
+    })?;
+    let report_value = value.get("attestation").cloned().unwrap_or(value);
+    serde_json::from_value(report_value)
+        .map_err(|e| crate::error::SandboxError::Http(format!("Invalid attestation response: {e}")))
 }
 
 /// Validate an attestation report for completeness and type correctness.
@@ -656,6 +683,43 @@ mod tests {
         assert_eq!(decoded.evidence, vec![0xDE, 0xAD, 0xBE, 0xEF]);
         assert_eq!(decoded.measurement, vec![0x01, 0x02, 0x03]);
         assert_eq!(decoded.timestamp, 1_700_000_000);
+    }
+
+    #[test]
+    fn sidecar_attestation_response_accepts_raw_report() {
+        let body = serde_json::to_string(&AttestationReport {
+            tee_type: TeeType::Nitro,
+            evidence: vec![1, 2, 3],
+            measurement: vec![4, 5, 6],
+            timestamp: 1_700_000_000,
+        })
+        .unwrap();
+
+        let decoded = parse_sidecar_attestation_response(&body).unwrap();
+
+        assert_eq!(decoded.tee_type, TeeType::Nitro);
+        assert_eq!(decoded.evidence, vec![1, 2, 3]);
+        assert_eq!(decoded.measurement, vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn sidecar_attestation_response_accepts_wrapped_report() {
+        let body = serde_json::json!({
+            "sandbox_id": "sb-1",
+            "attestation": {
+                "tee_type": "Sev",
+                "evidence": [7, 8, 9],
+                "measurement": [10, 11, 12],
+                "timestamp": 1_700_000_000u64,
+            }
+        })
+        .to_string();
+
+        let decoded = parse_sidecar_attestation_response(&body).unwrap();
+
+        assert_eq!(decoded.tee_type, TeeType::Sev);
+        assert_eq!(decoded.evidence, vec![7, 8, 9]);
+        assert_eq!(decoded.measurement, vec![10, 11, 12]);
     }
 
     #[test]

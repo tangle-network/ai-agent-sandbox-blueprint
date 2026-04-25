@@ -273,9 +273,15 @@ impl TeeBackend for NitroBackend {
         )
         .await?;
 
-        // Fetch attestation from the sidecar.
-        let attestation =
-            super::fetch_sidecar_attestation(&sidecar_url, &params.sidecar_token).await?;
+        // Fetch attestation from the sidecar. When the caller supplied a
+        // challenge, the sidecar must embed it in the signed NSM document.
+        let attestation = super::fetch_sidecar_attestation_with_report_data(
+            &sidecar_url,
+            &params.sidecar_token,
+            params.attestation_report_data,
+        )
+        .await?;
+        super::validate_attestation_report(&attestation, &TeeType::Nitro)?;
 
         let metadata = serde_json::json!({
             "ec2_instance_id": instance_id,
@@ -301,10 +307,14 @@ impl TeeBackend for NitroBackend {
     async fn attestation(
         &self,
         deployment_id: &str,
-        _report_data: Option<[u8; 64]>,
+        report_data: Option<[u8; 64]>,
     ) -> Result<AttestationReport> {
         let (sidecar_url, token) = super::sidecar_info_for_deployment(deployment_id)?;
-        super::fetch_sidecar_attestation(&sidecar_url, &token).await
+        let attestation =
+            super::fetch_sidecar_attestation_with_report_data(&sidecar_url, &token, report_data)
+                .await?;
+        super::validate_attestation_report(&attestation, &TeeType::Nitro)?;
+        Ok(attestation)
     }
 
     async fn stop(&self, deployment_id: &str) -> Result<()> {
@@ -333,6 +343,10 @@ impl TeeBackend for NitroBackend {
         TeeType::Nitro
     }
 
+    fn supports_attestation_report_data(&self) -> bool {
+        true
+    }
+
     async fn derive_public_key(&self, deployment_id: &str) -> Result<TeePublicKey> {
         super::sidecar_derive_public_key(deployment_id).await
     }
@@ -352,4 +366,26 @@ fn require_env(name: &str) -> Result<String> {
             "AWS Nitro backend requires {name} environment variable"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_backend() -> NitroBackend {
+        NitroBackend::new(NitroConfig {
+            region: "us-east-1".into(),
+            subnet_id: "subnet-test".into(),
+            security_group_id: "sg-test".into(),
+            ami_id: "ami-test".into(),
+            instance_type: "c5.xlarge".into(),
+            kms_key_id: None,
+            iam_instance_profile: None,
+        })
+    }
+
+    #[test]
+    fn nitro_supports_nonce_bound_attestation() {
+        assert!(test_backend().supports_attestation_report_data());
+    }
 }
