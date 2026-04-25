@@ -65,7 +65,7 @@ TEE_INTEGRATION=1 cargo test -p ai-agent-tee-instance-blueprint-lib -- tee_integ
 
 ```bash
 # Build
-cargo build -p ai-agent-tee-instance-blueprint-bin --features tee-all
+cargo build -p ai-agent-tee-instance-blueprint-bin
 
 # Deploy contract
 forge script contracts/script/DeployTeeInstance.s.sol:DeployTeeInstanceBlueprint \

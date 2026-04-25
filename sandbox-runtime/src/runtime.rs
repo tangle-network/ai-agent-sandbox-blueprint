@@ -1437,7 +1437,7 @@ async fn docker_exec_as_user(
 fn build_docker_ssh_bootstrap_command(username: &str) -> String {
     let user_arg = shell_escape(username);
     format!(
-        r#"set -euo pipefail;
+        r#"set -eu;
 user={user_arg};
 shell="/bin/sh";
 [ -x "$shell" ] || shell="/bin/bash";
@@ -1505,7 +1505,7 @@ awk 'NR > 1 {{ split($2,a,":"); if (toupper(a[2]) == "0016" && $4 == "0A") found
 fn build_docker_ssh_user_home_bootstrap_command(username: &str) -> String {
     let user_arg = shell_escape(username);
     format!(
-        r#"set -euo pipefail;
+        r#"set -eu;
 user={user_arg};
 home=$(getent passwd "$user" | cut -d: -f6);
 if [ -z "$home" ]; then
@@ -1523,7 +1523,7 @@ fn build_ssh_key_install_command(username: &str, public_key: &str) -> String {
     let user_arg = shell_escape(username);
     let key_arg = shell_escape(public_key);
     format!(
-        r#"set -euo pipefail;
+        r#"set -eu;
 user={user_arg};
 key={key_arg};
 home=$(getent passwd "$user" | cut -d: -f6);
@@ -1545,7 +1545,7 @@ fn build_ssh_key_revoke_command(username: &str, public_key: &str) -> String {
     let user_arg = shell_escape(username);
     let key_arg = shell_escape(public_key);
     format!(
-        r#"set -euo pipefail;
+        r#"set -eu;
 user={user_arg};
 key={key_arg};
 home=$(getent passwd "$user" | cut -d: -f6);
@@ -1566,7 +1566,7 @@ fn build_sidecar_ssh_key_install_command(username: &str, public_key: &str) -> St
     let user_arg = shell_escape(username);
     let key_arg = shell_escape(public_key);
     format!(
-        "set -euo pipefail; user={user_arg}; \
+        "set -eu; user={user_arg}; \
 home=$(getent passwd \"${{user}}\" | cut -d: -f6); \
 if [ -z \"$home\" ]; then echo \"User ${{user}} does not exist\" >&2; exit 1; fi; \
 mkdir -p \"$home/.ssh\"; chmod 700 \"$home/.ssh\"; \
@@ -1580,7 +1580,7 @@ fn build_sidecar_ssh_key_revoke_command(username: &str, public_key: &str) -> Str
     let user_arg = shell_escape(username);
     let key_arg = shell_escape(public_key);
     format!(
-        "set -euo pipefail; user={user_arg}; \
+        "set -eu; user={user_arg}; \
 home=$(getent passwd \"${{user}}\" | cut -d: -f6); \
 if [ -z \"$home\" ]; then echo \"User ${{user}} does not exist\" >&2; exit 1; fi; \
 if [ -f \"$home/.ssh/authorized_keys\" ]; then \
@@ -3419,6 +3419,7 @@ mod port_mapping_tests {
         let command = build_docker_ssh_bootstrap_command("agent");
         assert!(command.contains("passwd -u \"$user\""));
         assert!(command.contains("AllowUsers agent"));
+        assert!(!command.contains("pipefail"));
     }
 
     #[test]

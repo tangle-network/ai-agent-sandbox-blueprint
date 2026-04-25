@@ -371,13 +371,14 @@ else
     # 4a: Create sandbox
     # SandboxCreateRequest: (string name, string image, string stack, string agent_id,
     #   string env_json, string metadata_json, bool ssh, string ssh_key, bool web_term,
-    #   uint64 max_life, uint64 idle, uint64 cpu, uint64 mem, uint64 disk, bool tee, uint8 tee_type)
+    #   uint64 max_life, uint64 idle, uint64 cpu, uint64 mem, uint64 disk,
+    #   bool tee, uint8 tee_type, string attestation_nonce)
     CREATE_ARGS=$(cast abi-encode \
-        "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,bool,uint8)" \
-        "e2e-sandbox" "agent-dev" "default" "default-agent" "{}" "{}" \
+        "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,bool,uint8,string)" \
+        "e2e-sandbox" "${TANGLE_E2E_IMAGE:-${SIDECAR_IMAGE:-tangle-sidecar:local}}" "default" "default-agent" "{}" "{}" \
         false "" true \
         3600 900 2 2048 10 \
-        false 0)
+        false 0 "")
 
     SANDBOX_CALL_ID=$(submit_job "$SANDBOX_SERVICE_ID" 0 "$CREATE_ARGS" "$CREATE_RATE") || true
     if [ "$SANDBOX_CALL_ID" = "REVERT" ] || [ "$SANDBOX_CALL_ID" = "TX_FAIL" ]; then

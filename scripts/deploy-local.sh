@@ -256,7 +256,7 @@ SVC_BEFORE=$(echo "$SVC_BEFORE" | sed 's/^0x//' | sed 's/^0*//' | sed 's/^$/0/')
 
 # Request sandbox service (Dynamic membership, EventDriven pricing → no payment)
 if ! cast send "$TANGLE" \
-    "requestService(uint64,address[],bytes,address[],uint64,address,uint256)" \
+    "requestService(uint64,address[],bytes,address[],uint64,address,uint256,uint8)" \
     "$SANDBOX_BLUEPRINT_ID" \
     "[$OPERATOR1_ADDR,$OPERATOR2_ADDR]" \
     "0x" \
@@ -264,6 +264,7 @@ if ! cast send "$TANGLE" \
     31536000 \
     "0x0000000000000000000000000000000000000000" \
     0 \
+    2 \
     --gas-limit 3000000 \
     --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" > /dev/null 2>&1; then
     echo "  ERROR: Sandbox requestService failed"
@@ -277,12 +278,12 @@ echo "  Sandbox service request #$SANDBOX_REQ_ID submitted"
 NEXT_REQ=$((NEXT_REQ + 1))
 INSTANCE_CONFIG=$(cast abi-encode \
     "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,bool,uint8,string)" \
-    "dev-sandbox" "agent-dev" "default" "default-agent" "{}" "{}" \
+    "dev-sandbox" "$SIDECAR_IMAGE" "default" "default-agent" "{}" "{}" \
     true "" false \
     3600 900 2 4096 20 \
     false 0 "")
 if ! cast send "$TANGLE" \
-    "requestService(uint64,address[],bytes,address[],uint64,address,uint256)" \
+    "requestService(uint64,address[],bytes,address[],uint64,address,uint256,uint8)" \
     "$INSTANCE_BLUEPRINT_ID" \
     "[$OPERATOR1_ADDR,$OPERATOR2_ADDR]" \
     "$INSTANCE_CONFIG" \
@@ -290,6 +291,7 @@ if ! cast send "$TANGLE" \
     31536000 \
     "0x0000000000000000000000000000000000000000" \
     0 \
+    2 \
     --gas-limit 3000000 \
     --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" > /dev/null 2>&1; then
     echo "  ERROR: Instance requestService failed"
@@ -308,12 +310,12 @@ if [[ "$ENABLE_TEE_OPERATOR" == "1" ]]; then
     NEXT_REQ=$((NEXT_REQ + 1))
     TEE_INSTANCE_CONFIG=$(cast abi-encode \
         "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,bool,uint8,string)" \
-        "dev-tee-sandbox" "agent-dev" "default" "default-agent" "{}" "{}" \
+        "dev-tee-sandbox" "$SIDECAR_IMAGE" "default" "default-agent" "{}" "{}" \
         true "" false \
         3600 900 2 4096 20 \
         true "$TEE_TYPE_ID" "${TEE_ATTESTATION_NONCE:-}")
     if ! cast send "$TANGLE" \
-        "requestService(uint64,address[],bytes,address[],uint64,address,uint256)" \
+        "requestService(uint64,address[],bytes,address[],uint64,address,uint256,uint8)" \
         "$TEE_INSTANCE_BLUEPRINT_ID" \
         "[$OPERATOR1_ADDR,$OPERATOR2_ADDR]" \
         "$TEE_INSTANCE_CONFIG" \
@@ -321,6 +323,7 @@ if [[ "$ENABLE_TEE_OPERATOR" == "1" ]]; then
         31536000 \
         "0x0000000000000000000000000000000000000000" \
         0 \
+        1 \
         --gas-limit 3000000 \
         --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" > /dev/null 2>&1; then
         echo "  ERROR: TEE instance requestService failed"

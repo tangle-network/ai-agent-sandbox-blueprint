@@ -91,6 +91,7 @@ contract RegisterBlueprint is Script {
         returns (Types.BlueprintDefinition memory def)
     {
         def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
+        def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;
         def.masterManagerRevision = 0;
         def.hasConfig = true;
@@ -153,6 +154,7 @@ contract RegisterBlueprint is Script {
         returns (Types.BlueprintDefinition memory def)
     {
         def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
+        def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;
         def.masterManagerRevision = 0;
         def.hasConfig = true;
@@ -215,6 +217,7 @@ contract RegisterBlueprint is Script {
         returns (Types.BlueprintDefinition memory def)
     {
         def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
+        def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;
         def.masterManagerRevision = 0;
         def.hasConfig = true;
