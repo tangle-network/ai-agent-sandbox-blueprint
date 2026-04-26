@@ -102,13 +102,27 @@ pub struct CreateSandboxParams {
 /// Parse the `capabilities_json` field into the comma-separated wire
 /// format the sidecar's `SIDECAR_CAPABILITIES` parser expects.
 ///
-/// Mirrors the parser in
-/// `apps/orchestrator/src/orchestrator/sidecar-capabilities.ts` (the
-/// adjacent agent-dev-container repo) so both wire formats stay in
-/// lockstep — JSON array on input, comma-separated list on the env
-/// var, and unknown entries dropped silently. Returns `None` when
-/// nothing recognizable is present so callers can skip the env-var
-/// injection entirely.
+/// Cross-repo coupling: this parser MUST stay in lockstep with
+/// `parseSidecarCapabilities` in
+/// `apps/orchestrator/src/orchestrator/sidecar-capabilities.ts`
+/// (agent-dev-container repo). Both read the same wire string —
+/// the Rust one runs on the operator side (translates incoming
+/// `capabilities_json` into a `SIDECAR_CAPABILITIES` env entry),
+/// the TS one runs on the orchestrator side (gate + metadata).
+/// Adding a new capability requires editing both files; adding a
+/// new wire format variant requires both. Shared invariants:
+///   - Accept a JSON array AND a comma-separated list.
+///   - Drop unknown capabilities silently (forward compat).
+///   - Empty / malformed input means "no capabilities requested",
+///     not an error.
+///
+/// The sidecar's own parser at
+/// `apps/sidecar/src/server.ts` is a third mirror — it parses the
+/// same env var to drive boot-time Xvfb / dbus / MCP supervisor
+/// startup. All three must agree on the allow-list.
+///
+/// Returns `None` when nothing recognizable is present so callers
+/// can skip the env-var injection entirely.
 pub(crate) fn parse_sidecar_capabilities(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
