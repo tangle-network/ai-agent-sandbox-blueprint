@@ -113,6 +113,11 @@ sol! {
         uint8 tee_type;
         /// Hex-encoded 32-64 byte caller nonce to embed in deploy-time attestation.
         string attestation_nonce;
+        /// JSON array of sidecar capabilities to enable at boot (e.g.
+        /// `["computer_use"]`). Mirrors `SandboxCreateRequest.capabilities_json`
+        /// so instance auto-provision and direct sandbox-create surfaces
+        /// expose the same capability set to customers.
+        string capabilities_json;
     }
 
     /// Provision request shape before deploy-time attestation nonce was added.
@@ -296,6 +301,7 @@ impl From<&ProvisionRequest> for CreateSandboxParams {
             tee_config,
             user_env_json: String::new(),
             port_mappings: Vec::new(), // Parsed from metadata_json at runtime
+            capabilities_json: r.capabilities_json.to_string(),
         }
     }
 }
@@ -320,6 +326,7 @@ impl From<LegacyProvisionRequest> for ProvisionRequest {
             tee_required: r.tee_required,
             tee_type: r.tee_type,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         }
     }
 }
@@ -344,6 +351,7 @@ impl From<ProvisionRequestV1> for ProvisionRequest {
             tee_required: r.tee_required,
             tee_type: r.tee_type,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         }
     }
 }

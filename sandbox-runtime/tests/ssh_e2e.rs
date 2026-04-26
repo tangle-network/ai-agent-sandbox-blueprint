@@ -151,6 +151,7 @@ async fn docker_ssh_supports_commands_and_interactive_shell() {
         tee_config: None,
         user_env_json: String::new(),
         port_mappings: Vec::new(),
+        capabilities_json: String::new(),
     };
 
     let (record, _) = create_sidecar(&params, None)

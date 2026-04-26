@@ -218,6 +218,7 @@ mod tee_integration {
             extra_ports: HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         // The idempotent path reads from record.tee_attestation_json

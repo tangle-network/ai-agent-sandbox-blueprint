@@ -122,6 +122,7 @@ async fn instance_full_lifecycle() -> Result<()> {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
 
         let (provision_receipt, record) = provision_core(&provision_payload, None, &owner_address)

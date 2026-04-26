@@ -139,6 +139,7 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         }
         .abi_encode();
 
@@ -832,6 +833,7 @@ async fn workflow_create_and_cancel() -> Result<()> {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         }
         .abi_encode();
 

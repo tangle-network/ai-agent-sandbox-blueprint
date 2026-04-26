@@ -459,6 +459,7 @@ mod tests {
             extra_ports: HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         }
     }
 
@@ -515,6 +516,7 @@ mod tests {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
 
         // On-chain config is stored as params encoding (flat tuple, no outer offset),
@@ -551,6 +553,7 @@ mod tests {
             tee_required: true,
             tee_type: 1,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
 
         // abi_encode() produces tuple encoding (with outer offset prefix).
@@ -587,6 +590,7 @@ mod tests {
             tee_required: true,
             tee_type: 1,
             attestation_nonce: nonce.clone(),
+            capabilities_json: String::new(),
         };
 
         let encoded = request.abi_encode_params();

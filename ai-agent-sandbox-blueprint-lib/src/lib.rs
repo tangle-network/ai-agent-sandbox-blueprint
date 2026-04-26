@@ -83,6 +83,17 @@ sol! {
         uint8 tee_type;
         /// Hex-encoded 32-64 byte caller nonce to embed in deploy-time attestation.
         string attestation_nonce;
+        /// JSON array of sidecar capabilities to enable at boot.
+        /// Currently supported: ["computer_use"] — boots Xvfb + dbus + an MCP
+        /// server inside the sandbox so the Anthropic / OpenAI Responses
+        /// computer-use surfaces can drive mouse/keyboard/screenshots. Empty
+        /// or "" means no extra subsystems are started.
+        ///
+        /// Wire format: a JSON-encoded array of strings, e.g.
+        /// `["computer_use"]`. Encoded as a string (rather than `string[]`)
+        /// to match the existing `_json` convention on this struct
+        /// (`env_json`, `metadata_json`) so the ABI stays uniform.
+        string capabilities_json;
     }
 
     /// Sandbox identifier request.
@@ -288,6 +299,7 @@ impl From<&SandboxCreateRequest> for CreateSandboxParams {
             tee_config,
             user_env_json: String::new(),
             port_mappings: Vec::new(), // Parsed from metadata_json at runtime
+            capabilities_json: r.capabilities_json.to_string(),
         }
     }
 }

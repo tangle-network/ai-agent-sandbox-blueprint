@@ -52,6 +52,7 @@ fn tee_provision_request() -> ProvisionRequest {
         tee_required: true,
         tee_type: 1,
         attestation_nonce: String::new(), // Tdx
+        capabilities_json: String::new(),
     }
 }
 
