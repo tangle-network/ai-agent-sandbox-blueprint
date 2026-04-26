@@ -91,6 +91,52 @@ pub struct CreateSandboxParams {
     /// Extra container ports to expose (e.g. user web server on 3000).
     /// Parsed from `metadata_json.ports` at creation time.
     pub port_mappings: Vec<u16>,
+    /// Sidecar capabilities to enable at boot, encoded as a JSON array
+    /// (e.g. `["computer_use"]`). Currently supported entries: `computer_use`.
+    /// When non-empty, the runtime sets `SIDECAR_CAPABILITIES` on the
+    /// container env so the sidecar boots Xvfb / dbus / MCP at startup.
+    /// Empty string means no extra subsystems start.
+    pub capabilities_json: String,
+}
+
+/// Parse the `capabilities_json` field into the comma-separated wire
+/// format the sidecar's `SIDECAR_CAPABILITIES` parser expects.
+///
+/// Mirrors the parser in
+/// `apps/orchestrator/src/orchestrator/sidecar-capabilities.ts` (the
+/// adjacent agent-dev-container repo) so both wire formats stay in
+/// lockstep — JSON array on input, comma-separated list on the env
+/// var, and unknown entries dropped silently. Returns `None` when
+/// nothing recognizable is present so callers can skip the env-var
+/// injection entirely.
+pub(crate) fn parse_sidecar_capabilities(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Accept either a JSON array (the on-wire form) or a plain
+    // comma-separated list as a convenience for direct callers.
+    let entries: Vec<String> = if trimmed.starts_with('[') {
+        match serde_json::from_str::<Vec<String>>(trimmed) {
+            Ok(v) => v,
+            Err(_) => return None,
+        }
+    } else {
+        trimmed
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let known: Vec<String> = entries
+        .into_iter()
+        .filter(|c| c == "computer_use")
+        .collect();
+    if known.is_empty() {
+        None
+    } else {
+        Some(known.join(","))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,6 +406,13 @@ pub struct SandboxRecord {
     /// Persisted SSH key assignments so they can be replayed after recreation.
     #[serde(default)]
     pub ssh_authorized_keys: Vec<SshAuthorizedKey>,
+    /// Sidecar capabilities the sandbox was created with (e.g.
+    /// `["computer_use"]`), preserved verbatim from the create request
+    /// so snapshot-restore and recreation hand the same capability set
+    /// back to the sidecar. Empty string when no extra capabilities
+    /// were requested.
+    #[serde(default)]
+    pub capabilities_json: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1159,6 +1212,7 @@ async fn create_sidecar_tee(
         extra_ports: deployment.extra_ports,
         ssh_login_user: None,
         ssh_authorized_keys: Vec::new(),
+        capabilities_json: request.capabilities_json.clone(),
     };
 
     let mut sealed = record.clone();
@@ -1966,6 +2020,9 @@ async fn create_sidecar_firecracker(
         "SIDECAR_PORT".to_string(),
         config.container_port.to_string(),
     );
+    if let Some(caps) = parse_sidecar_capabilities(&request.capabilities_json) {
+        env.insert("SIDECAR_CAPABILITIES".to_string(), caps);
+    }
     if !effective_env.trim().is_empty() {
         if let Some(Value::Object(map)) = parse_json_object(&effective_env, "env_json")? {
             for (key, value) in map {
@@ -2047,6 +2104,7 @@ async fn create_sidecar_firecracker(
         extra_ports: HashMap::new(),
         ssh_login_user: None,
         ssh_authorized_keys: Vec::new(),
+        capabilities_json: request.capabilities_json.clone(),
     };
 
     let mut sealed = record.clone();
@@ -2119,7 +2177,12 @@ pub fn workflow_runtime_credentials_available(env_json: &str) -> Result<bool> {
 }
 
 /// Build the `Vec<String>` of `KEY=VALUE` env vars for a Docker container.
-fn build_env_vars(env_json: &str, token: &str, container_port: u16) -> Result<Vec<String>> {
+fn build_env_vars(
+    env_json: &str,
+    token: &str,
+    container_port: u16,
+    capabilities_json: &str,
+) -> Result<Vec<String>> {
     let mut env_vars = vec![
         format!("SIDECAR_PORT={container_port}"),
         format!("SIDECAR_AUTH_TOKEN={token}"),
@@ -2130,6 +2193,14 @@ fn build_env_vars(env_json: &str, token: &str, container_port: u16) -> Result<Ve
         "AGENT_SUBPROCESS_UID=1000".to_string(),
         "AGENT_SUBPROCESS_GID=1000".to_string(),
     ];
+
+    // Sidecar capabilities (e.g. `computer_use`). Inject before user env
+    // so a malformed user-supplied SIDECAR_CAPABILITIES override would
+    // win — but in practice users do not set this and the env-var name
+    // is documented as runtime-controlled.
+    if let Some(caps) = parse_sidecar_capabilities(capabilities_json) {
+        env_vars.push(format!("SIDECAR_CAPABILITIES={caps}"));
+    }
 
     // User-supplied env vars are appended after defaults so they can override.
     let env_map = parse_json_object(env_json, "env_json")?;
@@ -2298,7 +2369,12 @@ async fn create_sidecar_docker(
     let container_name = format!("sidecar-{sandbox_id}");
 
     let effective_env = merge_env_json(&request.env_json, &request.user_env_json);
-    let env_vars = build_env_vars(&effective_env, &token, config.container_port)?;
+    let env_vars = build_env_vars(
+        &effective_env,
+        &token,
+        config.container_port,
+        &request.capabilities_json,
+    )?;
 
     let metadata = parse_json_object(&request.metadata_json, "metadata_json")?;
     // Extract snapshot_destination before metadata is consumed by merge/labels
@@ -2464,6 +2540,7 @@ async fn create_sidecar_docker(
             extra_ports: extra_port_map,
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: request.capabilities_json.clone(),
         };
 
         let mut sealed = record.clone();
@@ -2867,6 +2944,11 @@ pub async fn recreate_sidecar_with_env(
         service_id: old.service_id,
         tee_config: old.tee_config.clone(),
         port_mappings: old.extra_ports.keys().copied().collect(),
+        // Replay the capability set the sandbox was originally booted
+        // with — recreation after secret-injection / wipe must hand the
+        // sidecar the same SIDECAR_CAPABILITIES it had before, otherwise
+        // computer_use sandboxes lose Xvfb on every refresh.
+        capabilities_json: old.capabilities_json.clone(),
     };
 
     // Preserve the original token so existing workflows/references keep working.
@@ -2961,7 +3043,12 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
 
     let ssh_enabled = record.ssh_port.is_some();
     let effective_env = record.effective_env_json();
-    let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
+    let env_vars = build_env_vars(
+        &effective_env,
+        &record.token,
+        config.container_port,
+        &record.capabilities_json,
+    )?;
     let ep: Vec<u16> = record.extra_ports.keys().copied().collect();
     let override_config = build_docker_config(
         config,
@@ -3054,7 +3141,12 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
 
     let ssh_enabled = record.ssh_port.is_some();
     let effective_env = record.effective_env_json();
-    let env_vars = build_env_vars(&effective_env, &record.token, config.container_port)?;
+    let env_vars = build_env_vars(
+        &effective_env,
+        &record.token,
+        config.container_port,
+        &record.capabilities_json,
+    )?;
     let ep: Vec<u16> = record.extra_ports.keys().copied().collect();
     let override_config = build_docker_config(
         config,
@@ -3461,6 +3553,77 @@ mod port_mapping_tests {
 }
 
 #[cfg(test)]
+mod sidecar_capability_tests {
+    use super::*;
+
+    #[test]
+    fn parse_sidecar_capabilities_handles_json_array() {
+        assert_eq!(
+            parse_sidecar_capabilities(r#"["computer_use"]"#).as_deref(),
+            Some("computer_use"),
+        );
+    }
+
+    #[test]
+    fn parse_sidecar_capabilities_handles_comma_list() {
+        assert_eq!(
+            parse_sidecar_capabilities("computer_use").as_deref(),
+            Some("computer_use"),
+        );
+        // Tolerate whitespace.
+        assert_eq!(
+            parse_sidecar_capabilities("  computer_use  ").as_deref(),
+            Some("computer_use"),
+        );
+    }
+
+    #[test]
+    fn parse_sidecar_capabilities_drops_unknown_silently() {
+        // Forward-compat: a future SDK that names a cap this orchestrator
+        // does not yet know must not crash the create — it just won't get
+        // the unrecognized subsystem.
+        assert_eq!(
+            parse_sidecar_capabilities(r#"["computer_use","future_cap"]"#).as_deref(),
+            Some("computer_use"),
+        );
+        assert!(parse_sidecar_capabilities("future_cap").is_none());
+    }
+
+    #[test]
+    fn parse_sidecar_capabilities_handles_empty_or_malformed() {
+        assert!(parse_sidecar_capabilities("").is_none());
+        assert!(parse_sidecar_capabilities("   ").is_none());
+        assert!(parse_sidecar_capabilities("[]").is_none());
+        assert!(parse_sidecar_capabilities("[not json").is_none());
+    }
+
+    #[test]
+    fn build_env_vars_injects_sidecar_capabilities_for_docker() {
+        // Regression: the Docker runtime path must put SIDECAR_CAPABILITIES
+        // on the container env so the sidecar boots Xvfb. The capability
+        // contract is identical across Docker / Firecracker / TEE; this
+        // pins the Docker side. (TEE is covered by tee_deploy_params_*
+        // in tee/mod.rs and Firecracker is exercised by integration.)
+        let env_vars = build_env_vars("{}", "tok", 8080, r#"["computer_use"]"#).unwrap();
+        assert!(
+            env_vars.contains(&"SIDECAR_CAPABILITIES=computer_use".to_string()),
+            "expected SIDECAR_CAPABILITIES in env, got {env_vars:?}",
+        );
+    }
+
+    #[test]
+    fn build_env_vars_omits_capabilities_when_unset() {
+        let env_vars = build_env_vars("{}", "tok", 8080, "").unwrap();
+        assert!(
+            !env_vars
+                .iter()
+                .any(|v| v.starts_with("SIDECAR_CAPABILITIES=")),
+            "expected no SIDECAR_CAPABILITIES env var, got {env_vars:?}",
+        );
+    }
+}
+
+#[cfg(test)]
 mod runtime_backend_tests {
     use super::*;
 
@@ -3754,6 +3917,7 @@ mod seal_tests {
             extra_ports: HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         seal_record(&mut record).unwrap();
@@ -3955,7 +4119,8 @@ mod core_logic_tests {
 
     #[test]
     fn env_vars_with_json() {
-        let vars = build_env_vars(r#"{"API_KEY":"sk-test","DEBUG":"true"}"#, "tok", 8080).unwrap();
+        let vars =
+            build_env_vars(r#"{"API_KEY":"sk-test","DEBUG":"true"}"#, "tok", 8080, "").unwrap();
         assert!(vars.contains(&"API_KEY=sk-test".to_string()));
         assert!(vars.contains(&"DEBUG=true".to_string()));
         assert!(vars.contains(&"SIDECAR_PORT=8080".to_string()));
@@ -3963,13 +4128,13 @@ mod core_logic_tests {
 
     #[test]
     fn env_vars_invalid_json() {
-        let result = build_env_vars("not-json", "tok", 3000);
+        let result = build_env_vars("not-json", "tok", 3000, "");
         assert!(result.is_err());
     }
 
     #[test]
     fn env_vars_preserve_explicit_ai_env() {
-        let vars = build_env_vars(r#"{"ZAI_API_KEY":"user-key"}"#, "tok", 8080).unwrap();
+        let vars = build_env_vars(r#"{"ZAI_API_KEY":"user-key"}"#, "tok", 8080, "").unwrap();
         assert!(vars.contains(&"ZAI_API_KEY=user-key".to_string()));
         assert!(!vars.contains(&"OPENCODE_MODEL_API_KEY=user-key".to_string()));
     }

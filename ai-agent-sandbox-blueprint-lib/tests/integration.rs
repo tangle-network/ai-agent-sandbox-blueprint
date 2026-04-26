@@ -104,6 +104,7 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 extra_ports: std::collections::HashMap::new(),
                 ssh_login_user: None,
                 ssh_authorized_keys: Vec::new(),
+                capabilities_json: String::new(),
             },
         )
         .unwrap();
@@ -154,6 +155,7 @@ fn insert_ssh_sandbox(url: &str, token: &str) -> String {
                 extra_ports: std::collections::HashMap::new(),
                 ssh_login_user: None,
                 ssh_authorized_keys: Vec::new(),
+                capabilities_json: String::new(),
             },
         )
         .unwrap();
@@ -204,6 +206,7 @@ fn insert_sandbox_with_owner(url: &str, token: &str, owner: &str) -> String {
                 extra_ports: std::collections::HashMap::new(),
                 ssh_login_user: None,
                 ssh_authorized_keys: Vec::new(),
+                capabilities_json: String::new(),
             },
         )
         .unwrap();
@@ -1410,6 +1413,7 @@ mod abi {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
         let d = SandboxCreateRequest::abi_decode(&req.abi_encode()).unwrap();
         assert_eq!(d.name, "t");
@@ -1545,6 +1549,7 @@ mod abi {
                 tee_required: false,
                 tee_type: 0,
                 attestation_nonce: String::new(),
+                capabilities_json: String::new(),
             },
             operators: vec![Address::ZERO],
             distribution: "round-robin".into(),
@@ -1609,6 +1614,7 @@ mod abi {
             tee_required,
             tee_type,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         }
     }
 
@@ -1904,6 +1910,7 @@ mod docker {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -1985,6 +1992,7 @@ mod docker {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -2048,6 +2056,7 @@ mod docker {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {
@@ -2149,6 +2158,7 @@ mod docker {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
 
         let record = match create_sidecar(&CreateSandboxParams::from(&request), None).await {

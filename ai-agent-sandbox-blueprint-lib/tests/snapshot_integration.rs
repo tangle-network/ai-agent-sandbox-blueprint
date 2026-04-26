@@ -159,6 +159,7 @@ async fn create_test_sandbox() -> SandboxRecord {
         tee_required: false,
         tee_type: 0,
         attestation_nonce: String::new(),
+        capabilities_json: String::new(),
     };
     create_sidecar(&CreateSandboxParams::from(&request), None)
         .await
@@ -187,6 +188,7 @@ async fn create_test_sandbox_with_destination(dest: &str) -> SandboxRecord {
         tee_required: false,
         tee_type: 0,
         attestation_nonce: String::new(),
+        capabilities_json: String::new(),
     };
     create_sidecar(&CreateSandboxParams::from(&request), None)
         .await
@@ -821,6 +823,7 @@ async fn tiered_gc_cold_to_gone_real() {
         extra_ports: std::collections::HashMap::new(),
         ssh_login_user: None,
         ssh_authorized_keys: Vec::new(),
+        capabilities_json: String::new(),
     };
 
     sandboxes()
@@ -923,6 +926,7 @@ async fn user_byos3_never_deleted_by_gc() {
         extra_ports: std::collections::HashMap::new(),
         ssh_login_user: None,
         ssh_authorized_keys: Vec::new(),
+        capabilities_json: String::new(),
     };
 
     sandboxes()

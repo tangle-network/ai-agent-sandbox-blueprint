@@ -110,6 +110,10 @@ impl TeeDeployParams {
             ("SIDECAR_AUTH_TOKEN".to_string(), token.to_string()),
         ];
 
+        if let Some(caps) = crate::runtime::parse_sidecar_capabilities(&params.capabilities_json) {
+            env_vars.push(("SIDECAR_CAPABILITIES".to_string(), caps));
+        }
+
         // Parse env_json into env var pairs.
         if !params.env_json.trim().is_empty() {
             if let Ok(Some(serde_json::Value::Object(map))) =
@@ -775,6 +779,40 @@ mod tests {
         };
         let deploy = TeeDeployParams::from_sandbox_params("sb-2", &params, 8080, 2222, "tok");
         assert_eq!(deploy.ssh_port, None);
+    }
+
+    #[test]
+    fn tee_deploy_params_forwards_computer_use_capability() {
+        // Regression: a TEE-routed sandbox booted with capabilities=[
+        // "computer_use"] must hand SIDECAR_CAPABILITIES to the
+        // deploy params so the in-TEE sidecar boots Xvfb / dbus / MCP.
+        // Without this, the capability silently drops on the TEE
+        // path and a getMcpAccessToken call later 404s at /mcp.
+        let params = crate::runtime::CreateSandboxParams {
+            capabilities_json: r#"["computer_use"]"#.into(),
+            ..Default::default()
+        };
+        let deploy = TeeDeployParams::from_sandbox_params("sb-cu", &params, 8080, 22, "t");
+        assert!(
+            deploy
+                .env_vars
+                .contains(&("SIDECAR_CAPABILITIES".into(), "computer_use".into())),
+            "expected SIDECAR_CAPABILITIES in TEE env vars, got {:?}",
+            deploy.env_vars
+        );
+    }
+
+    #[test]
+    fn tee_deploy_params_omits_capabilities_when_unset() {
+        let params = crate::runtime::CreateSandboxParams::default();
+        let deploy = TeeDeployParams::from_sandbox_params("sb-empty", &params, 8080, 22, "t");
+        assert!(
+            !deploy
+                .env_vars
+                .iter()
+                .any(|(k, _)| k == "SIDECAR_CAPABILITIES"),
+            "expected no SIDECAR_CAPABILITIES env var when capabilities_json is empty",
+        );
     }
 
     #[test]

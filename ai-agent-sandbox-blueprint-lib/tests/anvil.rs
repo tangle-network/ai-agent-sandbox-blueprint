@@ -236,6 +236,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         }
         .abi_encode();
 
@@ -539,6 +540,7 @@ async fn runs_firecracker_jobs_end_to_end() -> Result<()> {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         }
         .abi_encode();
 

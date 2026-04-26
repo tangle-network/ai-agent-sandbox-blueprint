@@ -428,6 +428,7 @@ mod tests {
             extra_ports: HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         let output = provision_output_from_record(&record);
@@ -477,6 +478,7 @@ mod tests {
             extra_ports: HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         let output = provision_output_from_record(&record);

@@ -107,6 +107,7 @@ impl SandboxProvider for DockerSandboxProvider {
             tee_config: req.tee,
             user_env_json: "{}".to_string(),
             port_mappings: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         let (record, attestation) = create_sidecar(&params, self.tee_backend.as_deref()).await?;

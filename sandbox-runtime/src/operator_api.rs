@@ -6165,6 +6165,7 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
@@ -6217,6 +6218,7 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();
@@ -7352,6 +7354,7 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             tee_config: None,
             user_env_json: String::new(),
             port_mappings: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         let created = match crate::runtime::create_sidecar(&request, None).await {
@@ -8224,6 +8227,7 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
             extra_ports: ports,
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
         seal_record(&mut record).unwrap();
         sandboxes().unwrap().insert(id.to_string(), record).unwrap();

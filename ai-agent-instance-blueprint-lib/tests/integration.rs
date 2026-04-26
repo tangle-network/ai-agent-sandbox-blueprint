@@ -96,6 +96,7 @@ fn insert_sandbox(url: &str, token: &str) -> String {
                 extra_ports: std::collections::HashMap::new(),
                 ssh_login_user: None,
                 ssh_authorized_keys: Vec::new(),
+                capabilities_json: String::new(),
             },
         )
         .unwrap();
@@ -146,6 +147,7 @@ fn insert_ssh_sandbox(url: &str, token: &str) -> String {
                 extra_ports: std::collections::HashMap::new(),
                 ssh_login_user: None,
                 ssh_authorized_keys: Vec::new(),
+                capabilities_json: String::new(),
             },
         )
         .unwrap();
@@ -840,6 +842,7 @@ mod instance_state_tests {
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -893,6 +896,7 @@ mod instance_state_tests {
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -1014,6 +1018,7 @@ mod abi_tests {
             tee_required: true,
             tee_type: 2,
             attestation_nonce: String::new(), // Nitro
+            capabilities_json: String::new(),
         };
 
         let encoded = request.abi_encode();
@@ -1097,6 +1102,7 @@ mod conversion_tests {
             tee_required: true,
             tee_type: 1,
             attestation_nonce: String::new(), // Tdx
+            capabilities_json: String::new(),
         };
 
         let params = CreateSandboxParams::from(&request);
@@ -1132,6 +1138,7 @@ mod conversion_tests {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
 
         let params = CreateSandboxParams::from(&request);
@@ -1165,6 +1172,7 @@ mod conversion_tests {
                 tee_required: true,
                 tee_type: tee_type_id,
                 attestation_nonce: String::new(),
+                capabilities_json: String::new(),
             };
 
             let params = CreateSandboxParams::from(&request);
@@ -1531,6 +1539,7 @@ mod provision_guard_tests {
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
         set_instance_sandbox(record).unwrap();
 
@@ -1586,6 +1595,7 @@ mod provision_guard_tests {
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
         set_instance_sandbox(record).unwrap();
         assert!(get_instance_sandbox().unwrap().is_some());
@@ -1643,6 +1653,7 @@ mod provision_guard_tests {
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         set_instance_sandbox(record).unwrap();
@@ -1714,6 +1725,7 @@ mod provision_guard_tests {
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         let record_b = SandboxRecord {
@@ -1753,6 +1765,7 @@ mod provision_guard_tests {
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
 
         set_instance_sandbox(record_a).unwrap();
@@ -1812,6 +1825,7 @@ mod provision_guard_tests {
             extra_ports: std::collections::HashMap::new(),
             ssh_login_user: None,
             ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
         };
         set_instance_sandbox(record).unwrap();
 
@@ -1891,6 +1905,7 @@ fn set_instance_for_test_with_owner(url: &str, token: &str, owner: &str) -> Stri
                 extra_ports: std::collections::HashMap::new(),
                 ssh_login_user: None,
                 ssh_authorized_keys: Vec::new(),
+                capabilities_json: String::new(),
             },
         )
         .unwrap();
@@ -1932,6 +1947,7 @@ fn set_instance_for_test_with_owner(url: &str, token: &str, owner: &str) -> Stri
         extra_ports: std::collections::HashMap::new(),
         ssh_login_user: None,
         ssh_authorized_keys: Vec::new(),
+        capabilities_json: String::new(),
     };
     set_instance_sandbox(record).unwrap();
     id
@@ -2605,6 +2621,7 @@ mod auto_provision_tests {
             tee_required: false,
             tee_type: 0,
             attestation_nonce: String::new(),
+            capabilities_json: String::new(),
         };
 
         // abi_encode() produces tuple encoding (with outer offset prefix).
