@@ -31,7 +31,7 @@ fn make_provision_request(name: &str, tee_required: bool, tee_type: u8) -> Provi
         tee_required,
         tee_type,
         attestation_nonce: String::new(),
-            capabilities_json: String::new(),
+        capabilities_json: String::new(),
     }
 }
 
@@ -77,7 +77,7 @@ fn decode_provision_config_tee_required_tdx() {
         tee_required: true,
         tee_type: 1,
         attestation_nonce: String::new(), // Tdx
-    capabilities_json: String::new(),
+        capabilities_json: String::new(),
     };
 
     let encoded = req.abi_encode_params();

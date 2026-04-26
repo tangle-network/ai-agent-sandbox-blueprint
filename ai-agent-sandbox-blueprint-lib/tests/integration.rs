@@ -1549,7 +1549,7 @@ mod abi {
                 tee_required: false,
                 tee_type: 0,
                 attestation_nonce: String::new(),
-            capabilities_json: String::new(),
+                capabilities_json: String::new(),
             },
             operators: vec![Address::ZERO],
             distribution: "round-robin".into(),

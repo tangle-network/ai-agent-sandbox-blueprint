@@ -110,9 +110,7 @@ impl TeeDeployParams {
             ("SIDECAR_AUTH_TOKEN".to_string(), token.to_string()),
         ];
 
-        if let Some(caps) =
-            crate::runtime::parse_sidecar_capabilities(&params.capabilities_json)
-        {
+        if let Some(caps) = crate::runtime::parse_sidecar_capabilities(&params.capabilities_json) {
             env_vars.push(("SIDECAR_CAPABILITIES".to_string(), caps));
         }
 

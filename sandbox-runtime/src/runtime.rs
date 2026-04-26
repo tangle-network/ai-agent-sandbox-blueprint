@@ -3615,7 +3615,9 @@ mod sidecar_capability_tests {
     fn build_env_vars_omits_capabilities_when_unset() {
         let env_vars = build_env_vars("{}", "tok", 8080, "").unwrap();
         assert!(
-            !env_vars.iter().any(|v| v.starts_with("SIDECAR_CAPABILITIES=")),
+            !env_vars
+                .iter()
+                .any(|v| v.starts_with("SIDECAR_CAPABILITIES=")),
             "expected no SIDECAR_CAPABILITIES env var, got {env_vars:?}",
         );
     }
@@ -4117,13 +4119,8 @@ mod core_logic_tests {
 
     #[test]
     fn env_vars_with_json() {
-        let vars = build_env_vars(
-            r#"{"API_KEY":"sk-test","DEBUG":"true"}"#,
-            "tok",
-            8080,
-            "",
-        )
-        .unwrap();
+        let vars =
+            build_env_vars(r#"{"API_KEY":"sk-test","DEBUG":"true"}"#, "tok", 8080, "").unwrap();
         assert!(vars.contains(&"API_KEY=sk-test".to_string()));
         assert!(vars.contains(&"DEBUG=true".to_string()));
         assert!(vars.contains(&"SIDECAR_PORT=8080".to_string()));
