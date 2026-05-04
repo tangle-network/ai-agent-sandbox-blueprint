@@ -1985,12 +1985,30 @@ async fn create_sidecar_firecracker(
 
     enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
 
-    let extra_ports = parse_extra_ports(&request.metadata_json, &request.port_mappings);
-    if !extra_ports.is_empty() {
-        return Err(SandboxError::Validation(
-            "runtime_backend=firecracker currently does not support metadata_json.ports port mappings"
-                .into(),
-        ));
+    // Parse and validate port mappings strictly — malformed entries fail
+    // fast here rather than being silently dropped. Both legacy `[3000]` and
+    // structured `[{container_port,host_port,protocol}]` shapes are accepted.
+    //
+    // Persistence: the parsed ports survive restarts because
+    // `metadata_with_runtime_backend` (called below) preserves the entire
+    // input metadata object, including `ports`, on the persisted record.
+    //
+    // Forwarding: the host-agent create-VM contract in this repo (see
+    // `firecracker.rs::create_and_start`) does NOT yet expose a port
+    // forwarding field in its OpenAPI types. Until the upstream host-agent
+    // adds one, we parse + persist + warn but do not invent a payload key.
+    // See README "Selecting `firecracker` disables `metadata_json.ports`"
+    // — that guidance is being relaxed in two phases (a) accept input,
+    // (b) forward once host-agent ships the contract.
+    let metadata_value =
+        parse_json_object(&request.metadata_json, "metadata_json")?.unwrap_or(Value::Null);
+    let parsed_ports = parse_metadata_ports(&metadata_value)?;
+    if !parsed_ports.is_empty() {
+        tracing::warn!(
+            sandbox_id = %sandbox_id,
+            count = parsed_ports.len(),
+            "firecracker: metadata.ports parsed and persisted; host-agent forwarding pending upstream contract",
+        );
     }
 
     let effective_image = if request.image.is_empty() {
@@ -2045,6 +2063,7 @@ async fn create_sidecar_firecracker(
         cpu_cores: request.cpu_cores,
         memory_mb: request.memory_mb,
         disk_gb: request.disk_gb,
+        ports: parsed_ports.clone(),
     };
 
     let provisioned = crate::firecracker::create_and_start(create_request).await?;
@@ -2101,7 +2120,14 @@ async fn create_sidecar_firecracker(
         owner: request.owner.clone(),
         service_id: request.service_id,
         tee_config: None,
-        extra_ports: HashMap::new(),
+        // Persist the parsed structured port mappings on the record so they
+        // survive restart and so callers reading the sandbox can introspect
+        // intended forwarding even before host-agent's port-forward contract
+        // is implemented. Empty when no `metadata.ports` were requested.
+        extra_ports: parsed_ports
+            .iter()
+            .map(|p| (p.container_port, p.host_port))
+            .collect(),
         ssh_login_user: None,
         ssh_authorized_keys: Vec::new(),
         capabilities_json: request.capabilities_json.clone(),
@@ -3314,6 +3340,181 @@ fn extract_host_port(
     Ok(parsed)
 }
 
+/// Wire protocol for a structured port mapping entry. Mirrors the Linux
+/// kernel's `IPPROTO_*` choices that are useful for agent-exposed services;
+/// ICMP/SCTP/etc are intentionally not supported because the sandbox network
+/// model does not route them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PortProtocol {
+    Tcp,
+    Udp,
+}
+
+impl PortProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PortProtocol::Tcp => "tcp",
+            PortProtocol::Udp => "udp",
+        }
+    }
+}
+
+/// Structured port mapping entry parsed from the `ports` field on
+/// `metadata_json`. Designed to round-trip through the host-agent
+/// create-VM payload once that contract stabilises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PortMapping {
+    pub container_port: u16,
+    pub host_port: u16,
+    pub protocol: PortProtocol,
+}
+
+/// Parse the `ports` field on `metadata_json` into a list of structured
+/// `PortMapping` entries. Accepts two shapes (both observed in production
+/// inputs) and validates them strictly:
+///
+/// 1. `[3000]` (legacy) — a bare port number. Treated as
+///    `{container_port: N, host_port: N, protocol: tcp}`.
+/// 2. `[{"container_port": 3000, "host_port": 30000, "protocol": "tcp"}]`
+///    (structured).
+///
+/// Validation rules:
+/// - Each port must be in `1..=65535` (zero is reserved as "unassigned").
+/// - Protocol must be `tcp` or `udp` (case-insensitive).
+/// - No duplicate `host_port` (would collide on the host network namespace).
+/// - No duplicate `container_port` within the same protocol.
+/// - Output is capped at [`crate::MAX_EXTRA_PORTS`] entries.
+///
+/// Returns `Ok(vec![])` when the field is absent, null, or an empty array.
+/// Returns `Err(Validation)` on malformed entries so misconfigured deploys
+/// fail fast rather than silently dropping ports.
+pub fn parse_metadata_ports(metadata_json: &Value) -> Result<Vec<PortMapping>> {
+    let arr = match metadata_json.get("ports") {
+        Some(Value::Array(a)) => a,
+        Some(Value::Null) | None => return Ok(Vec::new()),
+        Some(other) => {
+            return Err(SandboxError::Validation(format!(
+                "metadata_json.ports must be an array, got {}",
+                value_kind(other)
+            )));
+        }
+    };
+
+    if arr.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut out: Vec<PortMapping> = Vec::with_capacity(arr.len().min(crate::MAX_EXTRA_PORTS));
+    let mut seen_host = std::collections::HashSet::with_capacity(arr.len());
+    let mut seen_container = std::collections::HashSet::with_capacity(arr.len());
+
+    for (idx, entry) in arr.iter().enumerate() {
+        let mapping = parse_single_port_mapping(idx, entry)?;
+        if !seen_host.insert((mapping.host_port, mapping.protocol)) {
+            return Err(SandboxError::Validation(format!(
+                "metadata_json.ports[{idx}] duplicate host_port {}/{}",
+                mapping.host_port,
+                mapping.protocol.as_str()
+            )));
+        }
+        if !seen_container.insert((mapping.container_port, mapping.protocol)) {
+            return Err(SandboxError::Validation(format!(
+                "metadata_json.ports[{idx}] duplicate container_port {}/{}",
+                mapping.container_port,
+                mapping.protocol.as_str()
+            )));
+        }
+        out.push(mapping);
+        if out.len() == crate::MAX_EXTRA_PORTS {
+            // Match `parse_extra_ports`: silently truncate beyond the cap.
+            break;
+        }
+    }
+    Ok(out)
+}
+
+fn parse_single_port_mapping(idx: usize, entry: &Value) -> Result<PortMapping> {
+    let bad = |msg: &str| SandboxError::Validation(format!("metadata_json.ports[{idx}]: {msg}"));
+
+    // Bare integer: legacy compatibility with the existing `[3000]` shape.
+    if let Some(n) = entry.as_u64() {
+        let port = u16::try_from(n).map_err(|_| bad("port out of range, must be 1..=65535"))?;
+        if port == 0 {
+            return Err(bad("port 0 is reserved"));
+        }
+        return Ok(PortMapping {
+            container_port: port,
+            host_port: port,
+            protocol: PortProtocol::Tcp,
+        });
+    }
+
+    let obj = entry.as_object().ok_or_else(|| {
+        bad("each entry must be an integer or an object {container_port,host_port,protocol}")
+    })?;
+
+    let container_port = parse_port_field(idx, obj, "container_port")?;
+    let host_port = parse_port_field(idx, obj, "host_port")?;
+    let protocol = match obj.get("protocol") {
+        Some(Value::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
+            "tcp" => PortProtocol::Tcp,
+            "udp" => PortProtocol::Udp,
+            other => {
+                return Err(bad(&format!(
+                    "protocol must be \"tcp\" or \"udp\", got {other:?}"
+                )));
+            }
+        },
+        Some(Value::Null) | None => PortProtocol::Tcp,
+        Some(other) => {
+            return Err(bad(&format!(
+                "protocol must be a string, got {}",
+                value_kind(other)
+            )));
+        }
+    };
+
+    Ok(PortMapping {
+        container_port,
+        host_port,
+        protocol,
+    })
+}
+
+fn parse_port_field(idx: usize, obj: &Map<String, Value>, key: &str) -> Result<u16> {
+    let raw = obj.get(key).ok_or_else(|| {
+        SandboxError::Validation(format!("metadata_json.ports[{idx}]: missing field {key}"))
+    })?;
+    let n = raw.as_u64().ok_or_else(|| {
+        SandboxError::Validation(format!(
+            "metadata_json.ports[{idx}].{key} must be an unsigned integer"
+        ))
+    })?;
+    let port = u16::try_from(n).map_err(|_| {
+        SandboxError::Validation(format!(
+            "metadata_json.ports[{idx}].{key} out of range, must be 1..=65535"
+        ))
+    })?;
+    if port == 0 {
+        return Err(SandboxError::Validation(format!(
+            "metadata_json.ports[{idx}].{key} is 0 (reserved)"
+        )));
+    }
+    Ok(port)
+}
+
+fn value_kind(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 /// Parse extra port mappings from metadata_json and explicit port_mappings field.
 ///
 /// Ports come from two sources, deduplicated and capped at [`MAX_EXTRA_PORTS`]:
@@ -3549,6 +3750,199 @@ mod port_mapping_tests {
         let json = r#"{"id":"test","container_id":"c","sidecar_url":"http://x","sidecar_port":0,"token":"t","created_at":0}"#;
         let record: SandboxRecord = serde_json::from_str(json).unwrap();
         assert!(record.extra_ports.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod metadata_port_mapping_tests {
+    use super::*;
+
+    fn meta(s: &str) -> Value {
+        serde_json::from_str(s).expect("test metadata is valid JSON")
+    }
+
+    #[test]
+    fn parse_metadata_ports_absent_field_returns_empty() {
+        let m = meta(r#"{}"#);
+        assert!(parse_metadata_ports(&m).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_metadata_ports_null_field_returns_empty() {
+        let m = meta(r#"{"ports": null}"#);
+        assert!(parse_metadata_ports(&m).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_metadata_ports_empty_array_returns_empty() {
+        let m = meta(r#"{"ports": []}"#);
+        assert!(parse_metadata_ports(&m).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_metadata_ports_legacy_bare_integer() {
+        let m = meta(r#"{"ports": [3000]}"#);
+        let parsed = parse_metadata_ports(&m).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].container_port, 3000);
+        assert_eq!(parsed[0].host_port, 3000);
+        assert_eq!(parsed[0].protocol, PortProtocol::Tcp);
+    }
+
+    #[test]
+    fn parse_metadata_ports_single_structured_mapping() {
+        let m =
+            meta(r#"{"ports": [{"container_port": 3000, "host_port": 30000, "protocol": "tcp"}]}"#);
+        let parsed = parse_metadata_ports(&m).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].container_port, 3000);
+        assert_eq!(parsed[0].host_port, 30000);
+        assert_eq!(parsed[0].protocol, PortProtocol::Tcp);
+    }
+
+    #[test]
+    fn parse_metadata_ports_multiple_structured_mappings() {
+        let m = meta(
+            r#"{"ports": [
+                {"container_port": 3000, "host_port": 30000, "protocol": "tcp"},
+                {"container_port": 5432, "host_port": 30001, "protocol": "tcp"},
+                {"container_port": 53,   "host_port": 30053, "protocol": "udp"}
+            ]}"#,
+        );
+        let parsed = parse_metadata_ports(&m).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[2].protocol, PortProtocol::Udp);
+        assert_eq!(parsed[2].host_port, 30053);
+    }
+
+    #[test]
+    fn parse_metadata_ports_protocol_defaults_to_tcp() {
+        let m = meta(r#"{"ports": [{"container_port": 3000, "host_port": 30000}]}"#);
+        let parsed = parse_metadata_ports(&m).unwrap();
+        assert_eq!(parsed[0].protocol, PortProtocol::Tcp);
+    }
+
+    #[test]
+    fn parse_metadata_ports_protocol_case_insensitive() {
+        let m =
+            meta(r#"{"ports": [{"container_port": 3000, "host_port": 30000, "protocol": "TCP"}]}"#);
+        let parsed = parse_metadata_ports(&m).unwrap();
+        assert_eq!(parsed[0].protocol, PortProtocol::Tcp);
+    }
+
+    #[test]
+    fn parse_metadata_ports_rejects_port_out_of_range_legacy() {
+        let m = meta(r#"{"ports": [70000]}"#);
+        let err = parse_metadata_ports(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("out of range"), "{msg}");
+    }
+
+    #[test]
+    fn parse_metadata_ports_rejects_port_out_of_range_structured() {
+        let m = meta(
+            r#"{"ports": [{"container_port": 70000, "host_port": 30000, "protocol": "tcp"}]}"#,
+        );
+        let err = parse_metadata_ports(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("out of range"), "{msg}");
+        assert!(msg.contains("container_port"), "{msg}");
+    }
+
+    #[test]
+    fn parse_metadata_ports_rejects_port_zero() {
+        let m = meta(r#"{"ports": [0]}"#);
+        let err = parse_metadata_ports(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("0 is reserved") || msg.contains("reserved"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn parse_metadata_ports_rejects_unknown_protocol() {
+        let m = meta(
+            r#"{"ports": [{"container_port": 3000, "host_port": 30000, "protocol": "sctp"}]}"#,
+        );
+        let err = parse_metadata_ports(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("tcp") || msg.contains("udp"), "{msg}");
+    }
+
+    #[test]
+    fn parse_metadata_ports_rejects_duplicate_host_port() {
+        let m = meta(
+            r#"{"ports": [
+                {"container_port": 3000, "host_port": 30000, "protocol": "tcp"},
+                {"container_port": 3001, "host_port": 30000, "protocol": "tcp"}
+            ]}"#,
+        );
+        let err = parse_metadata_ports(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate host_port"), "{msg}");
+    }
+
+    #[test]
+    fn parse_metadata_ports_allows_same_host_port_on_different_protocols() {
+        // tcp/30000 and udp/30000 are distinct sockets and must both be allowed.
+        let m = meta(
+            r#"{"ports": [
+                {"container_port": 53, "host_port": 30053, "protocol": "tcp"},
+                {"container_port": 53, "host_port": 30053, "protocol": "udp"}
+            ]}"#,
+        );
+        let parsed = parse_metadata_ports(&m).unwrap();
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn parse_metadata_ports_rejects_duplicate_container_port_same_protocol() {
+        let m = meta(
+            r#"{"ports": [
+                {"container_port": 3000, "host_port": 30000, "protocol": "tcp"},
+                {"container_port": 3000, "host_port": 30001, "protocol": "tcp"}
+            ]}"#,
+        );
+        let err = parse_metadata_ports(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate container_port"), "{msg}");
+    }
+
+    #[test]
+    fn parse_metadata_ports_rejects_non_array_field() {
+        let m = meta(r#"{"ports": 3000}"#);
+        let err = parse_metadata_ports(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("must be an array"), "{msg}");
+    }
+
+    #[test]
+    fn parse_metadata_ports_caps_at_max_extra_ports() {
+        // 12 entries → output capped to MAX_EXTRA_PORTS.
+        let mut entries = String::from("[");
+        for i in 0..12 {
+            if i > 0 {
+                entries.push(',');
+            }
+            entries.push_str(&format!(
+                r#"{{"container_port": {}, "host_port": {}, "protocol": "tcp"}}"#,
+                3000 + i,
+                30000 + i,
+            ));
+        }
+        entries.push(']');
+        let m = meta(&format!(r#"{{"ports": {entries}}}"#));
+        let parsed = parse_metadata_ports(&m).unwrap();
+        assert_eq!(parsed.len(), crate::MAX_EXTRA_PORTS);
+    }
+
+    #[test]
+    fn parse_metadata_ports_rejects_missing_field() {
+        let m = meta(r#"{"ports": [{"container_port": 3000, "protocol": "tcp"}]}"#);
+        let err = parse_metadata_ports(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("missing field host_port"), "{msg}");
     }
 }
 
