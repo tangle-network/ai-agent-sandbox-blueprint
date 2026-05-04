@@ -72,9 +72,32 @@ fn bench_create_access_token_session(c: &mut Criterion) {
     });
 }
 
+/// Stress the lazy-GC fast path under sustained read load at 10 k sessions.
+///
+/// Used in conjunction with the CI gate in
+/// `sandbox-runtime/tests/bench_regression.rs`. Criterion's per-iteration
+/// stats (target/criterion/scoped_session/resolve_bearer_hot_10k/) make
+/// regressions visible; the integration test fails the build outright.
+fn bench_resolve_bearer_hot_10k(c: &mut Criterion) {
+    let (service, tokens) = make_service(10_000);
+    // Prime the GC clock once so we're measuring the steady-state hot path.
+    for token in tokens.iter().take(1_000) {
+        let _ = service.resolve_bearer(token);
+    }
+    let mut idx = 0usize;
+    c.bench_function("scoped_session/resolve_bearer_hot_10k", |b| {
+        b.iter(|| {
+            let token = &tokens[idx % tokens.len()];
+            idx = idx.wrapping_add(1);
+            black_box(service.resolve_bearer(black_box(token)));
+        })
+    });
+}
+
 criterion_group!(
     scoped_session_benches,
     bench_resolve_bearer_scaling,
     bench_create_access_token_session,
+    bench_resolve_bearer_hot_10k,
 );
 criterion_main!(scoped_session_benches);
