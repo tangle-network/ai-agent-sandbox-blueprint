@@ -185,6 +185,10 @@ jobs:
         # Yanked crates (e.g. keccak 0.1.5) are warnings by default, not errors
         # RUSTSEC-2026-0049: rustls-webpki — transitive dep via rustls 0.21
         # RUSTSEC-2026-0104: rustls-webpki — transitive dep via rustls 0.21
+        # RUSTSEC-2026-0119: hickory-proto 0.24.4 — transitive via libp2p-mdns 0.46
+        #   (pinned by blueprint-networking@alpha.15 in tangle-network/blueprint).
+        #   Exposure is local-network mDNS only; real fix requires upstream
+        #   libp2p bump. Re-evaluate when blueprint-networking ships libp2p ≥ 0.55.
         run: >
           cargo audit
           --ignore RUSTSEC-2025-0009
@@ -194,6 +198,7 @@ jobs:
           --ignore RUSTSEC-2026-0098
           --ignore RUSTSEC-2026-0099
           --ignore RUSTSEC-2026-0104
+          --ignore RUSTSEC-2026-0119
 
   e2e:
     name: E2E tests
