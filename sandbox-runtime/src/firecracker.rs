@@ -128,6 +128,18 @@ pub(crate) struct FirecrackerCreateRequest {
     pub cpu_cores: u64,
     pub memory_mb: u64,
     pub disk_gb: u64,
+    /// User-requested port mappings parsed from `metadata_json.ports`.
+    /// Persisted on the sandbox record; **not** forwarded to host-agent yet
+    /// because the host-agent OpenAPI in this repo does not specify a
+    /// port-forwarding field. See `build_create_payload` for the precise
+    /// gap, which is gated for a follow-up once host-agent ships the
+    /// contract.
+    ///
+    /// `#[allow(dead_code)]` is intentional: this field is the seam where
+    /// the future host-agent port-forwarding contract will plug in. Read
+    /// in `build_create_payload`'s contract assertion test.
+    #[allow(dead_code)]
+    pub ports: Vec<crate::runtime::PortMapping>,
 }
 
 #[derive(Clone, Debug)]
@@ -170,15 +182,31 @@ struct HostAgentErrorResponse {
     code: String,
 }
 
-pub(crate) async fn create_and_start(
-    req: FirecrackerCreateRequest,
-) -> Result<FirecrackerProvisionResult> {
-    let config = FirecrackerHostAgentConfig::load()?;
+/// Build the JSON body sent to host-agent's `POST /v1/containers`.
+///
+/// Extracted from `create_and_start` so it can be unit-tested without a
+/// running host-agent. The payload shape mirrors fields the host-agent's
+/// existing contract already accepts (`sessionId`, `image`, `env`, `labels`,
+/// `resources`, `volumes`, `network`, `security`).
+///
+/// **Port forwarding gap.** The host-agent OpenAPI bundled in this repo
+/// (see `dependencies/` and the mock in
+/// `sandbox-runtime/tests/firecracker_host_agent.rs`) does not specify a
+/// field for inbound port forwarding. `req.ports` is therefore parsed and
+/// persisted on the sandbox record (via `metadata_json` round-trip) but
+/// **deliberately not** placed in the outbound payload — to do otherwise
+/// would invent an upstream contract. Once host-agent publishes a stable
+/// port-forwarding field (e.g. `ports: [{containerPort, hostPort, protocol}]`),
+/// this function is the single place to add the forwarding.
+pub(crate) fn build_create_payload(
+    req: &FirecrackerCreateRequest,
+    config: &FirecrackerHostAgentConfig,
+) -> Value {
     let disk_mb = req.disk_gb.saturating_mul(1024).max(DEFAULT_DISK_MB);
     let memory_mb = req.memory_mb.max(DEFAULT_MEMORY_MB);
     let cpu_cores = req.cpu_cores.max(1);
 
-    let create_payload = json!({
+    json!({
         "sessionId": req.session_id,
         "image": req.image,
         "env": req.env,
@@ -200,7 +228,14 @@ pub(crate) async fn create_and_start(
                 "add": [],
             }
         },
-    });
+    })
+}
+
+pub(crate) async fn create_and_start(
+    req: FirecrackerCreateRequest,
+) -> Result<FirecrackerProvisionResult> {
+    let config = FirecrackerHostAgentConfig::load()?;
+    let create_payload = build_create_payload(&req, &config);
 
     let created = request_container(
         &config,
@@ -499,5 +534,72 @@ mod tests {
 
         let cfg = FirecrackerHostAgentConfig::load().expect("token mode should be valid");
         assert_eq!(cfg.sidecar_auth_token.as_deref(), Some("secret-token"));
+    }
+
+    fn test_config() -> FirecrackerHostAgentConfig {
+        FirecrackerHostAgentConfig {
+            base_url: "http://127.0.0.1:18080".into(),
+            api_key: None,
+            network: "bridge".into(),
+            pids_limit: DEFAULT_PIDS_LIMIT,
+            sidecar_auth_token: None,
+        }
+    }
+
+    fn req_with_ports(ports: Vec<crate::runtime::PortMapping>) -> FirecrackerCreateRequest {
+        FirecrackerCreateRequest {
+            session_id: "sess-1".into(),
+            image: "ghcr.io/test:latest".into(),
+            env: HashMap::new(),
+            labels: HashMap::new(),
+            cpu_cores: 2,
+            memory_mb: 1024,
+            disk_gb: 4,
+            ports,
+        }
+    }
+
+    #[test]
+    fn build_create_payload_contains_required_fields() {
+        let cfg = test_config();
+        let body = build_create_payload(&req_with_ports(Vec::new()), &cfg);
+        // Required keys established by the host-agent contract present in
+        // sandbox-runtime/tests/firecracker_host_agent.rs.
+        assert_eq!(body["sessionId"], "sess-1");
+        assert_eq!(body["image"], "ghcr.io/test:latest");
+        assert_eq!(body["network"], "bridge");
+        assert_eq!(body["resources"]["cpu"], 2);
+        assert_eq!(body["resources"]["memory"], 1024);
+        // disk: 4 GB → 4096 MB, but enforced ≥ 10 GB default ceiling.
+        assert!(body["resources"]["disk"].as_u64().unwrap() >= 4096);
+        assert_eq!(body["security"]["noNewPrivileges"], true);
+    }
+
+    #[test]
+    fn build_create_payload_omits_ports_field_until_host_agent_ships_contract() {
+        // Regression: until the upstream host-agent OpenAPI specifies a
+        // port-forwarding key, we MUST NOT invent one in the outbound
+        // payload. The orchestrator parses + persists ports via the
+        // metadata_json round-trip; this test pins that the create body
+        // stays minimal.
+        let cfg = test_config();
+        let mapping = crate::runtime::PortMapping {
+            container_port: 3000,
+            host_port: 30000,
+            protocol: crate::runtime::PortProtocol::Tcp,
+        };
+        let body = build_create_payload(&req_with_ports(vec![mapping]), &cfg);
+        assert!(
+            body.get("ports").is_none(),
+            "create payload must not include `ports` until host-agent contract exists; got {body}"
+        );
+        assert!(
+            body.get("portMappings").is_none(),
+            "create payload must not include `portMappings` either; got {body}"
+        );
+        assert!(
+            body.get("port_mappings").is_none(),
+            "create payload must not include `port_mappings` either; got {body}"
+        );
     }
 }

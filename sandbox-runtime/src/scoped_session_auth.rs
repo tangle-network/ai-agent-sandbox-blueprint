@@ -10,14 +10,29 @@
 //!
 //! Uses `DashMap` (sharded concurrent hashmap) for both challenges and sessions
 //! so `resolve_bearer` — called on every instance API request — can read without
-//! acquiring a global mutex. GC is time-gated (default 60s) rather than
-//! unconditional on every call; this mirrors the pattern used by
-//! [`crate::rate_limit::RateLimiter`]. The previous `Mutex<BTreeMap>` + per-call
-//! GC implementation scaled at O(N) with session count (22.8µs at 10k sessions);
-//! the DashMap + time-gated variant is ~O(1) and benchmarked at <500ns.
+//! acquiring a global mutex. GC is gated on (a) wall-clock elapsed since the
+//! last sweep and (b) load factor of the sessions map; this mirrors the
+//! pattern used by [`crate::rate_limit::RateLimiter`].
+//!
+//! ## Baseline numbers (criterion, sandbox-runtime/benches/scoped_session_bench.rs)
+//!
+//! Pre-evolve (unconditional `BTreeMap::retain` on every resolve_bearer call):
+//! - 1 session:      116 ns
+//! - 100 sessions:   252 ns
+//! - 1 000 sessions: 1 386 ns
+//! - 10 000:         22 847 ns  (196× degradation, per
+//!   `.evolve/pursuits/2026-04-15-bench-infra.md`)
+//!
+//! Post-evolve (DashMap + load-factor + time-gated GC, this file):
+//! - target: <1 µs at 10 000 sessions on the same hardware.
+//!
+//! The dual-trigger is deliberate: a purely time-based gate lets a hot map
+//! grow arbitrarily large between sweeps (memory pressure under burst load);
+//! a purely capacity-based gate skips sweeps entirely on cold-but-aged maps
+//! where TTL expiries dominate.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::Utc;
 use dashmap::DashMap;
@@ -81,17 +96,37 @@ struct SessionEntry {
     expires_at: i64,
 }
 
-/// GC interval in seconds: full-map retain runs at most this often, not on
-/// every request. Matches the `rate_limit::RateLimiter` cadence.
-const GC_INTERVAL_SECS: i64 = 60;
+/// GC time gate: a full-map retain runs at most once per this interval, even
+/// when the map is below the load-factor threshold. 60 s matches the cadence
+/// in `rate_limit::RateLimiter`.
+const GC_INTERVAL_MS: u64 = 60_000;
+
+/// GC load-factor gate: when sessions occupy ≥ this fraction of capacity, run
+/// GC immediately instead of waiting for the time gate. Caps memory under
+/// bursty traffic (e.g. wallet challenge storms) where the time gate would
+/// otherwise let the map grow unbounded between sweeps.
+const GC_LOAD_FACTOR: f64 = 0.8;
+
+/// `DashMap::len()` and `DashMap::capacity()` walk every shard and acquire a
+/// read lock per shard, so they are NOT free on the hot path. We sample the
+/// load factor only every `GC_LOAD_SAMPLE_MASK + 1` calls (must be a power
+/// of two minus one — used as a bitmask). At 256 the worst-case detection
+/// lag is < 1 ms even at 1 Mreq/s, well within the 60 s time gate.
+const GC_LOAD_SAMPLE_MASK: u64 = 0xFF; // every 256th call
 
 #[derive(Debug)]
 struct ScopedAuthState {
     challenges: DashMap<String, WalletChallengeEntry>,
     sessions: DashMap<String, SessionEntry>,
-    /// UTC timestamp (seconds) of the last full GC sweep. Used to gate GC so
-    /// `resolve_bearer` stays O(1) instead of O(N) on every call.
-    last_gc: AtomicI64,
+    /// Unix timestamp in **milliseconds** of the last full GC sweep. Used to
+    /// gate GC so `resolve_bearer` stays O(1) on the hot path instead of
+    /// O(N). `u64` because Unix time fits comfortably and we never need to
+    /// represent values before the epoch; `0` is the "never swept" sentinel.
+    last_gc_ms: AtomicU64,
+    /// Monotonic counter incremented on every `resolve_bearer` call. Combined
+    /// with `GC_LOAD_SAMPLE_MASK` to sample the (locking) DashMap load
+    /// factor periodically rather than on every call.
+    resolve_calls: AtomicU64,
 }
 
 impl ScopedAuthState {
@@ -99,37 +134,97 @@ impl ScopedAuthState {
         Self {
             challenges: DashMap::new(),
             sessions: DashMap::new(),
-            last_gc: AtomicI64::new(i64::MIN),
+            last_gc_ms: AtomicU64::new(0),
+            resolve_calls: AtomicU64::new(0),
         }
     }
 
-    /// Run a full GC sweep at most every [`GC_INTERVAL_SECS`]. Thread-safe —
-    /// uses compare-and-swap on `last_gc` so only one caller does the work.
-    fn maybe_gc(&self, now: i64) {
-        let last = self.last_gc.load(Ordering::Relaxed);
-        if now.saturating_sub(last) < GC_INTERVAL_SECS {
+    /// Decide whether GC should run. Two triggers (either is sufficient):
+    ///   1. Time gate: `now_ms - last_gc_ms > GC_INTERVAL_MS` — caps how
+    ///      stale the map is allowed to get.
+    ///   2. Load-factor gate: `sessions.len() / sessions.capacity() >= 0.8`
+    ///      — caps how full the map is allowed to get between sweeps.
+    ///
+    /// Computes the load factor unconditionally — used by write paths and by
+    /// the periodic sample on the read path. For the hot read path use
+    /// `should_gc_sampled` instead.
+    fn should_gc(&self, now_ms: u64, last_ms: u64) -> bool {
+        if now_ms.saturating_sub(last_ms) > GC_INTERVAL_MS {
+            return true;
+        }
+        load_factor_exceeded(&self.sessions)
+    }
+
+    /// Hot-path GC trigger check. Always honours the time gate (cheap: one
+    /// atomic compare) and probes the load factor only on a 1/(MASK+1)
+    /// sample to avoid the per-shard `len()`/`capacity()` lock storm.
+    fn should_gc_sampled(&self, now_ms: u64, last_ms: u64) -> bool {
+        if now_ms.saturating_sub(last_ms) > GC_INTERVAL_MS {
+            return true;
+        }
+        let calls = self.resolve_calls.fetch_add(1, Ordering::Relaxed);
+        if calls & GC_LOAD_SAMPLE_MASK != 0 {
+            return false;
+        }
+        load_factor_exceeded(&self.sessions)
+    }
+
+    /// Run a full GC sweep when triggered. Thread-safe — uses CAS on
+    /// `last_gc_ms` so only one caller does the work, and only when one of
+    /// the two GC triggers fires. Read-only (no GC) on the common case.
+    ///
+    /// `now_secs` is the current wall-clock time in seconds (matches
+    /// `expires_at` units on stored entries).
+    fn maybe_gc(&self, now_ms: u64, now_secs: i64) {
+        let last = self.last_gc_ms.load(Ordering::Relaxed);
+        if !self.should_gc(now_ms, last) {
             return;
         }
         // Claim the GC right. If the CAS loses, another thread is running GC —
-        // skip our turn. No need to loop.
+        // skip our turn. No need to loop or block.
         if self
-            .last_gc
-            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .last_gc_ms
+            .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
             .is_err()
         {
             return;
         }
-        self.challenges.retain(|_, c| c.expires_at > now);
-        self.sessions.retain(|_, s| s.expires_at > now);
+        self.challenges.retain(|_, c| c.expires_at > now_secs);
+        self.sessions.retain(|_, s| s.expires_at > now_secs);
     }
 
     /// Synchronous GC for paths that must observe the latest state (e.g.
     /// capacity checks before insert). Called only on write paths.
-    fn gc_now(&self, now: i64) {
-        self.last_gc.store(now, Ordering::Relaxed);
-        self.challenges.retain(|_, c| c.expires_at > now);
-        self.sessions.retain(|_, s| s.expires_at > now);
+    fn gc_now(&self, now_ms: u64, now_secs: i64) {
+        self.last_gc_ms.store(now_ms, Ordering::Relaxed);
+        self.challenges.retain(|_, c| c.expires_at > now_secs);
+        self.sessions.retain(|_, s| s.expires_at > now_secs);
     }
+}
+
+/// Current Unix time in milliseconds. Pulled out so callers don't repeat
+/// the conversion and so tests can be precise about ordering with
+/// `expires_at` (which is in seconds).
+fn now_ms() -> u64 {
+    let ms = Utc::now().timestamp_millis();
+    if ms < 0 { 0 } else { ms as u64 }
+}
+
+/// Whether `(map.len() / map.capacity()) >= GC_LOAD_FACTOR`. Pulled out so
+/// the hot-path sampler and the write-path probe share one definition.
+/// Both `len` and `capacity` walk every shard and acquire a read lock per
+/// shard, so call this sparingly.
+fn load_factor_exceeded<K, V>(map: &DashMap<K, V>) -> bool
+where
+    K: Eq + std::hash::Hash,
+{
+    let cap = map.capacity();
+    if cap == 0 {
+        return false;
+    }
+    // `len()` can briefly exceed `capacity()` between rehashes — saturate
+    // by treating any such case as "load high enough, GC".
+    map.len() as f64 / cap as f64 >= GC_LOAD_FACTOR
 }
 
 /// Session claims resolved from bearer tokens.
@@ -176,9 +271,10 @@ impl ScopedAuthService {
     }
 
     /// Resolve a bearer token to its claims. Hot path — called on every
-    /// instance-mode API request. Does NOT run full GC; a stale expired
-    /// session is filtered out by the per-lookup expiration check below,
-    /// and background GC prunes the map at [`GC_INTERVAL_SECS`].
+    /// instance-mode API request. Does NOT run full GC unless one of the GC
+    /// triggers fires (load factor ≥ 0.8 or > 60 s elapsed since last sweep);
+    /// stale expired sessions are filtered out by the per-lookup expiration
+    /// check below.
     pub fn resolve_bearer(&self, token: &str) -> Option<ScopedSessionClaims> {
         let trimmed = token.trim();
         if trimmed.is_empty() {
@@ -190,14 +286,22 @@ impl ScopedAuthService {
             return Some(ScopedSessionClaims::Operator);
         }
 
-        let now = Utc::now().timestamp();
-        // Amortized GC — does real work at most once per GC_INTERVAL_SECS.
-        self.state.maybe_gc(now);
+        // Lazy GC — fast path is one atomic load + one wrapping addition.
+        // Time gate fires when 60 s have elapsed; load-factor gate fires on
+        // a 1/256 sample of resolve calls to avoid the per-shard lock cost
+        // of `DashMap::len`/`capacity`. Either trigger leads to a single
+        // CAS-claimed full sweep — never two threads sweeping at once.
+        let last = self.state.last_gc_ms.load(Ordering::Relaxed);
+        let now_ms_value = now_ms();
+        let now_secs = (now_ms_value / 1_000) as i64;
+        if self.state.should_gc_sampled(now_ms_value, last) {
+            self.state.maybe_gc(now_ms_value, now_secs);
+        }
 
         let session = self.state.sessions.get(trimmed)?;
         // Filter out expired sessions that GC hasn't pruned yet. This keeps
         // revocation and expiry effective regardless of GC cadence.
-        if session.expires_at <= now {
+        if session.expires_at <= now_secs {
             return None;
         }
         Some(ScopedSessionClaims::Scoped {
@@ -235,7 +339,7 @@ impl ScopedAuthService {
         );
 
         // Write path: run GC synchronously so the capacity check is accurate.
-        self.state.gc_now(now);
+        self.state.gc_now(now_ms(), now);
         if self.state.challenges.len() >= self.config.max_challenges {
             return Err("challenge capacity exceeded, try again later".to_string());
         }
@@ -263,7 +367,7 @@ impl ScopedAuthService {
         signature_hex: &str,
     ) -> Result<ScopedSessionResponse, String> {
         let now = Utc::now().timestamp();
-        self.state.gc_now(now);
+        self.state.gc_now(now_ms(), now);
 
         // DashMap::remove returns Option<(K, V)>.
         let Some((_, challenge)) = self.state.challenges.remove(challenge_id) else {
@@ -319,7 +423,7 @@ impl ScopedAuthService {
         let expires_at = now + self.config.session_ttl_secs;
         let token = issue_token(&self.config.token_prefix);
 
-        self.state.gc_now(now);
+        self.state.gc_now(now_ms(), now);
         if self.state.sessions.len() >= self.config.max_sessions {
             return Err("session capacity exceeded, try again later".to_string());
         }

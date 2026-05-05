@@ -108,7 +108,7 @@ UI behavior:
 - "Runtime Backend" selector writes to `metadata_json.runtime_backend`.
 - Selecting `tee` forces `tee_required=true`.
 - Selecting `firecracker` forces `tee_required=false` (current release does not support Firecracker+TEE composition).
-- Selecting `firecracker` disables `metadata_json.ports` input (current Firecracker runtime does not support explicit port mappings).
+- Selecting `firecracker` accepts `metadata_json.ports` as either bare `[3000]` or structured `[{container_port:3000, host_port:30000, protocol:"tcp"}]`. The runtime parses, validates (1..=65535, no duplicate `host_port`/`container_port`, protocol ∈ {tcp,udp}, capped at `MAX_EXTRA_PORTS=8`) and persists them on the sandbox record so they round-trip across restarts. Forwarding to the Firecracker microVM via the host-agent is gated on the upstream host-agent shipping a stable port-forwarding field — until then, ports are recorded but not yet routed by the host network namespace.
 
 ### Instance Lifecycle Semantics
 

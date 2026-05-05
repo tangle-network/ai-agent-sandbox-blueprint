@@ -298,7 +298,7 @@ async fn firecracker_backend_lifecycle_flows_through_host_agent() {
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn test_firecracker_create_rejects_port_mappings() {
+async fn test_firecracker_create_accepts_and_persists_port_mappings() {
     let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let sidecar_app = Router::new().route("/health", get(sidecar_health));
     let sidecar_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -355,25 +355,78 @@ async fn test_firecracker_create_rejects_port_mappings() {
     }
     std::mem::forget(state_dir);
 
-    // Create with port_mappings should fail
+    // Structured port mappings now succeed (parsed + persisted; host-agent
+    // forwarding is the next phase).
     let params = CreateSandboxParams {
         name: "firecracker-port-test".to_string(),
         image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
-        metadata_json: r#"{"runtime_backend":"firecracker","ports":[3000]}"#.to_string(),
+        metadata_json: r#"{"runtime_backend":"firecracker","ports":[{"container_port":3000,"host_port":30000,"protocol":"tcp"}]}"#.to_string(),
         owner: "0xabc456".to_string(),
         cpu_cores: 1,
         memory_mb: 512,
         disk_gb: 10,
-        port_mappings: vec![3000],
         ..Default::default()
     };
 
-    let result = create_sidecar(&params, None).await;
-    assert!(result.is_err(), "firecracker should reject port mappings");
-    let err = result.unwrap_err().to_string();
+    let (record, _) = create_sidecar(&params, None)
+        .await
+        .expect("structured port mappings should be accepted");
+
+    assert_eq!(
+        record.extra_ports.get(&3000),
+        Some(&30000),
+        "container_port=3000 must persist host_port=30000 on the record"
+    );
+
+    // Round-trip: metadata_json on the record preserves the structured ports
+    // so that snapshot/restart paths can replay them once host-agent ships
+    // forwarding.
     assert!(
-        err.contains("port") || err.contains("Port"),
-        "error should mention ports: {err}"
+        record.metadata_json.contains("\"host_port\":30000"),
+        "structured ports must round-trip on metadata_json: {}",
+        record.metadata_json
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_firecracker_create_rejects_malformed_port_mappings() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let state_dir = tempfile::tempdir().expect("temp state dir");
+    unsafe {
+        std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path().to_str().unwrap());
+        std::env::set_var(
+            "SESSION_AUTH_SECRET",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        std::env::set_var(
+            "FIRECRACKER_HOST_AGENT_URL",
+            "http://127.0.0.1:1", // unused — parser fails before any HTTP
+        );
+        std::env::set_var("FIRECRACKER_HOST_AGENT_API_KEY", API_KEY);
+        std::env::set_var("FIRECRACKER_SIDECAR_AUTH_DISABLED", "true");
+        std::env::remove_var("FIRECRACKER_SIDECAR_AUTH_TOKEN");
+    }
+    std::mem::forget(state_dir);
+
+    // Out-of-range container_port (> 65535) must fail fast.
+    let bad = CreateSandboxParams {
+        name: "firecracker-port-bad".to_string(),
+        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        metadata_json: r#"{"runtime_backend":"firecracker","ports":[{"container_port":99999,"host_port":30000,"protocol":"tcp"}]}"#.to_string(),
+        owner: "0xabc789".to_string(),
+        cpu_cores: 1,
+        memory_mb: 512,
+        disk_gb: 10,
+        ..Default::default()
+    };
+    let err = create_sidecar(&bad, None)
+        .await
+        .expect_err("out-of-range port must fail validation");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("out of range") || msg.contains("ports[0]"),
+        "error should pinpoint the malformed port entry: {msg}"
     );
 }
 
