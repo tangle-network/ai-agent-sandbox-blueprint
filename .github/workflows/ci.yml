@@ -43,7 +43,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
+          version: v1.5.1
 
       - name: Verify Forge installation
         run: forge --version
@@ -90,7 +90,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
+          version: v1.5.1
 
       - name: Verify Forge installation
         run: forge --version
@@ -164,6 +164,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
       - name: Build
@@ -214,7 +216,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
+          version: v1.5.1
 
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
@@ -322,7 +324,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
+          version: v1.5.1
 
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
@@ -438,7 +440,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
+          version: v1.5.1
 
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
