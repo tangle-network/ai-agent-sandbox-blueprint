@@ -1,0 +1,54 @@
+{
+  "name": "AI Agent Sandbox Blueprint",
+  "description": "Run AI agents in isolated TEE-backed sandboxes with attested execution, capability-scoped sidecars, and per-session resource policy.",
+  "author": "Tangle Network",
+  "category": "AI Agents",
+  "image": null,
+  "website": "https://tangle.tools",
+  "codeRepository": "https://github.com/tangle-network/ai-agent-sandbox-blueprint",
+  "docs": "https://github.com/tangle-network/ai-agent-sandbox-blueprint#readme",
+  "integrity": null,
+  "blueprintUi": {
+    "displayName": "AI Agent Sandbox",
+    "description": "Provision attested AI agent sandboxes with sidecar capabilities, session-scoped budgets, and live execution traces.",
+    "requestedSlug": "ai-agent-sandbox",
+    "publisher": {
+      "name": "Tangle Network",
+      "namespace": "tangle",
+      "verified": false
+    },
+    "resources": {
+      "serviceLabel": "Sandbox fleet",
+      "itemLabel": "Agent",
+      "itemRoute": "agents"
+    },
+    "surfaces": [
+      "generic-overview",
+      "service-explorer",
+      "actions-panel",
+      "resources",
+      "metrics",
+      "permissions"
+    ],
+    "theme": {
+      "badgeLabel": "TEE-attested agents",
+      "accentColor": "#7C3AED",
+      "secondaryColor": "#1E1B4B",
+      "icon": "bot"
+    },
+    "externalApp": {
+      "url": "https://agent-sandbox.blueprint.tangle.tools/",
+      "mode": "iframe",
+      "label": "Open Agent Sandbox",
+      "iframe": {
+        "appId": "agent-sandbox",
+        "allowedChainIds": [],
+        "contracts": [],
+        "messages": [],
+        "allowReadAccount": true,
+        "allowChainSwitch": false,
+        "allowPopups": false
+      }
+    }
+  }
+}
