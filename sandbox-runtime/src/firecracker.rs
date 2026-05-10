@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use reqwest::{Method, StatusCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use zeroize::Zeroize;
 
 use crate::error::{Result, SandboxError};
 
@@ -41,17 +42,23 @@ impl FirecrackerHostAgentConfig {
                 )
             })?;
 
-        let api_key = std::env::var("FIRECRACKER_HOST_AGENT_API_KEY")
+        // Wipe the raw env-var read buffer after copying the trimmed value
+        // out: a heap dump after a misconfiguration crash should not surface
+        // the raw API key from the env block.
+        let api_key = match std::env::var("FIRECRACKER_HOST_AGENT_API_KEY")
             .or_else(|_| std::env::var("HOST_AGENT_API_KEY"))
-            .ok()
-            .and_then(|v| {
-                let trimmed = v.trim().to_string();
+        {
+            Ok(mut raw) => {
+                let trimmed = raw.trim().to_string();
+                raw.zeroize();
                 if trimmed.is_empty() {
                     None
                 } else {
                     Some(trimmed)
                 }
-            });
+            }
+            Err(_) => None,
+        };
 
         let network = std::env::var("FIRECRACKER_HOST_AGENT_NETWORK")
             .ok()
@@ -73,14 +80,18 @@ impl FirecrackerHostAgentConfig {
 
         let sidecar_auth_disabled = parse_bool_env(ENV_SIDECAR_AUTH_DISABLED, false)?;
 
-        let sidecar_auth_token = std::env::var(ENV_SIDECAR_AUTH_TOKEN).ok().and_then(|v| {
-            let trimmed = v.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
+        let sidecar_auth_token = match std::env::var(ENV_SIDECAR_AUTH_TOKEN) {
+            Ok(mut raw) => {
+                let trimmed = raw.trim().to_string();
+                raw.zeroize();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
             }
-        });
+            Err(_) => None,
+        };
 
         match (sidecar_auth_disabled, sidecar_auth_token.is_some()) {
             (true, true) => {

@@ -812,29 +812,37 @@ const SECRETS_HKDF_SALT: &[u8] = b"tangle-sandbox-blueprint-paseto-v4";
 
 /// 256-bit encryption key derived from `SESSION_AUTH_SECRET` via HKDF-SHA256.
 /// Falls back to an ephemeral random key (with warning) if the env var is unset.
-static SEAL_KEY: once_cell::sync::Lazy<[u8; 32]> = once_cell::sync::Lazy::new(|| {
-    use hkdf::Hkdf;
-    use sha2::Sha256;
+///
+/// The key is wrapped in [`zeroize::Zeroizing`] so the underlying bytes are
+/// wiped if the static is ever dropped, and so accidental clones carry the
+/// same drop-wipe contract. The env-var `String` carrying the input keying
+/// material is also explicitly zeroized after derivation.
+static SEAL_KEY: once_cell::sync::Lazy<zeroize::Zeroizing<[u8; 32]>> =
+    once_cell::sync::Lazy::new(|| {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        use zeroize::{Zeroize, Zeroizing};
 
-    match std::env::var("SESSION_AUTH_SECRET") {
-        Ok(secret) => {
-            let hk = Hkdf::<Sha256>::new(Some(SECRETS_HKDF_SALT), secret.as_bytes());
-            let mut key = [0u8; 32];
-            hk.expand(SECRETS_HKDF_INFO, &mut key)
-                .expect("HKDF-SHA256 expand to 32 bytes cannot fail");
-            key
-        }
-        Err(_) => {
-            tracing::warn!(
-                "SESSION_AUTH_SECRET not set; using ephemeral key for secrets encryption. \
+        match std::env::var("SESSION_AUTH_SECRET") {
+            Ok(mut secret) => {
+                let hk = Hkdf::<Sha256>::new(Some(SECRETS_HKDF_SALT), secret.as_bytes());
+                let mut key = Zeroizing::new([0u8; 32]);
+                hk.expand(SECRETS_HKDF_INFO, &mut *key)
+                    .expect("HKDF-SHA256 expand to 32 bytes cannot fail");
+                secret.zeroize();
+                key
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "SESSION_AUTH_SECRET not set; using ephemeral key for secrets encryption. \
                  Stored secrets will NOT survive restart."
-            );
-            let mut key = [0u8; 32];
-            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut key);
-            key
+                );
+                let mut key = Zeroizing::new([0u8; 32]);
+                rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut *key);
+                key
+            }
         }
-    }
-});
+    });
 
 /// Encrypt a plaintext string using ChaCha20-Poly1305 AEAD.
 /// Returns `"enc:v1:" + base64(nonce || ciphertext)`.
@@ -849,7 +857,7 @@ fn seal_field(plaintext: &str) -> Result<String> {
         return Ok(String::new());
     }
 
-    let cipher = ChaCha20Poly1305::new((&*SEAL_KEY).into());
+    let cipher = ChaCha20Poly1305::new((&**SEAL_KEY).into());
     let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
     let ciphertext = cipher
         .encrypt(&nonce, plaintext.as_bytes())
@@ -897,7 +905,7 @@ fn unseal_field(stored: &str) -> Result<String> {
     let nonce = chacha20poly1305::Nonce::from_slice(&blob[..12]);
     let ciphertext = &blob[12..];
 
-    let cipher = ChaCha20Poly1305::new((&*SEAL_KEY).into());
+    let cipher = ChaCha20Poly1305::new((&**SEAL_KEY).into());
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
         .map_err(|e| SandboxError::Storage(format!("unseal_field decrypt failed: {e}")))?;

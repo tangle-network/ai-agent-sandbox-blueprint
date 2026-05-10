@@ -8565,6 +8565,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid 1.23.1",
+ "zeroize",
 ]
 
 [[package]]

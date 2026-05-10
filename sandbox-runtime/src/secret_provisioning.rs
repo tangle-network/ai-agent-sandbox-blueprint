@@ -11,6 +11,7 @@
 //! values never touch the blockchain.
 
 use serde_json::{Map, Value};
+use zeroize::Zeroizing;
 
 use crate::error::{Result, SandboxError};
 use crate::runtime::{SandboxRecord, get_sandbox_by_id, recreate_sidecar_with_env};
@@ -32,8 +33,14 @@ pub async fn inject_secrets(
     secret_env: Map<String, Value>,
     tee: Option<&dyn crate::tee::TeeBackend>,
 ) -> Result<SandboxRecord> {
-    let user_env_json = serde_json::to_string(&secret_env)
-        .map_err(|e| SandboxError::Validation(format!("Invalid secret env: {e}")))?;
+    // Wrap the serialized secrets so the heap-resident JSON is wiped on
+    // drop. `recreate_sidecar_with_env` borrows it as `&str`; once that
+    // call returns, the only persisted copy is the at-rest-encrypted form
+    // sealed via `SEAL_KEY`.
+    let user_env_json: Zeroizing<String> = Zeroizing::new(
+        serde_json::to_string(&secret_env)
+            .map_err(|e| SandboxError::Validation(format!("Invalid secret env: {e}")))?,
+    );
 
     let new_record = recreate_sidecar_with_env(sandbox_id, &user_env_json, tee).await?;
     Ok(new_record)
