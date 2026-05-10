@@ -93,7 +93,17 @@ impl EscrowWatchdogConfig {
     /// Returns `None` if `TANGLE_CONTRACT_ADDRESS` is not set (billing disabled).
     pub fn from_env(service_id: u64, blueprint_id: u64) -> Option<Self> {
         let contract_str = std::env::var("TANGLE_CONTRACT_ADDRESS").ok()?;
-        let tangle_contract: Address = contract_str.parse().ok()?;
+        let tangle_contract: Address = match contract_str.parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                tracing::warn!(
+                    value = %contract_str,
+                    err = %e,
+                    "TANGLE_CONTRACT_ADDRESS is set but not a valid EVM address; billing disabled"
+                );
+                return None;
+            }
+        };
 
         let http_rpc_endpoint = std::env::var("HTTP_RPC_ENDPOINT")
             .or_else(|_| std::env::var("RPC_URL"))

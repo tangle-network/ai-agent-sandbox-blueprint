@@ -80,6 +80,60 @@ pub struct RateLimiter {
     last_gc: Mutex<Instant>,
 }
 
+/// Rate limiter keyed by an arbitrary session identifier (typically the
+/// SessionAuth address). Same sliding-window semantics as [`RateLimiter`]
+/// but keyed on `String` instead of `IpAddr`, so a single authenticated
+/// caller can't use a NAT'd / shared IP to evade per-session throttles
+/// on high-fanout endpoints.
+pub struct SessionRateLimiter {
+    config: RateLimitConfig,
+    buckets: Mutex<HashMap<String, Bucket>>,
+    last_gc: Mutex<Instant>,
+}
+
+impl SessionRateLimiter {
+    pub fn new(config: RateLimitConfig) -> Self {
+        Self {
+            config,
+            buckets: Mutex::new(HashMap::new()),
+            last_gc: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Check whether a request keyed on `session_id` is allowed.
+    pub fn check(&self, session_id: &str) -> bool {
+        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+
+        {
+            let mut last_gc = self.last_gc.lock().unwrap_or_else(|e| e.into_inner());
+            if last_gc.elapsed().as_secs() >= GC_INTERVAL_SECS {
+                let cutoff = Instant::now() - Duration::from_secs(self.config.window_secs * 2);
+                buckets.retain(|_, b| b.timestamps.last().is_some_and(|t| *t > cutoff));
+                *last_gc = Instant::now();
+            }
+        }
+
+        let bucket = buckets
+            .entry(session_id.to_string())
+            .or_insert_with(Bucket::new);
+        bucket.check_and_record(self.config.window_secs, self.config.max_requests)
+    }
+
+    /// Number of tracked sessions (for metrics/debugging).
+    pub fn tracked_sessions(&self) -> usize {
+        self.buckets.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// Clear all tracked buckets. Allows tests to reset state.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn reset(&self) {
+        self.buckets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+}
+
 /// GC interval: clean up stale IPs every 5 minutes.
 const GC_INTERVAL_SECS: u64 = 300;
 
@@ -142,9 +196,35 @@ static TERMINAL_INTERACTIVE_LIMITER: once_cell::sync::Lazy<RateLimiter> =
 static AUTH_LIMITER: once_cell::sync::Lazy<RateLimiter> =
     once_cell::sync::Lazy::new(|| RateLimiter::new(RateLimitConfig::new(10, 60)));
 
+/// Per-session limiter for high-fanout endpoints (port proxy, chat run/stream,
+/// sandbox provision). Default 60 req/min — env-tunable via
+/// `SESSION_FANOUT_LIMIT_PER_MINUTE` so operators can ratchet down if a
+/// single session is driving expensive RPC fanout.
+///
+/// Read at first init via `OnceLock`, so changes to the env var require
+/// an operator restart — same behavior as the trading-blueprint's
+/// `PreflightLimiter` and consistent with how the IP-tier limiters are
+/// configured (compile-time constants).
+static SESSION_FANOUT_LIMITER: once_cell::sync::Lazy<SessionRateLimiter> =
+    once_cell::sync::Lazy::new(|| {
+        let per_minute = std::env::var("SESSION_FANOUT_LIMIT_PER_MINUTE")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(60);
+        SessionRateLimiter::new(RateLimitConfig::new(per_minute, 60))
+    });
+
 /// Access the read-tier (120 req/min) limiter.
 pub fn read_limiter() -> &'static RateLimiter {
     &READ_LIMITER
+}
+
+/// Access the per-session fanout limiter. Use for endpoints that fan out
+/// to RPC / sidecar / port-proxy targets where a NAT'd IP isn't enough
+/// of a discriminator.
+pub fn session_fanout_limiter() -> &'static SessionRateLimiter {
+    &SESSION_FANOUT_LIMITER
 }
 
 /// Access the write-tier (30 req/min) limiter.
@@ -277,6 +357,22 @@ pub async fn auth_rate_limit(request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
+/// Check the session-fanout limiter for a given caller. Returns
+/// `Err(retry_after_secs)` when the bucket is exhausted, so handlers can
+/// surface a typed 429 with the right retry hint instead of mapping
+/// through middleware.
+///
+/// Use this in handlers that fan out to RPC / port-proxy / sidecar targets
+/// where the IP-tier limiter is too coarse (NAT'd users share a bucket).
+pub fn check_session_fanout(session_id: &str) -> std::result::Result<(), u64> {
+    if session_fanout_limiter().check(session_id) {
+        Ok(())
+    } else {
+        metrics::rate_limit_rejections().fetch_add(1, Ordering::Relaxed);
+        Err(60)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +397,29 @@ mod tests {
         assert!(limiter.check(ip1));
         assert!(!limiter.check(ip1)); // ip1 exhausted
         assert!(limiter.check(ip2)); // ip2 still has quota
+    }
+
+    #[test]
+    fn session_limiter_caps_per_session_not_per_ip() {
+        let limiter = SessionRateLimiter::new(RateLimitConfig::new(2, 60));
+        let alice = "0xaaaa";
+        let bob = "0xbbbb";
+
+        assert!(limiter.check(alice));
+        assert!(limiter.check(alice));
+        assert!(!limiter.check(alice)); // alice exhausted
+
+        // bob's bucket is independent — NAT/shared-IP can't drain it
+        assert!(limiter.check(bob));
+    }
+
+    #[test]
+    fn session_limiter_tracks_distinct_sessions() {
+        let limiter = SessionRateLimiter::new(RateLimitConfig::new(1, 60));
+        for i in 0..5 {
+            assert!(limiter.check(&format!("0x{i}")));
+        }
+        assert_eq!(limiter.tracked_sessions(), 5);
     }
 
     #[test]

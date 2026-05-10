@@ -40,6 +40,7 @@ impl FirecrackerHostAgentConfig {
                     "runtime_backend=firecracker requires FIRECRACKER_HOST_AGENT_URL (or HOST_AGENT_URL)".into(),
                 )
             })?;
+        validate_host_agent_url(&base_url)?;
 
         let api_key = std::env::var("FIRECRACKER_HOST_AGENT_API_KEY")
             .or_else(|_| std::env::var("HOST_AGENT_API_KEY"))
@@ -104,6 +105,55 @@ impl FirecrackerHostAgentConfig {
             sidecar_auth_token,
         })
     }
+}
+
+/// Validate that the host-agent URL is a sane HTTP(S) endpoint pointing at
+/// a non-metadata destination.
+///
+/// Operator misconfiguration or env injection that points the host-agent at
+/// `169.254.169.254` (cloud IMDS) or a Unix-domain socket path would let a
+/// caller pivot from the firecracker create path to internal services.
+/// Reject those at config-load time so failures surface at boot, not at
+/// first sandbox provision.
+fn validate_host_agent_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| {
+        SandboxError::Validation(format!(
+            "FIRECRACKER_HOST_AGENT_URL is not a valid URL: {e}"
+        ))
+    })?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(SandboxError::Validation(format!(
+                "FIRECRACKER_HOST_AGENT_URL scheme must be http or https, got '{other}'"
+            )));
+        }
+    }
+
+    let host = parsed.host_str().ok_or_else(|| {
+        SandboxError::Validation("FIRECRACKER_HOST_AGENT_URL must include a host component".into())
+    })?;
+
+    // Reject AWS / GCP / Azure cloud-metadata addresses outright. These are
+    // the canonical SSRF pivot targets and there is no legitimate reason
+    // for the host-agent to live there.
+    let imds_v4 = ["169.254.169.254", "169.254.170.2"]; // EC2 IMDS, ECS/Fargate task metadata
+    if imds_v4.contains(&host) {
+        return Err(SandboxError::Validation(format!(
+            "FIRECRACKER_HOST_AGENT_URL host '{host}' is a cloud-metadata address; refusing to proxy"
+        )));
+    }
+    // GCP metadata is reachable via a hostname rather than a fixed IP.
+    if host.eq_ignore_ascii_case("metadata.google.internal")
+        || host.eq_ignore_ascii_case("metadata")
+    {
+        return Err(SandboxError::Validation(format!(
+            "FIRECRACKER_HOST_AGENT_URL host '{host}' is a cloud-metadata address; refusing to proxy"
+        )));
+    }
+
+    Ok(())
 }
 
 fn parse_bool_env(name: &str, default: bool) -> Result<bool> {
@@ -534,6 +584,44 @@ mod tests {
 
         let cfg = FirecrackerHostAgentConfig::load().expect("token mode should be valid");
         assert_eq!(cfg.sidecar_auth_token.as_deref(), Some("secret-token"));
+    }
+
+    #[test]
+    fn validate_host_agent_url_accepts_loopback_and_private() {
+        validate_host_agent_url("http://127.0.0.1:8080").unwrap();
+        validate_host_agent_url("http://10.0.0.5:8080").unwrap();
+        validate_host_agent_url("https://host-agent.internal").unwrap();
+    }
+
+    #[test]
+    fn validate_host_agent_url_rejects_non_http() {
+        let err = validate_host_agent_url("file:///tmp/host.sock").unwrap_err();
+        assert!(
+            err.to_string().contains("scheme must be http or https"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_host_agent_url_rejects_imds() {
+        for url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://169.254.170.2",
+            "https://metadata.google.internal/computeMetadata/v1/",
+            "http://metadata",
+        ] {
+            let err = validate_host_agent_url(url).unwrap_err();
+            assert!(
+                err.to_string().contains("cloud-metadata"),
+                "expected cloud-metadata rejection for {url}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_host_agent_url_rejects_garbage() {
+        let err = validate_host_agent_url("not a url").unwrap_err();
+        assert!(err.to_string().contains("not a valid URL"), "{err}");
     }
 
     fn test_config() -> FirecrackerHostAgentConfig {
