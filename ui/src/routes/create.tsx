@@ -511,6 +511,15 @@ function AgentConfigurationField({
       <p className="text-[11px] text-cloud-elements-textTertiary">
         {helpText}
       </p>
+      {!usesBundledSelector && value.trim() !== '' && (
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+          <p className="text-xs text-amber-300">
+            Custom agent identifiers depend on the selected image registering the agent
+            internally. If the image doesn't recognize this name, chat will fail with a 502
+            once the sandbox is running. Smoke-test the agent endpoint after provision.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

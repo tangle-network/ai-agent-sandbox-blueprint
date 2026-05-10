@@ -17,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use once_cell::sync::Lazy;
 use rand::RngCore;
 use rand::rngs::OsRng;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{Result, SandboxError};
 
@@ -208,34 +209,38 @@ const HKDF_INFO: &[u8] = b"session-auth-symmetric-key-v1";
 /// early in `main()` to enforce the secret is set in production.
 static SYMMETRIC_KEY: Lazy<pasetors::keys::SymmetricKey<pasetors::version4::V4>> =
     Lazy::new(|| {
-        let key_bytes = match std::env::var("SESSION_AUTH_SECRET") {
-            Ok(secret) => derive_symmetric_key(secret.as_bytes()),
+        let key_bytes: Zeroizing<[u8; 32]> = match std::env::var("SESSION_AUTH_SECRET") {
+            Ok(mut secret) => {
+                let derived = derive_symmetric_key(secret.as_bytes());
+                secret.zeroize();
+                derived
+            }
             Err(_) => {
                 tracing::error!(
                     "SESSION_AUTH_SECRET is not set — using random key. \
                  Sessions will NOT survive restart. Set this env var in production."
                 );
-                let mut bytes = [0u8; 32];
-                OsRng.fill_bytes(&mut bytes);
+                let mut bytes = Zeroizing::new([0u8; 32]);
+                OsRng.fill_bytes(&mut *bytes);
                 bytes
             }
         };
-        pasetors::keys::SymmetricKey::<pasetors::version4::V4>::from(&key_bytes)
+        pasetors::keys::SymmetricKey::<pasetors::version4::V4>::from(&*key_bytes)
             .expect("Failed to create PASETO symmetric key")
     });
 
 /// Derive a 32-byte symmetric key from input keying material using HKDF-SHA256.
 ///
-/// Uses a domain-specific salt and info parameter to ensure the derived key is
-/// unique to this application's PASETO token encryption, even if the same secret
-/// is reused elsewhere.
-fn derive_symmetric_key(ikm: &[u8]) -> [u8; 32] {
+/// Returns the key in a [`Zeroizing`] wrapper so the temporary derivation
+/// buffer is wiped from the heap when it goes out of scope — pasetors copies
+/// the bytes into its own owned buffer when constructing `SymmetricKey`.
+fn derive_symmetric_key(ikm: &[u8]) -> Zeroizing<[u8; 32]> {
     use hkdf::Hkdf;
     use sha2::Sha256;
 
     let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), ikm);
-    let mut key = [0u8; 32];
-    hk.expand(HKDF_INFO, &mut key)
+    let mut key = Zeroizing::new([0u8; 32]);
+    hk.expand(HKDF_INFO, &mut *key)
         .expect("HKDF-SHA256 expand to 32 bytes cannot fail");
     key
 }
@@ -496,10 +501,17 @@ pub fn extract_bearer_token(auth_header: &str) -> Option<&str> {
 /// treated as a hard error; in test mode, log a warning and continue.
 pub fn validate_required_config() -> std::result::Result<(), String> {
     match std::env::var("SESSION_AUTH_SECRET") {
-        Ok(val) if !val.trim().is_empty() => Ok(()),
-        Ok(_) => Err("SESSION_AUTH_SECRET is set but empty. \
-             Provide a non-empty secret for stable session auth."
-            .to_string()),
+        Ok(mut val) => {
+            let ok = !val.trim().is_empty();
+            val.zeroize();
+            if ok {
+                Ok(())
+            } else {
+                Err("SESSION_AUTH_SECRET is set but empty. \
+                     Provide a non-empty secret for stable session auth."
+                    .to_string())
+            }
+        }
         Err(_) => Err("SESSION_AUTH_SECRET is not set. \
              Sessions will use a random key and break on restart. \
              Set this env var before starting the operator."
@@ -805,7 +817,7 @@ mod tests {
         let hkdf_key = derive_symmetric_key(input);
         let keccak_hash = keccak256(input);
         assert_ne!(
-            hkdf_key, keccak_hash,
+            *hkdf_key, keccak_hash,
             "HKDF output must differ from raw Keccak256"
         );
     }

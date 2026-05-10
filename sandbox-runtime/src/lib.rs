@@ -32,6 +32,30 @@ pub mod util;
 #[cfg(feature = "test-utils")]
 pub mod test_utils;
 
+/// Process-wide lock for tests that mutate env vars consumed by static
+/// `OnceLock` / `Lazy` config (e.g. `SESSION_AUTH_SECRET`,
+/// `FIRECRACKER_HOST_AGENT_*`, `TEE_BACKEND`, `BLUEPRINT_STATE_DIR`).
+///
+/// Without a single mutex shared across modules, each `#[test]` that
+/// `set_var`s a config-relevant env interleaves with parallel tests. The
+/// first init wins because `Lazy::new(...)` snapshots; subsequent tests
+/// see stale config and either flake or assert against the wrong value.
+///
+/// Use it from any test module — both lib tests and integration tests in
+/// `tests/` — by acquiring the lock before any `set_var` / `remove_var`:
+///
+/// ```ignore
+/// let _guard = sandbox_runtime::TEST_ENV_GUARD
+///     .lock()
+///     .unwrap_or_else(|p| p.into_inner());
+/// unsafe { std::env::set_var("…", "…") };
+/// ```
+///
+/// Gated behind `cfg(any(test, feature = "test-utils"))` so the symbol
+/// doesn't ship to production binaries.
+#[cfg(any(test, feature = "test-utils"))]
+pub static TEST_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub use error::SandboxError;
 pub use ingress_access_control::{
     AUTH_MODE_BEARER, DEFAULT_TOKEN_PREFIX, INGRESS_UI_AUTH_MODE_ENV, INGRESS_UI_BEARER_TOKEN_ENV,

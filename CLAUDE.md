@@ -1,5 +1,9 @@
 # Local Ops Memory
 
+## Commit + PR Hygiene
+- Never include `Co-Authored-By:` trailers, "Generated with" footers, or any other AI-attribution lines in commit messages or PR bodies. Apply across every repo, every branch.
+- Commit messages and PR descriptions stand on their content; authorship is git's job.
+
 ## Canonical Local Flow
 - Run `SKIP_BUILD=1 ./scripts/deploy-local.sh` to bring up local Anvil + operator APIs and regenerate `.env.local`.
 - Run `./scripts/test-e2e.sh` after deployment to validate on-chain wiring, operator APIs, auth, and lifecycle behavior.

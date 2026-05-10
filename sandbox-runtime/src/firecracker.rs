@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use reqwest::{Method, StatusCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use zeroize::Zeroize;
 
 use crate::error::{Result, SandboxError};
 
@@ -42,17 +43,23 @@ impl FirecrackerHostAgentConfig {
             })?;
         validate_host_agent_url(&base_url)?;
 
-        let api_key = std::env::var("FIRECRACKER_HOST_AGENT_API_KEY")
+        // Wipe the raw env-var read buffer after copying the trimmed value
+        // out: a heap dump after a misconfiguration crash should not surface
+        // the raw API key from the env block.
+        let api_key = match std::env::var("FIRECRACKER_HOST_AGENT_API_KEY")
             .or_else(|_| std::env::var("HOST_AGENT_API_KEY"))
-            .ok()
-            .and_then(|v| {
-                let trimmed = v.trim().to_string();
+        {
+            Ok(mut raw) => {
+                let trimmed = raw.trim().to_string();
+                raw.zeroize();
                 if trimmed.is_empty() {
                     None
                 } else {
                     Some(trimmed)
                 }
-            });
+            }
+            Err(_) => None,
+        };
 
         let network = std::env::var("FIRECRACKER_HOST_AGENT_NETWORK")
             .ok()
@@ -74,14 +81,18 @@ impl FirecrackerHostAgentConfig {
 
         let sidecar_auth_disabled = parse_bool_env(ENV_SIDECAR_AUTH_DISABLED, false)?;
 
-        let sidecar_auth_token = std::env::var(ENV_SIDECAR_AUTH_TOKEN).ok().and_then(|v| {
-            let trimmed = v.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
+        let sidecar_auth_token = match std::env::var(ENV_SIDECAR_AUTH_TOKEN) {
+            Ok(mut raw) => {
+                let trimmed = raw.trim().to_string();
+                raw.zeroize();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
             }
-        });
+            Err(_) => None,
+        };
 
         match (sidecar_auth_disabled, sidecar_auth_token.is_some()) {
             (true, true) => {
@@ -526,9 +537,7 @@ fn parse_host_agent_error(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::TEST_ENV_GUARD;
 
     fn set_or_unset(key: &str, value: Option<&str>) {
         match value {
@@ -539,7 +548,7 @@ mod tests {
 
     #[test]
     fn load_requires_explicit_sidecar_auth_mode() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
         set_or_unset(ENV_SIDECAR_AUTH_DISABLED, None);
         set_or_unset(ENV_SIDECAR_AUTH_TOKEN, None);
@@ -551,7 +560,7 @@ mod tests {
 
     #[test]
     fn load_rejects_disabled_plus_token() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
         set_or_unset(ENV_SIDECAR_AUTH_DISABLED, Some("true"));
         set_or_unset(ENV_SIDECAR_AUTH_TOKEN, Some("secret-token"));
@@ -566,7 +575,7 @@ mod tests {
 
     #[test]
     fn load_accepts_disabled_mode() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
         set_or_unset(ENV_SIDECAR_AUTH_DISABLED, Some("true"));
         set_or_unset(ENV_SIDECAR_AUTH_TOKEN, None);
@@ -577,7 +586,7 @@ mod tests {
 
     #[test]
     fn load_accepts_token_mode() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
         set_or_unset(ENV_SIDECAR_AUTH_DISABLED, Some("false"));
         set_or_unset(ENV_SIDECAR_AUTH_TOKEN, Some("secret-token"));

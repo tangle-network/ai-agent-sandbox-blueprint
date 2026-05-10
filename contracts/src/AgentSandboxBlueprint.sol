@@ -70,6 +70,10 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
 
     uint256 public constant MAX_WORKFLOWS = 10000;
     uint32 public constant MAX_OPERATORS_PER_SERVICE = 1000;
+    /// Cap on the byte length of a `sandboxId`. Prevents storage-griefing
+    /// via oversized identifiers and matches the `bytes1` length prefix
+    /// downstream tooling expects.
+    uint256 public constant MAX_SANDBOX_ID_LENGTH = 255;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // OPERATOR CAPACITY STATE (cloud mode)
@@ -793,7 +797,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         SandboxCreateOutput memory result = abi.decode(outputs, (SandboxCreateOutput));
         string memory sandboxId = result.sandboxId;
         if (bytes(sandboxId).length == 0) revert EmptySandboxId();
-        if (bytes(sandboxId).length > 255) revert SandboxIdTooLong(bytes(sandboxId).length);
+        if (bytes(sandboxId).length > MAX_SANDBOX_ID_LENGTH) revert SandboxIdTooLong(bytes(sandboxId).length);
         bytes32 sandboxHash = keccak256(bytes(sandboxId));
 
         if (sandboxOperator[sandboxHash] != address(0)) revert SandboxAlreadyExists(sandboxHash);
@@ -934,7 +938,7 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         } else {
             if (targetKind != WORKFLOW_TARGET_SANDBOX) revert InvalidWorkflowTarget(targetKind);
             if (bytes(targetSandboxId).length == 0) revert EmptySandboxId();
-            if (bytes(targetSandboxId).length > 255) revert SandboxIdTooLong(bytes(targetSandboxId).length);
+            if (bytes(targetSandboxId).length > MAX_SANDBOX_ID_LENGTH) revert SandboxIdTooLong(bytes(targetSandboxId).length);
         }
         if (targetServiceId != 0 && targetServiceId != serviceId) revert InvalidWorkflowTarget(targetKind);
 

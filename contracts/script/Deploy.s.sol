@@ -14,6 +14,17 @@ contract DeployBlueprint is Script {
         uint32 defaultOps = uint32(vm.envOr("DEFAULT_OPERATOR_COUNT", uint256(1)));
         uint32 defaultCapacity = uint32(vm.envOr("DEFAULT_MAX_CAPACITY", uint256(100)));
 
+        // Cloud-mode requires a real restaking address — without it, capacity-
+        // weighted operator selection (`_selectByCapacity`) reverts and
+        // `JOB_SANDBOX_CREATE` is non-functional. Fail the deploy at script
+        // time so a missing env var doesn't silently ship a broken cloud
+        // blueprint. Instance / TEE-instance scripts deliberately pass
+        // address(0) — they don't go through this gate.
+        require(
+            isInstance || restaking != address(0),
+            "Deploy: RESTAKING_ADDRESS required for cloud-mode (set INSTANCE_MODE=true to skip)"
+        );
+
         vm.startBroadcast();
 
         AgentSandboxBlueprint blueprint = new AgentSandboxBlueprint(restaking, isInstance, isTee);

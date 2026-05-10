@@ -32,7 +32,7 @@ export function ResourceIdentity({
         >
           {name}
         </h3>
-        <StatusBadge status={status as any} labelOverride={statusLabel} />
+        <StatusBadge status={status} labelOverride={statusLabel} />
         {teeEnabled && teeStyle === 'pill' && (
           <span className="text-xs text-violet-700 dark:text-violet-400 font-data bg-violet-500/10 px-2 py-0.5 rounded-full">TEE</span>
         )}
