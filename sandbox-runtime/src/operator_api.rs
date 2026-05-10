@@ -202,6 +202,82 @@ fn circuit_breaker_api_error(err: SandboxError) -> (StatusCode, Json<ApiError>) 
     }
 }
 
+/// Enforce the per-session fanout limiter for high-cost endpoints (port
+/// proxy, chat run/stream). NAT'd users would otherwise share an IP-tier
+/// bucket — this caps a single authenticated session's expensive
+/// downstream calls regardless of source IP.
+fn enforce_session_fanout(address: &str) -> std::result::Result<(), (StatusCode, Json<ApiError>)> {
+    match rate_limit::check_session_fanout(address) {
+        Ok(()) => Ok(()),
+        Err(retry_after_secs) => Err(api_error_with_details(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Per-session rate limit exceeded".to_string(),
+            Some("SESSION_RATE_LIMIT"),
+            Some(retry_after_secs * 1000),
+        )),
+    }
+}
+
+/// Generic 500 for `serde_json::Error` from response-body serialization. The
+/// detail goes to logs, not the wire — these are programming errors, not
+/// user-facing.
+fn json_serialization_error(e: serde_json::Error) -> axum::response::Response {
+    tracing::error!(err = %e, "JSON serialization failure");
+    api_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Response serialization failed".to_string(),
+    )
+    .into_response()
+}
+
+/// Map a `SandboxError` to a typed HTTP response. Use this in handler
+/// `Err(_)` arms instead of `api_error(INTERNAL_SERVER_ERROR, e.to_string())`
+/// so we don't leak raw error chains, container internals, or RPC error
+/// strings to API consumers.
+///
+/// Variants surface their messages directly when those messages are
+/// already user-facing (auth, validation, not-found, unavailable). Internal
+/// failures (docker, storage, cloud-provider, http) are logged at `error`
+/// level and return a generic message — operators see the detail in
+/// observability, callers see only that the request failed.
+pub(crate) fn classify_sandbox_error(err: SandboxError) -> (StatusCode, Json<ApiError>) {
+    match err {
+        SandboxError::Auth(msg) => api_error(StatusCode::UNAUTHORIZED, msg),
+        SandboxError::Validation(msg) => api_error(StatusCode::BAD_REQUEST, msg),
+        SandboxError::NotFound(msg) => api_error(StatusCode::NOT_FOUND, msg),
+        SandboxError::Unavailable(msg) => api_error(StatusCode::SERVICE_UNAVAILABLE, msg),
+        SandboxError::CircuitBreaker { .. } => circuit_breaker_api_error(err),
+        SandboxError::Http(detail) => {
+            tracing::error!(err = %detail, "upstream HTTP failure");
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                "Upstream request failed".to_string(),
+            )
+        }
+        SandboxError::CloudProvider(detail) => {
+            tracing::error!(err = %detail, "cloud provider failure");
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                "Cloud provider request failed".to_string(),
+            )
+        }
+        SandboxError::Docker(detail) => {
+            tracing::error!(err = %detail, "container runtime failure");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Container runtime error".to_string(),
+            )
+        }
+        SandboxError::Storage(detail) => {
+            tracing::error!(err = %detail, "storage failure");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Storage error".to_string(),
+            )
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct CreateLiveChatSessionRequest {
     #[serde(default)]
@@ -800,7 +876,7 @@ async fn list_sandboxes(SessionAuth(address): SessionAuth) -> impl IntoResponse 
             )
                 .into_response()
         }
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => classify_sandbox_error(e).into_response(),
     }
 }
 
@@ -812,10 +888,10 @@ async fn get_provision(Path(call_id): Path<u64>) -> impl IntoResponse {
     match provision_progress::get_provision(call_id) {
         Ok(Some(status)) => match serde_json::to_value(status) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-            Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => json_serialization_error(e),
         },
         Ok(None) => api_error(StatusCode::NOT_FOUND, "Provision not found").into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => classify_sandbox_error(e).into_response(),
     }
 }
 
@@ -826,7 +902,7 @@ async fn list_provisions() -> impl IntoResponse {
             Json(serde_json::json!({ "provisions": provisions })),
         )
             .into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => classify_sandbox_error(e).into_response(),
     }
 }
 
@@ -849,7 +925,7 @@ async fn create_challenge() -> impl IntoResponse {
     };
     match serde_json::to_value(challenge) {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => json_serialization_error(e),
     }
 }
 
@@ -857,7 +933,7 @@ async fn create_session(Json(req): Json<SessionRequest>) -> impl IntoResponse {
     match session_auth::exchange_signature_for_token(&req.nonce, &req.signature) {
         Ok(token) => match serde_json::to_value(token) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-            Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => json_serialization_error(e),
         },
         Err(crate::error::SandboxError::Unavailable(msg)) => {
             api_error(StatusCode::SERVICE_UNAVAILABLE, msg).into_response()
@@ -1608,7 +1684,7 @@ async fn instance_inject_secrets(
             )
                 .into_response()
         }
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => classify_sandbox_error(e).into_response(),
     }
 }
 
@@ -1636,7 +1712,7 @@ async fn instance_wipe_secrets(SessionAuth(address): SessionAuth) -> impl IntoRe
             )
                 .into_response()
         }
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => classify_sandbox_error(e).into_response(),
     }
 }
 
@@ -1703,7 +1779,7 @@ async fn inject_secrets(
             )
                 .into_response()
         }
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => classify_sandbox_error(e).into_response(),
     }
 }
 
@@ -1730,7 +1806,7 @@ async fn wipe_secrets(
             )
                 .into_response()
         }
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => classify_sandbox_error(e).into_response(),
     }
 }
 
@@ -4002,7 +4078,7 @@ fn handle_lifecycle_outcome(
         Err(crate::SandboxError::Unavailable(msg)) => {
             Err(api_error(StatusCode::SERVICE_UNAVAILABLE, msg))
         }
-        Err(e) => Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        Err(e) => Err(classify_sandbox_error(e)),
     }
 }
 
@@ -4317,6 +4393,7 @@ async fn sandbox_port_proxy_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    enforce_session_fanout(&address)?;
     let (sandbox_id, port, path) = params;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     run_port_proxy(record, port, &path, query.as_deref(), method, headers, body).await
@@ -4331,6 +4408,7 @@ async fn sandbox_port_proxy_root_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    enforce_session_fanout(&address)?;
     let (sandbox_id, port) = params;
     let record = resolve_sandbox(&sandbox_id, &address)?;
     run_port_proxy(record, port, "", query.as_deref(), method, headers, body).await
@@ -4345,6 +4423,7 @@ async fn instance_port_proxy_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    enforce_session_fanout(&address)?;
     let (port, path) = params;
     let record = resolve_instance(&address)?;
     run_port_proxy(record, port, &path, query.as_deref(), method, headers, body).await
@@ -4359,6 +4438,7 @@ async fn instance_port_proxy_root_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    enforce_session_fanout(&address)?;
     let record = resolve_instance(&address)?;
     run_port_proxy(record, port, "", query.as_deref(), method, headers, body).await
 }

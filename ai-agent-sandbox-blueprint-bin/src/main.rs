@@ -594,23 +594,51 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
 /// Optional:
 ///   - `HEARTBEAT_INTERVAL_SECS` — heartbeat interval (default: 120)
 ///   - `HEARTBEAT_MAX_MISSED` — max missed beats before slashing (default: 3)
+/// Parse a u64 from the first env var that's set in `keys`. Logs a warning
+/// and returns `None` if a value is set but doesn't parse — so operators
+/// see misconfiguration in observability instead of features silently
+/// disabling.
+#[cfg(feature = "qos")]
+fn parse_required_u64_env(keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        match std::env::var(key) {
+            Ok(raw) => match raw.parse::<u64>() {
+                Ok(v) => return Some(v),
+                Err(e) => {
+                    tracing::warn!(
+                        env = key,
+                        value = %raw,
+                        err = %e,
+                        "env var is set but not a valid u64; falling back to next key"
+                    );
+                }
+            },
+            Err(_) => continue,
+        }
+    }
+    None
+}
+
 #[cfg(feature = "qos")]
 fn build_heartbeat_config() -> Option<HeartbeatConfig> {
     use std::str::FromStr;
 
-    let service_id: u64 = std::env::var("SERVICE_ID")
-        .or_else(|_| std::env::var("TANGLE_SERVICE_ID"))
-        .ok()
-        .and_then(|v| v.parse().ok())?;
-
-    let blueprint_id: u64 = std::env::var("BLUEPRINT_ID")
-        .or_else(|_| std::env::var("TANGLE_BLUEPRINT_ID"))
-        .ok()
-        .and_then(|v| v.parse().ok())?;
+    let service_id: u64 = parse_required_u64_env(&["SERVICE_ID", "TANGLE_SERVICE_ID"])?;
+    let blueprint_id: u64 = parse_required_u64_env(&["BLUEPRINT_ID", "TANGLE_BLUEPRINT_ID"])?;
 
     let registry_addr_str = std::env::var("STATUS_REGISTRY_ADDRESS").ok()?;
     let status_registry_address =
-        blueprint_sdk::alloy::primitives::Address::from_str(&registry_addr_str).ok()?;
+        match blueprint_sdk::alloy::primitives::Address::from_str(&registry_addr_str) {
+            Ok(addr) => addr,
+            Err(e) => {
+                tracing::warn!(
+                    value = %registry_addr_str,
+                    err = %e,
+                    "STATUS_REGISTRY_ADDRESS is set but not a valid EVM address; heartbeat disabled"
+                );
+                return None;
+            }
+        };
 
     let interval_secs: u64 = std::env::var("HEARTBEAT_INTERVAL_SECS")
         .ok()
