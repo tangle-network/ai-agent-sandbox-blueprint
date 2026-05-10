@@ -34,7 +34,9 @@ pub fn backend_from_env() -> Result<Arc<dyn TeeBackend>> {
     match backend_name.to_lowercase().as_str() {
         #[cfg(feature = "tee-phala")]
         "phala" => {
-            let api_key = require_env("PHALA_API_KEY")?;
+            // Wrap the Phala API key so its heap copy is wiped once
+            // PhalaBackend::new has copied what it needs.
+            let api_key = zeroize::Zeroizing::new(require_env("PHALA_API_KEY")?);
             let api_endpoint = std::env::var("PHALA_API_ENDPOINT").ok();
             let backend = super::phala::PhalaBackend::new(&api_key, api_endpoint)?;
             Ok(Arc::new(backend))
