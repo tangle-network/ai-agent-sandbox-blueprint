@@ -584,16 +584,6 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     Ok(())
 }
 
-/// Build heartbeat config from environment variables.
-///
-/// Required env vars:
-///   - `SERVICE_ID` or `TANGLE_SERVICE_ID` — the service instance ID
-///   - `BLUEPRINT_ID` or `TANGLE_BLUEPRINT_ID` — the blueprint ID
-///   - `STATUS_REGISTRY_ADDRESS` — the OperatorStatusRegistry contract address
-///
-/// Optional:
-///   - `HEARTBEAT_INTERVAL_SECS` — heartbeat interval (default: 120)
-///   - `HEARTBEAT_MAX_MISSED` — max missed beats before slashing (default: 3)
 /// Parse a u64 from the first env var that's set in `keys`. Logs a warning
 /// and returns `None` if a value is set but doesn't parse — so operators
 /// see misconfiguration in observability instead of features silently
@@ -605,7 +595,7 @@ fn parse_required_u64_env(keys: &[&str]) -> Option<u64> {
             Ok(raw) => match raw.parse::<u64>() {
                 Ok(v) => return Some(v),
                 Err(e) => {
-                    tracing::warn!(
+                    warn!(
                         env = key,
                         value = %raw,
                         err = %e,
@@ -619,6 +609,16 @@ fn parse_required_u64_env(keys: &[&str]) -> Option<u64> {
     None
 }
 
+/// Build heartbeat config from environment variables.
+///
+/// Required env vars:
+///   - `SERVICE_ID` or `TANGLE_SERVICE_ID` — the service instance ID
+///   - `BLUEPRINT_ID` or `TANGLE_BLUEPRINT_ID` — the blueprint ID
+///   - `STATUS_REGISTRY_ADDRESS` — the OperatorStatusRegistry contract address
+///
+/// Optional:
+///   - `HEARTBEAT_INTERVAL_SECS` — heartbeat interval (default: 120)
+///   - `HEARTBEAT_MAX_MISSED` — max missed beats before slashing (default: 3)
 #[cfg(feature = "qos")]
 fn build_heartbeat_config() -> Option<HeartbeatConfig> {
     use std::str::FromStr;
@@ -631,7 +631,7 @@ fn build_heartbeat_config() -> Option<HeartbeatConfig> {
         match blueprint_sdk::alloy::primitives::Address::from_str(&registry_addr_str) {
             Ok(addr) => addr,
             Err(e) => {
-                tracing::warn!(
+                warn!(
                     value = %registry_addr_str,
                     err = %e,
                     "STATUS_REGISTRY_ADDRESS is set but not a valid EVM address; heartbeat disabled"
