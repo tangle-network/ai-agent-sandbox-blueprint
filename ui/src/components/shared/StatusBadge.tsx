@@ -1,7 +1,9 @@
 import { Badge } from '@tangle-network/blueprint-ui/components';
 import type { SandboxStatus } from '~/lib/types/sandbox';
 
-const statusConfig: Record<SandboxStatus, { label: string; variant: 'running' | 'stopped' | 'cold' | 'destructive' | 'secondary' | 'accent'; dot: string }> = {
+type BadgeVariant = 'running' | 'stopped' | 'cold' | 'destructive' | 'secondary' | 'accent';
+
+const statusConfig: Record<SandboxStatus, { label: string; variant: BadgeVariant; dot: string }> = {
   creating: { label: 'Creating', variant: 'accent', dot: 'status-creating' },
   running: { label: 'Running', variant: 'running', dot: 'status-running' },
   stopped: { label: 'Stopped', variant: 'stopped', dot: 'status-stopped' },
@@ -11,8 +13,18 @@ const statusConfig: Record<SandboxStatus, { label: string; variant: 'running' | 
   error: { label: 'Error', variant: 'destructive', dot: 'status-error' },
 };
 
-export function StatusBadge({ status, labelOverride }: { status: SandboxStatus; labelOverride?: string }) {
-  const config = statusConfig[status];
+const fallbackConfig = { label: 'Unknown', variant: 'secondary' as BadgeVariant, dot: 'status-deleted' };
+
+function isKnownStatus(value: string): value is SandboxStatus {
+  return value in statusConfig;
+}
+
+/// Accept arbitrary strings at the type boundary: the operator API may
+/// surface a status string the UI doesn't yet know about (e.g. after an
+/// API roll-forward). Render a neutral 'Unknown' badge instead of
+/// crashing when that happens.
+export function StatusBadge({ status, labelOverride }: { status: string; labelOverride?: string }) {
+  const config = isKnownStatus(status) ? statusConfig[status] : fallbackConfig;
   return (
     <Badge variant={config.variant}>
       <span className={`status-dot ${config.dot}`} />
