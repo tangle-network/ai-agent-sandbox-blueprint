@@ -1,0 +1,151 @@
+# cargo-deny configuration for ai-agent-sandbox-blueprint.
+#
+# Run locally:
+#   cargo deny check
+# Run a single section:
+#   cargo deny check advisories
+#   cargo deny check licenses
+#   cargo deny check bans
+#   cargo deny check sources
+#
+# CI gate is wired in `.github/workflows/static-analysis.yml`.
+#
+# Allowlist policy:
+# - `advisories.ignore`: only add IDs with a written rationale (mirror the
+#   `cargo audit --ignore` list in `.github/workflows/ci.yml`); each entry
+#   should be re-evaluated when the upstream fix lands.
+# - `licenses.allow`: OSI-approved permissive licences only. Copyleft
+#   (GPL/AGPL/LGPL) is intentionally not on the list — any new dep
+#   under those terms requires legal review before being added.
+# - `sources.allow-git`: only Tangle-org repos pinned by tag/commit.
+
+[graph]
+all-features = true
+
+# ── Advisories (RUSTSEC) ────────────────────────────────────────────────────
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+
+# Each entry MUST carry an inline reason. These mirror the audit
+# ignores already documented in `.github/workflows/ci.yml` plus the
+# additional advisories cargo-deny surfaces (audit ignores yanked /
+# unmaintained / unsound by default). Triage cadence: re-evaluate when
+# blueprint-sdk / blueprint-networking / rustls / tokio-tar bump
+# upstream.
+ignore = [
+    # ── Vulnerabilities (RUSTSEC vuln class) ────────────────────────────────
+    # tokio-tar PAX header smuggling — build-time only, not runtime.
+    { id = "RUSTSEC-2025-0111", reason = "build-time only; not in runtime call graph" },
+
+    # rustls-webpki name-constraints / CRL parser — pulled transitively
+    # via reqwest's TLS stack. Client-only TLS posture limits exposure.
+    { id = "RUSTSEC-2026-0098", reason = "client-only TLS; transitive via blueprint-sdk rustls" },
+    { id = "RUSTSEC-2026-0099", reason = "client-only TLS; transitive via blueprint-sdk rustls" },
+    { id = "RUSTSEC-2026-0104", reason = "client-only TLS; transitive via blueprint-sdk rustls" },
+
+    # ── Unsound (RUSTSEC informational class) ───────────────────────────────
+    # `rand` 0.9 unsoundness when a custom logger calls rand::rng().
+    # We use rand only with explicit ChaCha20Rng / OsRng instances.
+    { id = "RUSTSEC-2026-0097", reason = "we use explicit Rng impls, not rand::rng()" },
+
+    # ── Unmaintained (RUSTSEC informational class) ──────────────────────────
+    # All of the below are deep transitive deps. Replacing them requires
+    # upstream PRs against blueprint-sdk / eigensdk. None expose runtime
+    # call graph we exercise.
+    { id = "RUSTSEC-2021-0141", reason = "dotenv unmaintained — dev-dep only; tests use it for fixture loading" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained — pervasive transitive in blueprint-sdk proc-macros; no exploitable runtime path" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained — transitive via webpki / reqwest; covered by rustls migration plan" },
+
+]
+
+# ── Licences ────────────────────────────────────────────────────────────────
+[licenses]
+confidence-threshold = 0.93
+
+# OSI-approved permissive set + a few mature exceptions. NO GPL/AGPL/LGPL.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+    "Unlicense",
+]
+
+exceptions = []
+
+# Per-crate licence clarifications for crates whose Cargo.toml omits
+# `license` but ship a permissive LICENSE in their repo.
+[[licenses.clarify]]
+name = "ring"
+version = "0.16"
+expression = "ISC AND MIT AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+# eigensdk-rs and its sub-crates ship under BSD-3-Clause but omit the
+# `license` field upstream. Pulled in transitively via the blueprint
+# operator selection / restaking integration.
+[[licenses.clarify]]
+name = "eigensdk"
+expression = "BSD-3-Clause"
+license-files = []
+
+[[licenses.clarify]]
+name = "eigen-crypto-bls"
+expression = "BSD-3-Clause"
+license-files = []
+
+[[licenses.clarify]]
+name = "eigen-crypto-bn254"
+expression = "BSD-3-Clause"
+license-files = []
+
+[[licenses.clarify]]
+name = "eigen-signer"
+expression = "BSD-3-Clause"
+license-files = []
+
+[[licenses.clarify]]
+name = "eigen-utils"
+expression = "BSD-3-Clause"
+license-files = []
+
+# ── Bans (multi-version + wildcard hygiene) ─────────────────────────────────
+[bans]
+multiple-versions = "warn"
+
+# `*` version specifiers in published manifests are a footgun. Workspace
+# path deps render as wildcards but are safe (in-tree, pinned).
+wildcards = "warn"
+allow-wildcard-paths = true
+
+deny = []
+skip = []
+skip-tree = []
+
+# ── Source registries ───────────────────────────────────────────────────────
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Only Tangle-org git deps. Each MUST be pinned by tag or commit (not
+# branch) when consumed by published crates.
+allow-git = [
+    "https://github.com/tangle-network/blueprint",
+    "https://github.com/tangle-network/blueprint.git",
+    "https://github.com/tangle-network/tnt-core",
+    "https://github.com/tangle-network/tnt-core.git",
+]
