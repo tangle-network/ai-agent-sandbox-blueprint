@@ -7,9 +7,14 @@ import {
 } from '@tangle-network/blueprint-ui';
 import { agentInstanceBlueprintAbi } from '~/lib/contracts/abi';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
-import type { Address } from 'viem';
+import type { Address, ContractFunctionName } from 'viem';
 
 type BlueprintType = 'instance' | 'tee-instance';
+
+// Function-name union derived from the ABI. Compile-time check that
+// `functionName` passed in is actually a view/pure function on this
+// contract — replaces the previous `functionName as any` cast.
+type InstanceReadFn = ContractFunctionName<typeof agentInstanceBlueprintAbi, 'view' | 'pure'>;
 
 function useInstanceReadDeps(blueprintType: BlueprintType) {
   const chainId = useStore(selectedChainIdStore);
@@ -30,7 +35,7 @@ function useInstanceContractRead<TData>({
   refetchInterval,
 }: {
   blueprintType: BlueprintType;
-  functionName: string;
+  functionName: InstanceReadFn;
   args?: readonly unknown[];
   enabled?: boolean;
   refetchInterval?: number;
@@ -45,8 +50,12 @@ function useInstanceContractRead<TData>({
       publicClient.readContract({
         address,
         abi: agentInstanceBlueprintAbi,
-        functionName: functionName as any,
-        args: args as any,
+        functionName,
+        // viem's `args` is a tuple typed against `functionName`; we can't
+        // express that link without the caller specifying a literal-typed
+        // args tuple. Cast through `never` to make the unsafety explicit
+        // while still preserving function-name and ABI typing above.
+        args: args as never,
       }) as Promise<TData>,
     enabled: enabled && !!address && isContractDeployed(address),
     refetchInterval,

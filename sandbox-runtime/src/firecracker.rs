@@ -537,9 +537,7 @@ fn parse_host_agent_error(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::TEST_ENV_GUARD;
 
     fn set_or_unset(key: &str, value: Option<&str>) {
         match value {
@@ -550,7 +548,7 @@ mod tests {
 
     #[test]
     fn load_requires_explicit_sidecar_auth_mode() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
         set_or_unset(ENV_SIDECAR_AUTH_DISABLED, None);
         set_or_unset(ENV_SIDECAR_AUTH_TOKEN, None);
@@ -562,7 +560,7 @@ mod tests {
 
     #[test]
     fn load_rejects_disabled_plus_token() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
         set_or_unset(ENV_SIDECAR_AUTH_DISABLED, Some("true"));
         set_or_unset(ENV_SIDECAR_AUTH_TOKEN, Some("secret-token"));
@@ -577,7 +575,7 @@ mod tests {
 
     #[test]
     fn load_accepts_disabled_mode() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
         set_or_unset(ENV_SIDECAR_AUTH_DISABLED, Some("true"));
         set_or_unset(ENV_SIDECAR_AUTH_TOKEN, None);
@@ -588,7 +586,7 @@ mod tests {
 
     #[test]
     fn load_accepts_token_mode() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         set_or_unset("FIRECRACKER_HOST_AGENT_URL", Some("http://127.0.0.1:18080"));
         set_or_unset(ENV_SIDECAR_AUTH_DISABLED, Some("false"));
         set_or_unset(ENV_SIDECAR_AUTH_TOKEN, Some("secret-token"));
