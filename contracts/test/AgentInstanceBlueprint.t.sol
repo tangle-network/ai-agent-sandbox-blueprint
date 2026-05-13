@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "./helpers/InstanceSetup.sol";
+import "../src/libraries/SandboxTypes.sol";
 
 contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     using stdStorage for StdStorage;
@@ -28,7 +29,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         setServiceOperator(testServiceId, operator1, true);
 
         vm.expectEmit(true, true, false, true);
-        emit AgentSandboxBlueprint.OperatorProvisioned(
+        emit SandboxTypes.OperatorProvisioned(
             testServiceId, operator1, string(abi.encodePacked("sb-", vm.toString(operator1))), "http://sidecar:8080"
         );
 
@@ -43,9 +44,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
 
         setServiceOperator(testServiceId, operator1, true);
         vm.prank(operator1);
-        vm.expectRevert(
-            abi.encodeWithSelector(AgentSandboxBlueprint.AlreadyProvisioned.selector, testServiceId, operator1)
-        );
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.AlreadyProvisioned.selector, testServiceId, operator1));
         instance.reportProvisioned(testServiceId, "sb-dup", "http://dup:8080", 2222, "");
     }
 
@@ -98,7 +97,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         assertTrue(instance.isOperatorProvisioned(testServiceId, operator1));
 
         vm.expectEmit(true, true, false, false);
-        emit AgentSandboxBlueprint.OperatorDeprovisioned(testServiceId, operator1);
+        emit SandboxTypes.OperatorDeprovisioned(testServiceId, operator1);
 
         _deprovisionOperator(operator1);
 
@@ -110,7 +109,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     function test_deprovisionNotProvisionedReverts() public {
         setServiceOperator(testServiceId, operator1, true);
         vm.prank(operator1);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.NotProvisioned.selector, testServiceId, operator1));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.NotProvisioned.selector, testServiceId, operator1));
         instance.reportDeprovisioned(testServiceId);
     }
 
@@ -388,7 +387,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     function test_instanceModeAllowsWorkflowJobs() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "instance-workflow",
             workflow_json: "{\"prompt\":\"hello\"}",
             trigger_type: "cron",
@@ -410,14 +409,14 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
             bytes("")
         );
 
-        AgentSandboxBlueprint.WorkflowConfig memory cfg = instance.getWorkflow(createCallId);
+        SandboxTypes.WorkflowConfig memory cfg = instance.getWorkflow(createCallId);
         assertEq(cfg.name, "instance-workflow");
         assertTrue(cfg.active);
         assertEq(cfg.target_kind, 1);
         assertEq(cfg.target_service_id, testServiceId);
 
-        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl =
-            AgentSandboxBlueprint.WorkflowControlRequest({workflow_id: createCallId});
+        SandboxTypes.WorkflowControlRequest memory ctrl =
+            SandboxTypes.WorkflowControlRequest({workflow_id: createCallId});
 
         uint64 triggerCallId = 2101;
         simulateJobCall(testServiceId, instance.JOB_WORKFLOW_TRIGGER(), triggerCallId, abi.encode(ctrl));
@@ -435,7 +434,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     }
 
     function test_instanceModeNormalizesZeroWorkflowServiceId() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "instance-workflow-zero",
             workflow_json: "{\"prompt\":\"hello\"}",
             trigger_type: "cron",
@@ -457,13 +456,13 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
             bytes("")
         );
 
-        AgentSandboxBlueprint.WorkflowConfig memory cfg = instance.getWorkflow(createCallId);
+        SandboxTypes.WorkflowConfig memory cfg = instance.getWorkflow(createCallId);
         assertEq(cfg.target_service_id, testServiceId);
         assertEq(cfg.target_kind, 1);
     }
 
     function test_instanceModeRejectsMismatchedWorkflowServiceId() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "instance-workflow-bad-service",
             workflow_json: "{\"prompt\":\"hello\"}",
             trigger_type: "cron",
@@ -479,14 +478,14 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         simulateJobCall(testServiceId, workflowJobId, createCallId, encodeWorkflowCreateInputs(req));
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(1)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(1)));
         instance.onJobResult(
             testServiceId, workflowJobId, createCallId, operator1, encodeWorkflowCreateInputs(req), bytes("")
         );
     }
 
     function test_instanceModeRejectsSandboxTargetKind() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "instance-sandbox-kind",
             workflow_json: "{\"prompt\":\"hello\"}",
             trigger_type: "cron",
@@ -502,7 +501,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         simulateJobCall(testServiceId, workflowJobId, createCallId, encodeWorkflowCreateInputs(req));
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(0)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(0)));
         instance.onJobResult(
             testServiceId, workflowJobId, createCallId, operator1, encodeWorkflowCreateInputs(req), bytes("")
         );
@@ -511,7 +510,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     function test_instanceModeRejectsInvalidTargetKind() public {
         uint8 workflowJobId = instance.JOB_WORKFLOW_CREATE();
 
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req2 = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req2 = SandboxTypes.WorkflowCreateRequest({
             name: "instance-bad-kind-2",
             workflow_json: "{\"prompt\":\"hello\"}",
             trigger_type: "cron",
@@ -525,12 +524,12 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         uint64 callId2 = 2121;
         simulateJobCall(testServiceId, workflowJobId, callId2, encodeWorkflowCreateInputs(req2));
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(2)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(2)));
         instance.onJobResult(
             testServiceId, workflowJobId, callId2, operator1, encodeWorkflowCreateInputs(req2), bytes("")
         );
 
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req255 = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req255 = SandboxTypes.WorkflowCreateRequest({
             name: "instance-bad-kind-255",
             workflow_json: "{\"prompt\":\"hello\"}",
             trigger_type: "cron",
@@ -544,14 +543,14 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         uint64 callId255 = 2122;
         simulateJobCall(testServiceId, workflowJobId, callId255, encodeWorkflowCreateInputs(req255));
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(255)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(255)));
         instance.onJobResult(
             testServiceId, workflowJobId, callId255, operator1, encodeWorkflowCreateInputs(req255), bytes("")
         );
     }
 
     function test_instanceModeRejectsNonEmptySandboxId() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "instance-nonempty-sandbox",
             workflow_json: "{\"prompt\":\"hello\"}",
             trigger_type: "cron",
@@ -567,7 +566,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         simulateJobCall(testServiceId, workflowJobId, createCallId, encodeWorkflowCreateInputs(req));
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(1)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(1)));
         instance.onJobResult(
             testServiceId, workflowJobId, createCallId, operator1, encodeWorkflowCreateInputs(req), bytes("")
         );

@@ -67,29 +67,17 @@ contract RegisterBlueprint is Script {
         jobs = new Types.JobDefinition[](5);
         // IDs are positional in Tangle metadata. Keep 0/1 reserved so workflow IDs stay 2/3/4.
         jobs[0] = Types.JobDefinition(
-            "cloud_only_reserved_sandbox_create",
-            "Reserved in instance mode (cloud sandbox lifecycle only)",
-            "",
-            "",
-            ""
+            "cloud_only_reserved_sandbox_create", "Reserved in instance mode (cloud sandbox lifecycle only)", "", "", ""
         );
         jobs[1] = Types.JobDefinition(
-            "cloud_only_reserved_sandbox_delete",
-            "Reserved in instance mode (cloud sandbox lifecycle only)",
-            "",
-            "",
-            ""
+            "cloud_only_reserved_sandbox_delete", "Reserved in instance mode (cloud sandbox lifecycle only)", "", "", ""
         );
         jobs[2] = Types.JobDefinition("workflow_create", "Create or update a workflow", "", "", "");
         jobs[3] = Types.JobDefinition("workflow_trigger", "Trigger a workflow execution", "", "", "");
         jobs[4] = Types.JobDefinition("workflow_cancel", "Cancel an active workflow", "", "", "");
     }
 
-    function _buildSandboxDefinition(address manager)
-        internal
-        pure
-        returns (Types.BlueprintDefinition memory def)
-    {
+    function _buildSandboxDefinition(address manager) internal pure returns (Types.BlueprintDefinition memory def) {
         def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;
@@ -148,11 +136,7 @@ contract RegisterBlueprint is Script {
         def.supportedMemberships[0] = Types.MembershipModel.Dynamic;
     }
 
-    function _buildInstanceDefinition(address manager)
-        internal
-        pure
-        returns (Types.BlueprintDefinition memory def)
-    {
+    function _buildInstanceDefinition(address manager) internal pure returns (Types.BlueprintDefinition memory def) {
         def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;
@@ -211,11 +195,7 @@ contract RegisterBlueprint is Script {
         def.supportedMemberships[0] = Types.MembershipModel.Fixed;
     }
 
-    function _buildTeeInstanceDefinition(address manager)
-        internal
-        pure
-        returns (Types.BlueprintDefinition memory def)
-    {
+    function _buildTeeInstanceDefinition(address manager) internal pure returns (Types.BlueprintDefinition memory def) {
         def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;

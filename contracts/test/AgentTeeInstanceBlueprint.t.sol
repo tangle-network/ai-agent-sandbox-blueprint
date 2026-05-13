@@ -2,9 +2,9 @@
 pragma solidity ^0.8.26;
 
 import "./helpers/InstanceSetup.sol";
+import "../src/libraries/SandboxTypes.sol";
 
 contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
-
     // ═══════════════════════════════════════════════════════════════════════════
     // ATTESTATION ENFORCEMENT
     // ═══════════════════════════════════════════════════════════════════════════
@@ -13,13 +13,7 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
         setServiceOperator(testServiceId, operator1, true);
 
         vm.prank(operator1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                AgentSandboxBlueprint.MissingTeeAttestation.selector,
-                testServiceId,
-                operator1
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.MissingTeeAttestation.selector, testServiceId, operator1));
         teeInstance.reportProvisioned(testServiceId, "sb-1", "http://sidecar:8080", 2222, "");
     }
 
@@ -35,13 +29,7 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
         setServiceOperator(testServiceId, operator1, true);
 
         vm.prank(operator1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                AgentSandboxBlueprint.MissingTeeAttestation.selector,
-                testServiceId,
-                operator1
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.MissingTeeAttestation.selector, testServiceId, operator1));
         teeInstance.reportProvisioned(testServiceId, "sb-r1", "http://tee-op1:8080", 2222, "");
     }
 
@@ -84,7 +72,7 @@ contract AgentTeeInstanceBlueprintTest is TeeInstanceBlueprintTestSetup {
         assertTrue(teeInstance.isProvisioned(testServiceId));
 
         vm.expectEmit(true, true, false, false);
-        emit AgentSandboxBlueprint.OperatorDeprovisioned(testServiceId, operator1);
+        emit SandboxTypes.OperatorDeprovisioned(testServiceId, operator1);
 
         _deprovisionOperator(operator1);
 

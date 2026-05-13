@@ -3,9 +3,14 @@ pragma solidity ^0.8.26;
 
 import "tnt-core/BlueprintServiceManagerBase.sol";
 import "tnt-core/interfaces/IMultiAssetDelegation.sol";
+import "./libraries/OperatorSelectionLib.sol";
 
 /// @title OperatorSelectionBase
-/// @notice Deterministic operator selection + validation helper for blueprint service requests.
+/// @notice Deterministic operator selection + validation helper for
+///         blueprint service requests. The compute-heavy paths
+///         (`_selectOperators`, `_eligibleOperators`, the validation walk)
+///         live in `OperatorSelectionLib` so the inheriting blueprint
+///         contract stays under the EIP-170 24,576 B runtime cap.
 abstract contract OperatorSelectionBase is BlueprintServiceManagerBase {
     IMultiAssetDelegation public restaking;
 
@@ -18,8 +23,6 @@ abstract contract OperatorSelectionBase is BlueprintServiceManagerBase {
 
     error RestakingNotSet();
     error InvalidOperatorCount(uint32 requested, uint32 minOperators, uint32 maxOperators);
-    error NotEnoughEligibleOperators(uint32 requested, uint32 available);
-    error InvalidOperatorSelection();
 
     struct SelectionRequest {
         uint32 operatorCount;
@@ -33,11 +36,10 @@ abstract contract OperatorSelectionBase is BlueprintServiceManagerBase {
         emit RestakingUpdated(restakingAddress);
     }
 
-    function setOperatorSelectionConfig(
-        uint32 minOperators_,
-        uint32 maxOperators_,
-        uint32 defaultOperatorCount_
-    ) external onlyBlueprintOwner {
+    function setOperatorSelectionConfig(uint32 minOperators_, uint32 maxOperators_, uint32 defaultOperatorCount_)
+        external
+        onlyBlueprintOwner
+    {
         if (maxOperators_ > 0 && minOperators_ > maxOperators_) {
             revert InvalidOperatorCount(minOperators_, minOperators_, maxOperators_);
         }
@@ -57,146 +59,58 @@ abstract contract OperatorSelectionBase is BlueprintServiceManagerBase {
         emit OperatorSelectionConfigUpdated(minOperators_, maxOperators_, defaultOperatorCount_);
     }
 
-    function previewOperatorSelection(uint32 operatorCount, bytes32 seed)
-        public
-        view
-        returns (address[] memory)
-    {
-        return _selectOperators(operatorCount, seed);
+    function previewOperatorSelection(uint32 operatorCount, bytes32 seed) public view returns (address[] memory) {
+        if (address(restaking) == address(0)) revert RestakingNotSet();
+        uint32 count = operatorCount == 0 ? defaultOperatorCount : operatorCount;
+        if (count == 0) count = uint32(OperatorSelectionLib.eligibleOperators(restaking, blueprintId).length);
+        return OperatorSelectionLib.selectOperators(
+            OperatorSelectionLib.eligibleOperators(restaking, blueprintId), count, seed, minOperators, maxOperators
+        );
     }
 
-    function _decodeSelectionRequest(bytes calldata requestInputs)
-        internal
-        pure
-        returns (SelectionRequest memory)
-    {
+    function _decodeSelectionRequest(bytes calldata requestInputs) internal pure returns (SelectionRequest memory) {
         if (requestInputs.length == 0) {
-            return SelectionRequest({ operatorCount: 0, seed: bytes32(0), enforceDeterministic: false });
+            return SelectionRequest({operatorCount: 0, seed: bytes32(0), enforceDeterministic: false});
         }
         return abi.decode(requestInputs, (SelectionRequest));
     }
 
-    function _validateOperatorSelection(
-        address[] calldata operators,
-        SelectionRequest memory selection
-    ) internal view {
+    function _validateOperatorSelection(address[] calldata operators, SelectionRequest memory selection) internal view {
+        if (address(restaking) == address(0)) revert RestakingNotSet();
+
         uint32 expectedCount = selection.operatorCount;
-        if (expectedCount == 0) {
-            expectedCount = defaultOperatorCount;
-        }
-        if (expectedCount == 0) {
-            expectedCount = uint32(operators.length);
-        }
+        if (expectedCount == 0) expectedCount = defaultOperatorCount;
+        if (expectedCount == 0) expectedCount = uint32(operators.length);
 
-        _validateOperatorCount(expectedCount);
-        if (operators.length != expectedCount) {
-            revert InvalidOperatorCount(uint32(operators.length), minOperators, maxOperators);
+        if (expectedCount < minOperators) {
+            revert InvalidOperatorCount(expectedCount, minOperators, maxOperators);
+        }
+        if (maxOperators > 0 && expectedCount > maxOperators) {
+            revert InvalidOperatorCount(expectedCount, minOperators, maxOperators);
         }
 
-        if (selection.enforceDeterministic) {
-            address[] memory expected = _selectOperators(expectedCount, selection.seed);
-            if (expected.length != operators.length) revert InvalidOperatorSelection();
-            for (uint256 i = 0; i < expected.length; i++) {
-                if (expected[i] != operators[i]) revert InvalidOperatorSelection();
-            }
-            return;
-        }
-
-        _validateOperators(operators);
-    }
-
-    function _validateOperatorCount(uint32 count) internal view {
-        if (count < minOperators) {
-            revert InvalidOperatorCount(count, minOperators, maxOperators);
-        }
-        if (maxOperators > 0 && count > maxOperators) {
-            revert InvalidOperatorCount(count, minOperators, maxOperators);
-        }
-    }
-
-    function _validateOperators(address[] calldata operators) internal view {
-        if (address(restaking) == address(0)) revert RestakingNotSet();
-
-        for (uint256 i = 0; i < operators.length; i++) {
-            address operator = operators[i];
-            if (!_isEligibleOperator(operator)) {
-                revert InvalidOperatorSelection();
-            }
-            for (uint256 j = i + 1; j < operators.length; j++) {
-                if (operators[j] == operator) {
-                    revert InvalidOperatorSelection();
-                }
-            }
-        }
-    }
-
-    function _selectOperators(uint32 operatorCount, bytes32 seed) internal view returns (address[] memory) {
-        if (address(restaking) == address(0)) revert RestakingNotSet();
-
-        address[] memory eligible = _eligibleOperators();
-        uint256 available = eligible.length;
-
-        if (operatorCount == 0) {
-            operatorCount = defaultOperatorCount;
-        }
-        if (operatorCount == 0) {
-            operatorCount = uint32(available);
-        }
-
-        _validateOperatorCount(operatorCount);
-
-        if (operatorCount > available) {
-            revert NotEnoughEligibleOperators(operatorCount, uint32(available));
-        }
-
-        address[] memory selected = new address[](operatorCount);
-        uint256 remaining = available;
-
-        for (uint256 i = 0; i < operatorCount; i++) {
-            uint256 rand = uint256(keccak256(abi.encode(seed, i))) % remaining;
-            selected[i] = eligible[rand];
-            eligible[rand] = eligible[remaining - 1];
-            remaining -= 1;
-        }
-
-        return selected;
+        OperatorSelectionLib.validateOperatorSelection(
+            operators,
+            OperatorSelectionLib.eligibleOperators(restaking, blueprintId),
+            minOperators,
+            maxOperators,
+            expectedCount,
+            selection.seed,
+            selection.enforceDeterministic
+        );
     }
 
     function eligibleOperators() public view returns (address[] memory) {
-        return _eligibleOperators();
+        if (address(restaking) == address(0)) revert RestakingNotSet();
+        return OperatorSelectionLib.eligibleOperators(restaking, blueprintId);
     }
 
     function _eligibleOperators() internal view returns (address[] memory) {
-        uint256 total = restaking.operatorCount();
-        address[] memory temp = new address[](total);
-        uint256 count = 0;
-
-        for (uint256 i = 0; i < total; i++) {
-            address operator = restaking.operatorAt(i);
-            if (_isEligibleOperator(operator)) {
-                temp[count] = operator;
-                count++;
-            }
-        }
-
-        address[] memory eligible = new address[](count);
-        for (uint256 i = 0; i < count; i++) {
-            eligible[i] = temp[i];
-        }
-
-        return eligible;
+        if (address(restaking) == address(0)) revert RestakingNotSet();
+        return OperatorSelectionLib.eligibleOperators(restaking, blueprintId);
     }
 
     function _isEligibleOperator(address operator) internal view returns (bool) {
-        if (!restaking.isOperatorActive(operator)) {
-            return false;
-        }
-        uint256[] memory blueprints = restaking.getOperatorBlueprints(operator);
-        for (uint256 i = 0; i < blueprints.length; i++) {
-            if (blueprints[i] == blueprintId) {
-                return true;
-            }
-        }
-        return false;
+        return OperatorSelectionLib.isEligibleOperator(restaking, blueprintId, operator);
     }
 }
