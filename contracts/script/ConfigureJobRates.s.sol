@@ -53,11 +53,7 @@ contract ConfigureJobRates is Script {
         for (uint256 i = 0; i < jobIndexes.length; i++) {
             string memory jobName = _jobName(jobIndexes[i]);
             console.log(
-                string.concat(
-                    "  Job ", jobName,
-                    " (", vm.toString(jobIndexes[i]), "): ",
-                    vm.toString(rates[i]), " wei"
-                )
+                string.concat("  Job ", jobName, " (", vm.toString(jobIndexes[i]), "): ", vm.toString(rates[i]), " wei")
             );
         }
 

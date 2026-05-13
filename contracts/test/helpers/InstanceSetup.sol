@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "../../src/AgentSandboxBlueprint.sol";
+import "../../src/libraries/SandboxTypes.sol";
 
 /// @dev Minimal tangle core mock for direct instance reporting auth checks.
 contract MockTangleCoreInstance {
@@ -86,7 +87,7 @@ contract InstanceBlueprintTestSetup is Test {
     }
 
     /// @dev Encode workflow create inputs in the same flat ABI shape the UI/operator submit.
-    function encodeWorkflowCreateInputs(AgentSandboxBlueprint.WorkflowCreateRequest memory request)
+    function encodeWorkflowCreateInputs(SandboxTypes.WorkflowCreateRequest memory request)
         internal
         pure
         returns (bytes memory)

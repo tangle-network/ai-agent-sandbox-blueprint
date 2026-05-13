@@ -256,10 +256,7 @@ contract InvariantCountersTest is Test {
         for (uint256 i = 0; i < handler.activeSandboxIdsLength(); i++) {
             string memory sid = handler.getActiveSandboxId(i);
             bytes32 h = keccak256(bytes(sid));
-            assertTrue(
-                blueprint.sandboxActive(h),
-                "active sandbox not marked active on-chain"
-            );
+            assertTrue(blueprint.sandboxActive(h), "active sandbox not marked active on-chain");
         }
     }
 
@@ -268,11 +265,7 @@ contract InvariantCountersTest is Test {
     // ═══════════════════════════════════════════════════════════════════════════
 
     function invariant_activeListLengthEqualsGhost() public view {
-        assertEq(
-            handler.activeSandboxIdsLength(),
-            handler.activeSandboxCount(),
-            "active list length != ghost counter"
-        );
+        assertEq(handler.activeSandboxIdsLength(), handler.activeSandboxCount(), "active list length != ghost counter");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -285,10 +278,6 @@ contract InvariantCountersTest is Test {
             address op = handler.getOperator(i);
             sum += handler.getPerOperatorCount(op);
         }
-        assertEq(
-            blueprint.totalActiveSandboxes(),
-            sum,
-            "sum of per-operator counts != totalActiveSandboxes"
-        );
+        assertEq(blueprint.totalActiveSandboxes(), sum, "sum of per-operator counts != totalActiveSandboxes");
     }
 }

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "../helpers/Setup.sol";
+import "../../src/libraries/SandboxTypes.sol";
 
 contract MultiOperatorFlowTest is BlueprintTestSetup {
     // Additional operators beyond the base 3 from BlueprintTestSetup
@@ -40,12 +41,9 @@ contract MultiOperatorFlowTest is BlueprintTestSetup {
         return ops;
     }
 
-    function _createSandboxOnOperator(
-        uint64 serviceId,
-        uint64 callId,
-        address targetOperator,
-        string memory sandboxId
-    ) internal {
+    function _createSandboxOnOperator(uint64 serviceId, uint64 callId, address targetOperator, string memory sandboxId)
+        internal
+    {
         address[] memory ops = _allOperators();
 
         for (uint256 i = 0; i < ops.length; i++) {
@@ -118,14 +116,22 @@ contract MultiOperatorFlowTest is BlueprintTestSetup {
         // Delete sandboxes on operator4 and operator7
         simulateJobCall(1, blueprint.JOB_SANDBOX_DELETE(), 1020, encodeSandboxIdInputs("sb-op4"));
         simulateJobResult(
-            1, blueprint.JOB_SANDBOX_DELETE(), 1020, operator4,
-            encodeSandboxIdInputs("sb-op4"), encodeJsonOutputs("{\"deleted\":true}")
+            1,
+            blueprint.JOB_SANDBOX_DELETE(),
+            1020,
+            operator4,
+            encodeSandboxIdInputs("sb-op4"),
+            encodeJsonOutputs("{\"deleted\":true}")
         );
 
         simulateJobCall(1, blueprint.JOB_SANDBOX_DELETE(), 1021, encodeSandboxIdInputs("sb-op7"));
         simulateJobResult(
-            1, blueprint.JOB_SANDBOX_DELETE(), 1021, operator7,
-            encodeSandboxIdInputs("sb-op7"), encodeJsonOutputs("{\"deleted\":true}")
+            1,
+            blueprint.JOB_SANDBOX_DELETE(),
+            1021,
+            operator7,
+            encodeSandboxIdInputs("sb-op7"),
+            encodeJsonOutputs("{\"deleted\":true}")
         );
 
         assertEq(blueprint.totalActiveSandboxes(), 3);
@@ -162,14 +168,20 @@ contract MultiOperatorFlowTest is BlueprintTestSetup {
 
         simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 2000, encodeSandboxCreateInputs());
         simulateJobResult(
-            1, blueprint.JOB_SANDBOX_CREATE(), 2000, operator4,
+            1,
+            blueprint.JOB_SANDBOX_CREATE(),
+            2000,
+            operator4,
             encodeSandboxCreateInputs(),
             encodeSandboxCreateOutputs("cap-1", "{}")
         );
 
         simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 2001, encodeSandboxCreateInputs());
         simulateJobResult(
-            1, blueprint.JOB_SANDBOX_CREATE(), 2001, operator4,
+            1,
+            blueprint.JOB_SANDBOX_CREATE(),
+            2001,
+            operator4,
             encodeSandboxCreateInputs(),
             encodeSandboxCreateOutputs("cap-2", "{}")
         );
@@ -179,14 +191,18 @@ contract MultiOperatorFlowTest is BlueprintTestSetup {
         assertEq(max, 2);
 
         vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.NoAvailableCapacity.selector);
+        vm.expectRevert(SandboxTypes.NoAvailableCapacity.selector);
         blueprint.onJobCall(1, 0, 2002, encodeSandboxCreateInputs());
 
         // Delete one sandbox to free capacity
         simulateJobCall(1, blueprint.JOB_SANDBOX_DELETE(), 2003, encodeSandboxIdInputs("cap-1"));
         simulateJobResult(
-            1, blueprint.JOB_SANDBOX_DELETE(), 2003, operator4,
-            encodeSandboxIdInputs("cap-1"), encodeJsonOutputs("{\"deleted\":true}")
+            1,
+            blueprint.JOB_SANDBOX_DELETE(),
+            2003,
+            operator4,
+            encodeSandboxIdInputs("cap-1"),
+            encodeJsonOutputs("{\"deleted\":true}")
         );
 
         (uint32 activeAfter,) = blueprint.getOperatorLoad(operator4);
@@ -195,7 +211,10 @@ contract MultiOperatorFlowTest is BlueprintTestSetup {
         // Now a new create should succeed
         simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 2004, encodeSandboxCreateInputs());
         simulateJobResult(
-            1, blueprint.JOB_SANDBOX_CREATE(), 2004, operator4,
+            1,
+            blueprint.JOB_SANDBOX_CREATE(),
+            2004,
+            operator4,
             encodeSandboxCreateInputs(),
             encodeSandboxCreateOutputs("cap-3", "{}")
         );
@@ -233,7 +252,10 @@ contract MultiOperatorFlowTest is BlueprintTestSetup {
 
             string memory sid = string(abi.encodePacked("batch-", vm.toString(i)));
             simulateJobResult(
-                1, blueprint.JOB_SANDBOX_CREATE(), uint64(3000 + i), assigned,
+                1,
+                blueprint.JOB_SANDBOX_CREATE(),
+                uint64(3000 + i),
+                assigned,
                 encodeSandboxCreateInputs(),
                 encodeSandboxCreateOutputs(sid, "{}")
             );
@@ -272,7 +294,10 @@ contract MultiOperatorFlowTest is BlueprintTestSetup {
 
         gasBefore = gasleft();
         simulateJobResult(
-            1, blueprint.JOB_SANDBOX_CREATE(), 4000, operator4,
+            1,
+            blueprint.JOB_SANDBOX_CREATE(),
+            4000,
+            operator4,
             encodeSandboxCreateInputs(),
             encodeSandboxCreateOutputs("gas-sb", "{}")
         );
@@ -286,7 +311,10 @@ contract MultiOperatorFlowTest is BlueprintTestSetup {
 
         gasBefore = gasleft();
         simulateJobResult(
-            1, blueprint.JOB_SANDBOX_DELETE(), 4001, operator4,
+            1,
+            blueprint.JOB_SANDBOX_DELETE(),
+            4001,
+            operator4,
             encodeSandboxIdInputs("gas-sb"),
             encodeJsonOutputs("{\"deleted\":true}")
         );
@@ -361,8 +389,12 @@ contract MultiOperatorFlowTest is BlueprintTestSetup {
 
         simulateJobCall(serviceA, blueprint.JOB_SANDBOX_DELETE(), 6001, encodeSandboxIdInputs("svc1-sb"));
         simulateJobResult(
-            serviceA, blueprint.JOB_SANDBOX_DELETE(), 6001, operator4,
-            encodeSandboxIdInputs("svc1-sb"), encodeJsonOutputs("{\"deleted\":true}")
+            serviceA,
+            blueprint.JOB_SANDBOX_DELETE(),
+            6001,
+            operator4,
+            encodeSandboxIdInputs("svc1-sb"),
+            encodeJsonOutputs("{\"deleted\":true}")
         );
 
         assertFalse(blueprint.isSandboxActive("svc1-sb"));

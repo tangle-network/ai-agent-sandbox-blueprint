@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "./helpers/Setup.sol";
+import "../src/libraries/SandboxTypes.sol";
 
 contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // ═══════════════════════════════════════════════════════════════════════════
@@ -107,7 +108,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         _createSandbox(1, 1, operator1, "sb-full");
 
         vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.NoAvailableCapacity.selector);
+        vm.expectRevert(SandboxTypes.NoAvailableCapacity.selector);
         blueprint.onJobCall(1, 0, 999, encodeSandboxCreateInputs());
     }
 
@@ -168,7 +169,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         mockDelegation.setActive(operator2, true);
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.OperatorMismatch.selector, operator1, operator2));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.OperatorMismatch.selector, operator1, operator2));
         blueprint.onJobResult(
             1, 0, 30, operator2, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs("sandbox-wrong", "{}")
         );
@@ -179,7 +180,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         _createSandbox(1, 40, operator1, "sandbox-clear");
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.OperatorMismatch.selector, address(0), operator1));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.OperatorMismatch.selector, address(0), operator1));
         blueprint.onJobResult(
             1, 0, 40, operator1, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs("sandbox-clear2", "{}")
         );
@@ -202,7 +203,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     function test_routeRevertsUnknownSandbox() public {
         bytes32 unknownHash = keccak256(bytes("no-such-sandbox"));
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.SandboxNotFound.selector, unknownHash));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.SandboxNotFound.selector, unknownHash));
         blueprint.onJobCall(1, 1, 70, encodeSandboxIdInputs("no-such-sandbox"));
     }
 
@@ -255,7 +256,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         _createSandbox(1, 100, operator1, "sandbox-own");
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.OperatorMismatch.selector, operator1, operator2));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.OperatorMismatch.selector, operator1, operator2));
         blueprint.onJobResult(1, 1, 101, operator2, encodeSandboxIdInputs("sandbox-own"), encodeJsonOutputs("{}"));
     }
 
@@ -393,7 +394,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_workflowCreateStoresConfig() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "test-workflow",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -405,13 +406,13 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         });
 
         vm.expectEmit(true, false, false, true);
-        emit AgentSandboxBlueprint.WorkflowStored(500, "cron", "0 * * * *");
+        emit SandboxTypes.WorkflowStored(500, "cron", "0 * * * *");
 
         simulateJobResult(
             1, blueprint.JOB_WORKFLOW_CREATE(), 500, operator1, encodeWorkflowCreateInputs(req), encodeJsonOutputs("{}")
         );
 
-        AgentSandboxBlueprint.WorkflowConfig memory config = blueprint.getWorkflow(500);
+        SandboxTypes.WorkflowConfig memory config = blueprint.getWorkflow(500);
         assertEq(config.name, "test-workflow");
         assertEq(config.trigger_type, "cron");
         assertTrue(config.active);
@@ -421,7 +422,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     function test_workflowCreateNormalizesZeroServiceId() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "zero-service",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -436,13 +437,13 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             1, blueprint.JOB_WORKFLOW_CREATE(), 501, operator1, encodeWorkflowCreateInputs(req), encodeJsonOutputs("{}")
         );
 
-        AgentSandboxBlueprint.WorkflowConfig memory config = blueprint.getWorkflow(501);
+        SandboxTypes.WorkflowConfig memory config = blueprint.getWorkflow(501);
         assertEq(config.target_service_id, 1);
         assertEq(config.target_sandbox_id, "sb-zero");
     }
 
     function test_workflowCreateRevertsOnMismatchedServiceId() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "bad-service",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -457,12 +458,12 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         simulateJobCall(1, workflowJobId, 503, encodeWorkflowCreateInputs(req));
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(0)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(0)));
         blueprint.onJobResult(1, workflowJobId, 503, operator1, encodeWorkflowCreateInputs(req), bytes(""));
     }
 
     function test_workflowCreateRevertsOnInstanceTargetKindInCloudMode() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "wrong-kind",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -477,14 +478,14 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         simulateJobCall(1, workflowJobId, 504, encodeWorkflowCreateInputs(req));
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(1)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(1)));
         blueprint.onJobResult(1, workflowJobId, 504, operator1, encodeWorkflowCreateInputs(req), bytes(""));
     }
 
     function test_workflowCreateRevertsOnInvalidTargetKind() public {
         uint8 workflowJobId = blueprint.JOB_WORKFLOW_CREATE();
 
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req2 = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req2 = SandboxTypes.WorkflowCreateRequest({
             name: "bad-kind-2",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -497,10 +498,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         simulateJobCall(1, workflowJobId, 505, encodeWorkflowCreateInputs(req2));
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(2)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(2)));
         blueprint.onJobResult(1, workflowJobId, 505, operator1, encodeWorkflowCreateInputs(req2), bytes(""));
 
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req255 = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req255 = SandboxTypes.WorkflowCreateRequest({
             name: "bad-kind-255",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -513,12 +514,12 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         simulateJobCall(1, workflowJobId, 506, encodeWorkflowCreateInputs(req255));
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.InvalidWorkflowTarget.selector, uint8(255)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(255)));
         blueprint.onJobResult(1, workflowJobId, 506, operator1, encodeWorkflowCreateInputs(req255), bytes(""));
     }
 
     function test_workflowCreateRevertsOnEmptySandboxId() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "empty-sandbox",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -533,15 +534,17 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         simulateJobCall(1, workflowJobId, 507, encodeWorkflowCreateInputs(req));
 
         vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.EmptySandboxId.selector);
+        vm.expectRevert(SandboxTypes.EmptySandboxId.selector);
         blueprint.onJobResult(1, workflowJobId, 507, operator1, encodeWorkflowCreateInputs(req), bytes(""));
     }
 
     function test_workflowCreateRevertsOnSandboxIdTooLong() public {
         bytes memory longId = new bytes(256);
-        for (uint256 i = 0; i < 256; i++) longId[i] = "a";
+        for (uint256 i = 0; i < 256; i++) {
+            longId[i] = "a";
+        }
 
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "long-sandbox",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -556,12 +559,12 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         simulateJobCall(1, workflowJobId, 508, encodeWorkflowCreateInputs(req));
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.SandboxIdTooLong.selector, uint256(256)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.SandboxIdTooLong.selector, uint256(256)));
         blueprint.onJobResult(1, workflowJobId, 508, operator1, encodeWorkflowCreateInputs(req), bytes(""));
     }
 
     function test_workflowCreateStoresRealisticJsonPayload() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "workflow-qa",
             workflow_json: '{"sidecar_url":"http://127.0.0.1:54746","prompt":"Reply with exactly WORKFLOW_QA_OK","session_id":"workflow-qa","max_turns":1,"timeout_ms":60000}',
             trigger_type: "cron",
@@ -581,7 +584,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             encodeJsonOutputs('{"status":"active","workflowId":502}')
         );
 
-        AgentSandboxBlueprint.WorkflowConfig memory config = blueprint.getWorkflow(502);
+        SandboxTypes.WorkflowConfig memory config = blueprint.getWorkflow(502);
         assertEq(config.name, "workflow-qa");
         assertEq(config.workflow_json, req.workflow_json);
         assertEq(config.trigger_config, "*/15 * * * * *");
@@ -589,7 +592,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     }
 
     function test_workflowTriggerUpdatesTimestamp() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "trigger-test",
             workflow_json: "{}",
             trigger_type: "manual",
@@ -605,22 +608,21 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         vm.warp(1000);
 
-        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl =
-            AgentSandboxBlueprint.WorkflowControlRequest({workflow_id: 510});
+        SandboxTypes.WorkflowControlRequest memory ctrl = SandboxTypes.WorkflowControlRequest({workflow_id: 510});
 
         vm.expectEmit(true, false, false, true);
-        emit AgentSandboxBlueprint.WorkflowTriggered(510, 1000);
+        emit SandboxTypes.WorkflowTriggered(510, 1000);
 
         simulateJobResult(
             1, blueprint.JOB_WORKFLOW_TRIGGER(), 511, operator1, abi.encode(ctrl), encodeJsonOutputs("{}")
         );
 
-        AgentSandboxBlueprint.WorkflowConfig memory config = blueprint.getWorkflow(510);
+        SandboxTypes.WorkflowConfig memory config = blueprint.getWorkflow(510);
         assertEq(config.last_triggered_at, 1000);
     }
 
     function test_workflowCancelDeactivates() public {
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "cancel-test",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -636,11 +638,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         assertTrue(blueprint.getWorkflow(520).active);
 
-        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl =
-            AgentSandboxBlueprint.WorkflowControlRequest({workflow_id: 520});
+        SandboxTypes.WorkflowControlRequest memory ctrl = SandboxTypes.WorkflowControlRequest({workflow_id: 520});
 
         vm.expectEmit(true, false, false, true);
-        emit AgentSandboxBlueprint.WorkflowCanceled(520, uint64(block.timestamp));
+        emit SandboxTypes.WorkflowCanceled(520, uint64(block.timestamp));
 
         simulateJobResult(1, blueprint.JOB_WORKFLOW_CANCEL(), 521, operator1, abi.encode(ctrl), encodeJsonOutputs("{}"));
 
@@ -659,7 +660,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         bytes32 dupHash = keccak256(bytes("sandbox-dup"));
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.SandboxAlreadyExists.selector, dupHash));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.SandboxAlreadyExists.selector, dupHash));
         blueprint.onJobResult(
             1, 0, 801, operator1, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs("sandbox-dup", "{}")
         );
@@ -773,7 +774,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         simulateJobCall(1, blueprint.JOB_SANDBOX_CREATE(), 900, encodeSandboxCreateInputs());
 
         vm.prank(tangleCore);
-        vm.expectRevert(AgentSandboxBlueprint.EmptySandboxId.selector);
+        vm.expectRevert(SandboxTypes.EmptySandboxId.selector);
         blueprint.onJobResult(1, 0, 900, operator1, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs("", "{}"));
     }
 
@@ -789,7 +790,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         string memory longId = string(longBytes);
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.SandboxIdTooLong.selector, 256));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.SandboxIdTooLong.selector, 256));
         blueprint.onJobResult(
             1, 0, 901, operator1, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs(longId, "{}")
         );
@@ -1006,7 +1007,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         // Reserve 2 IDs above workflowId for trigger/cancel callIds.
         vm.assume(workflowId <= type(uint64).max - 2);
 
-        AgentSandboxBlueprint.WorkflowCreateRequest memory req = AgentSandboxBlueprint.WorkflowCreateRequest({
+        SandboxTypes.WorkflowCreateRequest memory req = SandboxTypes.WorkflowCreateRequest({
             name: "fuzz-workflow",
             workflow_json: "{}",
             trigger_type: "cron",
@@ -1027,13 +1028,12 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             encodeJsonOutputs("{}")
         );
 
-        AgentSandboxBlueprint.WorkflowConfig memory config = blueprint.getWorkflow(workflowId);
+        SandboxTypes.WorkflowConfig memory config = blueprint.getWorkflow(workflowId);
         assertEq(config.name, "fuzz-workflow");
         assertTrue(config.active);
 
         // Trigger should also work with any uint64
-        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl =
-            AgentSandboxBlueprint.WorkflowControlRequest({workflow_id: workflowId});
+        SandboxTypes.WorkflowControlRequest memory ctrl = SandboxTypes.WorkflowControlRequest({workflow_id: workflowId});
         simulateJobResult(
             1, blueprint.JOB_WORKFLOW_TRIGGER(), workflowId + 1, operator1, abi.encode(ctrl), encodeJsonOutputs("{}")
         );
@@ -1063,11 +1063,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_markTriggeredRevertsForNonExistentWorkflow() public {
-        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl =
-            AgentSandboxBlueprint.WorkflowControlRequest({workflow_id: 99999});
+        SandboxTypes.WorkflowControlRequest memory ctrl = SandboxTypes.WorkflowControlRequest({workflow_id: 99999});
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.WorkflowNotFound.selector, uint64(99999)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.WorkflowNotFound.selector, uint64(99999)));
         blueprint.onJobResult(
             1,
             3,
@@ -1083,11 +1082,10 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_cancelWorkflowRevertsForNonExistentWorkflow() public {
-        AgentSandboxBlueprint.WorkflowControlRequest memory ctrl =
-            AgentSandboxBlueprint.WorkflowControlRequest({workflow_id: 88888});
+        SandboxTypes.WorkflowControlRequest memory ctrl = SandboxTypes.WorkflowControlRequest({workflow_id: 88888});
 
         vm.prank(tangleCore);
-        vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.WorkflowNotFound.selector, uint64(88888)));
+        vm.expectRevert(abi.encodeWithSelector(SandboxTypes.WorkflowNotFound.selector, uint64(88888)));
         blueprint.onJobResult(
             1,
             4,
@@ -1134,21 +1132,21 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertEq(blueprint.operatorActiveSandboxes(operator1), 1);
         assertEq(blueprint.totalActiveSandboxes(), 1);
 
-        // Force operatorActiveSandboxes[operator1] to 0 via vm.store.
-        // operatorActiveSandboxes is mapping(address => uint32) at base slot 6.
-        // Mapping slot = keccak256(abi.encode(key, baseSlot)).
-        bytes32 opActiveSlot = keccak256(abi.encode(operator1, uint256(6)));
+        // State now lives at the ERC-7201 namespaced slot — see
+        // `SandboxStorage.STORAGE_LOCATION`. Recompute offsets:
+        //   instanceMode + teeRequired (packed)   → base + 0
+        //   operatorMaxCapacity                   → base + 1
+        //   operatorActiveSandboxes               → base + 2
+        //   defaultMaxCapacity + totalActiveSandboxes (packed) → base + 3
+        bytes32 base = 0x7570a0aa20487165d9e428dadee7d2c71adbabed29ef953f043f08164618cb00;
+        bytes32 opActiveSlot = keccak256(abi.encode(operator1, uint256(base) + 2));
         vm.store(address(blueprint), opActiveSlot, bytes32(uint256(0)));
 
-        // Force totalActiveSandboxes to 0. It's a uint32 at slot 7, offset 4.
-        // Slot 7 is packed: [defaultMaxCapacity (uint32 @ offset 0), totalActiveSandboxes (uint32 @ offset 4)].
-        // Preserve defaultMaxCapacity (100) while zeroing totalActiveSandboxes.
-        bytes32 slot7 = vm.load(address(blueprint), bytes32(uint256(7)));
-        // Zero out bytes 4-7 (totalActiveSandboxes) while keeping bytes 0-3 (defaultMaxCapacity).
-        // In EVM storage, lower offsets are stored in lower-order bytes of the 32-byte word.
-        bytes32 mask = bytes32(uint256(0xFFFFFFFF)); // keep lowest 4 bytes (defaultMaxCapacity)
-        bytes32 newSlot7 = slot7 & mask;
-        vm.store(address(blueprint), bytes32(uint256(7)), newSlot7);
+        bytes32 packedSlot = bytes32(uint256(base) + 3);
+        bytes32 cur = vm.load(address(blueprint), packedSlot);
+        // Keep defaultMaxCapacity (lowest 4 bytes), zero totalActiveSandboxes.
+        bytes32 mask = bytes32(uint256(0xFFFFFFFF));
+        vm.store(address(blueprint), packedSlot, cur & mask);
 
         // Verify forced to 0
         assertEq(blueprint.operatorActiveSandboxes(operator1), 0);

@@ -4,7 +4,6 @@ pragma solidity ^0.8.26;
 import "./helpers/Setup.sol";
 
 contract OperatorSelectionTest is BlueprintTestSetup {
-
     function setUp() public override {
         super.setUp();
         // Configure operator selection bounds
@@ -65,11 +64,7 @@ contract OperatorSelectionTest is BlueprintTestSetup {
         registerOperator(operator1, 10);
 
         vm.expectRevert(
-            abi.encodeWithSelector(
-                OperatorSelectionBase.NotEnoughEligibleOperators.selector,
-                uint32(3),
-                uint32(1)
-            )
+            abi.encodeWithSelector(OperatorSelectionLib.NotEnoughEligibleOperators.selector, uint32(3), uint32(1))
         );
         blueprint.previewOperatorSelection(3, keccak256("test"));
     }

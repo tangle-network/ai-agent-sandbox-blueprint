@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "../../src/AgentSandboxBlueprint.sol";
+import "../../src/libraries/SandboxTypes.sol";
 
 /// @title MockMultiAssetDelegation
 /// @dev Minimal mock of IMultiAssetDelegation for testing operator selection and capacity.
@@ -129,7 +130,7 @@ contract BlueprintTestSetup is Test {
     }
 
     /// @dev Encode workflow create inputs in the same flat ABI shape the UI/operator submit.
-    function encodeWorkflowCreateInputs(AgentSandboxBlueprint.WorkflowCreateRequest memory request)
+    function encodeWorkflowCreateInputs(SandboxTypes.WorkflowCreateRequest memory request)
         internal
         pure
         returns (bytes memory)
