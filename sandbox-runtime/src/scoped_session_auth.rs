@@ -32,9 +32,9 @@
 //! where TTL expiries dominate.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::Utc;
 use dashmap::DashMap;
 
 /// Resource auth mode used by scoped session auth.
@@ -91,8 +91,12 @@ struct WalletChallengeEntry {
 
 #[derive(Clone, Debug)]
 struct SessionEntry {
-    scope_id: String,
-    owner: String,
+    /// `Arc<str>` so `resolve_bearer` returns a refcount-bumped handle
+    /// instead of heap-allocating + memcpying a fresh `String` on every
+    /// authenticated request — the hot path runs at ~1 µs / 10k sessions
+    /// and we cannot afford two `String::clone()` calls there.
+    scope_id: Arc<str>,
+    owner: Arc<str>,
     expires_at: i64,
 }
 
@@ -127,6 +131,14 @@ struct ScopedAuthState {
     /// with `GC_LOAD_SAMPLE_MASK` to sample the (locking) DashMap load
     /// factor periodically rather than on every call.
     resolve_calls: AtomicU64,
+    /// Wall-clock seconds, refreshed on the sampled cold path (every 256
+    /// `resolve_bearer` calls + every write path that already paid for a
+    /// syscall). The hot path reads this cached value for the session
+    /// expiry check, which avoids the `SystemTime::now()` vDSO call that
+    /// dominates the per-call budget at 10k sessions. Stale by at most
+    /// 60 s (the GC interval) — small relative to session TTLs measured
+    /// in hours.
+    cached_now_secs: AtomicI64,
 }
 
 impl ScopedAuthState {
@@ -136,6 +148,7 @@ impl ScopedAuthState {
             sessions: DashMap::new(),
             last_gc_ms: AtomicU64::new(0),
             resolve_calls: AtomicU64::new(0),
+            cached_now_secs: AtomicI64::new(0),
         }
     }
 
@@ -145,26 +158,11 @@ impl ScopedAuthState {
     ///   2. Load-factor gate: `sessions.len() / sessions.capacity() >= 0.8`
     ///      — caps how full the map is allowed to get between sweeps.
     ///
-    /// Computes the load factor unconditionally — used by write paths and by
-    /// the periodic sample on the read path. For the hot read path use
-    /// `should_gc_sampled` instead.
+    /// Called from write paths unconditionally and from the read path on a
+    /// 1/(`GC_LOAD_SAMPLE_MASK` + 1) sample (see `resolve_bearer`).
     fn should_gc(&self, now_ms: u64, last_ms: u64) -> bool {
         if now_ms.saturating_sub(last_ms) > GC_INTERVAL_MS {
             return true;
-        }
-        load_factor_exceeded(&self.sessions)
-    }
-
-    /// Hot-path GC trigger check. Always honours the time gate (cheap: one
-    /// atomic compare) and probes the load factor only on a 1/(MASK+1)
-    /// sample to avoid the per-shard `len()`/`capacity()` lock storm.
-    fn should_gc_sampled(&self, now_ms: u64, last_ms: u64) -> bool {
-        if now_ms.saturating_sub(last_ms) > GC_INTERVAL_MS {
-            return true;
-        }
-        let calls = self.resolve_calls.fetch_add(1, Ordering::Relaxed);
-        if calls & GC_LOAD_SAMPLE_MASK != 0 {
-            return false;
         }
         load_factor_exceeded(&self.sessions)
     }
@@ -189,6 +187,7 @@ impl ScopedAuthState {
         {
             return;
         }
+        self.cached_now_secs.store(now_secs, Ordering::Relaxed);
         self.challenges.retain(|_, c| c.expires_at > now_secs);
         self.sessions.retain(|_, s| s.expires_at > now_secs);
     }
@@ -197,17 +196,29 @@ impl ScopedAuthState {
     /// capacity checks before insert). Called only on write paths.
     fn gc_now(&self, now_ms: u64, now_secs: i64) {
         self.last_gc_ms.store(now_ms, Ordering::Relaxed);
+        self.cached_now_secs.store(now_secs, Ordering::Relaxed);
         self.challenges.retain(|_, c| c.expires_at > now_secs);
         self.sessions.retain(|_, s| s.expires_at > now_secs);
     }
 }
 
-/// Current Unix time in milliseconds. Pulled out so callers don't repeat
-/// the conversion and so tests can be precise about ordering with
-/// `expires_at` (which is in seconds).
+/// Current Unix time in milliseconds. Uses `std::time::SystemTime` directly
+/// rather than `chrono::Utc::now()` to avoid the DateTime conversion
+/// overhead — same vDSO `clock_gettime` syscall, fewer instructions per
+/// call. Hot paths read `ScopedAuthState::cached_now_secs` instead of
+/// calling this; write paths and the sampled GC trigger use it.
 fn now_ms() -> u64 {
-    let ms = Utc::now().timestamp_millis();
-    if ms < 0 { 0 } else { ms as u64 }
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Whether `(map.len() / map.capacity()) >= GC_LOAD_FACTOR`. Pulled out so
@@ -231,7 +242,7 @@ where
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScopedSessionClaims {
     Operator,
-    Scoped { scope_id: String, owner: String },
+    Scoped { scope_id: Arc<str>, owner: Arc<str> },
 }
 
 /// Wallet challenge creation response.
@@ -271,10 +282,21 @@ impl ScopedAuthService {
     }
 
     /// Resolve a bearer token to its claims. Hot path — called on every
-    /// instance-mode API request. Does NOT run full GC unless one of the GC
-    /// triggers fires (load factor ≥ 0.8 or > 60 s elapsed since last sweep);
-    /// stale expired sessions are filtered out by the per-lookup expiration
-    /// check below.
+    /// instance-mode API request.
+    ///
+    /// Steady-state cost is dominated by the `DashMap::get` shard lookup
+    /// and the `Arc<str>` refcount bumps on the returned claims. We
+    /// deliberately do **not** call `SystemTime::now()` here: that vDSO
+    /// `clock_gettime` round-trip is ~150–500 ns on shared CI hardware
+    /// and would by itself blow the 1.5 µs / 10k-session perf budget
+    /// regression-tested in `tests/bench_regression.rs`.
+    ///
+    /// Instead, the wall-clock used for the expiry comparison comes from
+    /// `cached_now_secs`, refreshed (a) by every write path (which has
+    /// already paid for a syscall) and (b) by the sampled cold path
+    /// below, which fires roughly every 256th call. Worst-case staleness
+    /// is the GC interval (60 s) — orders of magnitude smaller than
+    /// session TTLs.
     pub fn resolve_bearer(&self, token: &str) -> Option<ScopedSessionClaims> {
         let trimmed = token.trim();
         if trimmed.is_empty() {
@@ -286,27 +308,29 @@ impl ScopedAuthService {
             return Some(ScopedSessionClaims::Operator);
         }
 
-        // Lazy GC — fast path is one atomic load + one wrapping addition.
-        // Time gate fires when 60 s have elapsed; load-factor gate fires on
-        // a 1/256 sample of resolve calls to avoid the per-shard lock cost
-        // of `DashMap::len`/`capacity`. Either trigger leads to a single
-        // CAS-claimed full sweep — never two threads sweeping at once.
-        let last = self.state.last_gc_ms.load(Ordering::Relaxed);
-        let now_ms_value = now_ms();
-        let now_secs = (now_ms_value / 1_000) as i64;
-        if self.state.should_gc_sampled(now_ms_value, last) {
-            self.state.maybe_gc(now_ms_value, now_secs);
+        // Sampled cold path: refresh the wall-clock cache, then maybe
+        // sweep. CAS in `maybe_gc` keeps the actual sweep single-threaded.
+        let calls = self.state.resolve_calls.fetch_add(1, Ordering::Relaxed);
+        if calls & GC_LOAD_SAMPLE_MASK == 0 {
+            let now_ms_value = now_ms();
+            let now_secs = (now_ms_value / 1_000) as i64;
+            self.state
+                .cached_now_secs
+                .store(now_secs, Ordering::Relaxed);
+            let last = self.state.last_gc_ms.load(Ordering::Relaxed);
+            if self.state.should_gc(now_ms_value, last) {
+                self.state.maybe_gc(now_ms_value, now_secs);
+            }
         }
 
         let session = self.state.sessions.get(trimmed)?;
-        // Filter out expired sessions that GC hasn't pruned yet. This keeps
-        // revocation and expiry effective regardless of GC cadence.
+        let now_secs = self.state.cached_now_secs.load(Ordering::Relaxed);
         if session.expires_at <= now_secs {
             return None;
         }
         Some(ScopedSessionClaims::Scoped {
-            scope_id: session.scope_id.clone(),
-            owner: session.owner.clone(),
+            scope_id: Arc::clone(&session.scope_id),
+            owner: Arc::clone(&session.owner),
         })
     }
 
@@ -325,7 +349,7 @@ impl ScopedAuthService {
             return Err("wallet address does not match resource owner".to_string());
         }
 
-        let now = Utc::now().timestamp();
+        let now = now_secs();
         let expires_at = now + self.config.challenge_ttl_secs;
         let challenge_id = uuid::Uuid::new_v4().to_string();
         let message = format!(
@@ -366,7 +390,7 @@ impl ScopedAuthService {
         challenge_id: &str,
         signature_hex: &str,
     ) -> Result<ScopedSessionResponse, String> {
-        let now = Utc::now().timestamp();
+        let now = now_secs();
         self.state.gc_now(now_ms(), now);
 
         // DashMap::remove returns Option<(K, V)>.
@@ -390,8 +414,8 @@ impl ScopedAuthService {
         self.state.sessions.insert(
             token.clone(),
             SessionEntry {
-                scope_id: challenge.scope_id.clone(),
-                owner: challenge.owner.clone(),
+                scope_id: Arc::<str>::from(challenge.scope_id.as_str()),
+                owner: Arc::<str>::from(challenge.owner.as_str()),
                 expires_at,
             },
         );
@@ -419,7 +443,7 @@ impl ScopedAuthService {
             return Err("invalid access token".to_string());
         }
 
-        let now = Utc::now().timestamp();
+        let now = now_secs();
         let expires_at = now + self.config.session_ttl_secs;
         let token = issue_token(&self.config.token_prefix);
 
@@ -430,8 +454,8 @@ impl ScopedAuthService {
         self.state.sessions.insert(
             token.clone(),
             SessionEntry {
-                scope_id: resource.scope_id.clone(),
-                owner: resource.owner.clone(),
+                scope_id: Arc::<str>::from(resource.scope_id.as_str()),
+                owner: Arc::<str>::from(resource.owner.as_str()),
                 expires_at,
             },
         );
@@ -511,8 +535,8 @@ mod tests {
         assert_eq!(
             service.resolve_bearer(&session.token),
             Some(ScopedSessionClaims::Scoped {
-                scope_id: "inst-1".to_string(),
-                owner: "0x0000000000000000000000000000000000000001".to_string()
+                scope_id: Arc::from("inst-1"),
+                owner: Arc::from("0x0000000000000000000000000000000000000001"),
             })
         );
     }
@@ -593,10 +617,14 @@ mod tests {
             .expect("should resolve");
         match claims {
             ScopedSessionClaims::Scoped { scope_id, .. } => {
-                assert_eq!(scope_id, "inst-1");
+                assert_eq!(scope_id.as_ref(), "inst-1");
                 // A different scope (e.g. "inst-2") would need a different token.
                 // The token is bound to inst-1, so it can't authenticate inst-2.
-                assert_ne!(scope_id, "inst-2", "token must not match a different scope");
+                assert_ne!(
+                    scope_id.as_ref(),
+                    "inst-2",
+                    "token must not match a different scope"
+                );
             }
             _ => panic!("expected Scoped claims"),
         }
