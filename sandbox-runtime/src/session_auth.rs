@@ -311,10 +311,10 @@ pub fn validate_session_token(token: &str) -> Result<SessionClaims> {
     // First try server-side session store (faster)
     {
         let sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(claims) = sessions.get(token) {
-            if now_secs() <= claims.expires_at {
-                return Ok(claims.clone());
-            }
+        if let Some(claims) = sessions.get(token)
+            && now_secs() <= claims.expires_at
+        {
+            return Ok(claims.clone());
         }
     }
 

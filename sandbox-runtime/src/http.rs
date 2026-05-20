@@ -74,10 +74,10 @@ pub async fn sidecar_post_json(
 
     // Propagate the operator request ID to the sidecar so that sidecar logs
     // can be correlated with the originating operator API request.
-    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
-        if let Ok(val) = HeaderValue::from_str(&rid) {
-            headers.insert("x-request-id", val);
-        }
+    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone())
+        && let Ok(val) = HeaderValue::from_str(&rid)
+    {
+        headers.insert("x-request-id", val);
     }
 
     let (_, body) = send_json(Method::POST, url, Some(payload), headers).await?;
@@ -94,10 +94,10 @@ pub async fn sidecar_post_json_without_timeout(
     let url = build_url(sidecar_url, path)?;
     let mut headers = auth_headers(token)?;
 
-    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
-        if let Ok(val) = HeaderValue::from_str(&rid) {
-            headers.insert("x-request-id", val);
-        }
+    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone())
+        && let Ok(val) = HeaderValue::from_str(&rid)
+    {
+        headers.insert("x-request-id", val);
     }
 
     let client = http_client_no_timeout()?;
@@ -111,10 +111,10 @@ pub async fn sidecar_get_json(sidecar_url: &str, path: &str, token: &str) -> Res
     let url = build_url(sidecar_url, path)?;
     let mut headers = auth_headers(token)?;
 
-    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
-        if let Ok(val) = HeaderValue::from_str(&rid) {
-            headers.insert("x-request-id", val);
-        }
+    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone())
+        && let Ok(val) = HeaderValue::from_str(&rid)
+    {
+        headers.insert("x-request-id", val);
     }
 
     let (_, body) = send_json(Method::GET, url, None, headers).await?;
@@ -177,10 +177,10 @@ pub async fn proxy_http(
     }
 
     // Propagate request ID for tracing
-    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
-        if let Ok(val) = HeaderValue::from_str(&rid) {
-            request = request.header("x-request-id", val);
-        }
+    if let Ok(rid) = crate::operator_api::CURRENT_REQUEST_ID.try_with(|id| id.clone())
+        && let Ok(val) = HeaderValue::from_str(&rid)
+    {
+        request = request.header("x-request-id", val);
     }
 
     if !body.is_empty() {

@@ -84,10 +84,12 @@ sol! {
         /// Hex-encoded 32-64 byte caller nonce to embed in deploy-time attestation.
         string attestation_nonce;
         /// JSON array of sidecar capabilities to enable at boot.
-        /// Currently supported: ["computer_use"] — boots Xvfb + dbus + an MCP
-        /// server inside the sandbox so the Anthropic / OpenAI Responses
-        /// computer-use surfaces can drive mouse/keyboard/screenshots. Empty
-        /// or "" means no extra subsystems are started.
+        /// Currently supported: ["computer_use", "all_harness"].
+        /// "computer_use" boots Xvfb + dbus + an MCP server inside the sandbox
+        /// so computer-use surfaces can drive mouse/keyboard/screenshots.
+        /// "all_harness" requests the open-source multi-harness agent runtime
+        /// with Claude, Codex, opencode, Kimi, and Gemini available in the
+        /// sandbox image. Empty or "" means no extra subsystems are started.
         ///
         /// Wire format: a JSON-encoded array of strings, e.g.
         /// `["computer_use"]`. Encoded as a string (rather than `string[]`)

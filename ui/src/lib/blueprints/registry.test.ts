@@ -66,11 +66,11 @@ describe('Blueprint Registry', () => {
 // ── ABI Metadata Correctness ──
 
 describe('Blueprint ABI Metadata', () => {
-  it('sandbox create keeps 16 ABI-encoded fields', () => {
+  it('sandbox create keeps 18 ABI-encoded fields', () => {
     const job = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.SANDBOX_CREATE)!;
     const fieldsWithAbi = job.fields.filter((f) => f.abiType);
     // Non-ABI UI-only helper fields may exist (for metadata shaping).
-    expect(fieldsWithAbi.length).toBe(16);
+    expect(fieldsWithAbi.length).toBe(18);
     expect(job.fields.some((f) => f.name === 'runtimeBackend' && !f.abiType)).toBe(true);
   });
 

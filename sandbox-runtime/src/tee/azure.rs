@@ -112,10 +112,10 @@ impl AzureSkrBackend {
         // Check cache first.
         {
             let cache = self.token_cache.read().await;
-            if let Some(ref cached) = *cache {
-                if cached.expires_at > std::time::Instant::now() + Duration::from_secs(60) {
-                    return Ok(cached.token.clone());
-                }
+            if let Some(ref cached) = *cache
+                && cached.expires_at > std::time::Instant::now() + Duration::from_secs(60)
+            {
+                return Ok(cached.token.clone());
             }
         }
 

@@ -46,7 +46,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
   {
     // ABI: SandboxCreateRequest { name, image, stack, agent_identifier, env_json, metadata_json,
     //   ssh_enabled, ssh_public_key, web_terminal_enabled, max_lifetime_seconds, idle_timeout_seconds,
-    //   cpu_cores, memory_mb, disk_gb, tee_required, tee_type }
+    //   cpu_cores, memory_mb, disk_gb, tee_required, tee_type, attestation_nonce, capabilities_json }
     id: JOB_IDS.SANDBOX_CREATE,
     name: 'sandbox_create',
     label: 'Create Sandbox',
@@ -82,6 +82,8 @@ const SANDBOX_JOBS: JobDefinition[] = [
       { name: 'diskGb', label: 'Disk (GB)', type: 'number', defaultValue: 10, min: 1, max: 100, helperText: '10 GB typical for dev, 50+ for large models', abiType: 'uint64', abiParam: 'disk_gb' },
       { name: 'teeRequired', label: 'TEE Required', type: 'boolean', defaultValue: false, abiType: 'bool', abiParam: 'tee_required' },
       { name: 'teeType', label: 'TEE Type', type: 'select', defaultValue: '0', abiType: 'uint8', abiParam: 'tee_type', options: TEE_TYPE_OPTIONS },
+      { name: 'attestationNonce', label: 'Attestation Nonce', type: 'text', defaultValue: '', abiType: 'string', abiParam: 'attestation_nonce', internal: true },
+      { name: 'capabilitiesJson', label: 'Capabilities (JSON)', type: 'json', placeholder: '[]', defaultValue: '[]', abiType: 'string', abiParam: 'capabilities_json', internal: true },
     ],
   },
   {

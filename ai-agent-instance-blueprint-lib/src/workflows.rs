@@ -454,10 +454,10 @@ fn merge_local_workflow_metadata(
         return Ok(());
     }
 
-    if entry.owner.is_empty() {
-        if let Some(owner) = resolve_workflow_owner(entry)? {
-            entry.owner = owner;
-        }
+    if entry.owner.is_empty()
+        && let Some(owner) = resolve_workflow_owner(entry)?
+    {
+        entry.owner = owner;
     }
 
     Ok(())

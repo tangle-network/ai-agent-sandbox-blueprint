@@ -11,7 +11,7 @@ billing = ["dep:reqwest"]
 
 [dependencies]
 sandbox-runtime = { path = "../sandbox-runtime" }
-blueprint-sdk = { version = "0.2.0-alpha.5", default-features = false, features = ["std", "tracing", "macros", "tangle", "local-store"] }
+blueprint-sdk = { version = "=0.2.0-alpha.6", default-features = false, features = ["std", "tracing", "macros", "tangle", "local-store"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 cron = "0.15"
 once_cell = "1"
@@ -26,7 +26,7 @@ url = "2"
 anyhow = "1"
 axum = "0.8"
 sandbox-runtime = { path = "../sandbox-runtime", features = ["test-utils"] }
-blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", branch = "main" }
+blueprint-anvil-testing-utils = { version = "=0.2.0-alpha.6" }
 hex = "0.4"
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
 futures-util = "0.3"

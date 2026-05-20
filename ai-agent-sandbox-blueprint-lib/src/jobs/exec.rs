@@ -55,10 +55,10 @@ pub fn build_exec_payload(
     if timeout_ms > 0 {
         payload.insert("timeout".to_string(), json!(timeout_ms));
     }
-    if !env_json.trim().is_empty() {
-        if let Ok(Some(env_map)) = crate::util::parse_json_object(env_json, "env_json") {
-            payload.insert("env".to_string(), env_map);
-        }
+    if !env_json.trim().is_empty()
+        && let Ok(Some(env_map)) = crate::util::parse_json_object(env_json, "env_json")
+    {
+        payload.insert("env".to_string(), env_map);
     }
     payload
 }
@@ -147,12 +147,11 @@ pub fn build_agent_payload(
     if !model.is_empty() {
         backend.insert("model".to_string(), Value::String(model.to_string()));
     }
-    if let Some(profile) = backend_profile {
-        if let Some(obj) = profile.as_object() {
-            if !obj.is_empty() {
-                backend.insert("profile".to_string(), profile.clone());
-            }
-        }
+    if let Some(profile) = backend_profile
+        && let Some(obj) = profile.as_object()
+        && !obj.is_empty()
+    {
+        backend.insert("profile".to_string(), profile.clone());
     }
     if !backend.is_empty() {
         payload.insert("backend".to_string(), Value::Object(backend));

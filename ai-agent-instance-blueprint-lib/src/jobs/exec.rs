@@ -28,10 +28,10 @@ pub fn build_exec_payload(
     if timeout_ms > 0 {
         payload.insert("timeout".to_string(), json!(timeout_ms));
     }
-    if !env_json.trim().is_empty() {
-        if let Ok(Some(env_map)) = crate::util::parse_json_object(env_json, "env_json") {
-            payload.insert("env".to_string(), env_map);
-        }
+    if !env_json.trim().is_empty()
+        && let Ok(Some(env_map)) = crate::util::parse_json_object(env_json, "env_json")
+    {
+        payload.insert("env".to_string(), env_map);
     }
     payload
 }

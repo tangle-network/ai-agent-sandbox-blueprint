@@ -230,15 +230,15 @@ async fn reuse_existing_instance_record(
         record.id
     );
 
-    if let Some(client) = report_client {
-        if let Err(err) = ensure_local_provision_reported(client, service_id, &record).await {
-            warn!(
-                service_id = service_id,
-                error = %err,
-                sandbox_id = %record.id,
-                "Auto-provision: reconcile report failed; pending report will be retried"
-            );
-        }
+    if let Some(client) = report_client
+        && let Err(err) = ensure_local_provision_reported(client, service_id, &record).await
+    {
+        warn!(
+            service_id = service_id,
+            error = %err,
+            sandbox_id = %record.id,
+            "Auto-provision: reconcile report failed; pending report will be retried"
+        );
     }
 
     Ok(())
@@ -396,16 +396,16 @@ pub async fn run_auto_provision(
     set_instance_sandbox(record.clone()).map_err(|e| e.to_string())?;
     sync_runtime_service_binding(&record)?;
 
-    if let Some(client) = report_client.as_ref() {
-        if let Err(err) = report_local_provision(client, config.service_id, &output).await {
-            warn!(
-                service_id = config.service_id,
-                error = %err,
-                sandbox_id = %output.sandbox_id,
-                "Auto-provision: direct report failed; queued pending report for retry"
-            );
-            mark_pending_provision_report(config.service_id, &output, &err)?;
-        }
+    if let Some(client) = report_client.as_ref()
+        && let Err(err) = report_local_provision(client, config.service_id, &output).await
+    {
+        warn!(
+            service_id = config.service_id,
+            error = %err,
+            sandbox_id = %output.sandbox_id,
+            "Auto-provision: direct report failed; queued pending report for retry"
+        );
+        mark_pending_provision_report(config.service_id, &output, &err)?;
     }
 
     info!(
