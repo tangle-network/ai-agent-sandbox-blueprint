@@ -59,10 +59,10 @@ fn tee_provision_request() -> ProvisionRequest {
 /// Clean both instance store and runtime sandboxes store for the given ID.
 fn cleanup(sandbox_id: Option<&str>) {
     let _ = clear_instance_sandbox();
-    if let Some(id) = sandbox_id {
-        if let Ok(store) = runtime::sandboxes() {
-            let _ = store.remove(id);
-        }
+    if let Some(id) = sandbox_id
+        && let Ok(store) = runtime::sandboxes()
+    {
+        let _ = store.remove(id);
     }
 }
 

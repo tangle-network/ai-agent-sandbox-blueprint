@@ -67,7 +67,7 @@ pub use tee::{
     init_tee_backend, tee_backend,
 };
 
-pub const DEFAULT_SIDECAR_IMAGE: &str = "ghcr.io/tangle-network/sidecar:latest";
+pub const DEFAULT_SIDECAR_IMAGE: &str = "ghcr.io/tangle-network/blueprint-sidecar:all-harness";
 pub const DEFAULT_SIDECAR_HTTP_PORT: u16 = 8080;
 pub const DEFAULT_SIDECAR_SSH_PORT: u16 = 22;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;

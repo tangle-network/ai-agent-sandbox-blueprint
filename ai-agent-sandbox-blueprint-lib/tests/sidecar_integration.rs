@@ -430,9 +430,17 @@ mod util_tests {
 
     #[test]
     fn merge_metadata_adds_image() {
-        let result = merge_metadata(None, "agent-dev", "").unwrap();
+        let result = merge_metadata(
+            None,
+            "ghcr.io/tangle-network/blueprint-sidecar:all-harness",
+            "",
+        )
+        .unwrap();
         let obj = result.unwrap();
-        assert_eq!(obj["image"], "agent-dev");
+        assert_eq!(
+            obj["image"],
+            "ghcr.io/tangle-network/blueprint-sidecar:all-harness"
+        );
     }
 
     #[test]

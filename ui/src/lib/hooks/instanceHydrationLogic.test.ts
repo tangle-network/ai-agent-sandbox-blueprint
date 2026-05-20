@@ -7,7 +7,7 @@ function makeInstance(overrides: Partial<LocalInstance> = {}): LocalInstance {
   return {
     id: 'draft-instance',
     name: 'draft-instance',
-    image: 'agent-dev',
+    image: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
     cpuCores: 2,
     memoryMb: 2048,
     diskGb: 10,
@@ -25,7 +25,7 @@ function makeApiSandbox(overrides: Partial<ApiSandbox> = {}): ApiSandbox {
     name: 'draft-instance',
     sidecar_url: 'http://127.0.0.1:9202',
     state: 'running',
-    image: 'agent-dev',
+    image: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
     cpu_cores: 2,
     memory_mb: 2048,
     disk_gb: 10,

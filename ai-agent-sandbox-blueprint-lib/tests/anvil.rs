@@ -193,8 +193,8 @@ fn setup_log() {
 /// Set up environment for the sidecar runtime config.
 /// Must be called before the first SidecarRuntimeConfig::load().
 fn setup_sidecar_env() {
-    let image =
-        std::env::var("SIDECAR_IMAGE").unwrap_or_else(|_| "tangle-sidecar:local".to_string());
+    let image = std::env::var("SIDECAR_IMAGE")
+        .unwrap_or_else(|_| "blueprint-sidecar:all-harness".to_string());
     unsafe {
         std::env::set_var("SIDECAR_IMAGE", &image);
         std::env::set_var("SIDECAR_PULL_IMAGE", "false");
@@ -220,7 +220,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
 
         let create_payload = SandboxCreateRequest {
             name: "agent-sandbox".to_string(),
-            image: "agent-dev".to_string(),
+            image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
             stack: "default".to_string(),
             agent_identifier: "default-agent".to_string(),
             env_json: "{}".to_string(),
@@ -283,10 +283,10 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
                 if tokio::time::Instant::now() > api_deadline {
                     anyhow::bail!("Operator API not ready within 5s");
                 }
-                if let Ok(r) = api_client.get(format!("{api_url}/api/provisions")).send().await {
-                    if r.status().is_success() {
-                        break;
-                    }
+                if let Ok(r) = api_client.get(format!("{api_url}/api/provisions")).send().await
+                    && r.status().is_success()
+                {
+                    break;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -381,11 +381,11 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
                     "Sidecar not healthy within 60s at {sidecar_url}"
                 );
             }
-            if let Ok(resp) = client.get(format!("{sidecar_url}/health")).send().await {
-                if resp.status().is_success() {
-                    eprintln!("Sidecar healthy at {sidecar_url}");
-                    break;
-                }
+            if let Ok(resp) = client.get(format!("{sidecar_url}/health")).send().await
+                && resp.status().is_success()
+            {
+                eprintln!("Sidecar healthy at {sidecar_url}");
+                break;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }

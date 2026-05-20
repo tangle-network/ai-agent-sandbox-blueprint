@@ -33,10 +33,8 @@ export const RUNTIME_BACKEND_OPTIONS = [
 ];
 
 export const SIDECAR_IMAGE_OPTIONS = [
-  { label: 'Local: agent-dev:latest', value: BUNDLED_SANDBOX_IMAGE_VALUES[0] },
-  { label: 'Local: agent-dev', value: BUNDLED_SANDBOX_IMAGE_VALUES[1] },
-  { label: 'Local: tangle-sidecar:local', value: BUNDLED_SANDBOX_IMAGE_VALUES[2] },
-  { label: 'Registry: ghcr.io/tangle-network/sidecar:latest', value: BUNDLED_SANDBOX_IMAGE_VALUES[3] },
+  { label: 'Registry: blueprint-sidecar all-harness', value: BUNDLED_SANDBOX_IMAGE_VALUES[0] },
+  { label: 'Local: blueprint-sidecar:all-harness', value: BUNDLED_SANDBOX_IMAGE_VALUES[1] },
 ];
 
 // ── Jobs ──
@@ -57,7 +55,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
     requiresSandbox: false,
     fields: [
       { name: 'name', label: 'Sandbox Name', type: 'text', placeholder: 'my-agent-sandbox', required: true, abiType: 'string' },
-      { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'agent-dev:latest', required: true, defaultValue: 'agent-dev:latest', abiType: 'string',
+      { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', required: true, defaultValue: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', abiType: 'string',
         options: SIDECAR_IMAGE_OPTIONS,
         helperText: 'Use a sidecar-compatible image that already runs the sandbox server on port 8080. Plain base images like ubuntu:22.04 will not work here.' },
       { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: RUNTIME_BACKEND_OPTIONS,

@@ -119,6 +119,8 @@ Sandbox and instance provisioning accept `capabilities_json`, a JSON-encoded str
 
 The runtime injects accepted values into the sandbox as `SIDECAR_CAPABILITIES`, preserving the same contract surface for Docker, Firecracker, and TEE-backed creation. The UI exposes `all_harness` as an explicit create/provision option while keeping the ABI field itself internal.
 
+The default sidecar image is now `ghcr.io/tangle-network/blueprint-sidecar:all-harness`, built from `sidecar/Dockerfile.all-harness`. That image owns the harness installation layer in this repo instead of relying on an opaque external image to contain every CLI.
+
 ### Instance Lifecycle Semantics
 
 - Canonical path is operator-signed direct reporting:

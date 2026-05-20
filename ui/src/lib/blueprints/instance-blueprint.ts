@@ -36,7 +36,7 @@ export function createInstanceJobs(opts?: {
       requiresSandbox: false,
       fields: [
         { name: 'name', label: 'Instance Name', type: 'text', placeholder: 'my-agent-instance', required: true, abiType: 'string' },
-        { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'agent-dev:latest', required: true, defaultValue: 'agent-dev:latest', abiType: 'string',
+        { name: 'image', label: 'Docker Image', type: 'combobox', placeholder: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', required: true, defaultValue: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', abiType: 'string',
           options: SIDECAR_IMAGE_OPTIONS,
           helperText: 'Use a sidecar-compatible image that already runs the sandbox server on port 8080.' },
         { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: RUNTIME_BACKEND_OPTIONS,

@@ -6,10 +6,8 @@ export interface AgentOption {
 export const BUNDLED_NO_AGENT_VALUE = '__none__';
 
 export const BUNDLED_SANDBOX_IMAGE_VALUES = [
-  'agent-dev:latest',
-  'agent-dev',
-  'tangle-sidecar:local',
-  'ghcr.io/tangle-network/sidecar:latest',
+  'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
+  'blueprint-sidecar:all-harness',
 ] as const;
 
 export const BUNDLED_AGENT_OPTIONS: AgentOption[] = [

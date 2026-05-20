@@ -103,13 +103,9 @@ pub struct CreateSandboxParams {
 /// Parse the `capabilities_json` field into the comma-separated wire
 /// format the sidecar's `SIDECAR_CAPABILITIES` parser expects.
 ///
-/// Mirrors the parser in
-/// `apps/orchestrator/src/orchestrator/sidecar-capabilities.ts` (the
-/// adjacent agent-dev-container repo) so both wire formats stay in
-/// lockstep — JSON array on input, comma-separated list on the env
-/// var, and unknown entries dropped silently. Returns `None` when
-/// nothing recognizable is present so callers can skip the env-var
-/// injection entirely.
+/// JSON array on input, comma-separated list on the env var, and unknown
+/// entries dropped silently. Returns `None` when nothing recognizable is
+/// present so callers can skip the env-var injection entirely.
 pub(crate) fn parse_sidecar_capabilities(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

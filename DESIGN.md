@@ -478,7 +478,7 @@ struct SshRevokeRequest {
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SIDECAR_IMAGE` | `ghcr.io/tangle-network/sidecar:latest` | Docker image for sidecar containers |
+| `SIDECAR_IMAGE` | `ghcr.io/tangle-network/blueprint-sidecar:all-harness` | Blueprint-owned all-harness sidecar image |
 | `SIDECAR_PUBLIC_HOST` | `127.0.0.1` | Hostname for constructing sidecar URLs |
 | `SIDECAR_HTTP_PORT` | `8080` | Container-internal HTTP port |
 | `SIDECAR_SSH_PORT` | `22` | Container-internal SSH port |

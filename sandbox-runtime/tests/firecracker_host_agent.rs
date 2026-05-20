@@ -244,7 +244,7 @@ async fn firecracker_backend_lifecycle_flows_through_host_agent() {
 
     let params = CreateSandboxParams {
         name: "firecracker-test".to_string(),
-        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
         metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
         owner: "0xabc123".to_string(),
         cpu_cores: 1,
@@ -359,7 +359,7 @@ async fn test_firecracker_create_accepts_and_persists_port_mappings() {
     // forwarding is the next phase).
     let params = CreateSandboxParams {
         name: "firecracker-port-test".to_string(),
-        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
         metadata_json: r#"{"runtime_backend":"firecracker","ports":[{"container_port":3000,"host_port":30000,"protocol":"tcp"}]}"#.to_string(),
         owner: "0xabc456".to_string(),
         cpu_cores: 1,
@@ -412,7 +412,7 @@ async fn test_firecracker_create_rejects_malformed_port_mappings() {
     // Out-of-range container_port (> 65535) must fail fast.
     let bad = CreateSandboxParams {
         name: "firecracker-port-bad".to_string(),
-        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
         metadata_json: r#"{"runtime_backend":"firecracker","ports":[{"container_port":99999,"host_port":30000,"protocol":"tcp"}]}"#.to_string(),
         owner: "0xabc789".to_string(),
         cpu_cores: 1,
@@ -491,7 +491,7 @@ async fn test_firecracker_metadata_persists_runtime_backend() {
 
     let params = CreateSandboxParams {
         name: "firecracker-metadata-test".to_string(),
-        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
         metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
         owner: "0xmeta123".to_string(),
         cpu_cores: 1,
@@ -578,7 +578,7 @@ async fn test_firecracker_stop_idempotent() {
 
     let params = CreateSandboxParams {
         name: "firecracker-idempotent-stop".to_string(),
-        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
         metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
         owner: "0xstop123".to_string(),
         cpu_cores: 1,
@@ -638,7 +638,7 @@ async fn test_firecracker_create_without_host_agent_url_fails() {
 
     let params = CreateSandboxParams {
         name: "firecracker-no-url".to_string(),
-        image: "ghcr.io/tangle-network/sidecar:latest".to_string(),
+        image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
         metadata_json: r#"{"runtime_backend":"firecracker"}"#.to_string(),
         owner: "0xnourl123".to_string(),
         cpu_cores: 1,

@@ -29,10 +29,8 @@ const {
 }));
 
 const SIDECAR_IMAGE_OPTIONS = [
-  { label: 'Local: agent-dev:latest', value: 'agent-dev:latest' },
-  { label: 'Local: agent-dev', value: 'agent-dev' },
-  { label: 'Local: tangle-sidecar:local', value: 'tangle-sidecar:local' },
-  { label: 'Registry: ghcr.io/tangle-network/sidecar:latest', value: 'ghcr.io/tangle-network/sidecar:latest' },
+  { label: 'Registry: blueprint-sidecar all-harness', value: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness' },
+  { label: 'Local: blueprint-sidecar:all-harness', value: 'blueprint-sidecar:all-harness' },
 ];
 
 const PRESET_BLUEPRINTS = {
@@ -53,7 +51,7 @@ const PRESET_BLUEPRINTS = {
         requiresSandbox: false,
         fields: [
           { name: 'name', label: 'Sandbox Name', type: 'text', required: true },
-          { name: 'image', label: 'Docker Image', type: 'combobox', defaultValue: 'agent-dev:latest', options: SIDECAR_IMAGE_OPTIONS },
+          { name: 'image', label: 'Docker Image', type: 'combobox', defaultValue: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', options: SIDECAR_IMAGE_OPTIONS },
           { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: [{ label: 'Docker', value: 'docker' }] },
           { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', options: [{ label: 'Default', value: 'default' }] },
           { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', internal: true },
@@ -90,7 +88,7 @@ const PRESET_BLUEPRINTS = {
         requiresSandbox: false,
         fields: [
           { name: 'name', label: 'Instance Name', type: 'text', required: true },
-          { name: 'image', label: 'Docker Image', type: 'combobox', defaultValue: 'agent-dev:latest', options: SIDECAR_IMAGE_OPTIONS },
+          { name: 'image', label: 'Docker Image', type: 'combobox', defaultValue: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', options: SIDECAR_IMAGE_OPTIONS },
           { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: [{ label: 'Docker', value: 'docker' }] },
           { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', options: [{ label: 'Default', value: 'default' }] },
           { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', internal: true },
@@ -136,7 +134,7 @@ const PRESET_BLUEPRINTS = {
         requiresSandbox: false,
         fields: [
           { name: 'name', label: 'Instance Name', type: 'text', required: true },
-          { name: 'image', label: 'Docker Image', type: 'combobox', defaultValue: 'agent-dev:latest', options: SIDECAR_IMAGE_OPTIONS },
+          { name: 'image', label: 'Docker Image', type: 'combobox', defaultValue: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', options: SIDECAR_IMAGE_OPTIONS },
           { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: [{ label: 'Docker', value: 'docker' }] },
           { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', options: [{ label: 'Default', value: 'default' }] },
           { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', internal: true },

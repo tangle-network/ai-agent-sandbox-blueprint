@@ -215,7 +215,7 @@ function makeSandbox(overrides: Partial<Record<string, unknown>> = {}) {
     localId: 'draft:sandbox-1',
     sandboxId: 'sandbox-1',
     name: 'Snapshot Sandbox',
-    image: 'tangle-sidecar:local',
+    image: 'blueprint-sidecar:all-harness',
     cpuCores: 2,
     memoryMb: 2048,
     diskGb: 10,

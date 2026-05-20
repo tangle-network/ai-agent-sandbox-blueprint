@@ -16,7 +16,7 @@
 //!
 //! Requires:
 //!   - Docker (for sidecar containers)
-//!   - tangle-sidecar:local image (or set SIDECAR_IMAGE)
+//!   - blueprint-sidecar:all-harness image (or set SIDECAR_IMAGE)
 //!   - TNT core artifacts (run scripts/fetch-localtestnet-fixtures.sh)
 
 use ai_agent_sandbox_blueprint_lib::{
@@ -123,7 +123,7 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         e2e_step!(2, "Submitting JOB_SANDBOX_CREATE via Tangle...");
         let create_payload = SandboxCreateRequest {
             name: "e2e-sandbox".to_string(),
-            image: "agent-dev".to_string(),
+            image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
             stack: "default".to_string(),
             agent_identifier: "default-agent".to_string(),
             env_json: "{}".to_string(),
@@ -817,7 +817,7 @@ async fn workflow_create_and_cancel() -> Result<()> {
         e2e_step!(2, "Submitting JOB_SANDBOX_CREATE for workflow target...");
         let sandbox_payload = SandboxCreateRequest {
             name: "workflow-target".to_string(),
-            image: "agent-dev".to_string(),
+            image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
             stack: "default".to_string(),
             agent_identifier: "default-agent".to_string(),
             env_json: "{}".to_string(),

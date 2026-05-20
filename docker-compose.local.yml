@@ -39,7 +39,7 @@ services:
       BLUEPRINT_ID: "0"
       SERVICE_ID: "0"
       OPERATOR_API_PORT: "9090"
-      SIDECAR_IMAGE: tangle-sidecar:local
+      SIDECAR_IMAGE: ghcr.io/tangle-network/blueprint-sidecar:all-harness
       SIDECAR_PULL_IMAGE: "false"
       SIDECAR_PUBLIC_HOST: "host.docker.internal"
       REQUEST_TIMEOUT_SECS: "60"

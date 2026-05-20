@@ -13,7 +13,7 @@
 //! Requires:
 //!   - Docker running
 //!   - MinIO on localhost:9100 (via docker-compose.test.yml)
-//!   - Sidecar image available (default: tangle-sidecar:local, override: SIDECAR_IMAGE)
+//!   - Sidecar image available (default: blueprint-sidecar:all-harness, override: SIDECAR_IMAGE)
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -67,7 +67,7 @@ macro_rules! skip_unless_snapshot {
 // ---------------------------------------------------------------------------
 
 fn sidecar_image() -> String {
-    std::env::var("SIDECAR_IMAGE").unwrap_or_else(|_| "tangle-sidecar:local".to_string())
+    std::env::var("SIDECAR_IMAGE").unwrap_or_else(|_| "blueprint-sidecar:all-harness".to_string())
 }
 
 fn http() -> Client {

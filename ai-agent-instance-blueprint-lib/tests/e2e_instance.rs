@@ -16,7 +16,7 @@
 //!
 //! Requires:
 //!   - Docker (for sidecar containers)
-//!   - tangle-sidecar:local image (or set SIDECAR_IMAGE)
+//!   - blueprint-sidecar:all-harness image (or set SIDECAR_IMAGE)
 //!   - TNT core artifacts (run scripts/fetch-localtestnet-fixtures.sh)
 
 use ai_agent_instance_blueprint_lib::{
@@ -106,7 +106,7 @@ async fn instance_full_lifecycle() -> Result<()> {
         e2e_step!(2, "Provisioning local instance runtime...");
         let provision_payload = ProvisionRequest {
             name: "e2e-instance".to_string(),
-            image: "agent-dev".to_string(),
+            image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
             stack: "default".to_string(),
             agent_identifier: "default-agent".to_string(),
             env_json: "{}".to_string(),

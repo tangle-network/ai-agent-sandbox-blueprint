@@ -14,7 +14,7 @@
 //! Run (with AI backend):
 //!   REAL_SIDECAR=1 ZAI_API_KEY=<key> cargo test -p ai-agent-instance-blueprint-lib --test real_sidecar -- --test-threads=1
 //!
-//! Requires Docker and a local sidecar image (default: tangle-sidecar:local).
+//! Requires Docker and a local sidecar image (default: blueprint-sidecar:all-harness).
 //! Override with SIDECAR_IMAGE env var.
 
 use std::collections::HashMap;
@@ -103,7 +103,7 @@ async fn ensure_sidecar() -> &'static TestSidecar {
             }
 
             let image = std::env::var("SIDECAR_IMAGE")
-                .unwrap_or_else(|_| "tangle-sidecar:local".to_string());
+                .unwrap_or_else(|_| "blueprint-sidecar:all-harness".to_string());
 
             let builder = docker_builder().await;
 
@@ -140,13 +140,13 @@ async fn ensure_sidecar() -> &'static TestSidecar {
             ];
 
             // Configure ZAI AI backend when API key is available.
-            if let Ok(api_key) = std::env::var("ZAI_API_KEY") {
-                if !api_key.is_empty() {
-                    env_vars.push("AGENT_BACKEND=opencode".to_string());
-                    env_vars.push("OPENCODE_MODEL_PROVIDER=zai-coding-plan".to_string());
-                    env_vars.push(format!("OPENCODE_MODEL_API_KEY={api_key}"));
-                    env_vars.push("OPENCODE_MODEL_NAME=glm-4.7".to_string());
-                }
+            if let Ok(api_key) = std::env::var("ZAI_API_KEY")
+                && !api_key.is_empty()
+            {
+                env_vars.push("AGENT_BACKEND=opencode".to_string());
+                env_vars.push("OPENCODE_MODEL_PROVIDER=zai-coding-plan".to_string());
+                env_vars.push(format!("OPENCODE_MODEL_API_KEY={api_key}"));
+                env_vars.push("OPENCODE_MODEL_NAME=glm-4.7".to_string());
             }
 
             let override_config = BollardConfig {

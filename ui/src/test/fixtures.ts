@@ -111,7 +111,7 @@ export const JSON_REQUEST_ABI: AbiParamDef[] = [
 /** Sandbox create form values matching all 16 fields */
 export const SANDBOX_CREATE_VALUES: Record<string, unknown> = {
   name: 'test-sandbox',
-  image: 'agent-dev:latest',
+  image: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
   stack: 'default',
   agentIdentifier: 'agent-1',
   envJson: '{"KEY":"val"}',
@@ -140,7 +140,7 @@ export const WORKFLOW_CREATE_VALUES: Record<string, unknown> = {
   workflowJson: '{"steps":[]}',
   triggerType: 'cron',
   triggerConfig: '0 */6 * * *',
-  sandboxConfigJson: '{"image":"agent-dev:latest"}',
+  sandboxConfigJson: '{"image":"ghcr.io/tangle-network/blueprint-sidecar:all-harness"}',
   targetKind: '0',
   targetSandboxId: 'sb-test-001',
   targetServiceId: 1,

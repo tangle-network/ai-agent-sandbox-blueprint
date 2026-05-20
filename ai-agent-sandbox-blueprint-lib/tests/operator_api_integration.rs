@@ -7,7 +7,7 @@
 //! Run:
 //!   REAL_SIDECAR=1 cargo test --test operator_api_integration -- --test-threads=1
 //!
-//! Requires Docker and a local sidecar image (default: tangle-sidecar:local).
+//! Requires Docker and a local sidecar image (default: blueprint-sidecar:all-harness).
 
 use std::collections::HashMap;
 use std::net::TcpListener;
@@ -91,7 +91,7 @@ async fn ensure_sidecar() -> &'static TestSidecar {
             }
 
             let image = std::env::var("SIDECAR_IMAGE")
-                .unwrap_or_else(|_| "tangle-sidecar:local".to_string());
+                .unwrap_or_else(|_| "blueprint-sidecar:all-harness".to_string());
 
             let builder = docker_builder().await;
 
