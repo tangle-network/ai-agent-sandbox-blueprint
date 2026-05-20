@@ -37,7 +37,7 @@ The blueprint family ships three operator variants:
 |---|---|
 | `OPERATOR_API_PORT` | Port the operator API binds to (default `9100`) |
 | `PUBLIC_HOST` | Externally-reachable hostname (operators behind NAT/VPN should set explicitly; auto-detect via Tailscale IPv4 with `AUTO_DETECT_PUBLIC_HOST=1`) |
-| `SIDECAR_IMAGE` | Container image used for sandboxes (default `tangle-sidecar:local` for dev) |
+| `SIDECAR_IMAGE` | Container image used for sandboxes (default `blueprint-sidecar:all-harness` for dev) |
 
 ### Firecracker (microVM) backend
 

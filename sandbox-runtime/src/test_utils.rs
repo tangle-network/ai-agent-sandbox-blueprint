@@ -262,8 +262,8 @@ pub async fn get_auth_token(api_url: &str, key_hex: &str) -> Result<(String, Str
 /// Sets `SIDECAR_IMAGE`, `SIDECAR_PULL_IMAGE`, `SIDECAR_PUBLIC_HOST`,
 /// `REQUEST_TIMEOUT_SECS`, `SESSION_AUTH_SECRET`, and `BLUEPRINT_STATE_DIR`.
 pub fn setup_sidecar_env() {
-    let image =
-        std::env::var("SIDECAR_IMAGE").unwrap_or_else(|_| "tangle-sidecar:local".to_string());
+    let image = std::env::var("SIDECAR_IMAGE")
+        .unwrap_or_else(|_| "blueprint-sidecar:all-harness".to_string());
     let state_dir = std::env::temp_dir().join(format!(
         "e2e-state-{}-{}",
         std::process::id(),

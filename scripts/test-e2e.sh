@@ -375,7 +375,7 @@ else
     #   bool tee, uint8 tee_type, string attestation_nonce, string capabilities_json)
     CREATE_ARGS=$(cast abi-encode \
         "f(string,string,string,string,string,string,bool,string,bool,uint64,uint64,uint64,uint64,uint64,bool,uint8,string,string)" \
-        "e2e-sandbox" "${TANGLE_E2E_IMAGE:-${SIDECAR_IMAGE:-tangle-sidecar:local}}" "default" "default-agent" "{}" "{}" \
+        "e2e-sandbox" "${TANGLE_E2E_IMAGE:-${SIDECAR_IMAGE:-blueprint-sidecar:all-harness}}" "default" "default-agent" "{}" "{}" \
         false "" true \
         3600 900 2 2048 10 \
         false 0 "" \

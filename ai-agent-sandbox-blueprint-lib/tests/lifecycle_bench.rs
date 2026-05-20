@@ -127,7 +127,7 @@ async fn ensure_sidecar() -> &'static RealSidecar {
     SIDECAR
         .get_or_init(|| async {
             let image = std::env::var("SIDECAR_IMAGE")
-                .unwrap_or_else(|_| "tangle-sidecar:local".to_string());
+                .unwrap_or_else(|_| "blueprint-sidecar:all-harness".to_string());
 
             let provision_start = Instant::now();
 

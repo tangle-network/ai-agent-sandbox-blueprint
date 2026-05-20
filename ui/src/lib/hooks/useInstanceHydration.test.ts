@@ -24,7 +24,7 @@ function makeInstance(overrides: Partial<LocalInstance> = {}): LocalInstance {
   return {
     id: 'draft-instance',
     name: 'draft-instance',
-    image: 'agent-dev:latest',
+    image: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
     cpuCores: 2,
     memoryMb: 2048,
     diskGb: 10,

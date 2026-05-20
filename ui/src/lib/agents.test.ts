@@ -10,8 +10,8 @@ import {
 
 describe('agent helpers', () => {
   it('recognizes bundled sandbox images', () => {
-    expect(isBundledSandboxImage('agent-dev:latest')).toBe(true);
-    expect(isBundledSandboxImage('ghcr.io/tangle-network/sidecar:latest')).toBe(true);
+    expect(isBundledSandboxImage('ghcr.io/tangle-network/blueprint-sidecar:all-harness')).toBe(true);
+    expect(isBundledSandboxImage('blueprint-sidecar:all-harness')).toBe(true);
     expect(isBundledSandboxImage('custom/sidecar:dev')).toBe(false);
   });
 

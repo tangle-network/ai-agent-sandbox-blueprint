@@ -335,7 +335,7 @@ describe('sandbox hydration merge logic', () => {
         status: 'creating',
         sidecarUrl: '',
         name: 'sb1',
-        image: 'agent-dev:latest',
+        image: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
         createdAt,
       }),
     ];
@@ -346,7 +346,7 @@ describe('sandbox hydration merge logic', () => {
         makeApiSandbox({
           id: 'sandbox-live-1',
           name: 'sb1',
-          image: 'agent-dev:latest',
+          image: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
           disk_gb: 10,
           created_at: createdAt / 1000,
           sidecar_url: 'http://live:8080',
@@ -372,7 +372,7 @@ describe('sandbox hydration merge logic', () => {
         status: 'creating',
         sidecarUrl: '',
         name: 'sb1',
-        image: 'agent-dev:latest',
+        image: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
         createdAt,
         txHash: '0xabc',
       }),
@@ -384,14 +384,14 @@ describe('sandbox hydration merge logic', () => {
         makeApiSandbox({
           id: 'sandbox-live-1',
           name: 'sb1',
-          image: 'agent-dev:latest',
+          image: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
           disk_gb: 10,
           created_at: Math.floor(createdAt / 1000),
         }),
         makeApiSandbox({
           id: 'sandbox-live-2',
           name: 'sb1',
-          image: 'agent-dev:latest',
+          image: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness',
           disk_gb: 10,
           created_at: Math.floor(createdAt / 1000),
         }),

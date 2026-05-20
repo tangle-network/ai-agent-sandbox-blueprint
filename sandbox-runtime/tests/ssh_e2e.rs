@@ -11,7 +11,7 @@ use sandbox_runtime::runtime::{
 
 // These tests mutate process env and rely on global OnceCell state.
 static TEST_LOCK: Mutex<()> = Mutex::const_new(());
-const TEST_IMAGE: &str = "agent-dev:latest";
+const TEST_IMAGE: &str = "ghcr.io/tangle-network/blueprint-sidecar:all-harness";
 
 fn setup_env(state_dir: &TempDir) {
     unsafe {

@@ -441,7 +441,7 @@ mod tests {
             snapshot_s3_url: None,
             container_removed_at: None,
             image_removed_at: None,
-            original_image: "agent-dev".to_string(),
+            original_image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
             base_env_json: "{}".to_string(),
             user_env_json: "{}".to_string(),
             snapshot_destination: None,
@@ -500,7 +500,7 @@ mod tests {
 
         let request = ProvisionRequest {
             name: "test-sandbox".to_string(),
-            image: "agent-dev".to_string(),
+            image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
             stack: "default".to_string(),
             agent_identifier: "test-agent".to_string(),
             env_json: "{}".to_string(),
@@ -525,7 +525,10 @@ mod tests {
         let decoded = decode_provision_config(&encoded).unwrap();
 
         assert_eq!(decoded.name, "test-sandbox");
-        assert_eq!(decoded.image, "agent-dev");
+        assert_eq!(
+            decoded.image,
+            "ghcr.io/tangle-network/blueprint-sidecar:all-harness"
+        );
         assert_eq!(decoded.cpu_cores, 2);
         assert_eq!(decoded.memory_mb, 4096);
         assert!(decoded.ssh_enabled);
@@ -537,7 +540,7 @@ mod tests {
 
         let request = ProvisionRequest {
             name: "tuple-sandbox".to_string(),
-            image: "agent-dev".to_string(),
+            image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
             stack: "default".to_string(),
             agent_identifier: "test-agent".to_string(),
             env_json: r#"{"KEY":"VALUE"}"#.to_string(),
@@ -574,7 +577,7 @@ mod tests {
         let nonce = "11".repeat(32);
         let request = ProvisionRequest {
             name: "nonce-sandbox".to_string(),
-            image: "agent-dev".to_string(),
+            image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
             stack: "default".to_string(),
             agent_identifier: "test-agent".to_string(),
             env_json: "{}".to_string(),
@@ -608,7 +611,7 @@ mod tests {
 
         let request = LegacyProvisionRequest {
             name: "legacy-sandbox".to_string(),
-            image: "agent-dev".to_string(),
+            image: "ghcr.io/tangle-network/blueprint-sidecar:all-harness".to_string(),
             stack: "default".to_string(),
             agent_identifier: "test-agent".to_string(),
             env_json: "{}".to_string(),
@@ -630,7 +633,10 @@ mod tests {
         let decoded = decode_provision_config(&encoded).unwrap();
 
         assert_eq!(decoded.name, "legacy-sandbox");
-        assert_eq!(decoded.image, "agent-dev");
+        assert_eq!(
+            decoded.image,
+            "ghcr.io/tangle-network/blueprint-sidecar:all-harness"
+        );
         assert_eq!(decoded.cpu_cores, 2);
         assert_eq!(decoded.memory_mb, 4096);
         assert!(!decoded.tee_required);

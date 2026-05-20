@@ -10,7 +10,7 @@
 //! Run (with AI backend):
 //!   REAL_SIDECAR=1 ZAI_API_KEY=<key> cargo test --test real_sidecar -- --test-threads=1
 //!
-//! Requires Docker and a local sidecar image (default: tangle-sidecar:local).
+//! Requires Docker and a local sidecar image (default: blueprint-sidecar:all-harness).
 //! Override with SIDECAR_IMAGE env var.
 
 use std::collections::HashMap;
@@ -104,7 +104,7 @@ async fn ensure_sidecar() -> &'static TestSidecar {
             }
 
             let image = std::env::var("SIDECAR_IMAGE")
-                .unwrap_or_else(|_| "tangle-sidecar:local".to_string());
+                .unwrap_or_else(|_| "blueprint-sidecar:all-harness".to_string());
 
             let builder = docker_builder().await;
 

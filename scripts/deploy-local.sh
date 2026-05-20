@@ -24,7 +24,7 @@
 #   TEE_BACKEND          — Required with ENABLE_TEE_OPERATOR=1: phala, nitro, gcp, azure, direct
 #   TEE_DIRECT_TYPE      — Required for TEE_BACKEND=direct: tdx or sev
 #   TEE_ATTESTATION_NONCE — Optional 32-64 byte hex deploy-time attestation nonce
-#   SIDECAR_IMAGE        — Docker image for sidecars (default: tangle-sidecar:local)
+#   SIDECAR_IMAGE        — Docker image for sidecars (default: blueprint-sidecar:all-harness)
 #   SKIP_BUILD           — Set to 1 to skip cargo build
 #   BASE_RATE            — Per-job base rate in wei (default: 1e15 = 0.001 TNT)
 #   ANVIL_STATE          — Path to Anvil state snapshot
@@ -48,7 +48,7 @@ TEE_INSTANCE_KEYSTORE_DIR="$SCRIPTS_DIR/data/operator-tee/keystore"
 # both stacks to run simultaneously.
 ANVIL_PORT="${ANVIL_PORT:-8645}"
 RPC_URL="${RPC_URL:-http://127.0.0.1:$ANVIL_PORT}"
-SIDECAR_IMAGE="${SIDECAR_IMAGE:-tangle-sidecar:local}"
+SIDECAR_IMAGE="${SIDECAR_IMAGE:-blueprint-sidecar:all-harness}"
 OPERATOR_API_PORT="${OPERATOR_API_PORT:-9100}"
 INSTANCE_OPERATOR_API_PORT="${INSTANCE_OPERATOR_API_PORT:-9200}"
 TEE_OPERATOR_API_PORT="${TEE_OPERATOR_API_PORT:-9300}"
@@ -593,7 +593,7 @@ SANDBOX_SERVICE_ID=$SANDBOX_SERVICE_ID
 INSTANCE_SERVICE_ID=$INSTANCE_SERVICE_ID
 TEE_INSTANCE_SERVICE_ID=$TEE_INSTANCE_SERVICE_ID
 
-# Orchestrator compatibility (agent-dev-container TangleDriver)
+# Orchestrator compatibility
 ORCHESTRATOR_DRIVER=tangle
 TANGLE_RPC_URL=http://127.0.0.1:$ANVIL_PORT
 TANGLE_WS_URL=ws://127.0.0.1:$ANVIL_PORT

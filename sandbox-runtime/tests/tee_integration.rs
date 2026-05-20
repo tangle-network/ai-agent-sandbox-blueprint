@@ -102,7 +102,7 @@ mod tee_integration {
         let params = TeeDeployParams {
             sandbox_id: "integ-lifecycle".into(),
             image: std::env::var("SIDECAR_IMAGE")
-                .unwrap_or_else(|_| "ghcr.io/tangle-network/sidecar:latest".into()),
+                .unwrap_or_else(|_| "ghcr.io/tangle-network/blueprint-sidecar:all-harness".into()),
             env_vars: vec![
                 ("SIDECAR_PORT".into(), "8080".into()),
                 ("SIDECAR_AUTH_TOKEN".into(), "test-token".into()),
@@ -137,7 +137,7 @@ mod tee_integration {
         let params = TeeDeployParams {
             sandbox_id: "integ-extra-ports".into(),
             image: std::env::var("SIDECAR_IMAGE")
-                .unwrap_or_else(|_| "ghcr.io/tangle-network/sidecar:latest".into()),
+                .unwrap_or_else(|_| "ghcr.io/tangle-network/blueprint-sidecar:all-harness".into()),
             env_vars: vec![
                 ("SIDECAR_PORT".into(), "8080".into()),
                 ("SIDECAR_AUTH_TOKEN".into(), "test-token".into()),

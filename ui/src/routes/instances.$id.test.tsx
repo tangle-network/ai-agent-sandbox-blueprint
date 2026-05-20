@@ -220,7 +220,7 @@ function makeInstance(overrides: Partial<Record<string, unknown>> = {}) {
     id: 'instance-1',
     sandboxId: 'sandbox-instance-1',
     name: 'Worker Instance',
-    image: 'tangle-sidecar:local',
+    image: 'blueprint-sidecar:all-harness',
     cpuCores: 2,
     memoryMb: 2048,
     diskGb: 10,
