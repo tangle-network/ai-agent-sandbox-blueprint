@@ -372,14 +372,14 @@ pub async fn report_local_deprovision(
 
 /// Best-effort wrapper that logs warning and returns success.
 pub async fn try_report_local_deprovision(client: Option<&TangleClient>, service_id: u64) {
-    if let Some(client) = client {
-        if let Err(err) = report_local_deprovision(client, service_id).await {
-            warn!(
-                service_id,
-                error = %err,
-                "Failed to report direct deprovision to manager"
-            );
-        }
+    if let Some(client) = client
+        && let Err(err) = report_local_deprovision(client, service_id).await
+    {
+        warn!(
+            service_id,
+            error = %err,
+            "Failed to report direct deprovision to manager"
+        );
     }
 }
 

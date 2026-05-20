@@ -148,10 +148,10 @@ fn gather_host_info() -> HostInfo {
 fn hostname() -> String {
     // Prefer `hostname` env var (set in many CI environments); fall back to
     // running `hostname` or `uname -n`.
-    if let Ok(h) = std::env::var("HOSTNAME") {
-        if !h.is_empty() {
-            return h;
-        }
+    if let Ok(h) = std::env::var("HOSTNAME")
+        && !h.is_empty()
+    {
+        return h;
     }
     Command::new("hostname")
         .output()

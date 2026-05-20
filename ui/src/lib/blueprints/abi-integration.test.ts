@@ -185,13 +185,13 @@ describe('Cross-Blueprint Consistency', () => {
   });
 
   it('field count matches Rust struct field count for workflow jobs', () => {
-    // SandboxCreateRequest: 16 fields
+    // SandboxCreateRequest: 18 fields
     const sandboxCreate = getJobById('ai-agent-sandbox-blueprint', JOB_IDS.SANDBOX_CREATE)!;
-    expect(sandboxCreate.fields.filter(f => f.abiType).length).toBe(16);
+    expect(sandboxCreate.fields.filter(f => f.abiType).length).toBe(18);
 
-    // ProvisionRequest: 16 fields
+    // ProvisionRequest: 18 fields
     const instanceProvision = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.PROVISION)!;
-    expect(instanceProvision.fields.filter(f => f.abiType).length).toBe(16);
+    expect(instanceProvision.fields.filter(f => f.abiType).length).toBe(18);
 
     // WorkflowCreateRequest: 8 fields
     const instanceWorkflowCreate = getJobById('ai-agent-instance-blueprint', INSTANCE_JOB_IDS.WORKFLOW_CREATE)!;

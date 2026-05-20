@@ -516,19 +516,19 @@ fn parse_host_agent_error(body: &str) -> String {
         return "empty error body".to_string();
     }
 
-    if let Ok(parsed) = serde_json::from_str::<HostAgentErrorResponse>(trimmed) {
-        if !parsed.error.trim().is_empty() {
-            if parsed.code.trim().is_empty() {
-                return parsed.error;
-            }
-            return format!("{} ({})", parsed.error, parsed.code);
+    if let Ok(parsed) = serde_json::from_str::<HostAgentErrorResponse>(trimmed)
+        && !parsed.error.trim().is_empty()
+    {
+        if parsed.code.trim().is_empty() {
+            return parsed.error;
         }
+        return format!("{} ({})", parsed.error, parsed.code);
     }
 
-    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
-            return error.to_string();
-        }
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed)
+        && let Some(error) = value.get("error").and_then(|v| v.as_str())
+    {
+        return error.to_string();
     }
 
     trimmed.to_string()

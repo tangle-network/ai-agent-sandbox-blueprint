@@ -115,19 +115,18 @@ impl TeeDeployParams {
         }
 
         // Parse env_json into env var pairs.
-        if !params.env_json.trim().is_empty() {
-            if let Ok(Some(serde_json::Value::Object(map))) =
+        if !params.env_json.trim().is_empty()
+            && let Ok(Some(serde_json::Value::Object(map))) =
                 crate::util::parse_json_object(&params.env_json, "env_json")
-            {
-                for (key, value) in map {
-                    let val = match value {
-                        serde_json::Value::String(v) => v,
-                        serde_json::Value::Number(v) => v.to_string(),
-                        serde_json::Value::Bool(v) => v.to_string(),
-                        _ => continue,
-                    };
-                    env_vars.push((key, val));
-                }
+        {
+            for (key, value) in map {
+                let val = match value {
+                    serde_json::Value::String(v) => v,
+                    serde_json::Value::Number(v) => v.to_string(),
+                    serde_json::Value::Bool(v) => v.to_string(),
+                    _ => continue,
+                };
+                env_vars.push((key, val));
             }
         }
 
@@ -180,7 +179,7 @@ pub fn decode_attestation_nonce_hex(value: &str) -> crate::error::Result<Vec<u8>
         return Ok(Vec::new());
     }
     let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(crate::error::SandboxError::Validation(
             "attestation_nonce must be even-length hex".into(),
         ));
@@ -460,13 +459,11 @@ pub(crate) async fn wait_for_sidecar_health(
         if let (Ok(url), Ok(headers)) = (
             crate::http::build_url(sidecar_url, "/health"),
             crate::http::auth_headers(token),
-        ) {
-            if crate::http::send_json(reqwest::Method::GET, url, None, headers)
-                .await
-                .is_ok()
-            {
-                return Ok(());
-            }
+        ) && crate::http::send_json(reqwest::Method::GET, url, None, headers)
+            .await
+            .is_ok()
+        {
+            return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }

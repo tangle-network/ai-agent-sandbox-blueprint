@@ -190,26 +190,23 @@ impl NitroBackend {
                 .reservations()
                 .first()
                 .and_then(|r| r.instances().first())
+                && let Some(state) = instance.state()
             {
-                if let Some(state) = instance.state() {
-                    if state.name() == Some(&InstanceStateName::Running) {
-                        return instance
-                            .public_ip_address()
-                            .map(|ip| ip.to_string())
-                            .ok_or_else(|| {
-                                SandboxError::CloudProvider(
-                                    "No public IP assigned to instance".into(),
-                                )
-                            });
-                    }
-                    if matches!(
-                        state.name(),
-                        Some(&InstanceStateName::Terminated | &InstanceStateName::ShuttingDown)
-                    ) {
-                        return Err(SandboxError::CloudProvider(format!(
-                            "EC2 instance {instance_id} entered terminal state"
-                        )));
-                    }
+                if state.name() == Some(&InstanceStateName::Running) {
+                    return instance
+                        .public_ip_address()
+                        .map(|ip| ip.to_string())
+                        .ok_or_else(|| {
+                            SandboxError::CloudProvider("No public IP assigned to instance".into())
+                        });
+                }
+                if matches!(
+                    state.name(),
+                    Some(&InstanceStateName::Terminated | &InstanceStateName::ShuttingDown)
+                ) {
+                    return Err(SandboxError::CloudProvider(format!(
+                        "EC2 instance {instance_id} entered terminal state"
+                    )));
                 }
             }
 

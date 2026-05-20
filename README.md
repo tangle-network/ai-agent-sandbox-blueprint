@@ -110,6 +110,15 @@ UI behavior:
 - Selecting `firecracker` forces `tee_required=false` (current release does not support Firecracker+TEE composition).
 - Selecting `firecracker` accepts `metadata_json.ports` as either bare `[3000]` or structured `[{container_port:3000, host_port:30000, protocol:"tcp"}]`. The runtime parses, validates (1..=65535, no duplicate `host_port`/`container_port`, protocol ∈ {tcp,udp}, capped at `MAX_EXTRA_PORTS=8`) and persists them on the sandbox record so they round-trip across restarts. Forwarding to the Firecracker microVM via the host-agent is gated on the upstream host-agent shipping a stable port-forwarding field — until then, ports are recorded but not yet routed by the host network namespace.
 
+### Sidecar Capabilities
+
+Sandbox and instance provisioning accept `capabilities_json`, a JSON-encoded string array:
+
+- `computer_use`: enables the sidecar computer-use subsystem.
+- `all_harness`: requests the open-source all-harness runtime image path with Claude, Codex, opencode, Kimi, and Gemini available inside the sandbox.
+
+The runtime injects accepted values into the sandbox as `SIDECAR_CAPABILITIES`, preserving the same contract surface for Docker, Firecracker, and TEE-backed creation. The UI exposes `all_harness` as an explicit create/provision option while keeping the ABI field itself internal.
+
 ### Instance Lifecycle Semantics
 
 - Canonical path is operator-signed direct reporting:
@@ -165,6 +174,7 @@ Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is cu
 - `GET /readyz` — Strict readiness probe (503 unless all subsystems healthy)
 - `GET /metrics` — Prometheus metrics
 - `GET /api/provisions` — List provision status
+- `GET /api/capabilities` — Advertise supported sidecar capabilities and harness feature matrix
 
 `GET /health` response contract:
 - `status`: `"ok"` or `"degraded"`

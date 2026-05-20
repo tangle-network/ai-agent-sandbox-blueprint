@@ -121,6 +121,8 @@ pub struct PromptApiRequest {
     #[serde(default)]
     pub session_id: String,
     #[serde(default)]
+    pub backend_type: String,
+    #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub context_json: String,
@@ -161,6 +163,8 @@ pub struct TaskApiRequest {
     pub session_id: String,
     #[serde(default)]
     pub max_turns: u64,
+    #[serde(default)]
+    pub backend_type: String,
     #[serde(default)]
     pub model: String,
     #[serde(default)]
@@ -216,10 +220,10 @@ pub struct SshProvisionApiRequest {
 
 impl SshProvisionApiRequest {
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(username) = self.username.as_deref() {
-            if !username.trim().is_empty() {
-                validate_username(username)?;
-            }
+        if let Some(username) = self.username.as_deref()
+            && !username.trim().is_empty()
+        {
+            validate_username(username)?;
         }
         validate_ssh_public_key(&self.public_key)
     }
@@ -234,10 +238,10 @@ pub struct SshRevokeApiRequest {
 
 impl SshRevokeApiRequest {
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(username) = self.username.as_deref() {
-            if !username.trim().is_empty() {
-                validate_username(username)?;
-            }
+        if let Some(username) = self.username.as_deref()
+            && !username.trim().is_empty()
+        {
+            validate_username(username)?;
         }
         validate_ssh_public_key(&self.public_key)
     }

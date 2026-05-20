@@ -480,12 +480,11 @@ fn normalize_stream_part(part: &Value) -> Option<Value> {
         return None;
     }
 
-    if object.get("type").and_then(Value::as_str) == Some("tool") {
-        if let Some(state) = object.get_mut("state").and_then(Value::as_object_mut) {
-            if state.get("status").and_then(Value::as_str) == Some("failed") {
-                state.insert("status".into(), json!("error"));
-            }
-        }
+    if object.get("type").and_then(Value::as_str) == Some("tool")
+        && let Some(state) = object.get_mut("state").and_then(Value::as_object_mut)
+        && state.get("status").and_then(Value::as_str) == Some("failed")
+    {
+        state.insert("status".into(), json!("error"));
     }
 
     Some(Value::Object(object))
@@ -829,10 +828,10 @@ fn derive_operator_address_from_keystore_uri(
 
 fn current_managing_operator() -> Option<String> {
     for key in ["MANAGING_OPERATOR_ADDRESS", "OPERATOR_ADDRESS"] {
-        if let Ok(value) = std::env::var(key) {
-            if let Some(address) = normalize_operator_address(&value) {
-                return Some(address);
-            }
+        if let Ok(value) = std::env::var(key)
+            && let Some(address) = normalize_operator_address(&value)
+        {
+            return Some(address);
         }
     }
 
@@ -847,13 +846,13 @@ fn current_managing_operator() -> Option<String> {
 }
 
 async fn list_sandboxes(SessionAuth(address): SessionAuth) -> impl IntoResponse {
-    if let Ok(repaired) = runtime::repair_sandbox_service_links_from_provisions() {
-        if repaired > 0 {
-            tracing::info!(
-                repaired,
-                "Repaired missing sandbox service links from provision metadata"
-            );
-        }
+    if let Ok(repaired) = runtime::repair_sandbox_service_links_from_provisions()
+        && repaired > 0
+    {
+        tracing::info!(
+            repaired,
+            "Repaired missing sandbox service links from provision metadata"
+        );
     }
 
     let managing_operator = current_managing_operator();
@@ -1271,17 +1270,15 @@ fn delete_chat_session(
     if !chat_session_matches(&session, scope_id, owner) {
         return Err(api_error(StatusCode::NOT_FOUND, "Chat session not found"));
     }
-    if let Some(active_run_id) = session.active_run_id.as_deref() {
-        if let Some(run) = chat_state::get_run(active_run_id)
+    if let Some(active_run_id) = session.active_run_id.as_deref()
+        && let Some(run) = chat_state::get_run(active_run_id)
             .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?
-        {
-            if run.status.is_active() {
-                return Err(api_error(
-                    StatusCode::CONFLICT,
-                    "Cannot delete a chat session while a run is active",
-                ));
-            }
-        }
+        && run.status.is_active()
+    {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "Cannot delete a chat session while a run is active",
+        ));
     }
     chat_state::delete_session(session_id)
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -2045,10 +2042,10 @@ fn build_exec_payload(command: &str, cwd: &str, env_json: &str, timeout_ms: u64)
     if timeout_ms > 0 {
         payload.insert("timeout".to_string(), json!(timeout_ms));
     }
-    if !env_json.trim().is_empty() {
-        if let Ok(Some(env_map)) = crate::util::parse_json_object(env_json, "env_json") {
-            payload.insert("env".to_string(), env_map);
-        }
+    if !env_json.trim().is_empty()
+        && let Ok(Some(env_map)) = crate::util::parse_json_object(env_json, "env_json")
+    {
+        payload.insert("env".to_string(), env_map);
     }
     Value::Object(payload)
 }
@@ -2150,64 +2147,68 @@ fn parse_detected_ssh_username(
 }
 
 /// Build `/agents/run` payload for prompt/task operations.
-fn build_agent_payload(
-    message: &str,
-    session_id: &str,
-    model: &str,
-    context_json: &str,
+struct AgentPayloadRequest<'a> {
+    message: &'a str,
+    session_id: &'a str,
+    backend_type: &'a str,
+    model: &'a str,
+    context_json: &'a str,
     timeout_ms: u64,
     max_turns: Option<u64>,
-    agent_identifier: &str,
-) -> Value {
+    agent_identifier: &'a str,
+}
+
+fn build_agent_payload(request: AgentPayloadRequest<'_>) -> Value {
     let mut payload = Map::new();
-    let identifier = if agent_identifier.is_empty() {
+    let identifier = if request.agent_identifier.is_empty() {
         "default"
     } else {
-        agent_identifier
+        request.agent_identifier
     };
     payload.insert("identifier".into(), json!(identifier));
-    payload.insert("message".into(), json!(message));
+    payload.insert("message".into(), json!(request.message));
 
-    if !session_id.is_empty() {
-        payload.insert("sessionId".into(), json!(session_id));
+    if !request.session_id.is_empty() {
+        payload.insert("sessionId".into(), json!(request.session_id));
     }
 
     let mut backend = Map::new();
-    if !model.is_empty() {
-        backend.insert("model".into(), json!(model));
+    if !request.backend_type.is_empty() {
+        backend.insert("type".into(), json!(request.backend_type));
+    }
+    if !request.model.is_empty() {
+        backend.insert("model".into(), json!(request.model));
     }
     if !backend.is_empty() {
         payload.insert("backend".into(), Value::Object(backend));
     }
 
-    if let Some(turns) = max_turns {
+    if let Some(turns) = request.max_turns {
         if turns > 0 {
             let mut metadata = Map::new();
             // Extend from context_json FIRST, then insert maxTurns — so
             // user-supplied context cannot override the operator-enforced
             // turn limit.
-            if !context_json.trim().is_empty() {
-                if let Ok(Some(Value::Object(mut ctx))) =
-                    crate::util::parse_json_object(context_json, "context_json")
-                {
-                    // Strip any attempt to override protected keys
-                    ctx.remove("maxTurns");
-                    metadata.extend(ctx);
-                }
+            if !request.context_json.trim().is_empty()
+                && let Ok(Some(Value::Object(mut ctx))) =
+                    crate::util::parse_json_object(request.context_json, "context_json")
+            {
+                // Strip any attempt to override protected keys
+                ctx.remove("maxTurns");
+                metadata.extend(ctx);
             }
             metadata.insert("maxTurns".into(), json!(turns));
             payload.insert("metadata".into(), Value::Object(metadata));
         }
-    } else if !context_json.trim().is_empty() {
-        if let Ok(Some(Value::Object(ctx))) =
-            crate::util::parse_json_object(context_json, "context_json")
-        {
-            payload.insert("metadata".into(), Value::Object(ctx));
-        }
+    } else if !request.context_json.trim().is_empty()
+        && let Ok(Some(Value::Object(ctx))) =
+            crate::util::parse_json_object(request.context_json, "context_json")
+    {
+        payload.insert("metadata".into(), Value::Object(ctx));
     }
 
-    if timeout_ms > 0 {
-        payload.insert("timeout".into(), json!(timeout_ms));
+    if request.timeout_ms > 0 {
+        payload.insert("timeout".into(), json!(request.timeout_ms));
     }
     Value::Object(payload)
 }
@@ -2236,6 +2237,86 @@ struct SidecarAgentList {
 struct AgentListApiResponse {
     agents: Vec<AgentDescriptor>,
     count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeCapabilityDescriptor {
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct HarnessCapabilityDescriptor {
+    id: &'static str,
+    label: &'static str,
+    mcp: bool,
+    skills: bool,
+    subagents: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeCapabilitiesResponse {
+    capabilities: Vec<RuntimeCapabilityDescriptor>,
+    harnesses: Vec<HarnessCapabilityDescriptor>,
+}
+
+fn runtime_capabilities_response() -> RuntimeCapabilitiesResponse {
+    RuntimeCapabilitiesResponse {
+        capabilities: vec![
+            RuntimeCapabilityDescriptor {
+                id: "computer_use",
+                label: "Computer Use",
+                description: "Enable browser/computer-use sidecar services.",
+            },
+            RuntimeCapabilityDescriptor {
+                id: "all_harness",
+                label: "All Harness Runtime",
+                description: "Enable the open-source all-harness agent runtime: Claude, Codex, opencode, Kimi, and Gemini.",
+            },
+        ],
+        harnesses: vec![
+            HarnessCapabilityDescriptor {
+                id: "claude-code",
+                label: "Claude Code",
+                mcp: true,
+                skills: true,
+                subagents: true,
+            },
+            HarnessCapabilityDescriptor {
+                id: "codex",
+                label: "Codex",
+                mcp: true,
+                skills: false,
+                subagents: false,
+            },
+            HarnessCapabilityDescriptor {
+                id: "opencode",
+                label: "opencode",
+                mcp: true,
+                skills: true,
+                subagents: true,
+            },
+            HarnessCapabilityDescriptor {
+                id: "kimi-code",
+                label: "Kimi Code",
+                mcp: true,
+                skills: false,
+                subagents: false,
+            },
+            HarnessCapabilityDescriptor {
+                id: "gemini",
+                label: "Gemini CLI",
+                mcp: true,
+                skills: false,
+                subagents: false,
+            },
+        ],
+    }
+}
+
+async fn capabilities_handler() -> impl IntoResponse {
+    (StatusCode::OK, Json(runtime_capabilities_response()))
 }
 
 fn format_available_agents(agents: &[AgentDescriptor]) -> String {
@@ -2329,6 +2410,7 @@ fn parse_agent_descriptors(
 struct AgentStreamRequest<'a> {
     message: &'a str,
     session_id: &'a str,
+    backend_type: &'a str,
     model: &'a str,
     context_json: &'a str,
     timeout_ms: u64,
@@ -2340,15 +2422,16 @@ async fn agent_stream_on_sidecar(
     request: AgentStreamRequest<'_>,
     mut on_event: impl FnMut(&SidecarSseEvent),
 ) -> Result<AgentStreamOutcome, (StatusCode, Json<ApiError>)> {
-    let payload = build_agent_payload(
-        request.message,
-        request.session_id,
-        request.model,
-        request.context_json,
-        resolve_agent_run_timeout_ms(request.timeout_ms, request.max_turns),
-        request.max_turns,
-        &record.agent_identifier,
-    );
+    let payload = build_agent_payload(AgentPayloadRequest {
+        message: request.message,
+        session_id: request.session_id,
+        backend_type: request.backend_type,
+        model: request.model,
+        context_json: request.context_json,
+        timeout_ms: resolve_agent_run_timeout_ms(request.timeout_ms, request.max_turns),
+        max_turns: request.max_turns,
+        agent_identifier: &record.agent_identifier,
+    });
     let client = crate::util::http_client_no_timeout().map_err(|err| {
         api_error(
             StatusCode::BAD_GATEWAY,
@@ -2372,10 +2455,10 @@ async fn agent_stream_on_sidecar(
             )
         })?;
 
-        if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
-            if let Ok(value) = reqwest::header::HeaderValue::from_str(&rid) {
-                headers.insert("x-request-id", value);
-            }
+        if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone())
+            && let Ok(value) = reqwest::header::HeaderValue::from_str(&rid)
+        {
+            headers.insert("x-request-id", value);
         }
 
         let response = client
@@ -2476,12 +2559,11 @@ async fn agent_stream_on_sidecar(
                 };
                 match event.event_type.as_str() {
                     "message.part.updated" => {
-                        if let Some(part) = event.data.get("part").and_then(normalize_stream_part) {
-                            if part.get("type").and_then(Value::as_str) == Some("text") {
-                                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                                    accumulated_text = text.to_string();
-                                }
-                            }
+                        if let Some(part) = event.data.get("part").and_then(normalize_stream_part)
+                            && part.get("type").and_then(Value::as_str) == Some("text")
+                            && let Some(text) = part.get("text").and_then(Value::as_str)
+                        {
+                            accumulated_text = text.to_string();
                         }
                         on_event(&event);
                     }
@@ -2689,10 +2771,10 @@ async fn run_sidecar_patch_json_attempt(
     match tokio::time::timeout(timeout, async move {
         let url = build_url(&sidecar_url, &path)?;
         let mut headers = auth_headers(&token)?;
-        if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
-            if let Ok(value) = reqwest::header::HeaderValue::from_str(&rid) {
-                headers.insert("x-request-id", value);
-            }
+        if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone())
+            && let Ok(value) = reqwest::header::HeaderValue::from_str(&rid)
+        {
+            headers.insert("x-request-id", value);
         }
 
         let response = crate::util::http_client()?
@@ -2749,25 +2831,26 @@ async fn sidecar_call(
             ))
         }
         Err(SidecarAttemptFailure::Error(err)) => {
-            if allow_transport_retry && is_retryable_transport_error(&err) {
-                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
-                    match run_sidecar_json_attempt(&refreshed, path, &payload, timeout).await {
-                        Ok(parsed) => {
-                            circuit_breaker::mark_healthy(&record.id);
-                            runtime::touch_sandbox(&record.id);
-                            return Ok(parsed);
-                        }
-                        Err(SidecarAttemptFailure::Timeout) => {
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(
-                                StatusCode::GATEWAY_TIMEOUT,
-                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
-                            ));
-                        }
-                        Err(SidecarAttemptFailure::Error(retry_err)) => {
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
-                        }
+            if allow_transport_retry
+                && is_retryable_transport_error(&err)
+                && let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await
+            {
+                match run_sidecar_json_attempt(&refreshed, path, &payload, timeout).await {
+                    Ok(parsed) => {
+                        circuit_breaker::mark_healthy(&record.id);
+                        runtime::touch_sandbox(&record.id);
+                        return Ok(parsed);
+                    }
+                    Err(SidecarAttemptFailure::Timeout) => {
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                        ));
+                    }
+                    Err(SidecarAttemptFailure::Error(retry_err)) => {
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
                     }
                 }
             }
@@ -2807,28 +2890,29 @@ async fn terminal_sidecar_call(
                 return Err(api_err);
             }
 
-            if allow_transport_retry && is_retryable_transport_error(&err) {
-                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
-                    match run_sidecar_json_attempt(&refreshed, path, &payload, timeout).await {
-                        Ok(parsed) => {
-                            circuit_breaker::mark_healthy(&record.id);
-                            runtime::touch_sandbox(&record.id);
-                            return Ok(parsed);
+            if allow_transport_retry
+                && is_retryable_transport_error(&err)
+                && let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await
+            {
+                match run_sidecar_json_attempt(&refreshed, path, &payload, timeout).await {
+                    Ok(parsed) => {
+                        circuit_breaker::mark_healthy(&record.id);
+                        runtime::touch_sandbox(&record.id);
+                        return Ok(parsed);
+                    }
+                    Err(SidecarAttemptFailure::Timeout) => {
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                        ));
+                    }
+                    Err(SidecarAttemptFailure::Error(retry_err)) => {
+                        if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
+                            return Err(api_err);
                         }
-                        Err(SidecarAttemptFailure::Timeout) => {
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(
-                                StatusCode::GATEWAY_TIMEOUT,
-                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
-                            ));
-                        }
-                        Err(SidecarAttemptFailure::Error(retry_err)) => {
-                            if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
-                                return Err(api_err);
-                            }
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
-                        }
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
                     }
                 }
             }
@@ -2867,31 +2951,31 @@ async fn sidecar_get_call(
                 return Err(api_error(StatusCode::BAD_GATEWAY, err_message));
             }
 
-            if is_retryable_transport_error(&err) {
-                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
-                    match run_sidecar_get_json_attempt(&refreshed, path, timeout).await {
-                        Ok(parsed) => {
-                            circuit_breaker::mark_healthy(&record.id);
-                            runtime::touch_sandbox(&record.id);
-                            return Ok(parsed);
-                        }
-                        Err(SidecarAttemptFailure::Timeout) => {
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(
-                                StatusCode::GATEWAY_TIMEOUT,
-                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
-                            ));
-                        }
-                        Err(SidecarAttemptFailure::Error(retry_err)) => {
-                            let retry_message = retry_err.to_string();
-                            if op_name == "agents"
-                                && agent_discovery_not_supported_message(&retry_message)
-                            {
-                                return Err(api_error(StatusCode::BAD_GATEWAY, retry_message));
-                            }
-                            circuit_breaker::mark_unhealthy(&record.id);
+            if is_retryable_transport_error(&err)
+                && let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await
+            {
+                match run_sidecar_get_json_attempt(&refreshed, path, timeout).await {
+                    Ok(parsed) => {
+                        circuit_breaker::mark_healthy(&record.id);
+                        runtime::touch_sandbox(&record.id);
+                        return Ok(parsed);
+                    }
+                    Err(SidecarAttemptFailure::Timeout) => {
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                        ));
+                    }
+                    Err(SidecarAttemptFailure::Error(retry_err)) => {
+                        let retry_message = retry_err.to_string();
+                        if op_name == "agents"
+                            && agent_discovery_not_supported_message(&retry_message)
+                        {
                             return Err(api_error(StatusCode::BAD_GATEWAY, retry_message));
                         }
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(StatusCode::BAD_GATEWAY, retry_message));
                     }
                 }
             }
@@ -2929,28 +3013,28 @@ async fn terminal_sidecar_get_call(
                 return Err(api_err);
             }
 
-            if is_retryable_transport_error(&err) {
-                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
-                    match run_sidecar_get_json_attempt(&refreshed, path, timeout).await {
-                        Ok(parsed) => {
-                            circuit_breaker::mark_healthy(&record.id);
-                            runtime::touch_sandbox(&record.id);
-                            return Ok(parsed);
+            if is_retryable_transport_error(&err)
+                && let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await
+            {
+                match run_sidecar_get_json_attempt(&refreshed, path, timeout).await {
+                    Ok(parsed) => {
+                        circuit_breaker::mark_healthy(&record.id);
+                        runtime::touch_sandbox(&record.id);
+                        return Ok(parsed);
+                    }
+                    Err(SidecarAttemptFailure::Timeout) => {
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                        ));
+                    }
+                    Err(SidecarAttemptFailure::Error(retry_err)) => {
+                        if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
+                            return Err(api_err);
                         }
-                        Err(SidecarAttemptFailure::Timeout) => {
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(
-                                StatusCode::GATEWAY_TIMEOUT,
-                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
-                            ));
-                        }
-                        Err(SidecarAttemptFailure::Error(retry_err)) => {
-                            if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
-                                return Err(api_err);
-                            }
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
-                        }
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
                     }
                 }
             }
@@ -2989,29 +3073,28 @@ async fn terminal_sidecar_patch_call(
                 return Err(api_err);
             }
 
-            if is_retryable_transport_error(&err) {
-                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
-                    match run_sidecar_patch_json_attempt(&refreshed, path, &payload, timeout).await
-                    {
-                        Ok(parsed) => {
-                            circuit_breaker::mark_healthy(&record.id);
-                            runtime::touch_sandbox(&record.id);
-                            return Ok(parsed);
+            if is_retryable_transport_error(&err)
+                && let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await
+            {
+                match run_sidecar_patch_json_attempt(&refreshed, path, &payload, timeout).await {
+                    Ok(parsed) => {
+                        circuit_breaker::mark_healthy(&record.id);
+                        runtime::touch_sandbox(&record.id);
+                        return Ok(parsed);
+                    }
+                    Err(SidecarAttemptFailure::Timeout) => {
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                        ));
+                    }
+                    Err(SidecarAttemptFailure::Error(retry_err)) => {
+                        if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
+                            return Err(api_err);
                         }
-                        Err(SidecarAttemptFailure::Timeout) => {
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(
-                                StatusCode::GATEWAY_TIMEOUT,
-                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
-                            ));
-                        }
-                        Err(SidecarAttemptFailure::Error(retry_err)) => {
-                            if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
-                                return Err(api_err);
-                            }
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
-                        }
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
                     }
                 }
             }
@@ -3040,10 +3123,10 @@ async fn open_sidecar_stream_attempt(
         Err(err) => return Err(SidecarAttemptFailure::Error(err)),
     };
 
-    if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
-        if let Ok(value) = reqwest::header::HeaderValue::from_str(&rid) {
-            headers.insert("x-request-id", value);
-        }
+    if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone())
+        && let Ok(value) = reqwest::header::HeaderValue::from_str(&rid)
+    {
+        headers.insert("x-request-id", value);
     }
 
     let client = match crate::util::http_client_no_timeout() {
@@ -3097,49 +3180,40 @@ async fn terminal_sidecar_stream_call(
                     return Err(api_err);
                 }
 
-                if is_retryable_transport_error(inner) {
-                    if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
-                        match tokio::time::timeout(
-                            timeout,
-                            open_sidecar_stream_attempt(&refreshed, path),
-                        )
-                        .await
-                        {
-                            Err(_) => {
-                                circuit_breaker::mark_unhealthy(&record.id);
-                                return Err(api_error(
-                                    StatusCode::GATEWAY_TIMEOUT,
-                                    format!(
-                                        "Sidecar {op_name} timed out after {}s",
-                                        timeout.as_secs()
-                                    ),
-                                ));
+                if is_retryable_transport_error(inner)
+                    && let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await
+                {
+                    match tokio::time::timeout(
+                        timeout,
+                        open_sidecar_stream_attempt(&refreshed, path),
+                    )
+                    .await
+                    {
+                        Err(_) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
+                        }
+                        Ok(Ok(response)) => {
+                            circuit_breaker::mark_healthy(&record.id);
+                            runtime::touch_sandbox(&record.id);
+                            return Ok(response);
+                        }
+                        Ok(Err(SidecarAttemptFailure::Error(retry_err))) => {
+                            if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
+                                return Err(api_err);
                             }
-                            Ok(Ok(response)) => {
-                                circuit_breaker::mark_healthy(&record.id);
-                                runtime::touch_sandbox(&record.id);
-                                return Ok(response);
-                            }
-                            Ok(Err(SidecarAttemptFailure::Error(retry_err))) => {
-                                if let Some(api_err) = terminal_api_error(&retry_err, op_name) {
-                                    return Err(api_err);
-                                }
-                                circuit_breaker::mark_unhealthy(&record.id);
-                                return Err(api_error(
-                                    StatusCode::BAD_GATEWAY,
-                                    retry_err.to_string(),
-                                ));
-                            }
-                            Ok(Err(SidecarAttemptFailure::Timeout)) => {
-                                circuit_breaker::mark_unhealthy(&record.id);
-                                return Err(api_error(
-                                    StatusCode::GATEWAY_TIMEOUT,
-                                    format!(
-                                        "Sidecar {op_name} timed out after {}s",
-                                        timeout.as_secs()
-                                    ),
-                                ));
-                            }
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
+                        }
+                        Ok(Err(SidecarAttemptFailure::Timeout)) => {
+                            circuit_breaker::mark_unhealthy(&record.id);
+                            return Err(api_error(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                            ));
                         }
                     }
                 }
@@ -3181,10 +3255,10 @@ async fn terminal_sidecar_delete_call(
                 .map_err(|err| api_error(StatusCode::BAD_GATEWAY, err.to_string()))?;
             let mut headers = auth_headers(&token)
                 .map_err(|err| api_error(StatusCode::BAD_GATEWAY, err.to_string()))?;
-            if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone()) {
-                if let Ok(value) = reqwest::header::HeaderValue::from_str(&rid) {
-                    headers.insert("x-request-id", value);
-                }
+            if let Ok(rid) = CURRENT_REQUEST_ID.try_with(|id| id.clone())
+                && let Ok(value) = reqwest::header::HeaderValue::from_str(&rid)
+            {
+                headers.insert("x-request-id", value);
             }
 
             let client = crate::util::http_client()
@@ -3233,35 +3307,34 @@ async fn terminal_sidecar_delete_call(
             }
 
             let err_text = err.1.0.error.clone();
-            if err_text.contains("error sending request for url") {
-                if let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await {
-                    match tokio::time::timeout(
-                        timeout,
-                        run_delete(refreshed.sidecar_url.clone(), refreshed.token.clone()),
-                    )
-                    .await
-                    {
-                        Err(_) => {
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(
-                                StatusCode::GATEWAY_TIMEOUT,
-                                format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
-                            ));
+            if err_text.contains("error sending request for url")
+                && let Some(refreshed) = try_refresh_stale_endpoint(record, op_name).await
+            {
+                match tokio::time::timeout(
+                    timeout,
+                    run_delete(refreshed.sidecar_url.clone(), refreshed.token.clone()),
+                )
+                .await
+                {
+                    Err(_) => {
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            format!("Sidecar {op_name} timed out after {}s", timeout.as_secs()),
+                        ));
+                    }
+                    Ok(Ok(())) => {
+                        circuit_breaker::mark_healthy(&record.id);
+                        runtime::touch_sandbox(&record.id);
+                        return Ok(());
+                    }
+                    Ok(Err(retry_err)) => {
+                        if let Some(api_err) = terminal_api_error_from_response(&retry_err, op_name)
+                        {
+                            return Err(api_err);
                         }
-                        Ok(Ok(())) => {
-                            circuit_breaker::mark_healthy(&record.id);
-                            runtime::touch_sandbox(&record.id);
-                            return Ok(());
-                        }
-                        Ok(Err(retry_err)) => {
-                            if let Some(api_err) =
-                                terminal_api_error_from_response(&retry_err, op_name)
-                            {
-                                return Err(api_err);
-                            }
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(retry_err);
-                        }
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(retry_err);
                     }
                 }
             }
@@ -3558,12 +3631,12 @@ fn enqueue_chat_run(
         error: None,
     };
     publish_chat_message(&session.id, user_message, "user_message");
-    if let Ok(Some(current_session)) = chat_state::get_session(&session.id) {
-        if let Some(message) = current_session.messages.last() {
-            emit_message_updated(&session.id, message);
-            for part in &message.parts {
-                emit_message_part_updated(&session.id, &message.id, part.clone());
-            }
+    if let Ok(Some(current_session)) = chat_state::get_session(&session.id)
+        && let Some(message) = current_session.messages.last()
+    {
+        emit_message_updated(&session.id, message);
+        for part in &message.parts {
+            emit_message_part_updated(&session.id, &message.id, part.clone());
         }
     }
     if let Ok(Some(queued_run)) = chat_state::get_run(&run.id) {
@@ -3578,6 +3651,7 @@ struct SpawnChatRunRequest {
     session_id: String,
     run_id: String,
     message: String,
+    backend_type: String,
     model: String,
     context_json: String,
     timeout_ms: u64,
@@ -3589,6 +3663,7 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
         session_id,
         run_id,
         message,
+        backend_type,
         model,
         context_json,
         timeout_ms,
@@ -3671,6 +3746,7 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
             AgentStreamRequest {
                 message: &message,
                 session_id: &sidecar_session_id,
+                backend_type: &backend_type,
                 model: &model,
                 context_json: &context_json,
                 timeout_ms,
@@ -3688,49 +3764,49 @@ fn spawn_chat_run(record: SandboxRecord, request: SpawnChatRunRequest) {
                     _ => None,
                 };
 
-                if let Some((candidate_session_id, candidate_source)) = streamed_session {
-                    if candidate_source > authoritative_sidecar_session_source {
-                        authoritative_sidecar_session_source = candidate_source;
-                        authoritative_sidecar_session_id = Some(candidate_session_id.clone());
-                        let _ = chat_state::set_session_sidecar_session_id(
-                            &session_id,
-                            Some(candidate_session_id.clone()),
-                        );
-                        let _ = chat_state::update_run(&run_id, |run| {
-                            run.sidecar_session_id = Some(candidate_session_id.clone());
-                        });
-                    }
+                if let Some((candidate_session_id, candidate_source)) = streamed_session
+                    && candidate_source > authoritative_sidecar_session_source
+                {
+                    authoritative_sidecar_session_source = candidate_source;
+                    authoritative_sidecar_session_id = Some(candidate_session_id.clone());
+                    let _ = chat_state::set_session_sidecar_session_id(
+                        &session_id,
+                        Some(candidate_session_id.clone()),
+                    );
+                    let _ = chat_state::update_run(&run_id, |run| {
+                        run.sidecar_session_id = Some(candidate_session_id.clone());
+                    });
                 }
 
-                if event.event_type == "message.part.updated" {
-                    if let Some(part) = event.data.get("part").and_then(normalize_stream_part) {
-                        if !should_forward_stream_part(
-                            &part,
-                            &message,
-                            &mut ignored_upstream_message_ids,
-                            &mut assistant_upstream_message_ids,
-                        ) {
-                            return;
-                        }
-                        let _ = chat_state::upsert_message_part(
-                            &session_id,
-                            &assistant_message_id,
-                            part.clone(),
-                        );
-                        emit_message_part_updated(&session_id, &assistant_message_id, part);
+                if event.event_type == "message.part.updated"
+                    && let Some(part) = event.data.get("part").and_then(normalize_stream_part)
+                {
+                    if !should_forward_stream_part(
+                        &part,
+                        &message,
+                        &mut ignored_upstream_message_ids,
+                        &mut assistant_upstream_message_ids,
+                    ) {
+                        return;
                     }
+                    let _ = chat_state::upsert_message_part(
+                        &session_id,
+                        &assistant_message_id,
+                        part.clone(),
+                    );
+                    emit_message_part_updated(&session_id, &assistant_message_id, part);
                 }
             },
         )
         .await;
 
-        if let Ok(Some(existing_run)) = chat_state::get_run(&run_id) {
-            if matches!(
+        if let Ok(Some(existing_run)) = chat_state::get_run(&run_id)
+            && matches!(
                 existing_run.status,
                 ChatRunStatus::Cancelled | ChatRunStatus::Cancelling
-            ) {
-                return;
-            }
+            )
+        {
+            return;
         }
 
         match result {
@@ -3941,6 +4017,7 @@ async fn sandbox_prompt_handler(
             session_id: session.id.clone(),
             run_id: run.id.clone(),
             message: req.message,
+            backend_type: req.backend_type,
             model: req.model,
             context_json: req.context_json,
             timeout_ms: req.timeout_ms,
@@ -3975,6 +4052,7 @@ async fn instance_prompt_handler(
             session_id: session.id.clone(),
             run_id: run.id.clone(),
             message: req.message,
+            backend_type: req.backend_type,
             model: req.model,
             context_json: req.context_json,
             timeout_ms: req.timeout_ms,
@@ -4012,6 +4090,7 @@ async fn sandbox_task_handler(
             session_id: session.id.clone(),
             run_id: run.id.clone(),
             message: req.prompt,
+            backend_type: req.backend_type,
             model: req.model,
             context_json: req.context_json,
             timeout_ms: req.timeout_ms,
@@ -4046,6 +4125,7 @@ async fn instance_task_handler(
             session_id: session.id.clone(),
             run_id: run.id.clone(),
             message: req.prompt,
+            backend_type: req.backend_type,
             model: req.model,
             context_json: req.context_json,
             timeout_ms: req.timeout_ms,
@@ -4529,39 +4609,39 @@ async fn run_port_proxy(
             ))
         }
         Err(SidecarAttemptFailure::Error(err)) => {
-            if is_retryable_transport_error(&err) {
-                if let Some(refreshed) = try_refresh_stale_endpoint(&record, "port_proxy").await {
-                    match proxy_once(build_target(&refreshed)?, method, headers, body).await {
-                        Ok((status, resp_headers, resp_body)) => {
-                            circuit_breaker::mark_healthy(&record.id);
-                            runtime::touch_sandbox(&record.id);
+            if is_retryable_transport_error(&err)
+                && let Some(refreshed) = try_refresh_stale_endpoint(&record, "port_proxy").await
+            {
+                match proxy_once(build_target(&refreshed)?, method, headers, body).await {
+                    Ok((status, resp_headers, resp_body)) => {
+                        circuit_breaker::mark_healthy(&record.id);
+                        runtime::touch_sandbox(&record.id);
 
-                            let mut response =
-                                axum::response::Response::builder().status(status.as_u16());
-                            for (name, value) in resp_headers.iter() {
-                                response = response.header(name.as_str(), value.as_bytes());
-                            }
+                        let mut response =
+                            axum::response::Response::builder().status(status.as_u16());
+                        for (name, value) in resp_headers.iter() {
+                            response = response.header(name.as_str(), value.as_bytes());
+                        }
 
-                            return response
-                                .body(axum::body::Body::from(resp_body))
-                                .map_err(|e| {
-                                    api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-                                });
-                        }
-                        Err(SidecarAttemptFailure::Timeout) => {
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(
-                                StatusCode::GATEWAY_TIMEOUT,
-                                format!(
-                                    "Port proxy timed out after {}s",
-                                    PORT_PROXY_TIMEOUT.as_secs()
-                                ),
-                            ));
-                        }
-                        Err(SidecarAttemptFailure::Error(retry_err)) => {
-                            circuit_breaker::mark_unhealthy(&record.id);
-                            return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
-                        }
+                        return response
+                            .body(axum::body::Body::from(resp_body))
+                            .map_err(|e| {
+                                api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                            });
+                    }
+                    Err(SidecarAttemptFailure::Timeout) => {
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            format!(
+                                "Port proxy timed out after {}s",
+                                PORT_PROXY_TIMEOUT.as_secs()
+                            ),
+                        ));
+                    }
+                    Err(SidecarAttemptFailure::Error(retry_err)) => {
+                        circuit_breaker::mark_unhealthy(&record.id);
+                        return Err(api_error(StatusCode::BAD_GATEWAY, retry_err.to_string()));
                     }
                 }
             }
@@ -4960,6 +5040,7 @@ pub fn operator_api_router_with_tee_and_routes(
     let infra_routes = Router::new()
         .route("/health", get(health))
         .route("/readyz", get(readyz))
+        .route("/api/capabilities", get(capabilities_handler))
         .route("/metrics", get(prometheus_metrics))
         .route("/api/provisions", get(list_provisions))
         .route("/api/provisions/{call_id}", get(get_provision))
@@ -6107,6 +6188,34 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             json["runtime_backend"].is_string(),
             "missing runtime_backend field"
         );
+    }
+
+    #[tokio::test]
+    async fn test_capabilities_endpoint_includes_all_harness_runtime() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response.into_body()).await;
+        let capabilities = json["capabilities"].as_array().expect("capabilities");
+        assert!(
+            capabilities.iter().any(|cap| cap["id"] == "all_harness"),
+            "missing all_harness capability: {json}",
+        );
+        let harnesses = json["harnesses"].as_array().expect("harnesses");
+        for id in ["claude-code", "codex", "opencode", "kimi-code", "gemini"] {
+            assert!(
+                harnesses.iter().any(|h| h["id"] == id),
+                "missing harness {id}: {json}",
+            );
+        }
     }
 
     #[tokio::test]
@@ -9613,15 +9722,16 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
     fn test_build_agent_payload_context_json_cannot_override_max_turns() {
         // A malicious client sends context_json with a maxTurns override
         // attempting to remove the operator-enforced turn limit.
-        let payload = build_agent_payload(
-            "hello",
-            "sess-1",
-            "",
-            r#"{"maxTurns": 999999, "custom_key": "safe"}"#,
-            60_000,
-            Some(5), // operator-enforced limit
-            "default",
-        );
+        let payload = build_agent_payload(AgentPayloadRequest {
+            message: "hello",
+            session_id: "sess-1",
+            backend_type: "",
+            model: "",
+            context_json: r#"{"maxTurns": 999999, "custom_key": "safe"}"#,
+            timeout_ms: 60_000,
+            max_turns: Some(5), // operator-enforced limit
+            agent_identifier: "default",
+        });
 
         let metadata = payload.get("metadata").expect("metadata should exist");
         assert_eq!(
@@ -9639,15 +9749,16 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
     #[test]
     fn test_build_agent_payload_context_json_without_max_turns_override() {
         // Normal case: context_json doesn't try to override maxTurns
-        let payload = build_agent_payload(
-            "hello",
-            "",
-            "gpt-4",
-            r#"{"user_context": "some data"}"#,
-            0,
-            Some(10),
-            "",
-        );
+        let payload = build_agent_payload(AgentPayloadRequest {
+            message: "hello",
+            session_id: "",
+            backend_type: "gemini",
+            model: "gpt-4",
+            context_json: r#"{"user_context": "some data"}"#,
+            timeout_ms: 0,
+            max_turns: Some(10),
+            agent_identifier: "",
+        });
 
         let metadata = payload.get("metadata").expect("metadata should exist");
         assert_eq!(metadata.get("maxTurns").and_then(|v| v.as_u64()), Some(10),);
@@ -9655,5 +9766,8 @@ data: {\"finalText\":\"first reply\",\"metadata\":{\"sessionId\":\"backend-resul
             metadata.get("user_context").and_then(|v| v.as_str()),
             Some("some data"),
         );
+        let backend = payload.get("backend").expect("backend should exist");
+        assert_eq!(backend.get("type").and_then(|v| v.as_str()), Some("gemini"));
+        assert_eq!(backend.get("model").and_then(|v| v.as_str()), Some("gpt-4"));
     }
 }

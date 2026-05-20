@@ -32,12 +32,11 @@ pub async fn batch_create(
     params.owner = super::caller_hex(&caller);
     if request.template_request.tee_required
         && !request.template_request.attestation_nonce.trim().is_empty()
+        && let Some(cfg) = params.tee_config.as_mut()
     {
-        if let Some(cfg) = params.tee_config.as_mut() {
-            cfg.attestation_nonce = Some(crate::tee::decode_attestation_nonce_hex(
-                &request.template_request.attestation_nonce,
-            )?);
-        }
+        cfg.attestation_nonce = Some(crate::tee::decode_attestation_nonce_hex(
+            &request.template_request.attestation_nonce,
+        )?);
     }
     let tee = crate::tee_backend().map(|b| b.as_ref());
     let mut sandboxes_out = Vec::with_capacity(request.count as usize);

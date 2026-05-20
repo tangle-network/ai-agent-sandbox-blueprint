@@ -164,33 +164,32 @@ pub async fn gc_tick() {
         if record_uses_firecracker(&record) {
             if let (Some(container_removed_at), Some(s3_url)) =
                 (record.container_removed_at, &record.snapshot_s3_url)
+                && container_removed_at + config.sandbox_gc_cold_retention <= now
             {
-                if container_removed_at + config.sandbox_gc_cold_retention <= now {
-                    let is_operator_managed = is_operator_s3(s3_url, &record, config);
-                    if is_operator_managed {
-                        info!(
-                            "gc: firecracker cold->gone for sandbox {} (deleting S3 snapshot)",
-                            record.id
-                        );
-                        if let Err(err) = delete_s3_snapshot(s3_url).await {
-                            error!(
-                                "gc: failed to delete firecracker S3 snapshot for sandbox {}: {err}",
-                                record.id
-                            );
-                        }
-                        metrics().record_gc_s3_cleaned();
-                    } else {
-                        info!(
-                            "gc: removing firecracker record for sandbox {} (user BYOS3 preserved at {s3_url})",
+                let is_operator_managed = is_operator_s3(s3_url, &record, config);
+                if is_operator_managed {
+                    info!(
+                        "gc: firecracker cold->gone for sandbox {} (deleting S3 snapshot)",
+                        record.id
+                    );
+                    if let Err(err) = delete_s3_snapshot(s3_url).await {
+                        error!(
+                            "gc: failed to delete firecracker S3 snapshot for sandbox {}: {err}",
                             record.id
                         );
                     }
-                    if let Ok(store) = sandboxes() {
-                        let _ = store.remove(&record.id);
-                    }
-                    metrics().record_garbage_collected();
-                    continue;
+                    metrics().record_gc_s3_cleaned();
+                } else {
+                    info!(
+                        "gc: removing firecracker record for sandbox {} (user BYOS3 preserved at {s3_url})",
+                        record.id
+                    );
                 }
+                if let Ok(store) = sandboxes() {
+                    let _ = store.remove(&record.id);
+                }
+                metrics().record_garbage_collected();
+                continue;
             }
 
             if record.container_removed_at.is_some()
@@ -261,70 +260,67 @@ pub async fn gc_tick() {
         // Tier 2: Warm -> Cold (remove committed image, keep S3)
         if let (Some(container_removed_at), Some(image_id)) =
             (record.container_removed_at, &record.snapshot_image_id)
+            && container_removed_at + config.sandbox_gc_warm_retention <= now
         {
-            if container_removed_at + config.sandbox_gc_warm_retention <= now {
-                info!(
-                    "gc: warm->cold for sandbox {} (removing image {})",
-                    record.id, image_id
+            info!(
+                "gc: warm->cold for sandbox {} (removing image {})",
+                record.id, image_id
+            );
+            if let Err(err) = remove_snapshot_image(image_id).await {
+                error!(
+                    "gc: failed to remove snapshot image for sandbox {}: {err}",
+                    record.id
                 );
-                if let Err(err) = remove_snapshot_image(image_id).await {
-                    error!(
-                        "gc: failed to remove snapshot image for sandbox {}: {err}",
-                        record.id
-                    );
-                }
-                if let Ok(store) = sandboxes() {
-                    let _ = store.update(&record.id, |r| {
-                        r.snapshot_image_id = None;
-                        r.image_removed_at = Some(now);
-                    });
-                }
-                metrics().record_gc_image_removed();
-
-                // If no S3 snapshot exists, remove record entirely
-                if record.snapshot_s3_url.is_none() {
-                    if let Ok(store) = sandboxes() {
-                        let _ = store.remove(&record.id);
-                    }
-                    metrics().record_garbage_collected();
-                }
-                continue;
             }
+            if let Ok(store) = sandboxes() {
+                let _ = store.update(&record.id, |r| {
+                    r.snapshot_image_id = None;
+                    r.image_removed_at = Some(now);
+                });
+            }
+            metrics().record_gc_image_removed();
+
+            // If no S3 snapshot exists, remove record entirely
+            if record.snapshot_s3_url.is_none() {
+                if let Ok(store) = sandboxes() {
+                    let _ = store.remove(&record.id);
+                }
+                metrics().record_garbage_collected();
+            }
+            continue;
         }
 
         // Tier 3: Cold -> Gone (remove S3 snapshot, remove record)
-        if record.snapshot_image_id.is_none() {
-            if let (Some(s3_url), Some(image_removed_at)) =
+        if record.snapshot_image_id.is_none()
+            && let (Some(s3_url), Some(image_removed_at)) =
                 (&record.snapshot_s3_url, record.image_removed_at)
-            {
-                if image_removed_at + config.sandbox_gc_cold_retention <= now {
-                    // Only delete operator-managed S3 snapshots, not user BYOS3
-                    let is_operator_managed = is_operator_s3(s3_url, &record, config);
-                    if is_operator_managed {
-                        info!(
-                            "gc: cold->gone for sandbox {} (deleting S3 snapshot)",
-                            record.id
-                        );
-                        if let Err(err) = delete_s3_snapshot(s3_url).await {
-                            error!(
-                                "gc: failed to delete S3 snapshot for sandbox {}: {err}",
-                                record.id
-                            );
-                        }
-                        metrics().record_gc_s3_cleaned();
-                    } else {
-                        info!(
-                            "gc: removing record for sandbox {} (user BYOS3 preserved at {s3_url})",
-                            record.id
-                        );
-                    }
-                    if let Ok(store) = sandboxes() {
-                        let _ = store.remove(&record.id);
-                    }
-                    metrics().record_garbage_collected();
-                    continue;
+            && image_removed_at + config.sandbox_gc_cold_retention <= now
+        {
+            // Only delete operator-managed S3 snapshots, not user BYOS3
+            let is_operator_managed = is_operator_s3(s3_url, &record, config);
+            if is_operator_managed {
+                info!(
+                    "gc: cold->gone for sandbox {} (deleting S3 snapshot)",
+                    record.id
+                );
+                if let Err(err) = delete_s3_snapshot(s3_url).await {
+                    error!(
+                        "gc: failed to delete S3 snapshot for sandbox {}: {err}",
+                        record.id
+                    );
                 }
+                metrics().record_gc_s3_cleaned();
+            } else {
+                info!(
+                    "gc: removing record for sandbox {} (user BYOS3 preserved at {s3_url})",
+                    record.id
+                );
             }
+            if let Ok(store) = sandboxes() {
+                let _ = store.remove(&record.id);
+            }
+            metrics().record_garbage_collected();
+            continue;
         }
 
         // Cleanup: record has no container, no image, no S3 -> remove
@@ -491,13 +487,13 @@ pub async fn reconcile_on_startup() {
                         });
                     }
                 } else if running {
-                    if supports_docker_endpoint_refresh(&record) {
-                        if let Err(err) = refresh_docker_sandbox_endpoint(&record).await {
-                            error!(
-                                "reconcile: failed to refresh endpoint for sandbox {}: {err}",
-                                record.id
-                            );
-                        }
+                    if supports_docker_endpoint_refresh(&record)
+                        && let Err(err) = refresh_docker_sandbox_endpoint(&record).await
+                    {
+                        error!(
+                            "reconcile: failed to refresh endpoint for sandbox {}: {err}",
+                            record.id
+                        );
                     }
 
                     if record.state == SandboxState::Stopped {

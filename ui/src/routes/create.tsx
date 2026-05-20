@@ -86,6 +86,20 @@ function parsePortsInput(value: string): number[] {
     .filter((n) => n > 0 && n <= 65535);
 }
 
+function parseCapabilitiesJson(value: unknown): Set<string> {
+  if (Array.isArray(value)) {
+    return new Set(value.filter((item): item is string => typeof item === 'string'));
+  }
+  try {
+    const parsed = JSON.parse(String(value || '[]'));
+    return Array.isArray(parsed)
+      ? new Set(parsed.filter((item): item is string => typeof item === 'string'))
+      : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
 export default function CreatePage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -167,6 +181,7 @@ export default function CreatePage() {
 
   // Extra ports input (not an ABI field — merged into metadataJson before deploy)
   const [portsInput, setPortsInput] = useState('');
+  const allHarnessEnabled = parseCapabilitiesJson(values.capabilitiesJson).has('all_harness');
   const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
   const supportsMetadataPorts = runtimeBackend !== 'firecracker';
   const selectedImage = String(values.image || '');
@@ -228,6 +243,7 @@ export default function CreatePage() {
     const nextValues: Record<string, unknown> = {
       ...values,
       metadataJson: JSON.stringify(metadata),
+      capabilitiesJson: allHarnessEnabled ? JSON.stringify(['all_harness']) : JSON.stringify([]),
       // Keep the deprecated ABI field pinned for backward-compatible encoding.
       webTerminalEnabled: true,
     };
@@ -239,7 +255,7 @@ export default function CreatePage() {
     }
 
     return nextValues;
-  }, [runtimeBackend, supportsMetadataPorts, values, portsInput]);
+  }, [runtimeBackend, supportsMetadataPorts, values, portsInput, allHarnessEnabled]);
 
   // Unified deploy hook — manages both submitJob and requestService paths
   const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values: mergedValues, infra, validate, capacity });
@@ -367,6 +383,11 @@ export default function CreatePage() {
                   onChange={(next) => onChange('agentIdentifier', next)}
                 />
               )}
+
+              <AllHarnessCapabilityField
+                enabled={allHarnessEnabled}
+                onChange={(enabled) => onChange('capabilitiesJson', enabled ? JSON.stringify(['all_harness']) : JSON.stringify([]))}
+              />
 
               {configuredAgentIdentifier && (
                 <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
@@ -520,6 +541,35 @@ function AgentConfigurationField({
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+function AllHarnessCapabilityField({
+  enabled,
+  onChange,
+}: {
+  enabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  return (
+    <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor">
+      <label className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onChange(e.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-cloud-elements-borderColor bg-cloud-elements-background-depth-2"
+        />
+        <span className="space-y-1">
+          <span className="block text-xs font-display font-medium text-cloud-elements-textSecondary">
+            All-Harness Runtime
+          </span>
+          <span className="block text-[11px] text-cloud-elements-textTertiary">
+            Request the open-source runtime with Claude, Codex, opencode, Kimi, and Gemini harnesses available in the sandbox image.
+          </span>
+        </span>
+      </label>
     </div>
   );
 }

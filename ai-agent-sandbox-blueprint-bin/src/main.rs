@@ -529,14 +529,14 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     // The contract's onRegister decodes abi.encode(uint32 capacity) from these inputs.
     let tangle_config = {
         let mut config = TangleConfig::default();
-        if let Ok(cap_str) = std::env::var("OPERATOR_MAX_CAPACITY") {
-            if let Ok(capacity) = cap_str.parse::<u32>() {
-                info!("Registering with OPERATOR_MAX_CAPACITY={capacity}");
-                // ABI-encode a single uint32 (padded to 32 bytes)
-                let mut inputs = vec![0u8; 32];
-                inputs[28..32].copy_from_slice(&capacity.to_be_bytes());
-                config = config.with_registration_inputs(inputs);
-            }
+        if let Ok(cap_str) = std::env::var("OPERATOR_MAX_CAPACITY")
+            && let Ok(capacity) = cap_str.parse::<u32>()
+        {
+            info!("Registering with OPERATOR_MAX_CAPACITY={capacity}");
+            // ABI-encode a single uint32 (padded to 32 bytes)
+            let mut inputs = vec![0u8; 32];
+            inputs[28..32].copy_from_slice(&capacity.to_be_bytes());
+            config = config.with_registration_inputs(inputs);
         }
         config
     };
@@ -921,12 +921,11 @@ async fn replay_error_is_already_materialized(
         }
     }
 
-    if let Ok(create_output) = SandboxCreateOutput::abi_decode(output.as_ref()) {
-        if ai_agent_sandbox_blueprint_lib::runtime::get_sandbox_by_id(&create_output.sandboxId)
+    if let Ok(create_output) = SandboxCreateOutput::abi_decode(output.as_ref())
+        && ai_agent_sandbox_blueprint_lib::runtime::get_sandbox_by_id(&create_output.sandboxId)
             .is_ok()
-        {
-            return true;
-        }
+    {
+        return true;
     }
 
     // Workflow IDs are derived from the create call ID. If a replayed

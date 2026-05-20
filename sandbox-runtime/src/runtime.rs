@@ -92,7 +92,8 @@ pub struct CreateSandboxParams {
     /// Parsed from `metadata_json.ports` at creation time.
     pub port_mappings: Vec<u16>,
     /// Sidecar capabilities to enable at boot, encoded as a JSON array
-    /// (e.g. `["computer_use"]`). Currently supported entries: `computer_use`.
+    /// (e.g. `["computer_use"]`). Currently supported entries:
+    /// `computer_use`, `all_harness`.
     /// When non-empty, the runtime sets `SIDECAR_CAPABILITIES` on the
     /// container env so the sidecar boots Xvfb / dbus / MCP at startup.
     /// Empty string means no extra subsystems start.
@@ -130,7 +131,7 @@ pub(crate) fn parse_sidecar_capabilities(raw: &str) -> Option<String> {
     };
     let known: Vec<String> = entries
         .into_iter()
-        .filter(|c| c == "computer_use")
+        .filter(|c| c == "computer_use" || c == "all_harness")
         .collect();
     if known.is_empty() {
         None
@@ -2049,17 +2050,17 @@ async fn create_sidecar_firecracker(
     if let Some(caps) = parse_sidecar_capabilities(&request.capabilities_json) {
         env.insert("SIDECAR_CAPABILITIES".to_string(), caps);
     }
-    if !effective_env.trim().is_empty() {
-        if let Some(Value::Object(map)) = parse_json_object(&effective_env, "env_json")? {
-            for (key, value) in map {
-                let val = match value {
-                    Value::String(v) => v,
-                    Value::Number(v) => v.to_string(),
-                    Value::Bool(v) => v.to_string(),
-                    _ => continue,
-                };
-                env.insert(key, val);
-            }
+    if !effective_env.trim().is_empty()
+        && let Some(Value::Object(map)) = parse_json_object(&effective_env, "env_json")?
+    {
+        for (key, value) in map {
+            let val = match value {
+                Value::String(v) => v,
+                Value::Number(v) => v.to_string(),
+                Value::Bool(v) => v.to_string(),
+                _ => continue,
+            };
+            env.insert(key, val);
         }
     }
 
@@ -2612,16 +2613,16 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
     }
 
     // TEE-managed sandbox: delegate to the TEE backend.
-    if let Some(deployment_id) = &record.tee_deployment_id {
-        if let Some(backend) = crate::tee::try_tee_backend() {
-            backend.stop(deployment_id).await?;
-            let now = crate::util::now_ts();
-            let _ = sandboxes()?.update(&record.id, |r| {
-                r.state = SandboxState::Stopped;
-                r.stopped_at = Some(now);
-            });
-            return Ok(());
-        }
+    if let Some(deployment_id) = &record.tee_deployment_id
+        && let Some(backend) = crate::tee::try_tee_backend()
+    {
+        backend.stop(deployment_id).await?;
+        let now = crate::util::now_ts();
+        let _ = sandboxes()?.update(&record.id, |r| {
+            r.state = SandboxState::Stopped;
+            r.stopped_at = Some(now);
+        });
+        return Ok(());
     }
 
     if record_uses_firecracker(record) {
@@ -2656,12 +2657,11 @@ async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
     let ready = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
         loop {
             let url = format!("{sidecar_url}/health");
-            if let Ok(resp) = crate::util::http_client().map(|c| c.get(&url)) {
-                if let Ok(r) = resp.send().await {
-                    if r.status().is_success() {
-                        return;
-                    }
-                }
+            if let Ok(resp) = crate::util::http_client().map(|c| c.get(&url))
+                && let Ok(r) = resp.send().await
+                && r.status().is_success()
+            {
+                return;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -3538,12 +3538,12 @@ fn parse_extra_ports(metadata_json: &str, explicit: &[u16]) -> Vec<u16> {
     let mut ports: Vec<u16> = Vec::new();
 
     // From metadata_json.ports
-    if let Ok(Some(meta)) = parse_json_object(metadata_json, "metadata_json") {
-        if let Some(arr) = meta.get("ports").and_then(|v| v.as_array()) {
-            for v in arr {
-                if let Some(p) = v.as_u64().and_then(|n| u16::try_from(n).ok()) {
-                    ports.push(p);
-                }
+    if let Ok(Some(meta)) = parse_json_object(metadata_json, "metadata_json")
+        && let Some(arr) = meta.get("ports").and_then(|v| v.as_array())
+    {
+        for v in arr {
+            if let Some(p) = v.as_u64().and_then(|n| u16::try_from(n).ok()) {
+                ports.push(p);
             }
         }
     }
@@ -3964,6 +3964,14 @@ mod sidecar_capability_tests {
             parse_sidecar_capabilities(r#"["computer_use"]"#).as_deref(),
             Some("computer_use"),
         );
+        assert_eq!(
+            parse_sidecar_capabilities(r#"["all_harness"]"#).as_deref(),
+            Some("all_harness"),
+        );
+        assert_eq!(
+            parse_sidecar_capabilities(r#"["computer_use","all_harness"]"#).as_deref(),
+            Some("computer_use,all_harness"),
+        );
     }
 
     #[test]
@@ -4010,6 +4018,12 @@ mod sidecar_capability_tests {
         assert!(
             env_vars.contains(&"SIDECAR_CAPABILITIES=computer_use".to_string()),
             "expected SIDECAR_CAPABILITIES in env, got {env_vars:?}",
+        );
+        let env_vars =
+            build_env_vars("{}", "tok", 8080, r#"["computer_use","all_harness"]"#).unwrap();
+        assert!(
+            env_vars.contains(&"SIDECAR_CAPABILITIES=computer_use,all_harness".to_string()),
+            "expected all-harness SIDECAR_CAPABILITIES in env, got {env_vars:?}",
         );
     }
 
