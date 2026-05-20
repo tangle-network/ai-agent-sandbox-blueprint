@@ -14,21 +14,26 @@ interface ITangle {
 /// @notice Deploys 1 unified contract 3 times with different mode flags and registers on Tangle.
 /// @dev Run via: forge script contracts/script/RegisterBlueprint.s.sol --rpc-url $RPC_URL --broadcast --slow
 contract RegisterBlueprint is Script {
-    // Anvil well-known deployer key
-    uint256 constant DEPLOYER_KEY = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+    // Anvil well-known deployer key (default when no PRIVATE_KEY env is set)
+    uint256 constant DEFAULT_DEPLOYER_KEY = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
 
-    // Tangle protocol address (deterministic from Anvil state snapshot)
-    address constant TANGLE = 0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9;
-    address constant RESTAKING = 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512;
+    // Tangle protocol addresses on a LocalTestnet anvil snapshot.
+    // For real chains (Base Sepolia, mainnet) pass via env: TANGLE_CORE, RESTAKING.
+    address constant DEFAULT_TANGLE = 0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9;
+    address constant DEFAULT_RESTAKING = 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512;
 
     function run() external {
-        ITangle tangle = ITangle(TANGLE);
+        uint256 deployerKey = vm.envOr("PRIVATE_KEY", DEFAULT_DEPLOYER_KEY);
+        address tangleAddr = vm.envOr("TANGLE_CORE", DEFAULT_TANGLE);
+        address restakingAddr = vm.envOr("RESTAKING", DEFAULT_RESTAKING);
 
-        vm.startBroadcast(DEPLOYER_KEY);
+        ITangle tangle = ITangle(tangleAddr);
+
+        vm.startBroadcast(deployerKey);
 
         // ── Deploy Blueprint Service Managers ────────────────────────────
         // Cloud mode: capacity-weighted operator selection
-        AgentSandboxBlueprint sandbox = new AgentSandboxBlueprint(RESTAKING, false, false);
+        AgentSandboxBlueprint sandbox = new AgentSandboxBlueprint(restakingAddr, false, false);
         // Instance mode: per-service singleton sandbox
         AgentSandboxBlueprint instance = new AgentSandboxBlueprint(address(0), true, false);
         // TEE instance mode: singleton with attestation enforcement
