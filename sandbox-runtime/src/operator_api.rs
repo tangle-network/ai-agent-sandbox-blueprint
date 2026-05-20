@@ -5776,10 +5776,10 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         let sidecar_url = format!("http://{addr}");
         let health_url = format!("{sidecar_url}/health");
         for _ in 0..20 {
-            if let Ok(resp) = reqwest::get(&health_url).await {
-                if resp.status().is_success() {
-                    break;
-                }
+            if let Ok(resp) = reqwest::get(&health_url).await
+                && resp.status().is_success()
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -5877,10 +5877,10 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         let sidecar_url = format!("http://{addr}");
         let health_url = format!("{sidecar_url}/health");
         for _ in 0..20 {
-            if let Ok(resp) = reqwest::get(&health_url).await {
-                if resp.status().is_success() {
-                    break;
-                }
+            if let Ok(resp) = reqwest::get(&health_url).await
+                && resp.status().is_success()
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -5938,10 +5938,10 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
     async fn wait_for_run_terminal(run_id: &str) -> ChatRunRecord {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
-            if let Some(run) = crate::chat_state::get_run(run_id).expect("get run") {
-                if !run.status.is_active() {
-                    return run;
-                }
+            if let Some(run) = crate::chat_state::get_run(run_id).expect("get run")
+                && !run.status.is_active()
+            {
+                return run;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -7401,10 +7401,10 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         let sidecar_url = format!("http://{addr}");
         let health_url = format!("{sidecar_url}/health");
         for _ in 0..20 {
-            if let Ok(resp) = reqwest::get(&health_url).await {
-                if resp.status().is_success() {
-                    break;
-                }
+            if let Ok(resp) = reqwest::get(&health_url).await
+                && resp.status().is_success()
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -7467,10 +7467,10 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         let sidecar_url = format!("http://{addr}");
         let health_url = format!("{sidecar_url}/health");
         for _ in 0..20 {
-            if let Ok(resp) = reqwest::get(&health_url).await {
-                if resp.status().is_success() {
-                    break;
-                }
+            if let Ok(resp) = reqwest::get(&health_url).await
+                && resp.status().is_success()
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

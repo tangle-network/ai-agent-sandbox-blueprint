@@ -80,7 +80,7 @@ fn bench_exchange_signature_for_token(c: &mut Criterion) {
 
     c.bench_function("session_auth/full_challenge_roundtrip", |b| {
         b.iter(|| {
-            if rand::random::<u8>() % 64 == 0 {
+            if rand::random::<u8>().is_multiple_of(64) {
                 clear_all_for_testing();
             }
             let challenge = create_challenge().expect("challenge");

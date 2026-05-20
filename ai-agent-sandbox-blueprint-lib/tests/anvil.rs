@@ -283,10 +283,10 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
                 if tokio::time::Instant::now() > api_deadline {
                     anyhow::bail!("Operator API not ready within 5s");
                 }
-                if let Ok(r) = api_client.get(format!("{api_url}/api/provisions")).send().await {
-                    if r.status().is_success() {
-                        break;
-                    }
+                if let Ok(r) = api_client.get(format!("{api_url}/api/provisions")).send().await
+                    && r.status().is_success()
+                {
+                    break;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -381,11 +381,11 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
                     "Sidecar not healthy within 60s at {sidecar_url}"
                 );
             }
-            if let Ok(resp) = client.get(format!("{sidecar_url}/health")).send().await {
-                if resp.status().is_success() {
-                    eprintln!("Sidecar healthy at {sidecar_url}");
-                    break;
-                }
+            if let Ok(resp) = client.get(format!("{sidecar_url}/health")).send().await
+                && resp.status().is_success()
+            {
+                eprintln!("Sidecar healthy at {sidecar_url}");
+                break;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }

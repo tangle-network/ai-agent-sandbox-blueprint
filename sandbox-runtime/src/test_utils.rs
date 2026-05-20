@@ -57,10 +57,10 @@ pub async fn wait_for_url(url: &str, timeout_secs: u64) -> Result<()> {
         if tokio::time::Instant::now() > deadline {
             anyhow::bail!("URL not ready within {timeout_secs}s: {url}");
         }
-        if let Ok(r) = http().get(url).send().await {
-            if r.status().is_success() {
-                return Ok(());
-            }
+        if let Ok(r) = http().get(url).send().await
+            && r.status().is_success()
+        {
+            return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }

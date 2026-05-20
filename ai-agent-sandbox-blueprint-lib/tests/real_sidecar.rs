@@ -141,13 +141,13 @@ async fn ensure_sidecar() -> &'static TestSidecar {
             ];
 
             // Configure ZAI AI backend when API key is available.
-            if let Ok(api_key) = std::env::var("ZAI_API_KEY") {
-                if !api_key.is_empty() {
-                    env_vars.push("AGENT_BACKEND=opencode".to_string());
-                    env_vars.push("OPENCODE_MODEL_PROVIDER=zai-coding-plan".to_string());
-                    env_vars.push(format!("OPENCODE_MODEL_API_KEY={api_key}"));
-                    env_vars.push("OPENCODE_MODEL_NAME=glm-4.7".to_string());
-                }
+            if let Ok(api_key) = std::env::var("ZAI_API_KEY")
+                && !api_key.is_empty()
+            {
+                env_vars.push("AGENT_BACKEND=opencode".to_string());
+                env_vars.push("OPENCODE_MODEL_PROVIDER=zai-coding-plan".to_string());
+                env_vars.push(format!("OPENCODE_MODEL_API_KEY={api_key}"));
+                env_vars.push("OPENCODE_MODEL_NAME=glm-4.7".to_string());
             }
 
             let override_config = BollardConfig {
