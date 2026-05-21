@@ -11,13 +11,18 @@
   "blueprintUi": {
     "displayName": "AI Agent Sandbox",
     "description": "Provision attested AI agent sandboxes with sidecar capabilities, session-scoped budgets, and live execution traces.",
+    "slug": "ai-agent-sandbox",
     "requestedSlug": "ai-agent-sandbox",
     "publisher": {
       "name": "Tangle Network",
       "namespace": "tangle",
-      "verified": false
+      "verified": true,
+      "verification": "verified"
     },
     "resources": {
+      "serviceNoun": "sandbox fleet",
+      "resourceNoun": "agent",
+      "resourceRoute": "agents",
       "serviceLabel": "Sandbox fleet",
       "itemLabel": "Agent",
       "itemRoute": "agents"
