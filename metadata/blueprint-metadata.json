@@ -47,7 +47,10 @@
       "label": "Open Agent Sandbox",
       "iframe": {
         "appId": "agent-sandbox",
-        "allowedChainIds": [31337, 84532],
+        "allowedChainIds": [
+          31337,
+          84532
+        ],
         "contracts": [
           {
             "chainId": 31337,
@@ -55,7 +58,7 @@
           },
           {
             "chainId": 84532,
-            "address": "0x1be58d12620ecc8ba9d780feec2596510d75a933"
+            "address": "0xC9b0716a187072be0f38A5D972392C6479b9Cfe3"
           }
         ],
         "messages": [
