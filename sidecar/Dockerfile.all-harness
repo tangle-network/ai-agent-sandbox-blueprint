@@ -21,8 +21,12 @@ ARG BLUEPRINT_HARNESSES
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl git python3 \
+    bash ca-certificates curl git python3 unzip \
   && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://bun.sh/install | bash \
+  && cp /root/.bun/bin/bun /usr/local/bin/bun \
+  && chmod 0755 /usr/local/bin/bun
 
 COPY sidecar/scripts/install-harness.sh /usr/local/share/blueprint-sidecar/install-harness.sh
 RUN set -eu; \
@@ -41,7 +45,7 @@ USER root
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl git openssh-client python3 tini \
+    bash ca-certificates curl git openssh-client python3 tini unzip \
   && rm -rf /var/lib/apt/lists/* \
   && existing_group="$(getent group 1000 | cut -d: -f1 || true)" \
   && if [ -n "$existing_group" ] && [ "$existing_group" != agent ]; then groupmod --new-name agent "$existing_group"; elif [ -z "$existing_group" ]; then groupadd --gid 1000 agent; fi \
@@ -53,6 +57,7 @@ RUN apt-get update \
   && chown -R agent:agent /home/agent
 
 COPY --from=harnesses /usr/local/ /usr/local/
+COPY --from=harnesses /root/.bun/ /root/.bun/
 COPY --from=harnesses /root/.local/ /root/.local/
 COPY --from=harnesses /root/.opencode/ /root/.opencode/
 
@@ -61,7 +66,7 @@ COPY sidecar/scripts/verify-harnesses.sh /usr/local/bin/blueprint-verify-harness
 RUN chmod +x /usr/local/bin/blueprint-verify-harnesses \
   && if [ "$BLUEPRINT_HARNESSES" = "all" ]; then blueprint-verify-harnesses; fi
 
-ENV PATH="/root/.local/bin:/root/.opencode/bin:/usr/local/bin:${PATH}"
+ENV PATH="/root/.bun/bin:/root/.local/bin:/root/.opencode/bin:/usr/local/bin:${PATH}"
 ENV SIDECAR_CAPABILITIES="all_harness"
 ENV SIDECAR_PORT=8080
 ENV AGENT_WORKSPACE_ROOT="/home/agent/workspace"

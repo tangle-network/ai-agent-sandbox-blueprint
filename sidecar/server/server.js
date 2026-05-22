@@ -124,6 +124,7 @@ function runProcess(command, args, options = {}) {
       cwd,
       env: childEnv,
       shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
       uid: process.getuid && process.getuid() === 0 ? childUid : undefined,
       gid: process.getuid && process.getuid() === 0 ? childGid : undefined,
     })
@@ -202,7 +203,9 @@ function harnessCommand(harness, payload) {
     case 'gemini':
       return {
         command: 'gemini',
-        args: model ? ['-m', model, '-p', message] : ['-p', message],
+        args: model
+          ? ['--skip-trust', '--yolo', '-m', model, '-p', message]
+          : ['--skip-trust', '--yolo', '-p', message],
         timeout,
       }
     case 'kimi':
