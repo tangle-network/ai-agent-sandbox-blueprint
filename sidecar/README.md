@@ -1,10 +1,10 @@
 # Blueprint Sidecar Image
 
-This directory owns the public all-harness sidecar layer for the sandbox blueprint.
+This directory owns the public all-harness sidecar runtime for the sandbox blueprint.
 
 The sandbox runtime should not assume that an external floating image contains
-every agent CLI. The image built here installs the harness toolchain in a
-reviewable, reproducible place:
+the sidecar server or every agent CLI. The image built here ships the sidecar
+HTTP contract plus the harness toolchain in a reviewable, reproducible place:
 
 - Claude Code
 - Codex
@@ -12,15 +12,10 @@ reviewable, reproducible place:
 - Kimi
 - Gemini
 
-The sidecar server base is required through `SIDECAR_BASE_IMAGE`. That keeps the
-ownership boundary explicit: this repo owns the public harness layer, and it will
-not silently fall back to a legacy sidecar image.
-
 ## Build
 
 ```bash
 docker build -f sidecar/Dockerfile.all-harness \
-  --build-arg SIDECAR_BASE_IMAGE="$BLUEPRINT_SIDECAR_SERVER_IMAGE" \
   -t ghcr.io/tangle-network/blueprint-sidecar:all-harness .
 ```
 
@@ -28,14 +23,9 @@ Build a smaller subset:
 
 ```bash
 docker build -f sidecar/Dockerfile.all-harness \
-  --build-arg SIDECAR_BASE_IMAGE="$BLUEPRINT_SIDECAR_SERVER_IMAGE" \
   --build-arg BLUEPRINT_HARNESSES=codex,gemini \
   -t ghcr.io/tangle-network/blueprint-sidecar:codex-gemini .
 ```
-
-The publish workflow requires the repository variable
-`BLUEPRINT_SIDECAR_SERVER_IMAGE`; without it, pull requests still validate the
-harness layer, but main will not publish a fake complete runtime image.
 
 ## Publish
 
@@ -45,9 +35,9 @@ The GitHub Actions workflow publishes the runtime image to GHCR:
 - `ghcr.io/tangle-network/blueprint-sidecar:all-harness-<git-sha>` — immutable commit tag for reproducible deployments.
 - `ghcr.io/tangle-network/blueprint-sidecar:all-harness-<release-tag>` — release/tag alias when publishing a GitHub Release or pushing a matching tag.
 
-Manual publish is available from the `Sidecar Image` workflow. Use the
-`sidecar_base_image` input only when overriding the repository variable for a
-one-off build.
+Manual publish is available from the `Sidecar Image` workflow. Publishing a
+GitHub Release also creates release-specific aliases such as
+`all-harness-v1.2.3` and `all-harness-1.2.3`.
 
 The workflow prunes old GHCR versions after successful publishes:
 

@@ -18,10 +18,6 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
-      sidecar_base_image:
-        description: 'Override the sidecar server base image. Defaults to repository variable BLUEPRINT_SIDECAR_SERVER_IMAGE.'
-        required: false
-        type: string
       prune_sha_versions_to_keep:
         description: 'How many all-harness-<sha> GHCR versions to keep after publish.'
         required: false
@@ -72,14 +68,8 @@ jobs:
 
       - name: Resolve image tags
         id: tags
-        env:
-          SIDECAR_BASE_IMAGE: ${{ inputs.sidecar_base_image || vars.BLUEPRINT_SIDECAR_SERVER_IMAGE }}
         run: |
           set -euo pipefail
-          if [ -z "$SIDECAR_BASE_IMAGE" ]; then
-            echo "BLUEPRINT_SIDECAR_SERVER_IMAGE repository variable or workflow_dispatch sidecar_base_image input is required" >&2
-            exit 1
-          fi
 
           image="ghcr.io/tangle-network/blueprint-sidecar"
           {
@@ -98,7 +88,6 @@ jobs:
 
           {
             echo "image=${image}"
-            echo "base_image=${SIDECAR_BASE_IMAGE}"
             echo "tags<<EOF"
             cat /tmp/sidecar-tags.txt
             echo "EOF"
@@ -117,7 +106,6 @@ jobs:
             org.opencontainers.image.version=${{ github.ref_name }}
           build-args: |
             BLUEPRINT_HARNESSES=all
-            SIDECAR_BASE_IMAGE=${{ steps.tags.outputs.base_image }}
 
   cleanup:
     name: Prune old sidecar image versions
