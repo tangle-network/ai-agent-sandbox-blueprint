@@ -5,6 +5,7 @@ pkgs.mkShell {
 
   packages = with pkgs; [
     bash
+    bun
     cacert
     curl
     git
