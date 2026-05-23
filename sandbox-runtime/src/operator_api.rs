@@ -246,6 +246,12 @@ pub(crate) fn classify_sandbox_error(err: SandboxError) -> (StatusCode, Json<Api
         SandboxError::Validation(msg) => api_error(StatusCode::BAD_REQUEST, msg),
         SandboxError::NotFound(msg) => api_error(StatusCode::NOT_FOUND, msg),
         SandboxError::Unavailable(msg) => api_error(StatusCode::SERVICE_UNAVAILABLE, msg),
+        // Feature is not yet implemented in the underlying runtime primitive.
+        // `501 Not Implemented` is the right shape — the request is well-formed
+        // and the caller is authenticated; the server simply has not yet wired
+        // the capability. Surface the message so callers learn which release to
+        // wait for.
+        SandboxError::Unsupported(msg) => api_error(StatusCode::NOT_IMPLEMENTED, msg),
         SandboxError::CircuitBreaker { .. } => circuit_breaker_api_error(err),
         SandboxError::Http(detail) => {
             tracing::error!(err = %detail, "upstream HTTP failure");
@@ -1895,7 +1901,7 @@ async fn probe_runtime_backend() -> (String, bool, Option<String>) {
                 Err(_) => (
                     backend.as_str().to_string(),
                     false,
-                    Some("firecracker host-agent health check timed out".to_string()),
+                    Some("firecracker driver health check timed out".to_string()),
                 ),
             }
         }

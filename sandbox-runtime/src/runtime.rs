@@ -1994,27 +1994,13 @@ async fn create_sidecar_firecracker(
     // fast here rather than being silently dropped. Both legacy `[3000]` and
     // structured `[{container_port,host_port,protocol}]` shapes are accepted.
     //
-    // Persistence: the parsed ports survive restarts because
-    // `metadata_with_runtime_backend` (called below) preserves the entire
-    // input metadata object, including `ports`, on the persisted record.
-    //
-    // Forwarding: the host-agent create-VM contract in this repo (see
-    // `firecracker.rs::create_and_start`) does NOT yet expose a port
-    // forwarding field in its OpenAPI types. Until the upstream host-agent
-    // adds one, we parse + persist + warn but do not invent a payload key.
-    // See README "Selecting `firecracker` disables `metadata_json.ports`"
-    // — that guidance is being relaxed in two phases (a) accept input,
-    // (b) forward once host-agent ships the contract.
+    // Persistence: parsed ports would round-trip through the persisted
+    // record once the firecracker create path actually returns a record
+    // (the in-process driver does not yet support port forwarding — see
+    // `firecracker::create_and_start`).
     let metadata_value =
         parse_json_object(&request.metadata_json, "metadata_json")?.unwrap_or(Value::Null);
     let parsed_ports = parse_metadata_ports(&metadata_value)?;
-    if !parsed_ports.is_empty() {
-        tracing::warn!(
-            sandbox_id = %sandbox_id,
-            count = parsed_ports.len(),
-            "firecracker: metadata.ports parsed and persisted; host-agent forwarding pending upstream contract",
-        );
-    }
 
     let effective_image = if request.image.is_empty() {
         config.image.clone()
@@ -2073,8 +2059,11 @@ async fn create_sidecar_firecracker(
 
     let provisioned = crate::firecracker::create_and_start(create_request).await?;
     let sidecar_url = provisioned.container.endpoint.ok_or_else(|| {
+        // `create_and_start` currently fails with `Unsupported` before reaching
+        // here. If a future driver release returns a container without an
+        // endpoint, surface it explicitly rather than silently mis-routing.
         SandboxError::Unavailable(format!(
-            "firecracker host-agent started sandbox {sandbox_id}, but did not return an endpoint"
+            "firecracker driver started sandbox {sandbox_id}, but did not return an endpoint"
         ))
     })?;
 
@@ -2127,8 +2116,9 @@ async fn create_sidecar_firecracker(
         tee_config: None,
         // Persist the parsed structured port mappings on the record so they
         // survive restart and so callers reading the sandbox can introspect
-        // intended forwarding even before host-agent's port-forward contract
-        // is implemented. Empty when no `metadata.ports` were requested.
+        // intended forwarding before microvm-runtime ships the network
+        // layer that actually routes them. Empty when no `metadata.ports`
+        // were requested.
         extra_ports: parsed_ports
             .iter()
             .map(|p| (p.container_port, p.host_port))
@@ -2754,31 +2744,39 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         ));
     }
     if record_uses_firecracker(record) {
+        // Re-start the VM via the in-process driver. The primitive can flip
+        // a stopped VM back to running but cannot yet expose a host-reachable
+        // endpoint, so we leave the persisted `sidecar_url` untouched. If the
+        // future driver release returns an endpoint, plumb it through here.
         let resumed = crate::firecracker::start(&record.container_id).await?;
-        let sidecar_url = resumed.endpoint.ok_or_else(|| {
-            SandboxError::Unavailable(format!(
-                "firecracker sandbox {} resumed without sidecar endpoint",
-                record.id
-            ))
-        })?;
-        let sidecar_port =
-            parse_url_port(&sidecar_url).unwrap_or(SidecarRuntimeConfig::load().container_port);
-        if !wait_for_sidecar_health(&sidecar_url, 30).await {
-            let _ = crate::firecracker::stop(&record.container_id).await;
-            return Err(SandboxError::Unavailable(format!(
-                "Resume failed: firecracker sidecar for sandbox {} did not become healthy",
-                record.id
-            )));
+        if let Some(sidecar_url) = resumed.endpoint {
+            let sidecar_port =
+                parse_url_port(&sidecar_url).unwrap_or(SidecarRuntimeConfig::load().container_port);
+            if !wait_for_sidecar_health(&sidecar_url, 30).await {
+                let _ = crate::firecracker::stop(&record.container_id).await;
+                return Err(SandboxError::Unavailable(format!(
+                    "Resume failed: firecracker sidecar for sandbox {} did not become healthy",
+                    record.id
+                )));
+            }
+            let now = crate::util::now_ts();
+            let _ = sandboxes()?.update(&record.id, |r| {
+                r.state = SandboxState::Running;
+                r.stopped_at = None;
+                r.last_activity_at = now;
+                r.sidecar_url = sidecar_url.clone();
+                r.sidecar_port = sidecar_port;
+            });
+            return Ok(());
         }
-        let now = crate::util::now_ts();
-        let _ = sandboxes()?.update(&record.id, |r| {
-            r.state = SandboxState::Running;
-            r.stopped_at = None;
-            r.last_activity_at = now;
-            r.sidecar_url = sidecar_url.clone();
-            r.sidecar_port = sidecar_port;
-        });
-        return Ok(());
+        // No endpoint plumbing yet: roll the VM back and report loudly.
+        let _ = crate::firecracker::stop(&record.container_id).await;
+        return Err(SandboxError::Unsupported(format!(
+            "resume for runtime_backend=firecracker is not wired end-to-end yet: the in-process \
+             driver started sandbox {} but cannot expose a host-reachable sidecar endpoint until \
+             microvm-runtime 0.2.0 ships network setup",
+            record.id
+        )));
     }
 
     // For TEE-managed sandboxes, tee_deployment_id holds the real Docker container
@@ -3365,8 +3363,8 @@ impl PortProtocol {
 }
 
 /// Structured port mapping entry parsed from the `ports` field on
-/// `metadata_json`. Designed to round-trip through the host-agent
-/// create-VM payload once that contract stabilises.
+/// `metadata_json`. Designed to round-trip through the microvm-runtime
+/// network layer once it ships in `0.2.0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PortMapping {
     pub container_port: u16,

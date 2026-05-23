@@ -34,7 +34,7 @@ pub mod test_utils;
 
 /// Process-wide lock for tests that mutate env vars consumed by static
 /// `OnceLock` / `Lazy` config (e.g. `SESSION_AUTH_SECRET`,
-/// `FIRECRACKER_HOST_AGENT_*`, `TEE_BACKEND`, `BLUEPRINT_STATE_DIR`).
+/// `MICROVM_FIRECRACKER_*`, `TEE_BACKEND`, `BLUEPRINT_STATE_DIR`).
 ///
 /// Without a single mutex shared across modules, each `#[test]` that
 /// `set_var`s a config-relevant env interleaves with parallel tests. The

@@ -81,8 +81,8 @@ Even if `sandbox-runtime` has a microVM adapter, `microvm-blueprint` stays separ
 
 - `sandbox-runtime` still contains concrete Docker/TEE integrations directly.
 - Runtime selection contract is wired (`metadata_json.runtime_backend`).
-- `runtime_backend=firecracker` is now implemented in `sandbox-runtime` via host-agent adapter calls (`/v1/containers` create/start/stop/delete + status reconcile).
-- Current Firecracker parity gap in this repo: no extra host port mapping (`metadata_json.ports`) support yet.
+- `runtime_backend=firecracker` is now implemented in `sandbox-runtime` by consuming the in-process [`microvm-runtime`](https://github.com/tangle-network/microvm-runtime) driver directly. There is no separate host-agent service — the operator process **is** the Firecracker host.
+- `microvm-runtime 0.1.0-alpha.1` wires VM lifecycle (create/start/stop/destroy + status reconcile). Networking, per-VM env injection, host port mapping (`metadata_json.ports`), and host-reachable sidecar endpoint exposure are deferred to `microvm-runtime 0.2.0`; until then the create/resume paths return `SandboxError::Unsupported`.
 - L1 layer contracts are codified in `sandbox-runtime/src/contracts.rs`
   (`SandboxProvider`, `RuntimeAdapter`, `DefaultRuntimeAdapter`, `DockerSandboxProvider`).
 - L0 is a target boundary, not fully extracted in this repo.
