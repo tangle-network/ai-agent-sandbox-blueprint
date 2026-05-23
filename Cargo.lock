@@ -6869,10 +6869,12 @@ dependencies = [
 
 [[package]]
 name = "microvm-runtime"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a9d35aee12fac25356b9c0e6c16084e9e2ea1ed72ae8b0e9b839ac8c651b232"
+checksum = "312192f848cd63715ac374ac0d72cb3cfc1fa5f77b6376b4ac1bb7e8c24e1c6c"
 dependencies = [
+ "libc",
+ "nix 0.30.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

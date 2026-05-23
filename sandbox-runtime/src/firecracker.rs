@@ -5,32 +5,38 @@
 //! separate "host-agent" service; this module talks directly to the VMM over
 //! its unix socket via the primitive.
 //!
-//! ## Wired today (`microvm-runtime 0.1.0-alpha.1`)
+//! ## Wired today (`microvm-runtime 0.2.0-alpha.1`)
 //!
 //! - VM create / start / stop / destroy lifecycle.
+//! - **Per-VM resource overrides**: `cpu_cores` and `memory_mb` from the
+//!   create request flow into `VmSpec` (clamped to FC's u8 / u32 ranges).
 //! - Status reporting for the reaper reconcile loop
 //!   (`FirecrackerContainerStatus::{Missing,Running,Stopped}`).
 //! - Provider initialization probe used by the operator API health check.
 //!
 //! ## Not yet wired (returns [`SandboxError::Unsupported`])
 //!
-//! These will land as `microvm-runtime 0.2.0+` ships them (see the crate
-//! ROADMAP). Failing loudly here is intentional: silent fallbacks would
-//! deliver half-broken sandboxes.
+//! `0.2.0-alpha.1` shipped the primitives — `network::NetworkManager`,
+//! `vsock::VsockManager`, `firewall::Firewall`, `Jailer`,
+//! `MetricsPoller`, `ConsoleCapture`, `graceful_shutdown`. Composing them
+//! into the sandbox's lifecycle (network attachment, vsock-backed sidecar
+//! handshake, port forwarding) is sandbox-runtime work tracked for the
+//! next milestone. Failing loudly here is intentional: silent fallbacks
+//! would deliver half-broken sandboxes.
 //!
-//! - **Sidecar endpoint URL**: requires network setup (TAP + bridge + NAT)
-//!   to make the guest reachable from the host. Until then, the create path
-//!   returns `Unsupported` rather than fabricating an endpoint.
-//! - **Per-VM environment injection**: requires either init-time cloud-init
+//! - **Sidecar endpoint URL**: requires composing `NetworkManager::attach`
+//!   with a vsock-backed sidecar handshake. Until that's wired here, the
+//!   create path tears the VM back down and returns `Unsupported` rather
+//!   than fabricating an endpoint.
+//! - **Per-VM environment injection**: requires either cloud-init at boot
 //!   or guest-side metadata service. Not yet exposed by the primitive.
-//! - **Per-VM resource overrides** (cpu / memory / disk): the primitive's
-//!   alpha takes resource sizing from process-wide env vars
-//!   (`MICROVM_FIRECRACKER_VCPU`, `MICROVM_FIRECRACKER_MEM_MIB`); per-request
-//!   overrides land in `0.2.0`.
-//! - **Port forwarding**: requires the network layer above plus iptables
-//!   DNAT.
-//! - **Sandbox-issued sidecar auth token**: the runtime cannot inject a
-//!   per-VM secret without env / vsock support.
+//! - **Per-VM disk sizing**: requires creating a per-VM ext4 image
+//!   (`disk_gb` from the request). Today the primitive uses the workspace
+//!   default rootfs path.
+//! - **Port forwarding**: requires composing `Firewall` (DNAT rules) on
+//!   top of `NetworkManager`.
+//! - **Sandbox-issued sidecar auth token**: requires the vsock handshake
+//!   composition above.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -38,7 +44,7 @@ use std::sync::OnceLock;
 use microvm_runtime::{
     adapters::firecracker::FirecrackerVmProvider,
     error::VmRuntimeError,
-    model::VmStatus,
+    model::{VmSpec, VmStatus},
     provider::{VmProvider, VmQuery},
 };
 
@@ -56,7 +62,26 @@ fn provider() -> &'static FirecrackerVmProvider {
 
 /// Marker pointing at the upcoming `microvm-runtime` release that adds the
 /// missing capability. Keeps the migration breadcrumb in one place.
-const UPCOMING_RELEASE: &str = "microvm-runtime 0.2.0";
+const UPCOMING_RELEASE: &str = "microvm-runtime 0.3.0 (networking + vsock)";
+
+/// Build a [`VmSpec`] from the sandbox-side create request.
+///
+/// Wires per-VM resource overrides (vCPU count, memory) from the request into
+/// the primitive. Other fields (`image`, `disk_gb`, `env`, `ports`) still
+/// require capability the primitive does not yet expose — see the docstring
+/// at the top of this file.
+fn spec_from_request(req: &FirecrackerCreateRequest) -> VmSpec {
+    let mut spec = VmSpec::default();
+    if req.cpu_cores > 0 {
+        // `cpu_cores` is `u64` on the sandbox side, but FC's `vcpu_count` is
+        // `u8` (the kernel's max is 255). Clamp rather than overflow-panic.
+        spec.vcpu_count = Some(req.cpu_cores.min(u8::MAX as u64) as u8);
+    }
+    if req.memory_mb > 0 {
+        spec.mem_size_mib = Some(req.memory_mb.min(u32::MAX as u64) as u32);
+    }
+    spec
+}
 
 fn unsupported(feature: &str) -> SandboxError {
     SandboxError::Unsupported(format!(
@@ -79,12 +104,28 @@ fn map_vm_error(action: &str, vm_id: &str, err: VmRuntimeError) -> SandboxError 
         VmRuntimeError::SnapshotAlreadyExists { snapshot_id, .. } => SandboxError::Validation(
             format!("{action} vm {vm_id}: snapshot {snapshot_id} already exists"),
         ),
+        VmRuntimeError::SnapshotNotFound { snapshot_id, .. } => SandboxError::NotFound(format!(
+            "{action} vm {vm_id}: snapshot {snapshot_id} not found"
+        )),
         VmRuntimeError::StatePoisoned => SandboxError::Unavailable(format!(
             "{action} vm {vm_id}: microvm-runtime state lock poisoned"
         )),
         VmRuntimeError::Unsupported(msg) => SandboxError::Unavailable(format!(
             "{action} vm {vm_id}: firecracker backend not ready: {msg}"
         )),
+        // 0.2.0 hardening error variants. The sandbox-runtime wrapper today
+        // never invokes the modules that produce these (network, vsock,
+        // firewall, jailer, metrics, shutdown) — they surface only when the
+        // sandbox wires those primitives directly. Map defensively to
+        // `Unavailable` until that wiring lands.
+        VmRuntimeError::Metrics(msg)
+        | VmRuntimeError::Shutdown(msg)
+        | VmRuntimeError::Firewall(msg)
+        | VmRuntimeError::Jailer(msg)
+        | VmRuntimeError::NetworkConfig(msg)
+        | VmRuntimeError::NetworkSetup(msg) => {
+            SandboxError::Unavailable(format!("{action} vm {vm_id}: microvm-runtime: {msg}"))
+        }
     }
 }
 
@@ -186,12 +227,14 @@ pub(crate) async fn create_and_start(
     }
 
     let vm_id = req.session_id.clone();
+    let spec = spec_from_request(&req);
 
     // The blocking lifecycle calls on `FirecrackerVmProvider` shell out to a
     // child process and do unix-socket I/O; isolate them onto a blocking
     // worker so the async runtime stays responsive.
     let create_id = vm_id.clone();
-    tokio::task::spawn_blocking(move || provider().create_vm(&create_id))
+    let create_spec = spec.clone();
+    tokio::task::spawn_blocking(move || provider().create_vm_with_spec(&create_id, &create_spec))
         .await
         .map_err(|e| {
             SandboxError::Unavailable(format!("firecracker create join error for {vm_id}: {e}"))
