@@ -19,6 +19,14 @@ pub enum SandboxError {
     CloudProvider(String),
     /// Service temporarily unavailable (capacity exceeded, overloaded).
     Unavailable(String),
+    /// Operation is not yet supported by the underlying runtime primitive.
+    ///
+    /// Distinct from `Validation` (operator misconfiguration) and
+    /// `Unavailable` (transient failure): this means the feature is not
+    /// implemented today and there is nothing the operator can do to enable
+    /// it short of upgrading the primitive. Use this when a request asks for
+    /// behavior that the current `microvm-runtime` release does not expose.
+    Unsupported(String),
     /// Circuit breaker is active for the sandbox sidecar.
     CircuitBreaker { remaining_secs: u64, probing: bool },
 }
@@ -34,6 +42,7 @@ impl fmt::Display for SandboxError {
             SandboxError::Storage(msg) => write!(f, "storage error: {msg}"),
             SandboxError::CloudProvider(msg) => write!(f, "cloud provider error: {msg}"),
             SandboxError::Unavailable(msg) => write!(f, "service unavailable: {msg}"),
+            SandboxError::Unsupported(msg) => write!(f, "unsupported: {msg}"),
             SandboxError::CircuitBreaker {
                 remaining_secs,
                 probing,

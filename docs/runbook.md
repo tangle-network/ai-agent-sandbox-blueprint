@@ -41,15 +41,35 @@ The blueprint family ships three operator variants:
 
 ### Firecracker (microVM) backend
 
-Set when running sandboxes on a Firecracker host instead of Docker:
+The operator process drives Firecracker directly via the in-process
+[`microvm-runtime`](https://github.com/tangle-network/microvm-runtime) driver.
+There is **no separate host-agent service**; the operator binary is the
+Firecracker host. Set the following when running sandboxes on a Firecracker
+host instead of Docker:
 
 | Var | Purpose | Required |
 |---|---|---|
-| `FIRECRACKER_HOST_AGENT_URL` (alias `HOST_AGENT_URL`) | Host-agent endpoint (e.g. `http://10.0.0.5:8080`) | yes |
-| `FIRECRACKER_HOST_AGENT_API_KEY` (alias `HOST_AGENT_API_KEY`) | Bearer for host-agent | recommended |
-| `FIRECRACKER_HOST_AGENT_NETWORK` | Bridge network name | optional |
-| `FIRECRACKER_HOST_AGENT_PIDS_LIMIT` | PID cap per microVM (default 512) | optional |
-| `FIRECRACKER_SIDECAR_AUTH_DISABLED` + `FIRECRACKER_SIDECAR_AUTH_TOKEN` | **Mutually exclusive — exactly one must be set.** Set `_DISABLED=true` for trusted single-tenant host or `_TOKEN=<bytes>` for shared-host auth. | yes (one of) |
+| `MICROVM_FIRECRACKER_BIN` | Path to the `firecracker` binary (default `/usr/local/bin/firecracker`) | yes |
+| `MICROVM_FIRECRACKER_KERNEL` | Path to the Linux kernel image (default `/var/lib/firecracker/vmlinux`) | yes |
+| `MICROVM_FIRECRACKER_ROOTFS` | Path to the rootfs ext4 image (default `/var/lib/firecracker/rootfs/default.ext4`) | yes |
+| `MICROVM_FIRECRACKER_SOCKET_DIR` | Per-VM API socket parent directory (default `/var/run/microvm/sockets`) | optional |
+| `MICROVM_FIRECRACKER_STATE_DIR` | Per-VM state directory (default `/var/lib/microvm/state`) | optional |
+| `MICROVM_FIRECRACKER_VCPU` | Default vCPU count per VM (default `1`) | optional |
+| `MICROVM_FIRECRACKER_MEM_MIB` | Default memory size per VM in MiB (default `256`) | optional |
+
+**Current scope (microvm-runtime 0.1.0-alpha.1).** The driver primitive wires
+VM lifecycle (create/start/stop/destroy) and status reporting end-to-end.
+Network setup, per-VM environment injection, port forwarding, and
+sidecar-endpoint exposure are not yet wired and will land as
+[`microvm-runtime 0.2.0`](https://github.com/tangle-network/microvm-runtime).
+Until then, creating a sandbox with `runtime_backend=firecracker` returns
+`SandboxError::Unsupported` rather than silently fabricating an endpoint.
+
+**Migration note.** The previous host-agent HTTP boundary
+(`FIRECRACKER_HOST_AGENT_URL`, `_API_KEY`, `_NETWORK`, `_PIDS_LIMIT`,
+`FIRECRACKER_SIDECAR_AUTH_DISABLED`, `FIRECRACKER_SIDECAR_AUTH_TOKEN`) has
+been removed. Operators previously running with `runtime_backend=firecracker`
+should unset those env vars; the operator no longer reads them.
 
 ### TEE instance only
 
@@ -261,11 +281,20 @@ curl -X POST http://127.0.0.1:$OPERATOR_API_PORT/api/sandboxes/$ID/resume \
 
 The breaker clears on successful resume.
 
-### Firecracker create fails with `validation` error
+### Firecracker create fails with `unsupported` error
 
-Either `FIRECRACKER_HOST_AGENT_URL` is unset, or the sidecar auth mode is
-ambiguous. Confirm exactly one of `_DISABLED=true` or `_TOKEN=<bytes>` is
-set (see §1).
+The in-process `microvm-runtime 0.1.0-alpha.1` driver does not yet expose
+a host-reachable sidecar endpoint, per-VM env injection, or port forwarding.
+Create/resume return `SandboxError::Unsupported` until `microvm-runtime
+0.2.0` ships network setup. VM lifecycle (stop / delete / status / reaper
+reconcile) is fully wired today.
+
+### Firecracker create fails with `service unavailable` error
+
+`microvm-runtime` could not locate the Firecracker binary, kernel image, or
+rootfs at the paths configured by `MICROVM_FIRECRACKER_BIN` /
+`MICROVM_FIRECRACKER_KERNEL` / `MICROVM_FIRECRACKER_ROOTFS`. Confirm those
+paths exist and are readable by the operator process.
 
 ### TEE attestation rejected
 

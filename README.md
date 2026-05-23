@@ -108,7 +108,7 @@ UI behavior:
 - "Runtime Backend" selector writes to `metadata_json.runtime_backend`.
 - Selecting `tee` forces `tee_required=true`.
 - Selecting `firecracker` forces `tee_required=false` (current release does not support Firecracker+TEE composition).
-- Selecting `firecracker` accepts `metadata_json.ports` as either bare `[3000]` or structured `[{container_port:3000, host_port:30000, protocol:"tcp"}]`. The runtime parses, validates (1..=65535, no duplicate `host_port`/`container_port`, protocol ∈ {tcp,udp}, capped at `MAX_EXTRA_PORTS=8`) and persists them on the sandbox record so they round-trip across restarts. Forwarding to the Firecracker microVM via the host-agent is gated on the upstream host-agent shipping a stable port-forwarding field — until then, ports are recorded but not yet routed by the host network namespace.
+- Selecting `firecracker` parses `metadata_json.ports` for forward-compatibility, but the create path currently rejects non-empty port mappings with `SandboxError::Unsupported`. Port forwarding lands with `microvm-runtime 0.2.0` (network setup).
 
 ### Sidecar Capabilities
 
@@ -227,20 +227,26 @@ Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is cu
 | `SANDBOX_REAPER_INTERVAL` | `30` | Reaper check interval |
 | `SANDBOX_GC_INTERVAL` | `3600` | GC interval |
 | `SANDBOX_RUNTIME_BACKEND` | `docker` | Default runtime backend (`docker`, `firecracker`, `tee`) |
-| `FIRECRACKER_HOST_AGENT_URL` | — | Base URL for Firecracker host-agent API (required for `runtime_backend=firecracker`) |
-| `FIRECRACKER_HOST_AGENT_API_KEY` | — | Optional API key header (`x-api-key`) for host-agent |
-| `FIRECRACKER_HOST_AGENT_NETWORK` | `bridge` | Network value sent in host-agent create payload |
-| `FIRECRACKER_HOST_AGENT_PIDS_LIMIT` | `512` | PIDs limit sent in host-agent create payload |
-| `FIRECRACKER_SIDECAR_AUTH_DISABLED` | `false` | Explicitly disable sidecar auth for Firecracker (`true` only when sidecar auth is intentionally off) |
-| `FIRECRACKER_SIDECAR_AUTH_TOKEN` | — | Static sidecar auth token for Firecracker records when auth is enabled |
+| `MICROVM_FIRECRACKER_BIN` | `/usr/local/bin/firecracker` | Path to the Firecracker VMM binary |
+| `MICROVM_FIRECRACKER_KERNEL` | `/var/lib/firecracker/vmlinux` | Linux kernel image used to boot guests |
+| `MICROVM_FIRECRACKER_ROOTFS` | `/var/lib/firecracker/rootfs/default.ext4` | Rootfs image used to boot guests |
+| `MICROVM_FIRECRACKER_SOCKET_DIR` | `/var/run/microvm/sockets` | Per-VM API socket parent directory |
+| `MICROVM_FIRECRACKER_STATE_DIR` | `/var/lib/microvm/state` | Per-VM state directory |
+| `MICROVM_FIRECRACKER_VCPU` | `1` | Default vCPU count per VM |
+| `MICROVM_FIRECRACKER_MEM_MIB` | `256` | Default memory size (MiB) per VM |
 | `WORKFLOW_CRON_SCHEDULE` | `0 * * * * *` | Cron schedule for workflow ticks |
 | `CORS_ALLOWED_ORIGINS` | `localhost only` | Comma-separated CORS origins |
 | `BSM_ADDRESS` | — | BSM contract address (instance mode) |
 | `HTTP_RPC_ENDPOINT` / `RPC_URL` | — | Chain RPC endpoint |
 
-Firecracker auth mode is explicit and mutually exclusive:
-- set `FIRECRACKER_SIDECAR_AUTH_DISABLED=true` and leave `FIRECRACKER_SIDECAR_AUTH_TOKEN` unset, or
-- set `FIRECRACKER_SIDECAR_AUTH_DISABLED=false` with `FIRECRACKER_SIDECAR_AUTH_TOKEN` set.
+The Firecracker backend is driven in-process via the
+[`microvm-runtime`](https://github.com/tangle-network/microvm-runtime) crate
+(the operator binary **is** the Firecracker host — there is no separate
+host-agent service). The `0.1.0-alpha.1` release of the driver wires VM
+lifecycle (create/start/stop/destroy) and status, but networking, per-VM
+env injection, and port forwarding are not yet exposed; sandbox provisioning
+with `runtime_backend=firecracker` therefore returns
+`SandboxError::Unsupported` until `microvm-runtime 0.2.0` lands.
 
 ## Development
 
@@ -266,13 +272,10 @@ cd ui && pnpm install && pnpm test && pnpm dev
 # Local dev (skip BPM bridge)
 cargo run -p ai-agent-sandbox-blueprint-bin -- run --test-mode
 
-# Real Firecracker job-path E2E (requires reachable host-agent + KVM host)
-FIRECRACKER_E2E=1 FIRECRACKER_REAL_E2E=1 \
-FIRECRACKER_HOST_AGENT_URL=http://127.0.0.1:3101 \
-FIRECRACKER_HOST_AGENT_API_KEY=fc-test-key \
-FIRECRACKER_SIDECAR_AUTH_DISABLED=true \
-FIRECRACKER_TEST_IMAGE=/var/lib/firecracker/rootfs/sidecar.ext4 \
-cargo test -p ai-agent-sandbox-blueprint-lib --test anvil runs_firecracker_jobs_end_to_end -- --nocapture --test-threads=1
+# Firecracker driver wrapper tests (no KVM required — assertions cover the
+# `Unsupported` contract; real microVM lifecycle is covered by
+# `microvm-runtime`'s own KVM-gated test suite).
+cargo test -p sandbox-runtime --test firecracker_in_process
 ```
 
 ## Key Concepts
