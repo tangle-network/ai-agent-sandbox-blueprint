@@ -1993,11 +1993,8 @@ async fn create_sidecar_firecracker(
     // Parse and validate port mappings strictly — malformed entries fail
     // fast here rather than being silently dropped. Both legacy `[3000]` and
     // structured `[{container_port,host_port,protocol}]` shapes are accepted.
-    //
-    // Persistence: parsed ports would round-trip through the persisted
-    // record once the firecracker create path actually returns a record
-    // (the in-process driver does not yet support port forwarding — see
-    // `firecracker::create_and_start`).
+    // The parsed entries are persisted on the record and wired into the
+    // per-VM iptables PREROUTING DNAT chain by `firecracker::create_and_start`.
     let metadata_value =
         parse_json_object(&request.metadata_json, "metadata_json")?.unwrap_or(Value::Null);
     let parsed_ports = parse_metadata_ports(&metadata_value)?;
@@ -2059,9 +2056,10 @@ async fn create_sidecar_firecracker(
 
     let provisioned = crate::firecracker::create_and_start(create_request).await?;
     let sidecar_url = provisioned.container.endpoint.ok_or_else(|| {
-        // `create_and_start` currently fails with `Unsupported` before reaching
-        // here. If a future driver release returns a container without an
-        // endpoint, surface it explicitly rather than silently mis-routing.
+        // `create_and_start` always populates `endpoint` once the VM is
+        // reachable; an absent value here means the primitive shape changed
+        // in a way we cannot route around. Surface it explicitly rather than
+        // silently mis-routing into a sandbox with no URL.
         SandboxError::Unavailable(format!(
             "firecracker driver started sandbox {sandbox_id}, but did not return an endpoint"
         ))

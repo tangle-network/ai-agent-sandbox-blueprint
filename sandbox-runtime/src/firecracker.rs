@@ -5,7 +5,7 @@
 //! separate "host-agent" service; this module talks directly to the VMM over
 //! its unix socket via the primitive.
 //!
-//! ## Wired today (`microvm-runtime 0.3.0-alpha.1`)
+//! ## Wired today (`microvm-runtime 0.4.0-alpha.1`)
 //!
 //! - VM create / start / stop / destroy lifecycle.
 //! - **Per-VM TAP / bridge / NAT** via [`NetworkManager`]. The host bridge,
@@ -20,6 +20,18 @@
 //!   released on delete.
 //! - **Per-VM resource overrides**: `cpu_cores` and `memory_mb` from the
 //!   create request flow into `VmSpec` (clamped to FC's u8 / u32 ranges).
+//! - **Per-VM disk sizing**: when `req.disk_gb > 0` the request's chosen
+//!   stack is cloned through [`RootfsRegistry::clone_for_vm_with_size`] and
+//!   the resulting per-VM ext4 image is wired into [`VmSpec::rootfs`]. The
+//!   default stack name comes from `SANDBOX_FIRECRACKER_DEFAULT_STACK` when
+//!   `req.image` is empty; when both are absent the workspace default
+//!   rootfs path baked into the provider is reused untouched.
+//! - **Per-VM environment + sidecar auth token injection** via the guest
+//!   metadata service ([`GuestMetadataClient`]). Post-boot, the host opens
+//!   the per-VM vsock UDS and pushes the full `req.env` map plus a freshly
+//!   minted 32-byte sidecar auth token into the guest. The token is also
+//!   returned to the caller so the runtime layer can stamp it onto the
+//!   sandbox record.
 //! - **Host-reachable sidecar endpoint URL** computed from the composer-
 //!   assigned guest IP and the sidecar port (`SIDECAR_PORT` env, default
 //!   8080).
@@ -27,33 +39,31 @@
 //!   (`FirecrackerContainerStatus::{Missing,Running,Stopped}`).
 //! - Provider initialization probe used by the operator API health check.
 //!
-//! ## Still deferred (returns [`SandboxError::Unsupported`] when requested)
+//! ## Operator prerequisites
 //!
-//! These need a guest-side handshake we have not built yet. The runtime
-//! primitive exposes the channel (vsock), but the guest agent inside the
-//! rootfs that consumes it is sandbox-runtime work tracked separately.
-//!
-//! - **Per-VM environment injection**: requires either cloud-init at boot
-//!   or a guest-side metadata service over vsock. The request's `env`
-//!   field beyond the runtime envelope (`SIDECAR_PORT`,
-//!   `SIDECAR_CAPABILITIES`) cannot reach the guest yet.
-//! - **Per-VM disk sizing**: the primitive uses the workspace default
-//!   rootfs path; `disk_gb` from the request is accepted for API parity
-//!   but ignored. A per-VM ext4 image with the requested size is a
-//!   follow-up.
-//! - **Sandbox-issued sidecar auth token**: returned as `None`; sealing a
-//!   token into the guest requires the vsock metadata service above.
+//! - A guest-side metadata daemon listening on vsock port
+//!   `MICROVM_GUEST_METADATA_PORT` (default `5555`) baked into the rootfs.
+//!   The reference implementation ships at
+//!   `microvm-runtime/examples/guest_metadata_daemon.rs`; operators should
+//!   install it as a systemd unit (or equivalent) inside their stack image.
+//! - Stack templates under `MICROVM_ROOTFS_TEMPLATE_DIR` with per-VM
+//!   clones written to `MICROVM_ROOTFS_CLONES_DIR`. The default stack name
+//!   used when the create request leaves `image` empty is configured via
+//!   `SANDBOX_FIRECRACKER_DEFAULT_STACK`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use microvm_runtime::{
-    NetworkManager, VmNetwork, VsockManager,
+    GuestMetadataClient, GuestMetadataConfig, NetworkManager, RootfsRegistry, VmNetwork,
+    VsockManager,
     adapters::firecracker::FirecrackerVmProvider,
     error::VmRuntimeError,
     model::{NetworkInterface, VmSpec, VmStatus, VsockSpec},
     provider::{VmProvider, VmQuery},
 };
+use rand::RngCore;
+use rand::rngs::OsRng;
 
 use crate::error::{Result, SandboxError};
 
@@ -85,12 +95,21 @@ fn vsock_manager() -> &'static VsockManager {
     VSOCK.get_or_init(VsockManager::from_env)
 }
 
+/// Process-wide [`RootfsRegistry`]. The registry only caches `(path, mtime)
+/// → sha256`, which is safe to share; the per-VM clone slots it produces are
+/// keyed by `vm_id` so callers cannot collide across sandboxes.
+fn rootfs_registry() -> &'static RootfsRegistry {
+    static REGISTRY: OnceLock<RootfsRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(RootfsRegistry::from_env)
+}
+
 /// Per-VM bookkeeping captured at create time so `delete` can release the
 /// composer-managed host resources without having to re-derive them.
 ///
 /// Stored as the value side of [`ATTACHMENTS`]; keyed by `vm_id`. Network /
 /// vsock are released via their managers; DNAT rules are released by chain
-/// name via [`firecracker_dnat::release_port_forwards`].
+/// name via [`firecracker_dnat::release_port_forwards`]; rootfs clones are
+/// released via [`RootfsRegistry::release`] when [`rootfs_released`] is set.
 #[derive(Debug, Clone)]
 struct VmAttachments {
     network_attached: bool,
@@ -98,6 +117,9 @@ struct VmAttachments {
     /// Number of installed DNAT rules. Used as a tombstone — non-zero means
     /// we created at least one rule and the per-VM chain must be torn down.
     dnat_rule_count: usize,
+    /// `true` iff a per-VM rootfs clone was created and must be released
+    /// on delete. `false` for VMs that reused the provider's default rootfs.
+    rootfs_cloned: bool,
 }
 
 fn attachments_map() -> &'static Mutex<HashMap<String, Arc<VmAttachments>>> {
@@ -125,13 +147,21 @@ fn sidecar_port() -> u16 {
         .unwrap_or(8080)
 }
 
-fn unsupported(feature: &str) -> SandboxError {
-    SandboxError::Unsupported(format!(
-        "{feature} is not yet supported by the in-process Firecracker driver; \
-         a vsock-backed guest metadata service is the next milestone. \
-         See https://github.com/tangle-network/microvm-runtime"
-    ))
+/// Stack name used when `req.image` is empty. `None` means "fall back to
+/// the workspace default rootfs path the provider was constructed with" —
+/// no per-VM clone is performed in that case.
+fn default_stack_name() -> Option<String> {
+    std::env::var("SANDBOX_FIRECRACKER_DEFAULT_STACK")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
+
+/// Secret name used by the guest metadata daemon for the host-issued sidecar
+/// auth token. The guest stack convention is for the sidecar process to read
+/// this from the per-secret file the daemon writes (default
+/// `/var/run/microvm-guest/secrets/sidecar_auth_token`).
+const SIDECAR_AUTH_TOKEN_SECRET: &str = "sidecar_auth_token";
 
 fn map_vm_error(action: &str, vm_id: &str, err: VmRuntimeError) -> SandboxError {
     match err {
@@ -153,6 +183,10 @@ fn map_vm_error(action: &str, vm_id: &str, err: VmRuntimeError) -> SandboxError 
         VmRuntimeError::StatePoisoned => SandboxError::Unavailable(format!(
             "{action} vm {vm_id}: microvm-runtime state lock poisoned"
         )),
+        // `Unsupported` here comes from the primitive (e.g. backend feature
+        // gate), not from us — surface it as `Unavailable` so callers retry
+        // by re-checking host config rather than treating it as a hard
+        // "feature missing" claim against the sandbox API.
         VmRuntimeError::Unsupported(msg) => SandboxError::Unavailable(format!(
             "{action} vm {vm_id}: firecracker backend not ready: {msg}"
         )),
@@ -163,7 +197,8 @@ fn map_vm_error(action: &str, vm_id: &str, err: VmRuntimeError) -> SandboxError 
         | VmRuntimeError::NetworkConfig(msg)
         | VmRuntimeError::NetworkSetup(msg)
         | VmRuntimeError::Rootfs(msg)
-        | VmRuntimeError::Uffd(msg) => {
+        | VmRuntimeError::Uffd(msg)
+        | VmRuntimeError::GuestMetadata(msg) => {
             SandboxError::Unavailable(format!("{action} vm {vm_id}: microvm-runtime: {msg}"))
         }
     }
@@ -193,9 +228,10 @@ pub(crate) struct FirecrackerContainer {
 
 /// Sandbox-side view of a successful provision call.
 ///
-/// `sidecar_auth_token` stays `None` until the vsock-backed metadata
-/// service lands; until then the runtime layer falls back to a sandbox-
-/// generated token (not sealed into the guest).
+/// `sidecar_auth_token` carries the 32-byte token the host minted and pushed
+/// into the guest via the metadata service. The runtime layer stamps it onto
+/// the sandbox record so subsequent sidecar calls authenticate against the
+/// same value the guest stored.
 #[derive(Clone, Debug)]
 pub(crate) struct FirecrackerProvisionResult {
     pub container: FirecrackerContainer,
@@ -204,10 +240,11 @@ pub(crate) struct FirecrackerProvisionResult {
 
 /// Sandbox-side create request.
 ///
-/// `image` and `disk_gb` are accepted for API parity but currently ignored
-/// — the primitive uses the workspace default rootfs path and size. `env`
-/// beyond the runtime-injected envelope keys cannot reach the guest yet
-/// (see module docs).
+/// `image` is the stack name (e.g. `"node-20"`). `disk_gb`, when non-zero,
+/// resizes the per-VM rootfs clone via
+/// [`RootfsRegistry::clone_for_vm_with_size`]. `env` is pushed verbatim into
+/// the guest by the metadata service after boot — both runtime-injected
+/// envelope keys and caller-supplied keys flow through the same path.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct FirecrackerCreateRequest {
@@ -224,7 +261,9 @@ pub(crate) struct FirecrackerCreateRequest {
 /// Build the per-VM [`VmSpec`] from request-level resource overrides.
 ///
 /// Pre-composition fields only; the [`NetworkInterface`] and [`VsockSpec`]
-/// are appended by `attach_network_and_vsock` once they have been allocated.
+/// are appended by `attach_network_and_vsock` once they have been allocated,
+/// and the optional per-VM rootfs path is set by `attach_rootfs` when a disk
+/// resize is requested.
 fn spec_from_request(req: &FirecrackerCreateRequest) -> VmSpec {
     let mut spec = VmSpec::default();
     if req.cpu_cores > 0 {
@@ -240,13 +279,17 @@ fn spec_from_request(req: &FirecrackerCreateRequest) -> VmSpec {
 
 /// Allocate the host TAP + vsock CID for `vm_id`, augmenting `spec` with the
 /// resulting network interface and vsock binding. Returns the [`VmNetwork`]
-/// so the caller can build the host-reachable endpoint URL.
+/// so the caller can build the host-reachable endpoint URL and the
+/// per-VM UDS path so the post-boot metadata client can dial the guest.
 ///
 /// This deliberately does NOT use [`microvm_runtime::FirecrackerComposer`]:
 /// the composer hides the per-VM addressing from the caller (the `VmSpec`
 /// it mutates is consumed inside the provider and never returned), and we
 /// need the guest IP to build the endpoint URL.
-fn attach_network_and_vsock(vm_id: &str, spec: &mut VmSpec) -> Result<VmNetwork> {
+fn attach_network_and_vsock(
+    vm_id: &str,
+    spec: &mut VmSpec,
+) -> Result<(VmNetwork, std::path::PathBuf)> {
     let net = network();
     net.ensure_host()
         .map_err(|e| map_vm_error("ensure_host", vm_id, e))?;
@@ -269,12 +312,91 @@ fn attach_network_and_vsock(vm_id: &str, spec: &mut VmSpec) -> Result<VmNetwork>
     vsock
         .ensure_uds_parent(&vm_vsock.uds_path)
         .map_err(|e| map_vm_error("vsock_ensure_uds_parent", vm_id, e))?;
+    let uds_path = vm_vsock.uds_path.clone();
     spec.vsock = Some(VsockSpec {
         cid: vm_vsock.cid,
         uds_path: vm_vsock.uds_path,
     });
 
-    Ok(vm_net)
+    Ok((vm_net, uds_path))
+}
+
+/// Resolve the requested stack name and, when one applies, clone it into a
+/// per-VM rootfs slot sized to `disk_gb`. Returns `Ok(true)` when a clone
+/// was performed (so `delete` knows to release it), `Ok(false)` when the
+/// provider's default rootfs path was reused.
+///
+/// `disk_gb == 0` keeps the provider default regardless of `image`, matching
+/// the historical behaviour where `disk_gb` was accepted for API parity.
+fn attach_rootfs(vm_id: &str, req: &FirecrackerCreateRequest, spec: &mut VmSpec) -> Result<bool> {
+    if req.disk_gb == 0 {
+        return Ok(false);
+    }
+    let stack_name = if req.image.trim().is_empty() {
+        match default_stack_name() {
+            Some(s) => s,
+            // No stack to clone from. Keep the provider default rootfs; the
+            // caller asked for a size override we cannot honour without a
+            // template, but failing the create here would be worse than
+            // surfacing the (still-functional) default-size VM.
+            None => return Ok(false),
+        }
+    } else {
+        req.image.trim().to_string()
+    };
+
+    let target_bytes = req.disk_gb.saturating_mul(1024 * 1024 * 1024);
+    let registry = rootfs_registry();
+    let rootfs = registry
+        .clone_for_vm_with_size(vm_id, &stack_name, target_bytes)
+        .map_err(|e| map_vm_error("rootfs_clone", vm_id, e))?;
+    spec.rootfs = Some(rootfs.path);
+    Ok(true)
+}
+
+/// Mint a 32-byte sidecar auth token, URL-safe base64-encoded.
+///
+/// The token is opaque to the host past this point — it is pushed verbatim
+/// into the guest secrets directory and returned to the caller so the
+/// sandbox record can stamp the same value the sidecar will compare against.
+fn mint_sidecar_token() -> String {
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    // Match `auth::generate_token`'s hex encoding so downstream consumers
+    // (sidecar comparators, log redactors) see a single token format.
+    hex::encode(bytes)
+}
+
+/// Push the env table and the sidecar auth token into the guest via the
+/// metadata service. Returns the minted token on success.
+///
+/// The connection takes a moment to come up after `start_vm` (cold boot is
+/// 1-3s, snapshot restore <100ms); [`GuestMetadataClient::connect`] handles
+/// the retry loop against `connect_timeout`. The whole transaction runs on
+/// a blocking worker because the underlying UnixStream calls block.
+async fn inject_runtime_metadata(
+    vm_id: &str,
+    uds_path: std::path::PathBuf,
+    env: HashMap<String, String>,
+) -> Result<String> {
+    let token = mint_sidecar_token();
+    let token_bytes = token.clone().into_bytes();
+    let vm_id_owned = vm_id.to_string();
+    let result = tokio::task::spawn_blocking(move || -> std::result::Result<(), VmRuntimeError> {
+        let client = GuestMetadataClient::new(uds_path, GuestMetadataConfig::from_env());
+        let mut conn = client.connect()?;
+        if !env.is_empty() {
+            conn.set_env(&env)?;
+        }
+        conn.set_secret(SIDECAR_AUTH_TOKEN_SECRET, &token_bytes)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| {
+        SandboxError::Unavailable(format!("guest metadata join error for {vm_id_owned}: {e}"))
+    })?;
+    result.map_err(|e| map_vm_error("guest_metadata", vm_id, e))?;
+    Ok(token)
 }
 
 /// Tear down the host-side allocations associated with `vm_id`. Best-effort:
@@ -296,6 +418,11 @@ fn release_attachments(vm_id: &str, attachments: &VmAttachments) {
     {
         tracing::warn!(vm_id, ?err, "failed to detach firecracker network");
     }
+    if attachments.rootfs_cloned
+        && let Err(err) = rootfs_registry().release(vm_id)
+    {
+        tracing::warn!(vm_id, ?err, "failed to release firecracker rootfs clone");
+    }
 }
 
 /// Sanity-check the configured Firecracker provider is reachable.
@@ -310,7 +437,9 @@ pub(crate) async fn health() -> Result<()> {
 }
 
 /// Create a VM and start it via the in-process driver, attaching network,
-/// vsock, and any requested host port forwards.
+/// vsock, rootfs (when sized), and any requested host port forwards; then
+/// inject per-VM env and the sidecar auth token into the guest via the
+/// metadata service before returning.
 ///
 /// On any failure after VM creation, the VM is destroyed and all attached
 /// host resources are released before returning. On success, a record of
@@ -318,23 +447,13 @@ pub(crate) async fn health() -> Result<()> {
 pub(crate) async fn create_and_start(
     req: FirecrackerCreateRequest,
 ) -> Result<FirecrackerProvisionResult> {
-    // Per-VM environment injection still requires a guest metadata service.
-    // Fail loudly rather than silently dropping caller-supplied env entries.
-    let injected_keys = ["SIDECAR_PORT", "SIDECAR_CAPABILITIES"];
-    let has_user_env = req.env.keys().any(|k| !injected_keys.contains(&k.as_str()));
-    if has_user_env {
-        return Err(unsupported(
-            "per-VM environment injection for firecracker sandboxes",
-        ));
-    }
-
     let vm_id = req.session_id.clone();
     let mut spec = spec_from_request(&req);
 
     // Compose the per-VM TAP + vsock binding pre-spawn. The returned
     // `VmNetwork` carries the guest IP that the sidecar endpoint URL is
-    // built from.
-    let vm_net = match attach_network_and_vsock(&vm_id, &mut spec) {
+    // built from; the UDS path is used post-boot to push env + secrets.
+    let (vm_net, vsock_uds_path) = match attach_network_and_vsock(&vm_id, &mut spec) {
         Ok(v) => v,
         Err(err) => {
             // ensure_host failed, or attach failed mid-way — release whatever
@@ -342,6 +461,24 @@ pub(crate) async fn create_and_start(
             // idempotent under "nothing to release".
             let _ = network().detach(&vm_id);
             let _ = vsock_manager().detach(&vm_id);
+            return Err(err);
+        }
+    };
+
+    // Per-VM disk sizing via the rootfs registry. Skipped entirely when
+    // `disk_gb == 0` so the provider's default rootfs is reused untouched.
+    let rootfs_cloned = match attach_rootfs(&vm_id, &req, &mut spec) {
+        Ok(v) => v,
+        Err(err) => {
+            release_attachments(
+                &vm_id,
+                &VmAttachments {
+                    network_attached: true,
+                    vsock_attached: true,
+                    dnat_rule_count: 0,
+                    rootfs_cloned: false,
+                },
+            );
             return Err(err);
         }
     };
@@ -366,6 +503,7 @@ pub(crate) async fn create_and_start(
                 network_attached: true,
                 vsock_attached: true,
                 dnat_rule_count: 0,
+                rootfs_cloned,
             },
         );
         return Err(err);
@@ -388,6 +526,7 @@ pub(crate) async fn create_and_start(
                 network_attached: true,
                 vsock_attached: true,
                 dnat_rule_count: 0,
+                rootfs_cloned,
             },
         );
         return Err(err);
@@ -415,6 +554,7 @@ pub(crate) async fn create_and_start(
                     network_attached: true,
                     vsock_attached: true,
                     dnat_rule_count,
+                    rootfs_cloned,
                 },
             );
             return Err(SandboxError::Unavailable(format!(
@@ -424,12 +564,35 @@ pub(crate) async fn create_and_start(
         dnat_rule_count += 1;
     }
 
+    // Inject per-VM env + sidecar auth token into the guest. Any failure
+    // here is a real runtime error (the guest daemon is unreachable, the
+    // env is malformed, etc.) — propagate it after rolling back the VM so
+    // the caller does not end up with an inaccessible sandbox.
+    let sidecar_auth_token = match inject_runtime_metadata(&vm_id, vsock_uds_path, req.env).await {
+        Ok(t) => t,
+        Err(err) => {
+            let cleanup_id = vm_id.clone();
+            let _ = tokio::task::spawn_blocking(move || provider().destroy_vm(&cleanup_id)).await;
+            release_attachments(
+                &vm_id,
+                &VmAttachments {
+                    network_attached: true,
+                    vsock_attached: true,
+                    dnat_rule_count,
+                    rootfs_cloned,
+                },
+            );
+            return Err(err);
+        }
+    };
+
     record_attachments(
         &vm_id,
         VmAttachments {
             network_attached: true,
             vsock_attached: true,
             dnat_rule_count,
+            rootfs_cloned,
         },
     );
 
@@ -440,10 +603,7 @@ pub(crate) async fn create_and_start(
             id: vm_id,
             endpoint: Some(endpoint),
         },
-        // Vsock-injected token requires a guest-side metadata agent the
-        // sandbox rootfs does not ship yet. Until that lands the runtime
-        // layer generates its own token and treats the sidecar as unsealed.
-        sidecar_auth_token: None,
+        sidecar_auth_token: Some(sidecar_auth_token),
     })
 }
 
@@ -503,7 +663,7 @@ pub(crate) async fn stop(container_id: &str) -> Result<()> {
 }
 
 /// Destroy a VM permanently and release all per-VM host attachments
-/// (DNAT rules, vsock CID, TAP).
+/// (DNAT rules, vsock CID, TAP, rootfs clone).
 ///
 /// Idempotent: missing or already-destroyed VMs return `Ok(())` so callers
 /// can treat delete-after-delete as a no-op. Attachment release runs even
@@ -532,6 +692,7 @@ pub(crate) async fn delete(container_id: &str) -> Result<()> {
         }
         let _ = vsock_manager().detach(&vm_id);
         let _ = network().detach(&vm_id);
+        let _ = rootfs_registry().release(&vm_id);
     }
 
     match destroy_outcome {
@@ -571,17 +732,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unsupported_message_points_at_microvm_runtime() {
-        // Regression: the operator-facing error must explain which deferred
-        // capability tripped and where the fix lands, instead of looking
-        // like a config bug on the caller's side.
-        let err = unsupported("test feature");
-        let msg = err.to_string();
-        assert!(msg.contains("test feature"), "{msg}");
-        assert!(msg.contains("microvm-runtime"), "{msg}");
-    }
-
-    #[test]
     fn map_vm_error_translates_not_found_to_sandbox_not_found() {
         // Regression: `stop`/`delete` rely on `SandboxError::NotFound` being
         // the variant they pattern-match for idempotent treatment. Pinning
@@ -605,6 +755,30 @@ mod tests {
     }
 
     #[test]
+    fn map_vm_error_translates_guest_metadata_to_unavailable() {
+        // Regression: when the guest daemon is unreachable or rejects a
+        // request, we surface it as `Unavailable` (operator can install the
+        // daemon, restart the VM, etc.) — never as `Unsupported`, which
+        // would falsely claim the feature is unimplemented.
+        let err = map_vm_error(
+            "test",
+            "vm-1",
+            VmRuntimeError::GuestMetadata("daemon did not reply".into()),
+        );
+        assert!(matches!(err, SandboxError::Unavailable(_)), "got {err:?}");
+        assert!(err.to_string().contains("daemon did not reply"));
+    }
+
+    #[test]
+    fn mint_sidecar_token_is_64_hex_chars_and_unique() {
+        let a = mint_sidecar_token();
+        let b = mint_sidecar_token();
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
     fn attachments_roundtrip_is_take_once() {
         // Regression: a second `delete` after the first must not see the
         // attachments again (otherwise we'd double-release DNAT rules,
@@ -618,10 +792,33 @@ mod tests {
                 network_attached: true,
                 vsock_attached: true,
                 dnat_rule_count: 2,
+                rootfs_cloned: true,
             },
         );
         let first = take_attachments(vm_id).expect("first take returns recorded value");
         assert_eq!(first.dnat_rule_count, 2);
+        assert!(first.rootfs_cloned);
         assert!(take_attachments(vm_id).is_none());
+    }
+
+    #[test]
+    fn default_stack_name_round_trips_through_env() {
+        // Use a hermetic guard: capture the prior value, set, observe, restore.
+        // SAFETY: the surrounding tests acquire a process-wide env mutex in
+        // `lib.rs` (TEST_ENV_GUARD); this unit test is the only place in
+        // this module that mutates env, so a localised lock would buy
+        // nothing — the helper just round-trips and restores.
+        let prior = std::env::var("SANDBOX_FIRECRACKER_DEFAULT_STACK").ok();
+        unsafe { std::env::set_var("SANDBOX_FIRECRACKER_DEFAULT_STACK", "node-20") };
+        assert_eq!(default_stack_name().as_deref(), Some("node-20"));
+        unsafe { std::env::set_var("SANDBOX_FIRECRACKER_DEFAULT_STACK", "   ") };
+        assert!(
+            default_stack_name().is_none(),
+            "empty/whitespace must be None"
+        );
+        match prior {
+            Some(v) => unsafe { std::env::set_var("SANDBOX_FIRECRACKER_DEFAULT_STACK", v) },
+            None => unsafe { std::env::remove_var("SANDBOX_FIRECRACKER_DEFAULT_STACK") },
+        }
     }
 }
