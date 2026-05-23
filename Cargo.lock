@@ -2261,6 +2261,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.68.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "726e4313eb6ec35d2730258ad4e15b547ee75d6afaa1361a922e78e59b7d8078"
+dependencies = [
+ "bitflags 2.11.1",
+ "cexpr",
+ "clang-sys",
+ "lazy_static",
+ "lazycell",
+ "peeking_take_while",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 1.1.0",
+ "shlex",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6629,7 +6649,7 @@ version = "0.11.0+8.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3386f101bcb4bd252d8e9d2fb41ec3b0862a15a62b478c355b2982efa469e3e"
 dependencies = [
- "bindgen",
+ "bindgen 0.65.1",
  "bzip2-sys",
  "cc",
  "glob",
@@ -6874,10 +6894,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "312192f848cd63715ac374ac0d72cb3cfc1fa5f77b6376b4ac1bb7e8c24e1c6c"
 dependencies = [
  "libc",
- "nix 0.30.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "microvm-runtime"
+version = "0.3.0-alpha.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f9f30737ee7a540715f4f7ddefad8eff1f9e6e0262246cbf7b0ca80ebc9dc93"
+dependencies = [
+ "libc",
+ "nix 0.30.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "userfaultfd",
+]
+
+[[package]]
+name = "microvm-warm-pool"
+version = "0.1.0-alpha.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "334921033131e3101715e67c3b4f031ec0790b1d6b0e281549c2a7cb0850bc7f"
+dependencies = [
+ "microvm-runtime 0.2.0-alpha.1",
 ]
 
 [[package]]
@@ -7072,6 +7115,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
 dependencies = [
  "bitflags 1.3.2",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eb04e9c688eff1c89d72b407f168cf79bb9e867a9d3323ed6c01519eb9cc053"
+dependencies = [
+ "bitflags 2.11.1",
  "cfg-if",
  "libc",
 ]
@@ -8926,7 +8980,8 @@ dependencies = [
  "hyper 1.9.0",
  "k256",
  "libc",
- "microvm-runtime",
+ "microvm-runtime 0.3.0-alpha.1",
+ "microvm-warm-pool",
  "once_cell",
  "pasetors 0.6.8",
  "phala-tee-deploy-rs",
@@ -10577,6 +10632,31 @@ name = "urlencoding"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
+
+[[package]]
+name = "userfaultfd"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18d8b176d4d3e420685e964f87c25df5fdd5b26d7eb0d0e7c892d771f5b81035"
+dependencies = [
+ "bitflags 2.11.1",
+ "cfg-if",
+ "libc",
+ "nix 0.27.1",
+ "thiserror 1.0.69",
+ "userfaultfd-sys",
+]
+
+[[package]]
+name = "userfaultfd-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d75595d2a62b7db16bd47f5a1ce14e1fe05ccbe27d6c96721a958e0a027cad41"
+dependencies = [
+ "bindgen 0.68.1",
+ "cc",
+ "cfg-if",
+]
 
 [[package]]
 name = "utf-8"

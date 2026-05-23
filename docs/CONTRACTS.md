@@ -12,7 +12,7 @@ On-chain jobs are for state transitions only.
 ## Current State (March 4, 2026)
 
 - `sandbox-runtime` currently contains both runtime contracts and concrete Docker/TEE integrations.
-- `runtime_backend=firecracker` now executes through the in-process [`microvm-runtime`](https://github.com/tangle-network/microvm-runtime) driver consumed directly by `sandbox-runtime`. The operator is the Firecracker host; there is no separate host-agent service. The L1 job/operator API surface is unchanged.
+- `runtime_backend=firecracker` executes through the in-process [`microvm-runtime`](https://github.com/tangle-network/microvm-runtime) driver consumed directly by `sandbox-runtime`. The operator is the Firecracker host; there is no separate host-agent service. The L1 job/operator API surface is unchanged. The create path returns a real host-reachable sidecar endpoint and installs per-VM iptables DNAT rules for `metadata_json.ports`; guest-side env injection, per-VM disk sizing, and sandbox-sealed sidecar auth tokens remain deferred behind `SandboxError::Unsupported` until a guest metadata service over vsock ships.
 - Minimal runtime contracts are now codified in `sandbox-runtime/src/contracts.rs`.
 - `microvm-blueprint` is the target L0 substrate and should be consumed only via L1 adapters.
 - `ai-agent-tee-instance-blueprint-lib` currently depends on `ai-agent-instance-blueprint-lib` (same-product variant coupling). This is a temporary exception that should be removed by extracting shared instance runtime logic to L1.

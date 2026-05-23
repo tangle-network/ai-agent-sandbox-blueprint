@@ -53,7 +53,7 @@
 - Snapshot destination policy currently rejects `http://` and accepts `https://` / `s3://`; e2e should validate this policy, not old behavior.
 - Agent endpoints may return `502` (backend unavailable) followed by `503` (breaker cooldown). This is acceptable in optional-agent local e2e.
 - Firecracker startup reads its config from `MICROVM_FIRECRACKER_*` env vars (bin / kernel / rootfs / socket dir / state dir / vcpu / mem). Misconfiguration surfaces as `Unavailable` (binary or images missing) on first create, not on operator boot.
-- Firecracker create/resume currently fail with `SandboxError::Unsupported` because the `microvm-runtime 0.1.0-alpha.1` primitive does not yet expose a host-reachable sidecar endpoint, per-VM env injection, or port forwarding. These land in `microvm-runtime 0.2.0`. Stop / delete / status / reaper reconcile **are** wired end-to-end.
+- Firecracker create/resume against `microvm-runtime 0.3.0-alpha.1` return a real `http://<guest_ip>:<sidecar_port>` endpoint, install per-VM iptables PREROUTING DNAT for `metadata_json.ports`, and release all host attachments (TAP, vsock CID, DNAT chain) on delete. Per-VM env injection beyond `SIDECAR_PORT`/`SIDECAR_CAPABILITIES`, per-VM disk sizing, and vsock-sealed sidecar auth tokens still surface `SandboxError::Unsupported` until the guest-side metadata service lands.
 - Never reintroduce host-agent HTTP plumbing for firecracker. The operator process is the host.
 
 ## Regression Gate (Run Before Merge)

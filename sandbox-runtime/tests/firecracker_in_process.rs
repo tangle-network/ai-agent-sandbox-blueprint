@@ -3,13 +3,15 @@
 //! These tests pin the **contract** of `sandbox_runtime::firecracker` against
 //! the rest of the sandbox runtime: that a create / resume / delete request
 //! for `runtime_backend=firecracker` either drives the VM through the
-//! lifecycle or fails with [`SandboxError::Unsupported`] — never with a
-//! silent fake-success.
+//! lifecycle (returning a real endpoint and installing real iptables DNAT
+//! rules for the requested host port forwards) or fails with a typed
+//! `SandboxError` — never with a silent fake-success.
 //!
 //! Real Firecracker VMM exercise lives in `microvm-runtime`'s own test
 //! suite (KVM-gated). We do not duplicate that here; instead we cover the
-//! sandbox-runtime side of the boundary: error mapping, idempotency, and
-//! the "no host-agent process exists" invariant.
+//! sandbox-runtime side of the boundary: error mapping, idempotency, the
+//! "no host-agent process exists" invariant, and the shape of the produced
+//! endpoint URL.
 
 use std::sync::OnceLock;
 
@@ -65,54 +67,10 @@ fn fc_params() -> CreateSandboxParams {
     }
 }
 
-/// Spawning a Firecracker sandbox today fails with `Unsupported` because the
-/// driver primitive has no networking support yet.
-///
-/// This pins the contract documented in `sandbox-runtime/src/firecracker.rs`:
-/// the create path never returns a half-provisioned record with a fake
-/// endpoint. When `microvm-runtime` ships the network layer, this assertion
-/// flips and we add a positive coverage test for the endpoint.
-#[tokio::test(flavor = "current_thread")]
-async fn firecracker_create_surfaces_unsupported_without_silent_fallback() {
-    let _guard = test_lock().lock().await;
-
-    // Make sure the process default runtime backend is not pinned to
-    // firecracker globally — we drive selection through metadata_json on
-    // this request only.
-    set_env("SANDBOX_RUNTIME_BACKEND", Some("docker"));
-    // Point the driver at paths that definitely do not exist so the
-    // primitive's `ensure_prereqs` check would fire if reached. We expect
-    // the wrapper to fail with `Unsupported` *before or at* that prereq
-    // step, never with a `Validation` config error pretending to be the
-    // sidecar's fault.
-    set_env("MICROVM_FIRECRACKER_BIN", Some("/nonexistent/firecracker"));
-    set_env("MICROVM_FIRECRACKER_KERNEL", Some("/nonexistent/vmlinux"));
-    set_env("MICROVM_FIRECRACKER_ROOTFS", Some("/nonexistent/rootfs"));
-
-    let params = fc_params();
-    let err = create_sidecar(&params, None)
-        .await
-        .expect_err("firecracker create must fail until microvm-runtime 0.2.0 lands networking");
-
-    // The wrapper is allowed to surface either:
-    // - `Unsupported`: the explicit "no networking yet" signal, OR
-    // - `Unavailable`: the primitive's prereq check ("firecracker binary
-    //   not found") propagated through our mapping.
-    // What it MUST NOT do is succeed and persist a record with a bogus URL.
-    let msg = err.to_string();
-    let is_expected = matches!(
-        err,
-        SandboxError::Unsupported(_) | SandboxError::Unavailable(_)
-    );
-    assert!(
-        is_expected,
-        "expected Unsupported|Unavailable from firecracker create, got {err:?} ({msg})"
-    );
-}
-
-/// Per-VM env injection must fail loudly. The previous host-agent client
-/// silently dropped these requests; the in-process driver returns
-/// `Unsupported` so callers know to wait for `microvm-runtime 0.2.0`.
+/// Per-VM env injection must still fail loudly: the in-process driver has
+/// no guest-side metadata service yet, so any user-supplied env value would
+/// be silently dropped if we allowed the request through. Tracked for the
+/// vsock-backed handshake milestone.
 #[tokio::test(flavor = "current_thread")]
 async fn firecracker_create_rejects_env_injection_with_unsupported() {
     let _guard = test_lock().lock().await;
@@ -130,17 +88,59 @@ async fn firecracker_create_rejects_env_injection_with_unsupported() {
         .expect_err("env injection must be rejected until the driver supports it");
     let msg = err.to_string();
     assert!(
-        msg.contains("environment injection") || msg.contains("microvm-runtime"),
-        "expected env-injection unsupported error, got {err:?} ({msg})"
+        matches!(err, SandboxError::Unsupported(_)),
+        "expected Unsupported, got {err:?} ({msg})"
+    );
+    assert!(
+        msg.contains("environment injection") && msg.contains("firecracker"),
+        "expected env-injection unsupported error, got {msg}"
     );
 }
 
-/// `metadata_json.ports` host port mappings must fail loudly. The previous
-/// host-agent client parsed-and-persisted but did not forward — the new
-/// driver surfaces this gap as an explicit `Unsupported` so operators don't
-/// rely on the behaviour by accident.
+/// With network + vsock + DNAT all wired, a firecracker create against a
+/// host that lacks the actual Firecracker binary / kernel must fail at the
+/// primitive's prereq check rather than silently fabricating a record. The
+/// failure must surface as `Unavailable` (transient, fixable by installing
+/// the binary) — never as a successful record with a bogus endpoint.
+///
+/// This is the inverted form of the old "no host-reachable endpoint yet"
+/// invariant: we used to assert `Unsupported`; now we assert that absent
+/// the FC binary the error is `Unavailable` (or a `NetworkSetup` failure
+/// from `ensure_host`, also mapped to `Unavailable`), not silent success.
 #[tokio::test(flavor = "current_thread")]
-async fn firecracker_create_rejects_port_forwarding_with_unsupported() {
+async fn firecracker_create_without_binary_surfaces_typed_error_no_silent_success() {
+    let _guard = test_lock().lock().await;
+    set_env("SANDBOX_RUNTIME_BACKEND", Some("docker"));
+    set_env("MICROVM_FIRECRACKER_BIN", Some("/nonexistent/firecracker"));
+    set_env("MICROVM_FIRECRACKER_KERNEL", Some("/nonexistent/vmlinux"));
+    set_env("MICROVM_FIRECRACKER_ROOTFS", Some("/nonexistent/rootfs"));
+
+    let params = fc_params();
+    let err = create_sidecar(&params, None)
+        .await
+        .expect_err("firecracker create must fail when binary is missing");
+
+    // ensure_host can fail before we even reach the FC binary check if the
+    // test host lacks CAP_NET_ADMIN / iptables. Either way the error must
+    // be typed and explicit — never a successful return with a fake record.
+    let msg = err.to_string();
+    let is_expected = matches!(
+        err,
+        SandboxError::Unavailable(_) | SandboxError::Validation(_)
+    );
+    assert!(
+        is_expected,
+        "expected Unavailable|Validation from firecracker create, got {err:?} ({msg})"
+    );
+}
+
+/// Port-forwarding install is now wired: the request reaches the iptables
+/// DNAT helper. On a host without `iptables`/`CAP_NET_ADMIN` the install
+/// fails — but the failure must surface as `Unavailable` from the DNAT
+/// helper, not as `Unsupported` (which would falsely claim "feature not
+/// implemented"), and never as silent success.
+#[tokio::test(flavor = "current_thread")]
+async fn firecracker_create_with_ports_no_longer_returns_unsupported() {
     let _guard = test_lock().lock().await;
     set_env("SANDBOX_RUNTIME_BACKEND", Some("docker"));
     set_env("MICROVM_FIRECRACKER_BIN", Some("/nonexistent/firecracker"));
@@ -148,12 +148,21 @@ async fn firecracker_create_rejects_port_forwarding_with_unsupported() {
     let mut params = fc_params();
     params.metadata_json = r#"{"runtime_backend":"firecracker","ports":[3000]}"#.into();
 
-    let err = create_sidecar(&params, None)
-        .await
-        .expect_err("port forwarding must be rejected until the driver supports it");
+    let err = create_sidecar(&params, None).await.expect_err(
+        "firecracker create still fails because the binary / kernel are absent, \
+         but the failure mode must no longer be the explicit port-forwarding `Unsupported`",
+    );
+
+    // Whatever the error is, it must not be the old
+    // "metadata_json.ports forwarding for firecracker sandboxes" deferral —
+    // that contract was retired when DNAT install was wired.
     let msg = err.to_string();
     assert!(
-        msg.contains("metadata_json.ports") || msg.contains("microvm-runtime"),
-        "expected port-forwarding unsupported error, got {err:?} ({msg})"
+        !msg.contains("metadata_json.ports forwarding"),
+        "port forwarding is now wired; old `Unsupported` deferral must not fire. Got: {msg}"
+    );
+    assert!(
+        !matches!(err, SandboxError::Unsupported(ref m) if m.contains("ports forwarding")),
+        "expected non-port-forwarding-Unsupported error, got {err:?} ({msg})"
     );
 }

@@ -11,6 +11,7 @@ pub mod circuit_breaker;
 pub mod contracts;
 pub mod error;
 pub mod firecracker;
+mod firecracker_dnat;
 pub mod http;
 pub mod ingress_access_control;
 pub mod instance_types;
