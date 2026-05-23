@@ -3,15 +3,18 @@
 //! These tests pin the **contract** of `sandbox_runtime::firecracker` against
 //! the rest of the sandbox runtime: that a create / resume / delete request
 //! for `runtime_backend=firecracker` either drives the VM through the
-//! lifecycle (returning a real endpoint and installing real iptables DNAT
-//! rules for the requested host port forwards) or fails with a typed
-//! `SandboxError` — never with a silent fake-success.
+//! lifecycle (returning a real endpoint, installing real iptables DNAT
+//! rules for the requested host port forwards, and injecting per-VM env +
+//! a host-minted sidecar auth token via the guest metadata service) or
+//! fails with a typed `SandboxError` — never with a silent fake-success.
 //!
 //! Real Firecracker VMM exercise lives in `microvm-runtime`'s own test
 //! suite (KVM-gated). We do not duplicate that here; instead we cover the
 //! sandbox-runtime side of the boundary: error mapping, idempotency, the
-//! "no host-agent process exists" invariant, and the shape of the produced
-//! endpoint URL.
+//! "no host-agent process exists" invariant, the shape of the produced
+//! endpoint URL, and the post-`Unsupported` failure modes (env injection
+//! / disk sizing / auth token must produce real runtime errors when the
+//! guest plumbing is missing, never the old static deferral).
 
 use std::sync::OnceLock;
 
@@ -67,46 +70,52 @@ fn fc_params() -> CreateSandboxParams {
     }
 }
 
-/// Per-VM env injection must still fail loudly: the in-process driver has
-/// no guest-side metadata service yet, so any user-supplied env value would
-/// be silently dropped if we allowed the request through. Tracked for the
-/// vsock-backed handshake milestone.
+/// With env injection now wired through the guest metadata service, a
+/// caller-supplied `env_json` must NOT short-circuit with the old
+/// `SandboxError::Unsupported("per-VM environment injection ...")` deferral.
+/// The request must enter the lifecycle path and fail on the actual missing
+/// piece (the FC binary / kernel / rootfs is absent in unit-test env) — i.e.
+/// `Unavailable` or `Validation`, never `Unsupported`.
 #[tokio::test(flavor = "current_thread")]
-async fn firecracker_create_rejects_env_injection_with_unsupported() {
+async fn firecracker_create_no_longer_rejects_env_injection_as_unsupported() {
     let _guard = test_lock().lock().await;
     set_env("SANDBOX_RUNTIME_BACKEND", Some("docker"));
     set_env("MICROVM_FIRECRACKER_BIN", Some("/nonexistent/firecracker"));
+    set_env("MICROVM_FIRECRACKER_KERNEL", Some("/nonexistent/vmlinux"));
+    set_env("MICROVM_FIRECRACKER_ROOTFS", Some("/nonexistent/rootfs"));
 
     let mut params = fc_params();
-    // Force the env-injection path: any non-empty env_json triggers the
-    // wrapper's `Unsupported("per-VM environment injection ...")` short-circuit.
     params.env_json = r#"{"FOO":"bar"}"#.into();
     params.user_env_json = r#"{"BAZ":"qux"}"#.into();
 
     let err = create_sidecar(&params, None)
         .await
-        .expect_err("env injection must be rejected until the driver supports it");
+        .expect_err("create still fails because the FC binary is absent");
+
     let msg = err.to_string();
     assert!(
-        matches!(err, SandboxError::Unsupported(_)),
-        "expected Unsupported, got {err:?} ({msg})"
+        !matches!(err, SandboxError::Unsupported(_)),
+        "env injection must no longer produce `Unsupported`; got {err:?} ({msg})"
     );
     assert!(
-        msg.contains("environment injection") && msg.contains("firecracker"),
-        "expected env-injection unsupported error, got {msg}"
+        !msg.contains("environment injection"),
+        "the old env-injection deferral message must not surface: {msg}"
+    );
+    assert!(
+        matches!(
+            err,
+            SandboxError::Unavailable(_) | SandboxError::Validation(_)
+        ),
+        "expected Unavailable|Validation from the underlying lifecycle, got {err:?} ({msg})"
     );
 }
 
-/// With network + vsock + DNAT all wired, a firecracker create against a
-/// host that lacks the actual Firecracker binary / kernel must fail at the
-/// primitive's prereq check rather than silently fabricating a record. The
-/// failure must surface as `Unavailable` (transient, fixable by installing
-/// the binary) — never as a successful record with a bogus endpoint.
-///
-/// This is the inverted form of the old "no host-reachable endpoint yet"
-/// invariant: we used to assert `Unsupported`; now we assert that absent
-/// the FC binary the error is `Unavailable` (or a `NetworkSetup` failure
-/// from `ensure_host`, also mapped to `Unavailable`), not silent success.
+/// With network + vsock + DNAT + guest-metadata all wired, a firecracker
+/// create against a host that lacks the actual Firecracker binary / kernel
+/// must fail at the primitive's prereq check rather than silently
+/// fabricating a record. The failure must surface as `Unavailable`
+/// (transient, fixable by installing the binary) — never as a successful
+/// record with a bogus endpoint, and never as `Unsupported`.
 #[tokio::test(flavor = "current_thread")]
 async fn firecracker_create_without_binary_surfaces_typed_error_no_silent_success() {
     let _guard = test_lock().lock().await;
@@ -122,8 +131,14 @@ async fn firecracker_create_without_binary_surfaces_typed_error_no_silent_succes
 
     // ensure_host can fail before we even reach the FC binary check if the
     // test host lacks CAP_NET_ADMIN / iptables. Either way the error must
-    // be typed and explicit — never a successful return with a fake record.
+    // be typed and explicit — never a successful return with a fake record,
+    // and never `Unsupported` (which would falsely claim the feature is
+    // missing rather than transiently unavailable).
     let msg = err.to_string();
+    assert!(
+        !matches!(err, SandboxError::Unsupported(_)),
+        "lifecycle errors must never collapse to `Unsupported`; got {err:?} ({msg})"
+    );
     let is_expected = matches!(
         err,
         SandboxError::Unavailable(_) | SandboxError::Validation(_)
@@ -134,7 +149,7 @@ async fn firecracker_create_without_binary_surfaces_typed_error_no_silent_succes
     );
 }
 
-/// Port-forwarding install is now wired: the request reaches the iptables
+/// Port-forwarding install is wired: the request reaches the iptables
 /// DNAT helper. On a host without `iptables`/`CAP_NET_ADMIN` the install
 /// fails — but the failure must surface as `Unavailable` from the DNAT
 /// helper, not as `Unsupported` (which would falsely claim "feature not
@@ -164,5 +179,65 @@ async fn firecracker_create_with_ports_no_longer_returns_unsupported() {
     assert!(
         !matches!(err, SandboxError::Unsupported(ref m) if m.contains("ports forwarding")),
         "expected non-port-forwarding-Unsupported error, got {err:?} ({msg})"
+    );
+}
+
+/// Disk sizing is wired through `RootfsRegistry::clone_for_vm_with_size`.
+/// A non-zero `disk_gb` no longer short-circuits with `Unsupported`; the
+/// request enters the lifecycle path and fails on the underlying missing
+/// pieces (FC binary / rootfs templates absent in unit-test env).
+#[tokio::test(flavor = "current_thread")]
+async fn firecracker_create_with_disk_size_no_longer_returns_unsupported() {
+    let _guard = test_lock().lock().await;
+    set_env("SANDBOX_RUNTIME_BACKEND", Some("docker"));
+    set_env("MICROVM_FIRECRACKER_BIN", Some("/nonexistent/firecracker"));
+    set_env("MICROVM_FIRECRACKER_KERNEL", Some("/nonexistent/vmlinux"));
+    set_env("MICROVM_FIRECRACKER_ROOTFS", Some("/nonexistent/rootfs"));
+
+    let mut params = fc_params();
+    params.disk_gb = 8;
+
+    let err = create_sidecar(&params, None)
+        .await
+        .expect_err("create still fails because the FC binary / rootfs templates are absent");
+
+    let msg = err.to_string();
+    assert!(
+        !matches!(err, SandboxError::Unsupported(_)),
+        "disk sizing must no longer produce `Unsupported`; got {err:?} ({msg})"
+    );
+    assert!(
+        !msg.contains("disk sizing"),
+        "old disk-sizing deferral message must not surface: {msg}"
+    );
+}
+
+/// The sidecar auth token contract: the firecracker provision result must
+/// carry a `Some(_)` token in the success case (host-minted, pushed into
+/// the guest via the metadata service). Under the unit-test environment we
+/// cannot reach that success state — the FC binary is absent — but we can
+/// pin the invariant that failures here surface as typed errors and that
+/// the token-injection path is no longer guarded by `Unsupported`.
+#[tokio::test(flavor = "current_thread")]
+async fn firecracker_create_token_path_no_longer_returns_unsupported() {
+    let _guard = test_lock().lock().await;
+    set_env("SANDBOX_RUNTIME_BACKEND", Some("docker"));
+    set_env("MICROVM_FIRECRACKER_BIN", Some("/nonexistent/firecracker"));
+    set_env("MICROVM_FIRECRACKER_KERNEL", Some("/nonexistent/vmlinux"));
+    set_env("MICROVM_FIRECRACKER_ROOTFS", Some("/nonexistent/rootfs"));
+
+    let params = fc_params();
+    let err = create_sidecar(&params, None)
+        .await
+        .expect_err("create still fails because the lifecycle preconditions are absent");
+
+    let msg = err.to_string();
+    assert!(
+        !matches!(err, SandboxError::Unsupported(_)),
+        "auth-token injection must no longer produce `Unsupported`; got {err:?} ({msg})"
+    );
+    assert!(
+        !msg.contains("sidecar auth token"),
+        "old token-injection deferral message must not surface: {msg}"
     );
 }

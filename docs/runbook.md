@@ -57,20 +57,25 @@ host instead of Docker:
 | `MICROVM_FIRECRACKER_VCPU` | Default vCPU count per VM (default `1`) | optional |
 | `MICROVM_FIRECRACKER_MEM_MIB` | Default memory size per VM in MiB (default `256`) | optional |
 
-**Current scope (microvm-runtime 0.3.0-alpha.1).** The driver primitive wires
+**Current scope (microvm-runtime 0.4.0-alpha.1).** The driver primitive wires
 the full per-VM lifecycle end-to-end: create / start / stop / destroy and
 status reporting, plus host bridge + per-VM TAP + per-VM vsock CID/UDS
 allocation pre-boot, plus per-VM iptables PREROUTING DNAT for any
 `metadata_json.ports` host-port mappings. Creating a sandbox with
 `runtime_backend=firecracker` returns a real host-reachable endpoint of the
-shape `http://<guest_ip>:<sidecar_port>`.
+shape `http://<guest_ip>:<sidecar_port>` and a `Some(_)` sidecar auth token.
 
-Per-VM environment injection beyond the `SIDECAR_PORT` / `SIDECAR_CAPABILITIES`
-envelope, per-VM disk sizing, and sandbox-issued sidecar auth tokens still
-require a guest-side metadata service (vsock-backed handshake) the sandbox
-rootfs does not ship yet; those paths return
-`SandboxError::Unsupported` with a pointer to
-[`microvm-runtime`](https://github.com/tangle-network/microvm-runtime).
+Per-VM disk sizing is wired via `RootfsRegistry::clone_for_vm_with_size`
+(consumes `MICROVM_ROOTFS_TEMPLATE_DIR` + `MICROVM_ROOTFS_CLONES_DIR`; the
+default stack name when `image` is empty comes from
+`SANDBOX_FIRECRACKER_DEFAULT_STACK`). Per-VM env injection and
+sandbox-issued sidecar auth tokens are wired via the `GuestMetadataClient`
+over vsock (`MICROVM_GUEST_METADATA_PORT`, default `5555`); operators
+must bake a guest-side daemon into the rootfs — the reference implementation
+ships at
+[`microvm-runtime/examples/guest_metadata_daemon.rs`](https://github.com/tangle-network/microvm-runtime/blob/main/examples/guest_metadata_daemon.rs)
+and should run under systemd (or equivalent). No `SandboxError::Unsupported`
+paths remain in the firecracker backend.
 
 **Migration note.** The previous host-agent HTTP boundary
 (`FIRECRACKER_HOST_AGENT_URL`, `_API_KEY`, `_NETWORK`, `_PIDS_LIMIT`,
@@ -288,24 +293,26 @@ curl -X POST http://127.0.0.1:$OPERATOR_API_PORT/api/sandboxes/$ID/resume \
 
 The breaker clears on successful resume.
 
-### Firecracker create fails with `unsupported` error
-
-`microvm-runtime 0.3.0-alpha.1` ships VM lifecycle, host networking,
-vsock, and DNAT-based port forwarding — all wired through. The remaining
-`Unsupported` errors all surface a single class of problem: the request
-needs a guest-side handshake (per-VM environment injection beyond
-`SIDECAR_PORT` / `SIDECAR_CAPABILITIES`, sandbox-issued sidecar auth tokens)
-that the sandbox rootfs does not implement yet. Remove the unsupported
-field from the create request, or wait for the vsock metadata service
-milestone to land. The error message includes the deferred capability name
-and a pointer to the upstream tracker.
-
 ### Firecracker create fails with `service unavailable` error
 
-`microvm-runtime` could not locate the Firecracker binary, kernel image, or
-rootfs at the paths configured by `MICROVM_FIRECRACKER_BIN` /
-`MICROVM_FIRECRACKER_KERNEL` / `MICROVM_FIRECRACKER_ROOTFS`. Confirm those
-paths exist and are readable by the operator process.
+The create path returns `Unavailable` for any underlying host-side failure
+that the operator can fix. Common causes, in order of likelihood:
+
+- `microvm-runtime` could not locate the Firecracker binary, kernel image,
+  or rootfs at the paths configured by `MICROVM_FIRECRACKER_BIN` /
+  `MICROVM_FIRECRACKER_KERNEL` / `MICROVM_FIRECRACKER_ROOTFS`. Confirm
+  those paths exist and are readable by the operator process.
+- `RootfsRegistry::clone_for_vm_with_size` could not find the requested
+  stack template under `MICROVM_ROOTFS_TEMPLATE_DIR`. Verify the
+  `image` field of the create request matches a `<stack>/rootfs.ext4`
+  subdirectory there, or set `SANDBOX_FIRECRACKER_DEFAULT_STACK` so an
+  empty `image` falls back to a known stack.
+- The in-guest metadata daemon is not running. The host pushes per-VM
+  env + sidecar auth token over vsock after boot; if no daemon is bound
+  to `MICROVM_GUEST_METADATA_PORT` (default `5555`) inside the rootfs,
+  `connect` times out and the create rolls back. Bake the reference
+  implementation from `microvm-runtime/examples/guest_metadata_daemon.rs`
+  into the stack image (systemd unit or equivalent).
 
 ### TEE attestation rejected
 

@@ -108,7 +108,7 @@ UI behavior:
 - "Runtime Backend" selector writes to `metadata_json.runtime_backend`.
 - Selecting `tee` forces `tee_required=true`.
 - Selecting `firecracker` forces `tee_required=false` (current release does not support Firecracker+TEE composition).
-- Selecting `firecracker` installs per-VM iptables PREROUTING DNAT rules for each `metadata_json.ports` entry (`microvm-runtime 0.3.0-alpha.1`). Rules are released on sandbox delete; orphaned rules from a crashed operator are flushed by the per-VM chain teardown on the next delete for the same `vm_id`.
+- Selecting `firecracker` installs per-VM iptables PREROUTING DNAT rules for each `metadata_json.ports` entry (`microvm-runtime 0.4.0-alpha.1`). Rules are released on sandbox delete; orphaned rules from a crashed operator are flushed by the per-VM chain teardown on the next delete for the same `vm_id`.
 
 ### Sidecar Capabilities
 
@@ -229,11 +229,17 @@ Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is cu
 | `SANDBOX_RUNTIME_BACKEND` | `docker` | Default runtime backend (`docker`, `firecracker`, `tee`) |
 | `MICROVM_FIRECRACKER_BIN` | `/usr/local/bin/firecracker` | Path to the Firecracker VMM binary |
 | `MICROVM_FIRECRACKER_KERNEL` | `/var/lib/firecracker/vmlinux` | Linux kernel image used to boot guests |
-| `MICROVM_FIRECRACKER_ROOTFS` | `/var/lib/firecracker/rootfs/default.ext4` | Rootfs image used to boot guests |
+| `MICROVM_FIRECRACKER_ROOTFS` | `/var/lib/firecracker/rootfs/default.ext4` | Default rootfs image used when no per-VM clone applies |
 | `MICROVM_FIRECRACKER_SOCKET_DIR` | `/var/run/microvm/sockets` | Per-VM API socket parent directory |
 | `MICROVM_FIRECRACKER_STATE_DIR` | `/var/lib/microvm/state` | Per-VM state directory |
 | `MICROVM_FIRECRACKER_VCPU` | `1` | Default vCPU count per VM |
 | `MICROVM_FIRECRACKER_MEM_MIB` | `256` | Default memory size (MiB) per VM |
+| `MICROVM_ROOTFS_TEMPLATE_DIR` | `/var/lib/microvm/rootfs-templates` | Directory containing the canonical per-stack `rootfs.ext4` templates |
+| `MICROVM_ROOTFS_CLONES_DIR` | `/var/lib/microvm/rootfs` | Per-VM rootfs clone directory written by `RootfsRegistry` |
+| `SANDBOX_FIRECRACKER_DEFAULT_STACK` | unset | Stack name to clone when a create request's `image` field is empty; unset disables per-VM cloning and reuses `MICROVM_FIRECRACKER_ROOTFS` |
+| `MICROVM_GUEST_METADATA_PORT` | `5555` | vsock port the in-guest metadata daemon binds to |
+| `MICROVM_GUEST_METADATA_CONNECT_TIMEOUT_MS` | `10000` | Max wait for the host-to-guest metadata connection to come up after boot |
+| `MICROVM_GUEST_METADATA_REQUEST_TIMEOUT_MS` | `5000` | Per-request read/write timeout on the metadata socket |
 | `WORKFLOW_CRON_SCHEDULE` | `0 * * * * *` | Cron schedule for workflow ticks |
 | `CORS_ALLOWED_ORIGINS` | `localhost only` | Comma-separated CORS origins |
 | `BSM_ADDRESS` | — | BSM contract address (instance mode) |
@@ -242,16 +248,34 @@ Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is cu
 The Firecracker backend is driven in-process via the
 [`microvm-runtime`](https://github.com/tangle-network/microvm-runtime) crate
 (the operator binary **is** the Firecracker host — there is no separate
-host-agent service). The `0.3.0-alpha.1` release wires the full lifecycle
-end-to-end: create / start / stop / destroy, host bridge + per-VM TAP +
-vsock CID/UDS allocation, and per-VM iptables PREROUTING DNAT for any
-`metadata_json.ports` host-port mappings. Sandbox provisioning with
-`runtime_backend=firecracker` returns a real
-`http://<guest_ip>:<sidecar_port>` endpoint. Per-VM environment injection
-beyond the runtime envelope, per-VM disk sizing, and sandbox-issued sidecar
-auth tokens still return `SandboxError::Unsupported` — those require a
-guest-side metadata service over vsock that the sandbox rootfs does not
-ship yet.
+host-agent service). The `0.4.0-alpha.1` release wires the full lifecycle
+end-to-end with zero remaining `Unsupported` paths in `sandbox-runtime`:
+
+- create / start / stop / destroy plus reaper status reconcile,
+- host bridge + per-VM TAP + vsock CID/UDS allocation,
+- per-VM iptables PREROUTING DNAT for any `metadata_json.ports` host-port
+  mappings,
+- per-VM rootfs sizing via `RootfsRegistry::clone_for_vm_with_size` when
+  `disk_gb > 0`,
+- post-boot env + sidecar auth token injection over vsock via the
+  `GuestMetadataClient` (the host mints a 32-byte token and pushes it into
+  the guest secrets directory; the same value is stamped onto the sandbox
+  record so the sidecar comparator authenticates against it).
+
+Sandbox provisioning with `runtime_backend=firecracker` returns a real
+`http://<guest_ip>:<sidecar_port>` endpoint and a `Some(...)` auth token.
+
+#### Operator prerequisites
+
+Operators must bake a guest metadata daemon into the rootfs image so the
+host's vsock-based env / secret push has somewhere to land. The reference
+implementation ships at `microvm-runtime/examples/guest_metadata_daemon.rs`
+and should be installed as a systemd unit (or equivalent) inside the
+stack image, listening on vsock port `MICROVM_GUEST_METADATA_PORT`
+(default `5555`). Stack templates live under `MICROVM_ROOTFS_TEMPLATE_DIR`
+with per-VM clones written to `MICROVM_ROOTFS_CLONES_DIR`; the default
+stack name used when a create request leaves `image` empty is configured
+via `SANDBOX_FIRECRACKER_DEFAULT_STACK`.
 
 ## Development
 
@@ -278,9 +302,10 @@ cd ui && pnpm install && pnpm test && pnpm dev
 cargo run -p ai-agent-sandbox-blueprint-bin -- run --test-mode
 
 # Firecracker driver wrapper tests (no KVM required — assertions cover the
-# sandbox-runtime side of the boundary: error mapping, idempotency, env
-# injection rejection. Real microVM lifecycle is covered by
-# `microvm-runtime`'s own KVM-gated test suite).
+# sandbox-runtime side of the boundary: error mapping, idempotency, the
+# absence of `Unsupported` short-circuits, and the wire-shape of the
+# provision result. Real microVM lifecycle is covered by `microvm-runtime`'s
+# own KVM-gated test suite).
 cargo test -p sandbox-runtime --test firecracker_in_process
 ```
 

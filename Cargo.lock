@@ -6901,10 +6901,11 @@ dependencies = [
 
 [[package]]
 name = "microvm-runtime"
-version = "0.3.0-alpha.1"
+version = "0.4.0-alpha.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f9f30737ee7a540715f4f7ddefad8eff1f9e6e0262246cbf7b0ca80ebc9dc93"
+checksum = "5f4563a12aed22bc8775cdf836068572b0de91af1822fa20b9342b89bf7a35dd"
 dependencies = [
+ "base64 0.22.1",
  "libc",
  "nix 0.30.1",
  "serde",
@@ -8980,7 +8981,7 @@ dependencies = [
  "hyper 1.9.0",
  "k256",
  "libc",
- "microvm-runtime 0.3.0-alpha.1",
+ "microvm-runtime 0.4.0-alpha.1",
  "microvm-warm-pool",
  "once_cell",
  "pasetors 0.6.8",
