@@ -108,7 +108,7 @@ UI behavior:
 - "Runtime Backend" selector writes to `metadata_json.runtime_backend`.
 - Selecting `tee` forces `tee_required=true`.
 - Selecting `firecracker` forces `tee_required=false` (current release does not support Firecracker+TEE composition).
-- Selecting `firecracker` parses `metadata_json.ports` for forward-compatibility, but the create path currently rejects non-empty port mappings with `SandboxError::Unsupported`. Port forwarding lands with `microvm-runtime 0.2.0` (network setup).
+- Selecting `firecracker` installs per-VM iptables PREROUTING DNAT rules for each `metadata_json.ports` entry (`microvm-runtime 0.3.0-alpha.1`). Rules are released on sandbox delete; orphaned rules from a crashed operator are flushed by the per-VM chain teardown on the next delete for the same `vm_id`.
 
 ### Sidecar Capabilities
 
@@ -242,11 +242,16 @@ Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is cu
 The Firecracker backend is driven in-process via the
 [`microvm-runtime`](https://github.com/tangle-network/microvm-runtime) crate
 (the operator binary **is** the Firecracker host — there is no separate
-host-agent service). The `0.1.0-alpha.1` release of the driver wires VM
-lifecycle (create/start/stop/destroy) and status, but networking, per-VM
-env injection, and port forwarding are not yet exposed; sandbox provisioning
-with `runtime_backend=firecracker` therefore returns
-`SandboxError::Unsupported` until `microvm-runtime 0.2.0` lands.
+host-agent service). The `0.3.0-alpha.1` release wires the full lifecycle
+end-to-end: create / start / stop / destroy, host bridge + per-VM TAP +
+vsock CID/UDS allocation, and per-VM iptables PREROUTING DNAT for any
+`metadata_json.ports` host-port mappings. Sandbox provisioning with
+`runtime_backend=firecracker` returns a real
+`http://<guest_ip>:<sidecar_port>` endpoint. Per-VM environment injection
+beyond the runtime envelope, per-VM disk sizing, and sandbox-issued sidecar
+auth tokens still return `SandboxError::Unsupported` — those require a
+guest-side metadata service over vsock that the sandbox rootfs does not
+ship yet.
 
 ## Development
 
@@ -273,7 +278,8 @@ cd ui && pnpm install && pnpm test && pnpm dev
 cargo run -p ai-agent-sandbox-blueprint-bin -- run --test-mode
 
 # Firecracker driver wrapper tests (no KVM required — assertions cover the
-# `Unsupported` contract; real microVM lifecycle is covered by
+# sandbox-runtime side of the boundary: error mapping, idempotency, env
+# injection rejection. Real microVM lifecycle is covered by
 # `microvm-runtime`'s own KVM-gated test suite).
 cargo test -p sandbox-runtime --test firecracker_in_process
 ```
