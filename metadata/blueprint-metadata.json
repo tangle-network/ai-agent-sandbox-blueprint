@@ -73,6 +73,27 @@
         "allowChainSwitch": true,
         "allowPopups": false
       }
-    }
+    },
+    "modes": [
+      {
+        "id": "cloud",
+        "label": "Cloud",
+        "description": "Many operators, capacity-weighted scheduling, shared infra. Default sandbox flavor.",
+        "blueprintId": 10,
+        "tagline": "Recommended"
+      },
+      {
+        "id": "instance",
+        "label": "Dedicated Instance",
+        "description": "Per-service singleton — one dedicated operator + isolated box per service. Better isolation, higher cost.",
+        "blueprintId": 11
+      },
+      {
+        "id": "tee",
+        "label": "TEE Instance",
+        "description": "Dedicated Instance + mandatory TEE attestation (SGX/SEV/TDX) before service activation. For confidential workloads.",
+        "blueprintId": 12
+      }
+    ]
   }
 }
