@@ -27,6 +27,7 @@ import { BlueprintBadgeInline } from '~/components/shared/InfraSummaryBits';
 import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { EnvEditor } from '~/components/shared/EnvEditor';
+import { ConnectWalletPanel } from '~/components/shared/ConnectWalletPanel';
 import {
   BUNDLED_AGENT_OPTIONS,
   BUNDLED_NO_AGENT_VALUE,
@@ -103,7 +104,8 @@ function parseCapabilitiesJson(value: unknown): Set<string> {
 export default function CreatePage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { address } = useAccount();
+  const { address, isConnected, status: walletStatus } = useAccount();
+  const isReconnectingWallet = walletStatus === 'reconnecting';
   const infra = useStore(infraStore);
   const { validate: validateService, isValidating: serviceValidating, serviceInfo, error: serviceError } = useServiceValidation();
   const { data: capacity } = useAvailableCapacity();
@@ -295,6 +297,8 @@ export default function CreatePage() {
     setStep('configure');
   }, [resetForm, deployReset, address, validateService]);
 
+  const showConnectPanel = !isConnected && !address && !isReconnectingWallet;
+
   return (
     <AnimatedPage className="mx-auto max-w-3xl px-4 sm:px-6 py-8">
       <div className="mb-6">
@@ -307,6 +311,16 @@ export default function CreatePage() {
             : 'Select a blueprint to provision a new AI agent resource on Tangle Network'}
         </p>
       </div>
+
+      {/* Wallet connect prompt — shown when no wallet is connected so the page
+          never lands on an empty, action-less surface inside the iframe. */}
+      {showConnectPanel && (
+        <div className="mb-6">
+          <ConnectWalletPanel
+            description="Provisioning a sandbox or instance requires a connected wallet on Tangle Network. You can browse blueprints below, but deploying will be blocked until you connect."
+          />
+        </div>
+      )}
 
       {/* Infrastructure bar */}
       {step !== 'blueprint' && (

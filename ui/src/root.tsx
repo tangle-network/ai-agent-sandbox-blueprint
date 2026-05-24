@@ -8,19 +8,17 @@ import './styles/global.scss';
 import '~/lib/blueprints'; // side-effect: register all blueprints
 
 import { Outlet, useRouteError, isRouteErrorResponse } from 'react-router';
-import { AppDocument, AppFooter, AppToaster } from '@tangle-network/blueprint-ui/components';
+import { AppFooter, AppToaster } from '@tangle-network/blueprint-ui/components';
 import { Web3Provider } from '~/providers/Web3Provider';
 import { SandboxSyncProvider } from '~/providers/SandboxSyncProvider';
 import { Header } from '~/components/layout/Header';
+import { IframeAppDocument } from '~/components/layout/IframeAppDocument';
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <AppDocument
-      description="Tangle Sandbox Cloud - Provision and manage AI agent sandboxes"
-      themeStorageKeys={['bp_theme', 'sandbox_cloud_theme']}
-    >
+    <IframeAppDocument description="Tangle Sandbox Cloud - Provision and manage AI agent sandboxes">
       {children}
-    </AppDocument>
+    </IframeAppDocument>
   );
 }
 
