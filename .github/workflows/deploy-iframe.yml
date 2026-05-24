@@ -1,0 +1,52 @@
+name: Deploy iframe UI to Cloudflare Pages
+
+# Auto-deploys the React Router SPA at `ui/` to Cloudflare Pages
+# (project: agent-sandbox → https://agent-sandbox.blueprint.tangle.tools).
+#
+# Before this existed the project was wired as "direct upload" in Cloudflare
+# with no git source, so every CSP / dapp-host / runtime-backend change had to
+# be deployed by a human running `wrangler pages deploy` locally — which
+# silently broke when nobody noticed an old commit on main hadn't shipped.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ui/**'
+      - '.github/workflows/deploy-iframe.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-iframe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build iframe UI
+        run: pnpm -C ui run build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy ui/build/client --project-name=agent-sandbox --branch=main --commit-hash=${{ github.sha }} --commit-message="${{ github.event.head_commit.message }}"
