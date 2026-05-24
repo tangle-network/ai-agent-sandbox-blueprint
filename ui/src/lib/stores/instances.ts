@@ -1,5 +1,6 @@
 import { computed } from 'nanostores';
 import { persistedAtom } from '@tangle-network/blueprint-ui';
+import { getSafeLocalStorage } from '~/lib/safe-storage';
 
 export interface LocalInstance {
   id: string;
@@ -96,9 +97,15 @@ export function pruneInstanceCacheKeys(storage: Pick<Storage, 'length' | 'key' |
 const instanceDeploymentFingerprint = buildInstanceDeploymentFingerprint();
 const instanceStoreKey = getInstanceStoreKey(instanceDeploymentFingerprint);
 
-if (typeof window !== 'undefined' && window.localStorage) {
-  migrateLegacyInstanceCacheKey(window.localStorage, instanceStoreKey);
-  pruneInstanceCacheKeys(window.localStorage, instanceStoreKey);
+// `window.localStorage` property access throws SecurityError in sandboxed
+// iframes (no `allow-same-origin`) — the `&&` guard does not short-circuit
+// safely. Route through `getSafeLocalStorage()` which try/catches the read.
+{
+  const ls = getSafeLocalStorage();
+  if (ls) {
+    migrateLegacyInstanceCacheKey(ls, instanceStoreKey);
+    pruneInstanceCacheKeys(ls, instanceStoreKey);
+  }
 }
 
 export const instanceListStore = persistedAtom<LocalInstance[]>({

@@ -2,6 +2,7 @@ import { persistedAtom } from '@tangle-network/blueprint-ui';
 
 import { buildSandboxDeploymentFingerprint } from './sandboxes';
 import type { WorkflowBlueprintId, WorkflowScope } from '~/lib/workflows';
+import { getSafeLocalStorage } from '~/lib/safe-storage';
 
 export type PendingWorkflowStatus =
   | 'processing'
@@ -68,8 +69,12 @@ function prunePendingWorkflowCacheKeys(
 
 const pendingWorkflowStoreKey = getPendingWorkflowStoreKey();
 
-if (typeof window !== 'undefined' && window.localStorage) {
-  prunePendingWorkflowCacheKeys(window.localStorage, pendingWorkflowStoreKey);
+// `window.localStorage` property access throws SecurityError in sandboxed
+// iframes (no `allow-same-origin`) — the `&&` guard does not short-circuit
+// safely. Route through `getSafeLocalStorage()` which try/catches the read.
+{
+  const ls = getSafeLocalStorage();
+  if (ls) prunePendingWorkflowCacheKeys(ls, pendingWorkflowStoreKey);
 }
 
 export const pendingWorkflowStore = persistedAtom<PendingWorkflowCreation[]>({
