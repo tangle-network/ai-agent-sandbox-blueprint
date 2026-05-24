@@ -1517,16 +1517,34 @@ if [ "$current_shell" = "/sbin/nologin" ] || [ "$current_shell" = "/bin/false" ]
 fi;
 if command -v passwd >/dev/null 2>&1; then
   # OpenSSH rejects locked accounts before checking authorized_keys.
-  passwd -u "$user" >/dev/null 2>&1 || true;
+  # `passwd -u` only unlocks an account that *has* a stored password — for
+  # the common case of a service user created with `useradd` (no password
+  # ever set), `passwd -u` fails with "unlocking the password would result
+  # in a passwordless account" and the shadow entry stays `!`-prefixed.
+  # `passwd -d` removes the password entirely and clears the lock flag
+  # (`NP` in `passwd -S`), which is what we actually want: key-only login,
+  # no password fallback. Try -d first; fall through to -u for the
+  # platforms that support one but not the other.
+  passwd -d "$user" >/dev/null 2>&1 || passwd -u "$user" >/dev/null 2>&1 || true;
 fi;
 if ! command -v sshd >/dev/null 2>&1; then
   if command -v apk >/dev/null 2>&1; then
     apk add --no-cache openssh-server >/dev/null;
   elif command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive;
-    apt-get update >/dev/null;
-    apt-get install -y --no-install-recommends openssh-server >/dev/null;
-    rm -rf /var/lib/apt/lists/*;
+    # apt-get install can emit benign non-zero exits when its partial-cache
+    # cleanup hits a permission mismatch (e.g. _apt-owned files inside a
+    # rootless or user-namespace-remapped runtime). The package itself
+    # still gets installed — apt's cleanup is best-effort. We capture the
+    # exit and source-of-truth on `command -v sshd` afterwards instead of
+    # letting `set -e` abort the bootstrap on a cleanup-only failure.
+    apt-get update >/dev/null 2>&1 || true;
+    apt-get install -y --no-install-recommends openssh-server >/dev/null 2>&1 || true;
+    rm -rf /var/lib/apt/lists/* 2>/dev/null || true;
+    if ! command -v sshd >/dev/null 2>&1; then
+      echo "openssh-server install failed: sshd binary missing after apt-get install" >&2;
+      exit 1;
+    fi;
   else
     echo "Unsupported package manager for SSH bootstrap" >&2;
     exit 1;
@@ -2316,6 +2334,29 @@ fn build_docker_config(
                 // OpenSSH's pre-auth sandbox chroots into /var/empty.
                 caps.push("SYS_CHROOT".to_string());
                 caps.push("NET_BIND_SERVICE".to_string());
+                // sshd calls `audit_send_user_message()` on every PTY
+                // allocation (interactive shell). Without CAP_AUDIT_WRITE,
+                // the audit syscall returns EPERM and
+                // `linux_audit_write_entry` fails — modern OpenSSH aborts
+                // the session immediately with "Connection closed by
+                // remote host" instead of dropping into the shell.
+                // Non-interactive (`ssh host cmd`) does not allocate a PTY
+                // and works without this cap, which is why command-mode
+                // tests pass but `ssh -tt` hangs up.
+                caps.push("AUDIT_WRITE".to_string());
+                // apt-get install (the openssh-server fallback path for
+                // images without a pre-installed sshd) drops fetching to
+                // the `_apt` user. With cap_drop=ALL, even in-container
+                // root cannot bypass the `_apt`-owned cache directory
+                // permissions, so the install fails with
+                // `rename failed, Permission denied` and the package
+                // lookup degrades to "no installation candidate". Grant
+                // DAC_OVERRIDE + FOWNER only for ssh-enabled sandboxes
+                // — the widening is scoped to the path that needs it.
+                // Long-term, pre-baking openssh-server into the sidecar
+                // image lets us drop this back to just the two caps above.
+                caps.push("DAC_OVERRIDE".to_string());
+                caps.push("FOWNER".to_string());
             }
             caps
         }),
@@ -3705,14 +3746,93 @@ mod port_mapping_tests {
         assert!(caps.contains(&"CHOWN".to_string()));
         assert!(caps.contains(&"NET_BIND_SERVICE".to_string()));
         assert!(caps.contains(&"SYS_CHROOT".to_string()));
+        // DAC_OVERRIDE + FOWNER are required for `apt-get install
+        // openssh-server` to succeed in images without a pre-baked sshd —
+        // apt drops to `_apt` for fetching and in-container root cannot
+        // bypass the `_apt`-owned partial cache without DAC_OVERRIDE.
+        // Regression for the ssh_e2e flake where install failed with
+        // `rename failed, Permission denied`.
+        assert!(
+            caps.contains(&"DAC_OVERRIDE".to_string()),
+            "DAC_OVERRIDE must be granted when ssh_enabled so apt can install openssh-server"
+        );
+        assert!(
+            caps.contains(&"FOWNER".to_string()),
+            "FOWNER must be granted when ssh_enabled so apt can manage _apt-owned files"
+        );
+        // AUDIT_WRITE is required for sshd's PTY allocation path. Without
+        // it interactive shells (`ssh -tt`) fail at session start with
+        // "Connection closed by remote host" while non-interactive command
+        // mode (`ssh host cmd`) still works. Regression for the
+        // ssh_e2e interactive-shell assertion.
+        assert!(
+            caps.contains(&"AUDIT_WRITE".to_string()),
+            "AUDIT_WRITE must be granted when ssh_enabled so sshd can allocate PTYs"
+        );
+    }
+
+    /// SSH-specific capability widening must NOT leak into non-SSH sandboxes.
+    /// The widening is justified by the apt fallback path only, and the
+    /// security-minimal default profile (no DAC_OVERRIDE) must hold for
+    /// every other configuration.
+    #[test]
+    fn build_docker_config_omits_ssh_caps_when_disabled() {
+        init();
+        let config = SidecarRuntimeConfig::load();
+        let docker_config = build_docker_config(config, false, 1, 512, None, &[]);
+
+        let caps = docker_config.host_config.unwrap().cap_add.unwrap();
+        assert!(!caps.contains(&"DAC_OVERRIDE".to_string()));
+        assert!(!caps.contains(&"FOWNER".to_string()));
+        assert!(!caps.contains(&"AUDIT_WRITE".to_string()));
+        assert!(!caps.contains(&"SYS_CHROOT".to_string()));
+        assert!(!caps.contains(&"NET_BIND_SERVICE".to_string()));
     }
 
     #[test]
     fn docker_ssh_bootstrap_unlocks_login_user() {
         let command = build_docker_ssh_bootstrap_command("agent");
+        // `passwd -d` is the primary unlock — it removes the password and
+        // clears the lock flag (`NP` in passwd -S), the right state for
+        // key-only login. `passwd -u` is the secondary because it fails on
+        // passwordless accounts (the common case for `useradd`-created
+        // service users), which leaves the shadow entry `!`-prefixed and
+        // modern OpenSSH rejects auth before checking authorized_keys.
+        assert!(command.contains("passwd -d \"$user\""));
         assert!(command.contains("passwd -u \"$user\""));
         assert!(command.contains("AllowUsers agent"));
         assert!(!command.contains("pipefail"));
+    }
+
+    /// `apt-get install` exits non-zero on this image family when its
+    /// partial-cache cleanup hits `_apt`-owned files it can't remove
+    /// (rootless / user-namespace-remapped Docker), even though the package
+    /// itself installed cleanly. The bootstrap must not abort on that
+    /// best-effort cleanup failure — it must check `command -v sshd` as
+    /// the actual success criterion. Regression for the
+    /// `docker_ssh_supports_commands_and_interactive_shell` flake where
+    /// the stderr `rm: cannot remove '/var/cache/apt/archives/partial/*.deb'`
+    /// fell through `set -e` and failed the bootstrap.
+    #[test]
+    fn docker_ssh_bootstrap_tolerates_apt_cleanup_failure() {
+        let command = build_docker_ssh_bootstrap_command("agent");
+        // Both the install and the lists-cleanup must be wrapped with
+        // `|| true` so a benign non-zero exit doesn't trip `set -e`.
+        assert!(
+            command.contains("apt-get install -y --no-install-recommends openssh-server >/dev/null 2>&1 || true"),
+            "apt-get install must tolerate cache-cleanup failures"
+        );
+        assert!(
+            command.contains("rm -rf /var/lib/apt/lists/* 2>/dev/null || true"),
+            "apt lists cleanup must be best-effort"
+        );
+        // After the tolerant install, the bootstrap must hard-fail when
+        // sshd is genuinely missing — otherwise we'd silently start sshd
+        // setup against a container with no sshd binary.
+        assert!(
+            command.contains("openssh-server install failed: sshd binary missing"),
+            "bootstrap must verify sshd actually installed before continuing"
+        );
     }
 
     #[test]
