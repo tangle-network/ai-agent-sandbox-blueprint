@@ -8,7 +8,13 @@ import { startTransition } from 'react';
 import { hydrateRoot } from 'react-dom/client';
 import { HydratedRouter } from 'react-router/dom';
 
-// Migrate localStorage keys from sandbox_cloud_* → bp_* (one-time)
+// Migrate localStorage keys from sandbox_cloud_* → bp_* (one-time).
+// Wrapped in `withLocalStorage` so this no-ops cleanly when the UI is loaded
+// inside the Tangle Cloud dapp's sandboxed iframe (no `allow-same-origin`,
+// so any `localStorage` access throws SecurityError — an unhandled throw
+// here used to prevent `hydrateRoot` from ever running and produced a blank
+// black void inside the dapp's iframe shell).
+import { withLocalStorage } from '~/lib/safe-storage';
 const KEY_MIGRATIONS: [string, string][] = [
   ['sandbox_cloud_theme', 'bp_theme'],
   ['sandbox_cloud_tx_history', 'bp_tx_history'],
@@ -16,11 +22,13 @@ const KEY_MIGRATIONS: [string, string][] = [
   ['sandbox_cloud_infra', 'bp_infra'],
   ['sandbox_cloud_selected_chain', 'bp_selected_chain'],
 ];
-for (const [oldKey, newKey] of KEY_MIGRATIONS) {
-  if (!localStorage.getItem(newKey) && localStorage.getItem(oldKey)) {
-    localStorage.setItem(newKey, localStorage.getItem(oldKey)!);
+withLocalStorage((ls) => {
+  for (const [oldKey, newKey] of KEY_MIGRATIONS) {
+    if (!ls.getItem(newKey) && ls.getItem(oldKey)) {
+      ls.setItem(newKey, ls.getItem(oldKey)!);
+    }
   }
-}
+});
 
 // Ensure chains module (with configureNetworks) is loaded early
 import('~/lib/contracts/chains');

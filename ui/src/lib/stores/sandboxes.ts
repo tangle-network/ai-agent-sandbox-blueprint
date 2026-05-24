@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores';
 import { persistedAtom } from '@tangle-network/blueprint-ui';
+import { getSafeLocalStorage } from '~/lib/safe-storage';
 
 /**
  * Local sandbox registry — tracks sandboxes the user has created or interacted with.
@@ -101,8 +102,12 @@ export function pruneSandboxCacheKeys(storage: Pick<Storage, 'length' | 'key' | 
 const sandboxDeploymentFingerprint = buildSandboxDeploymentFingerprint();
 const sandboxStoreKey = getSandboxStoreKey(sandboxDeploymentFingerprint);
 
-if (typeof window !== 'undefined' && window.localStorage) {
-  pruneSandboxCacheKeys(window.localStorage, sandboxStoreKey);
+// `window.localStorage` property access throws SecurityError in sandboxed
+// iframes (no `allow-same-origin`) — the `&&` guard does not short-circuit
+// safely. Route through `getSafeLocalStorage()` which try/catches the read.
+{
+  const ls = getSafeLocalStorage();
+  if (ls) pruneSandboxCacheKeys(ls, sandboxStoreKey);
 }
 
 export function isCanonicalSandboxId(id: string | undefined): id is string {
