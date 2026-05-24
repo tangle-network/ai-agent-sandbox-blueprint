@@ -3819,7 +3819,9 @@ mod port_mapping_tests {
         // Both the install and the lists-cleanup must be wrapped with
         // `|| true` so a benign non-zero exit doesn't trip `set -e`.
         assert!(
-            command.contains("apt-get install -y --no-install-recommends openssh-server >/dev/null 2>&1 || true"),
+            command.contains(
+                "apt-get install -y --no-install-recommends openssh-server >/dev/null 2>&1 || true"
+            ),
             "apt-get install must tolerate cache-cleanup failures"
         );
         assert!(
