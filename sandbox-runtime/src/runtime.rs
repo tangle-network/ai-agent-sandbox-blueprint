@@ -2336,13 +2336,12 @@ fn build_docker_config(
                 caps.push("NET_BIND_SERVICE".to_string());
                 // sshd calls `audit_send_user_message()` on every PTY
                 // allocation (interactive shell). Without CAP_AUDIT_WRITE,
-                // the audit syscall returns EPERM and
-                // `linux_audit_write_entry` fails — modern OpenSSH aborts
-                // the session immediately with "Connection closed by
-                // remote host" instead of dropping into the shell.
-                // Non-interactive (`ssh host cmd`) does not allocate a PTY
-                // and works without this cap, which is why command-mode
-                // tests pass but `ssh -tt` hangs up.
+                // the audit syscall returns EPERM and `linux_audit_write_entry`
+                // fails — modern OpenSSH aborts the session immediately
+                // with "Connection closed by remote host" instead of
+                // dropping into the shell. Non-interactive (`ssh host cmd`)
+                // does not allocate a PTY and works without this cap, which
+                // is why command-mode tests pass but `ssh -tt` hangs up.
                 caps.push("AUDIT_WRITE".to_string());
                 // apt-get install (the openssh-server fallback path for
                 // images without a pre-installed sshd) drops fetching to
@@ -3819,9 +3818,7 @@ mod port_mapping_tests {
         // Both the install and the lists-cleanup must be wrapped with
         // `|| true` so a benign non-zero exit doesn't trip `set -e`.
         assert!(
-            command.contains(
-                "apt-get install -y --no-install-recommends openssh-server >/dev/null 2>&1 || true"
-            ),
+            command.contains("apt-get install -y --no-install-recommends openssh-server >/dev/null 2>&1 || true"),
             "apt-get install must tolerate cache-cleanup failures"
         );
         assert!(
