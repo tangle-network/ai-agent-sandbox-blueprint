@@ -7,8 +7,10 @@ import {
   tangleWalletChains,
 } from '@tangle-network/blueprint-ui';
 import { Web3Shell } from '@tangle-network/blueprint-ui/components';
-import { detectTangleCloudParentOrigin } from '~/lib/wallet/detectParentOrigin';
-import { parentBridgeConnector } from '~/lib/wallet/parentBridgeConnector';
+import {
+  detectTangleCloudParentOrigin,
+  parentBridgeConnector,
+} from '@tangle-network/blueprint-ui/wallet';
 
 const appMetadata = {
   appName: 'Tangle Sandbox Cloud',
@@ -23,7 +25,18 @@ const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || 
 // config and the autoConnect flag below. The detection reads
 // `document.referrer` + `window.location` — both stable for the lifetime of
 // the iframe page, so a one-shot check is safe.
-const PARENT_ORIGIN = detectTangleCloudParentOrigin();
+// Thread `VITE_TANGLE_CLOUD_ORIGINS` (comma-separated) into the library's
+// origin allowlist. The library doesn't read import.meta.env itself so it
+// stays bundler-agnostic; the app injects what its env can resolve.
+const EXTRA_PARENT_ORIGINS = (
+  import.meta.env.VITE_TANGLE_CLOUD_ORIGINS as string | undefined
+)
+  ?.split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const PARENT_ORIGIN = detectTangleCloudParentOrigin({
+  extraOrigins: EXTRA_PARENT_ORIGINS,
+});
 
 /**
  * `true` when this app is running inside the Tangle Cloud dapp's iframe

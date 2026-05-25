@@ -271,12 +271,19 @@ export default function CreatePage() {
   const operatorRpcUrl = infra.serviceInfo?.operators?.[0]?.rpcAddress;
   const blueprintId = BigInt(infra.blueprintId || '0');
   const serviceIdBig = BigInt(infra.serviceId || '0');
+  // `requester` is the wallet that will execute the job — tnt-core v0.13.0
+  // binds quotes to this address so the operator quote can scope pricing
+  // (per-account rate-limits, holder discounts, etc.) to the actual caller.
+  // The `enabled` flag also gates on `!!address` so we don't query with the
+  // zero-address sentinel by accident.
+  const ZERO_ADDR = '0x0000000000000000000000000000000000000000' as const;
   const { quote: provisionQuote, isLoading: priceLoading, formattedPrice: provisionPriceFormatted } = useJobPrice(
     operatorRpcUrl,
     serviceIdBig,
     createJob?.id ?? 0,
     blueprintId,
-    step === 'deploy' && !!operatorRpcUrl && serviceIdBig > 0n && !!createJob,
+    step === 'deploy' && !!operatorRpcUrl && serviceIdBig > 0n && !!createJob && !!address,
+    (address ?? ZERO_ADDR) as `0x${string}`,
   );
   const provisionEstimate = BigInt(createJob?.pricingMultiplier ?? 50) * 1_000_000_000_000_000n;
   const hasProvisionRfq = !!provisionQuote;
