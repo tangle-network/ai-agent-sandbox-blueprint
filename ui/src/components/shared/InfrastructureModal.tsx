@@ -54,11 +54,17 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
     () => operators.filter((op) => selectedOperators.includes(op.address)),
     [operators, selectedOperators],
   );
+  // tnt-core v0.13.0 binds quotes to a `requester` so per-account pricing
+  // (rate limits, holder discounts) can scope to the actual caller. Pass the
+  // connected wallet; gate `enabled` on `!!address` so we don't query with
+  // the zero-address sentinel.
+  const ZERO_REQUESTER = '0x0000000000000000000000000000000000000000' as const;
   const { quotes, isLoading: quotesLoading, isSolvingPow, errors: quoteErrors, totalCost, refetch: refetchQuotes } = useQuotes(
     selectedOps,
     BigInt(blueprintId || '0'),
     TTL_BLOCKS,
-    mode === 'new' && selectedOperators.length > 0,
+    mode === 'new' && selectedOperators.length > 0 && !!address,
+    (address ?? ZERO_REQUESTER) as `0x${string}`,
   );
 
   // Service creation TX
@@ -99,17 +105,25 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
     if (quotes.length === 0 || !address) return;
     const addrs = getAddresses();
 
+    // tnt-core v0.13.0 QuoteDetails shape adds three fields the operator
+    // signs over: `requester`, `confidentiality`, `resourceCommitments`.
+    // Forward them verbatim from the quote response — the operator's
+    // signature covers them, so any local rewrite would invalidate the
+    // quote.
     const quoteTuples = quotes.map((q) => ({
       details: {
+        requester: q.details.requester,
         blueprintId: q.details.blueprintId,
         ttlBlocks: q.details.ttlBlocks,
         totalCost: q.details.totalCost,
         timestamp: q.details.timestamp,
         expiry: q.details.expiry,
+        confidentiality: q.details.confidentiality,
         securityCommitments: q.details.securityCommitments.map((sc) => ({
           asset: sc.asset,
           exposureBps: sc.exposureBps,
         })),
+        resourceCommitments: q.details.resourceCommitments,
       },
       signature: q.signature,
       operator: q.operator,

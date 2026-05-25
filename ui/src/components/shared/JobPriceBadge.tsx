@@ -3,6 +3,7 @@ import { infraStore } from '@tangle-network/blueprint-ui';
 import { useJobPrice } from '@tangle-network/blueprint-ui';
 import { formatCost } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
+import { useAccount } from 'wagmi';
 
 interface JobPriceBadgeProps {
   jobIndex: number;
@@ -25,12 +26,18 @@ export function JobPriceBadge({ jobIndex, pricingMultiplier, className, compact 
   const serviceId = BigInt(infra.serviceId || '0');
   const blueprintId = BigInt(infra.blueprintId || '0');
 
+  const { address } = useAccount();
+  // tnt-core v0.13.0 binds quotes to the requesting wallet. Pass the
+  // connected account; gate the query on `!!address` so we don't issue an
+  // RFQ with the zero-address sentinel.
+  const ZERO_ADDR = '0x0000000000000000000000000000000000000000' as const;
   const { quote, isLoading, isSolvingPow, formattedPrice, error } = useJobPrice(
     operatorRpcUrl,
     serviceId,
     jobIndex,
     blueprintId,
-    !!operatorRpcUrl && serviceId > 0n,
+    !!operatorRpcUrl && serviceId > 0n && !!address,
+    (address ?? ZERO_ADDR) as `0x${string}`,
   );
 
   // Fallback: estimate from multiplier (base rate = 0.001 TNT = 1e15 wei)
