@@ -6,13 +6,16 @@
 /* Dark Theme (Default) */
 :root,
 :root[data-theme='dark'] {
-  --cloud-elements-borderColor: rgba(240, 240, 245, 0.06);
+  /* Borders/dividers were 0.06 (≈invisible) — surfaces had no separation on
+     the near-black base ("dark on dark"). Lift to a readable contrast and widen
+     the depth ramp so cards/sections clearly sit above the page. */
+  --cloud-elements-borderColor: rgba(240, 240, 245, 0.14);
   --cloud-elements-borderColorActive: theme('colors.violet.400');
 
   --cloud-elements-bg-depth-1: #0A0A0F;
-  --cloud-elements-bg-depth-2: #12121A;
-  --cloud-elements-bg-depth-3: #1A1A25;
-  --cloud-elements-bg-depth-4: #22222E;
+  --cloud-elements-bg-depth-2: #16161F;
+  --cloud-elements-bg-depth-3: #20202C;
+  --cloud-elements-bg-depth-4: #2B2B3A;
 
   --cloud-elements-textPrimary: #F0F0F5;
   --cloud-elements-textSecondary: #8A8A9E;
@@ -36,9 +39,9 @@
   --cloud-elements-icon-primary: #F0F0F5;
   --cloud-elements-icon-secondary: #5A5A6E;
 
-  --cloud-elements-dividerColor: rgba(240, 240, 245, 0.06);
-  --cloud-elements-item-backgroundHover: rgba(240, 240, 245, 0.03);
-  --cloud-elements-item-backgroundActive: rgba(240, 240, 245, 0.06);
+  --cloud-elements-dividerColor: rgba(240, 240, 245, 0.10);
+  --cloud-elements-item-backgroundHover: rgba(240, 240, 245, 0.05);
+  --cloud-elements-item-backgroundActive: rgba(240, 240, 245, 0.09);
   --cloud-elements-focus: #8E59FF;
 
   /* Status colors */
@@ -72,11 +75,14 @@
   --ring: 263 100% 68%;
   --radius: 0.625rem;
 
-  /* Glass morphism tokens */
-  --glass-bg: rgba(18, 18, 26, 0.60);
-  --glass-bg-strong: rgba(18, 18, 26, 0.80);
-  --glass-border: rgba(240, 240, 245, 0.06);
-  --glass-border-hover: rgba(240, 240, 245, 0.12);
+  /* Glass morphism tokens — the actual card surface (.glass-card reads these).
+     Lift the surface clearly above the #0A0A0F page (was rgba(18,18,26,.60)
+     ≈ #0E0E14, indistinguishable from the page → "dark on dark"). Mirror the
+     light theme, where cards sit a full step above the base. */
+  --glass-bg: rgba(32, 32, 46, 0.72);
+  --glass-bg-strong: rgba(40, 40, 56, 0.86);
+  --glass-border: rgba(240, 240, 245, 0.12);
+  --glass-border-hover: rgba(240, 240, 245, 0.20);
   --glass-blur: 16px;
 
   /* Gradient mesh */
