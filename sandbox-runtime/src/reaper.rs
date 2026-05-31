@@ -512,6 +512,38 @@ pub async fn reconcile_on_startup() {
             }
         }
     }
+
+    // Sidecar image drift remediation. Every blueprint calls
+    // reconcile_on_startup() at boot, so folding this here means the cascade off
+    // the manager's binary upgrade is universal: when the manager swaps the
+    // operator binary (on-chain BinaryVersion CD loop), the new binary boots,
+    // reconciles, and rolls any sandbox still on a stale image onto the current
+    // SIDECAR_IMAGE — preserving each sandbox's secrets/identity. Without this,
+    // sandboxes stay pinned to their birth image forever (e.g. one that predates
+    // opencode → every agent run fails). Drift detection ⇒ no-op when unchanged.
+    // Policy via SIDECAR_UPGRADE_POLICY (default Auto; `manual` only reports).
+    match crate::runtime::reconcile_sidecar_images(
+        crate::runtime::SidecarUpgradePolicy::from_env(),
+        None,
+    )
+    .await
+    {
+        Ok(report)
+            if !report.upgraded.is_empty()
+                || !report.failed.is_empty()
+                || !report.pending.is_empty() =>
+        {
+            tracing::info!(
+                target_image = %report.target_image,
+                upgraded = report.upgraded.len(),
+                failed = report.failed.len(),
+                pending = report.pending.len(),
+                "reconcile: sidecar image drift remediation complete"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::error!("reconcile: sidecar image reconcile failed: {e}"),
+    }
 }
 
 /// Resolve the snapshot destination URL for a sandbox.
