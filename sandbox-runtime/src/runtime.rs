@@ -2061,6 +2061,16 @@ async fn create_sidecar_firecracker(
         }
     }
 
+    // Forward the operator's Tangle Intelligence telemetry config into every
+    // sidecar so the agent-runtime loop OTEL (token usage, decisions, tool
+    // calls, eval scores — the self-improvement signal) streams to Intelligence
+    // via the sidecar's sdk-telemetry sink. The operator process carries
+    // TANGLE_API_KEY (sk-tan-*) for its own OTLP export; the sidecar runs the
+    // agent loops, so it needs the same credential. Gated on the key being
+    // present; explicit per-sandbox TELEMETRY_*/OTEL_* env always wins (we only
+    // fill what isn't already set).
+    inject_intelligence_telemetry_env(&mut env);
+
     let create_request = crate::firecracker::FirecrackerCreateRequest {
         session_id: sandbox_id.clone(),
         image: effective_image.clone(),
@@ -2158,6 +2168,34 @@ async fn create_sidecar_firecracker(
 
 /// Merge base and user env JSON strings into a single JSON object string.
 /// User values override base values when keys collide.
+/// Default Tangle Intelligence base the sidecar telemetry sink posts to.
+const DEFAULT_INTELLIGENCE_ENDPOINT: &str = "https://intelligence.tangle.tools";
+
+/// Fill a sidecar's env with the operator's Tangle Intelligence telemetry
+/// config so its agent-runtime loop OTEL exports to Intelligence. No-op unless
+/// the operator process carries `TANGLE_API_KEY`. Never overrides explicit
+/// per-sandbox telemetry env (`TELEMETRY_*` / `OTEL_EXPORTER_OTLP_ENDPOINT`).
+fn inject_intelligence_telemetry_env(env: &mut HashMap<String, String>) {
+    // Respect an explicit telemetry/OTLP setup on the sandbox.
+    if env.contains_key("TELEMETRY_API_KEY") || env.contains_key("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        return;
+    }
+    let Ok(key) = env::var("TANGLE_API_KEY") else {
+        return;
+    };
+    if key.trim().is_empty() {
+        return;
+    }
+    env.entry("TELEMETRY_ENABLED".to_string())
+        .or_insert_with(|| "true".to_string());
+    env.entry("TELEMETRY_ENDPOINT".to_string())
+        .or_insert_with(|| {
+            env::var("TELEMETRY_ENDPOINT")
+                .unwrap_or_else(|_| DEFAULT_INTELLIGENCE_ENDPOINT.to_string())
+        });
+    env.entry("TELEMETRY_API_KEY".to_string()).or_insert(key);
+}
+
 pub fn merge_env_json(base: &str, user: &str) -> String {
     let user_trimmed = user.trim();
     if user_trimmed.is_empty() || user_trimmed == "{}" {
