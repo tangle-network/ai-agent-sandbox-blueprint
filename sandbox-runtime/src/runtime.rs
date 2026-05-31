@@ -2959,9 +2959,152 @@ pub async fn delete_sidecar(
 /// Pass an empty string to clear user secrets (base env only).
 ///
 /// Returns the new [`SandboxRecord`] for the recreated container.
+/// The sidecar image the operator is currently configured to run
+/// (`SIDECAR_IMAGE` env, falling back to the build-time default). This is the
+/// target for fleet image upgrades — see [`upgrade_sidecar_image`].
+#[must_use]
+pub fn current_sidecar_image() -> String {
+    env::var("SIDECAR_IMAGE").unwrap_or_else(|_| DEFAULT_SIDECAR_IMAGE.to_string())
+}
+
+/// List sandboxes whose container was created from an image other than the
+/// operator's current `SIDECAR_IMAGE` — i.e. they're running a stale sidecar and
+/// would benefit from an in-place image upgrade. Returns `(sandbox_id, original_image)`.
+/// TEE sandboxes are excluded (their image can't be swapped without breaking
+/// attestation). This is how an operator detects post-deploy image drift without
+/// shelling into Docker.
+pub fn sandboxes_needing_image_upgrade() -> Result<Vec<(String, String)>> {
+    let target = current_sidecar_image();
+    Ok(sandboxes()?
+        .values()?
+        .into_iter()
+        .filter(|r| r.tee_deployment_id.is_none() && r.original_image != target)
+        .map(|r| (r.id, r.original_image))
+        .collect())
+}
+
+/// Sidecar image upgrade policy, read from `SIDECAR_UPGRADE_POLICY`.
+/// Mirrors the on-chain binary `UpgradePolicy` one layer down: the blueprint
+/// manager swaps the operator *binary* per its on-chain policy; the freshly
+/// booted binary then reconciles its *sidecars* per this policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidecarUpgradePolicy {
+    /// Roll drifted sandboxes onto the current image automatically (default).
+    Auto,
+    /// Only report drift — an operator triggers the upgrade explicitly
+    /// (`POST /api/operator/sidecar-image/upgrade-stale`).
+    Manual,
+}
+
+impl SidecarUpgradePolicy {
+    #[must_use]
+    pub fn from_env() -> Self {
+        match env::var("SIDECAR_UPGRADE_POLICY").ok().as_deref() {
+            Some(v) if v.eq_ignore_ascii_case("manual") => Self::Manual,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Outcome of [`reconcile_sidecar_images`].
+#[derive(Debug, Default)]
+pub struct SidecarReconcileReport {
+    pub target_image: String,
+    pub upgraded: Vec<String>,
+    pub failed: Vec<(String, String)>,
+    pub pending: Vec<String>,
+}
+
+/// Reconcile every running sandbox onto the operator's current `SIDECAR_IMAGE`.
+///
+/// This is the cascade that makes sidecar upgrades "just happen" off the
+/// manager's binary upgrade: the blueprint binary calls this at startup, so when
+/// the manager swaps the operator binary (the on-chain BinaryVersion CD loop) the
+/// new binary boots and rolls any stale sidecars forward — no manual step. Under
+/// `Auto` it upgrades drifted sandboxes; under `Manual` it only records what's
+/// pending (the operator triggers the upgrade endpoint). Drift detection means a
+/// no-op when nothing changed, so calling it on every boot is safe.
+pub async fn reconcile_sidecar_images(
+    policy: SidecarUpgradePolicy,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<SidecarReconcileReport> {
+    let mut report = SidecarReconcileReport {
+        target_image: current_sidecar_image(),
+        ..Default::default()
+    };
+    let stale = sandboxes_needing_image_upgrade()?;
+    if stale.is_empty() {
+        return Ok(report);
+    }
+    if policy == SidecarUpgradePolicy::Manual {
+        tracing::warn!(
+            count = stale.len(),
+            target = %report.target_image,
+            "Sidecar image drift detected; SIDECAR_UPGRADE_POLICY=manual — not auto-upgrading. \
+             Trigger POST /api/operator/sidecar-image/upgrade-stale to roll them."
+        );
+        report.pending = stale.into_iter().map(|(id, _)| id).collect();
+        return Ok(report);
+    }
+    tracing::info!(
+        count = stale.len(),
+        target = %report.target_image,
+        "Sidecar image drift detected; auto-upgrading stale sandboxes to current image"
+    );
+    for (id, from_image) in stale {
+        let _lock = acquire_lifecycle_lock(&id).await;
+        match upgrade_sidecar_image(&id, &report.target_image, tee).await {
+            Ok(_) => {
+                tracing::info!(sandbox = %id, from = %from_image, to = %report.target_image, "sidecar upgraded");
+                report.upgraded.push(id);
+            }
+            Err(e) => {
+                tracing::error!(sandbox = %id, error = %e, "sidecar image upgrade failed");
+                report.failed.push((id, e.to_string()));
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Recreate a sandbox onto the operator's current `SIDECAR_IMAGE`, preserving
+/// the bot's secrets/env, token, ports, capabilities, and identity.
+///
+/// This is the clean fleet-upgrade primitive: when the operator ships a new
+/// sidecar image (security patch, new agent harness, opencode bump), existing
+/// sandboxes stay pinned to their *birth* image forever unless explicitly
+/// migrated — which silently rots a fleet (e.g. agent runs failing on an old
+/// image that never had opencode). Call this per sandbox (or over
+/// [`sandboxes_needing_image_upgrade`]) to roll them forward in place.
+///
+/// Secrets are preserved: `get_sandbox_by_id` unseals the record, so the
+/// existing `user_env_json` is replayed verbatim — no re-entry of API keys.
+pub async fn upgrade_sidecar_image(
+    sandbox_id: &str,
+    target_image: &str,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<SandboxRecord> {
+    let old = get_sandbox_by_id(sandbox_id)?;
+    let preserved_user_env = old.user_env_json.clone();
+    recreate_sidecar_impl(sandbox_id, &preserved_user_env, Some(target_image), tee).await
+}
+
 pub async fn recreate_sidecar_with_env(
     sandbox_id: &str,
     user_env_json: &str,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<SandboxRecord> {
+    recreate_sidecar_impl(sandbox_id, user_env_json, None, tee).await
+}
+
+/// Shared recreate engine. `image_override = Some(img)` swaps the sidecar onto
+/// `img` (image upgrade); `None` preserves the sandbox's existing image (the
+/// secret re-injection / wipe path). Everything else — env, token, ports,
+/// capabilities, identity — is replayed faithfully from the stored record.
+async fn recreate_sidecar_impl(
+    sandbox_id: &str,
+    user_env_json: &str,
+    image_override: Option<&str>,
     tee: Option<&dyn crate::tee::TeeBackend>,
 ) -> Result<SandboxRecord> {
     let old = get_sandbox_by_id(sandbox_id)?;
@@ -2982,11 +3125,13 @@ pub async fn recreate_sidecar_with_env(
     }
     delete_sidecar(&old, tee).await?;
 
-    // Rebuild creation params faithfully from the stored record
-    let image = if old.original_image.is_empty() {
-        env::var("SIDECAR_IMAGE").unwrap_or_else(|_| DEFAULT_SIDECAR_IMAGE.to_string())
-    } else {
-        old.original_image.clone()
+    // Rebuild creation params faithfully from the stored record. An explicit
+    // `image_override` (fleet upgrade) wins; otherwise keep the sandbox's own
+    // image, falling back to the configured one only if it was never recorded.
+    let image = match image_override {
+        Some(img) => img.to_string(),
+        None if old.original_image.is_empty() => current_sidecar_image(),
+        None => old.original_image.clone(),
     };
 
     let old_token = old.token.clone();
@@ -3818,7 +3963,9 @@ mod port_mapping_tests {
         // Both the install and the lists-cleanup must be wrapped with
         // `|| true` so a benign non-zero exit doesn't trip `set -e`.
         assert!(
-            command.contains("apt-get install -y --no-install-recommends openssh-server >/dev/null 2>&1 || true"),
+            command.contains(
+                "apt-get install -y --no-install-recommends openssh-server >/dev/null 2>&1 || true"
+            ),
             "apt-get install must tolerate cache-cleanup failures"
         );
         assert!(
