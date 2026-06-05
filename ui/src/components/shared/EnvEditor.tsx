@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Button } from '@tangle-network/blueprint-ui/components';
 import { cn } from '@tangle-network/blueprint-ui';
 
 interface EnvEditorProps {
@@ -83,35 +82,40 @@ export function EnvEditor({ value, onChange, className }: EnvEditorProps) {
   return (
     <div className={cn('space-y-2', className)}>
       {rows.map((row) => (
-        <div key={row.id} className="flex items-center gap-2">
+        <div key={row.id} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1.35fr)_auto] items-center gap-2">
           <input
             type="text"
             value={row.key}
             onChange={(e) => updateRow(row.id, 'key', e.target.value)}
             placeholder="KEY"
-            className="flex-1 px-3 py-1.5 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus:outline-none focus:border-cloud-elements-borderColorActive transition-colors"
+            className="min-w-0 rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] px-3 py-2 font-data text-sm text-[var(--sandbox-console-text)] placeholder:text-[var(--sandbox-console-subtle)] transition-colors hover:border-[var(--sandbox-console-border-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:outline-none"
           />
-          <span className="text-cloud-elements-textTertiary text-xs">=</span>
+          <span className="font-data text-xs text-[var(--sandbox-console-subtle)]">=</span>
           <input
             type="text"
             value={row.value}
             onChange={(e) => updateRow(row.id, 'value', e.target.value)}
             placeholder="value"
-            className="flex-[2] px-3 py-1.5 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus:outline-none focus:border-cloud-elements-borderColorActive transition-colors"
+            className="min-w-0 rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] px-3 py-2 font-data text-sm text-[var(--sandbox-console-text)] placeholder:text-[var(--sandbox-console-subtle)] transition-colors hover:border-[var(--sandbox-console-border-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:outline-none"
           />
           <button
             type="button"
             onClick={() => removeRow(row.id)}
-            className="p-1.5 rounded-lg text-cloud-elements-textTertiary hover:text-crimson-400 hover:bg-crimson-500/10 transition-colors"
+            className="flex h-9 w-9 items-center justify-center rounded-md text-[var(--sandbox-console-muted)] transition-colors hover:bg-red-400/10 hover:text-[var(--sandbox-console-danger)]"
+            aria-label="Remove environment variable"
           >
             <div className="i-ph:x text-sm" />
           </button>
         </div>
       ))}
-      <Button type="button" variant="ghost" size="sm" onClick={addRow} className="text-xs">
+      <button
+        type="button"
+        onClick={addRow}
+        className="inline-flex h-8 items-center gap-2 rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] px-3 font-display text-xs font-semibold text-[var(--sandbox-console-secondary)] transition-colors hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-panel-strong)] hover:text-[var(--sandbox-console-text)]"
+      >
         <div className="i-ph:plus text-sm" />
         Add variable
-      </Button>
+      </button>
     </div>
   );
 }

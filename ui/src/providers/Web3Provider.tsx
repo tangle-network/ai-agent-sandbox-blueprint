@@ -1,16 +1,16 @@
-import { createConfig, type Config } from 'wagmi';
+import { createConfig, http, type Config } from 'wagmi';
 import { ConnectKitProvider, getDefaultConfig } from 'connectkit';
 import { type ReactNode } from 'react';
+import type { Chain } from 'viem';
 import {
-  createTangleTransports,
   defaultConnectKitOptions,
-  tangleWalletChains,
 } from '@tangle-network/blueprint-ui';
 import { Web3Shell } from '@tangle-network/blueprint-ui/components';
 import {
   detectTangleCloudParentOrigin,
   parentBridgeConnector,
 } from '@tangle-network/blueprint-ui/wallet';
+import { baseSepolia, networks } from '~/lib/contracts/chains';
 
 const appMetadata = {
   appName: 'Tangle Sandbox Cloud',
@@ -46,14 +46,35 @@ const PARENT_ORIGIN = detectTangleCloudParentOrigin({
  */
 export const isEmbeddedInTangleCloud = PARENT_ORIGIN !== null;
 
+function dedupeChains(chains: readonly Chain[]): readonly [Chain, ...Chain[]] {
+  const seen = new Set<number>();
+  const unique = chains.filter((chain) => {
+    if (seen.has(chain.id)) return false;
+    seen.add(chain.id);
+    return true;
+  });
+
+  return unique as [Chain, ...Chain[]];
+}
+
+function getSandboxWalletChains(): readonly [Chain, ...Chain[]] {
+  return dedupeChains(Object.values(networks).map((network) => network.chain));
+}
+
 export function createWeb3Config(projectId = walletConnectProjectId): Config {
   // connectkit's `getDefaultConfig` and wagmi's `createConfig` ship slightly
   // different `Chain` / `Transport` generics across the two package versions
   // pinned by this app — they're structurally compatible at runtime. Cast
   // the shared structures explicitly via `unknown` so we don't silently
   // accept anything else.
-  const chains = tangleWalletChains as unknown as Parameters<typeof getDefaultConfig>[0]['chains'];
-  const transports = createTangleTransports() as unknown as Parameters<
+  const walletChains = getSandboxWalletChains();
+  const chains = walletChains as unknown as Parameters<typeof getDefaultConfig>[0]['chains'];
+  const transports = Object.fromEntries(
+    walletChains.map((chain) => [
+      chain.id,
+      http(networks[chain.id]?.rpcUrl ?? chain.rpcUrls.default.http[0]),
+    ]),
+  ) as unknown as Parameters<
     typeof getDefaultConfig
   >[0]['transports'];
   const base = getDefaultConfig({
@@ -97,7 +118,7 @@ export function Web3Provider({ children }: { children: ReactNode }) {
         mode="auto"
         options={{
           ...defaultConnectKitOptions,
-          initialChainId: undefined,
+          initialChainId: baseSepolia.id,
         }}
       >
         {children}

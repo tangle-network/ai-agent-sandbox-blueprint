@@ -1,18 +1,14 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type RefObject, type ReactNode, type TextareaHTMLAttributes } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useAccount } from 'wagmi';
 import { useStore } from '@nanostores/react';
-import { Button } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
-import { Input, Select } from '@tangle-network/blueprint-ui/components';
 import { InfrastructureModal } from '~/components/shared/InfrastructureModal';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { infraStore, updateInfra } from '@tangle-network/blueprint-ui';
-import { BlueprintJobForm, type FormSection } from '@tangle-network/blueprint-ui/components';
 import { Identicon } from '@tangle-network/blueprint-ui/components';
 import {
   ConsoleChip,
-  ConsoleMetricStrip,
   ConsolePage,
   ConsoleSection,
   type ConsoleMetric,
@@ -24,7 +20,7 @@ import { useServiceValidation } from '@tangle-network/blueprint-ui';
 import { formatCost } from '@tangle-network/blueprint-ui';
 import { useAvailableCapacity } from '~/lib/hooks/useSandboxReads';
 import { useCreateDeploy, type DeployStatus } from '~/lib/hooks/useCreateDeploy';
-import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition } from '@tangle-network/blueprint-ui';
+import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition, type JobFieldDef } from '@tangle-network/blueprint-ui';
 import { updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { updateInstanceStatus } from '~/lib/stores/instances';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
@@ -44,47 +40,32 @@ type ConsoleTone = NonNullable<ConsoleMetric['tone']>;
 
 // ── Blueprint → on-chain ID mapping from env vars ──
 
+const LOCAL_NETWORK_ENABLED = import.meta.env.VITE_ENABLE_LOCAL_NETWORK === 'true';
+
 const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }> = {
   'ai-agent-sandbox-blueprint': {
-    blueprintId: import.meta.env.VITE_SANDBOX_BLUEPRINT_ID ?? '1',
-    serviceId: import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '1',
+    blueprintId: import.meta.env.VITE_BASE_SEPOLIA_SANDBOX_BLUEPRINT_ID
+      ?? (LOCAL_NETWORK_ENABLED ? import.meta.env.VITE_SANDBOX_BLUEPRINT_ID : undefined)
+      ?? '10',
+    serviceId: import.meta.env.VITE_BASE_SEPOLIA_SANDBOX_SERVICE_ID ?? import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '1',
   },
   'ai-agent-instance-blueprint': {
-    blueprintId: import.meta.env.VITE_INSTANCE_BLUEPRINT_ID ?? '2',
-    serviceId: import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '2',
+    blueprintId: import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_BLUEPRINT_ID
+      ?? (LOCAL_NETWORK_ENABLED ? import.meta.env.VITE_INSTANCE_BLUEPRINT_ID : undefined)
+      ?? '11',
+    serviceId: import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_SERVICE_ID ?? import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '2',
   },
   'ai-agent-tee-instance-blueprint': {
-    blueprintId: import.meta.env.VITE_TEE_INSTANCE_BLUEPRINT_ID ?? '3',
-    serviceId: import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '2',
+    blueprintId: import.meta.env.VITE_BASE_SEPOLIA_TEE_INSTANCE_BLUEPRINT_ID
+      ?? (LOCAL_NETWORK_ENABLED ? import.meta.env.VITE_TEE_INSTANCE_BLUEPRINT_ID : undefined)
+      ?? '12',
+    serviceId: import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_SERVICE_ID ?? import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '2',
   },
 };
-
-// ── Form sections for provision/create jobs (organized layout) ──
-
-const PRE_AGENT_SECTIONS: FormSection[] = [
-  { label: 'Identity', fields: ['name'] },
-  { label: 'Image', fields: ['image'] },
-];
-
-function getPostAgentSections(isTee: boolean): FormSection[] {
-  return [
-    { label: 'Runtime & Stack', fields: ['runtimeBackend', 'stack'] },
-    { label: 'Resources', fields: ['cpuCores', 'memoryMb', 'diskGb'] },
-    { label: 'Timeouts', fields: ['maxLifetimeSeconds', 'idleTimeoutSeconds'] },
-    { label: 'Features', fields: ['sshEnabled', 'sshPublicKey'] },
-    { label: 'Advanced Options', fields: isTee ? ['metadataJson', 'teeRequired', 'teeType'] : ['metadataJson'], collapsed: true },
-  ];
-}
 
 // ── Wizard Steps ──
 
 type WizardStep = 'blueprint' | 'configure' | 'deploy';
-
-const STEPS: { key: WizardStep; label: string; icon: string }[] = [
-  { key: 'blueprint', label: 'Mode', icon: 'i-ph:cube' },
-  { key: 'configure', label: 'Spec', icon: 'i-ph:gear' },
-  { key: 'deploy', label: 'Launch', icon: 'i-ph:rocket-launch' },
-];
 
 function parsePortsInput(value: string): number[] {
   return value
@@ -116,6 +97,41 @@ function runtimeLabel(value: string) {
   if (value === 'firecracker') return 'Firecracker';
   if (value === 'tee') return 'TEE';
   return 'Docker';
+}
+
+function field(job: JobDefinition | null, name: string): JobFieldDef | undefined {
+  return job?.fields.find((item) => item.name === name);
+}
+
+function fieldOptions(job: JobDefinition | null, name: string): { label: string; value: string }[] {
+  return field(job, name)?.options ?? [];
+}
+
+function valueString(values: Record<string, unknown>, name: string, fallback = ''): string {
+  const value = values[name];
+  if (value === undefined || value === null) return fallback;
+  return String(value);
+}
+
+function valueNumber(values: Record<string, unknown>, name: string, fallback: number): number {
+  const raw = Number(values[name]);
+  return Number.isFinite(raw) ? raw : fallback;
+}
+
+function clampNumber(value: number, min?: number, max?: number): number {
+  if (typeof min === 'number' && value < min) return min;
+  if (typeof max === 'number' && value > max) return max;
+  return value;
+}
+
+function hoursFromSeconds(value: unknown, fallbackSeconds: number): number {
+  const seconds = Number(value);
+  return Math.max(0, Math.round((Number.isFinite(seconds) ? seconds : fallbackSeconds) / 3600));
+}
+
+function minutesFromSeconds(value: unknown, fallbackSeconds: number): number {
+  const seconds = Number(value);
+  return Math.max(0, Math.round((Number.isFinite(seconds) ? seconds : fallbackSeconds) / 60));
 }
 
 function serviceTone({
@@ -151,6 +167,9 @@ export default function CreatePage() {
   const [selectedBlueprint, setSelectedBlueprint] = useState<BlueprintDefinition | undefined>(preselected);
   const [step, setStep] = useState<WizardStep>(preselected ? 'configure' : 'blueprint');
   const [showInfra, setShowInfra] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [attemptedContinue, setAttemptedContinue] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   // Refs for values that should not re-trigger the init effect
   const addressRef = useRef(address);
@@ -200,7 +219,6 @@ export default function CreatePage() {
   const { values, errors, onChange, validate, reset: resetForm } = useJobForm(createJob);
 
   const isTeeBlueprint = selectedBlueprint?.id === 'ai-agent-tee-instance-blueprint';
-  const postAgentSections = useMemo(() => getPostAgentSections(isTeeBlueprint), [isTeeBlueprint]);
 
   // For non-TEE blueprints, hide the TEE runtime backend option from the form.
   const displayJob = useMemo<JobDefinition | null>(() => {
@@ -299,7 +317,6 @@ export default function CreatePage() {
 
   const isSandbox = deploy.mode === 'sandbox';
   const entityLabel = isSandbox ? 'Sandbox' : 'Instance';
-  const currentIdx = STEPS.findIndex((s) => s.key === step);
   const blueprints = useMemo(() => getAllBlueprints(), []);
 
   // Per-job RFQ pricing
@@ -329,6 +346,7 @@ export default function CreatePage() {
     setSelectedBlueprint(bp);
     resetForm();
     deployReset();
+    setAttemptedContinue(false);
     const mapping = BLUEPRINT_INFRA[bp.id];
     if (mapping) {
       updateInfra({ blueprintId: mapping.blueprintId, serviceId: mapping.serviceId, serviceValidated: false });
@@ -339,73 +357,30 @@ export default function CreatePage() {
     setStep('configure');
   }, [resetForm, deployReset, address, validateService]);
 
+  const handleContinue = useCallback(() => {
+    setAttemptedContinue(true);
+    if (!String(values.name || '').trim()) {
+      nameInputRef.current?.focus();
+      return;
+    }
+    if (validate()) setStep('deploy');
+  }, [validate, values.name]);
+
   const showConnectPanel = !isConnected && !address && !isReconnectingWallet;
   const parsedPorts = supportsMetadataPorts ? parsePortsInput(portsInput) : [];
-  const launchMetrics: ConsoleMetric[] = [
-    {
-      label: 'Blueprint',
-      value: selectedBlueprint ? entityLabel : 'Select',
-      detail: selectedBlueprint?.name ?? 'catalog',
-      tone: selectedBlueprint ? 'brand' : 'muted',
-    },
-    {
-      label: 'Runtime',
-      value: runtimeLabel(runtimeBackend),
-      detail: step === 'blueprint' ? 'pending' : 'backend',
-      tone: runtimeBackend === 'tee' ? 'warn' : 'ready',
-    },
-    {
-      label: 'Capacity',
-      value: formatCapacityValue(capacity),
-      detail: 'slots',
-      tone: capacity !== undefined && Number(capacity) === 0 ? 'warn' : 'ready',
-    },
-    {
-      label: 'Service',
-      value: serviceValidating
-        ? 'Checking'
-        : serviceError
-          ? 'Blocked'
-          : deploy.isNewService
-            ? 'New'
-            : deploy.hasValidService
-              ? 'Verified'
-              : 'Pending',
-      detail: `#${infra.serviceId || '--'}`,
-      tone: serviceTone({
-        serviceValidating,
-        serviceError,
-        hasValidService: deploy.hasValidService,
-        isNewService: deploy.isNewService,
-      }),
-    },
-  ];
 
   return (
     <ConsolePage
-      title="Launch Console"
-      eyebrow="Tangle sandbox compiler"
+      title="Launch Workspace"
+      eyebrow="Tangle agent compute"
       actions={step !== 'blueprint' ? (
-        <Button variant="secondary" onClick={() => setShowInfra(true)}>
+        <LaunchActionButton variant="secondary" onClick={() => setShowInfra(true)}>
           <span className="i-ph:sliders-horizontal text-base" />
           Infrastructure
-        </Button>
+        </LaunchActionButton>
       ) : null}
     >
-      <div className="grid min-h-full gap-4 xl:grid-cols-[260px_minmax(0,1fr)_320px]">
-        <aside className="space-y-4">
-          <LaunchModeRail
-            blueprints={blueprints}
-            selectedBlueprint={selectedBlueprint}
-            onSelect={handleSelectBlueprint}
-          />
-          <LaunchPhaseRail
-            step={step}
-            currentIdx={currentIdx}
-            onStepChange={(nextStep) => setStep(nextStep)}
-          />
-        </aside>
-
+      <div className="grid min-h-full gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
         <main className="min-w-0 space-y-4">
           {showConnectPanel && (
             <ConnectWalletPanel
@@ -413,117 +388,57 @@ export default function CreatePage() {
             />
           )}
 
-          <ConsoleMetricStrip metrics={launchMetrics} />
+          <LaunchModeStrip
+            blueprints={blueprints}
+            selectedBlueprint={selectedBlueprint}
+            onSelect={handleSelectBlueprint}
+          />
 
           {step === 'blueprint' && (
-            <ConsoleSection title="Blueprint Catalog">
-              <BlueprintSelector blueprints={blueprints} onSelect={handleSelectBlueprint} />
+            <ConsoleSection title="Next">
+              <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="max-w-xl text-sm text-[var(--sandbox-console-muted)]">
+                  Choose the provisioning mode above. Sandbox mode is for shared cloud capacity; Instance and TEE Instance create dedicated service paths.
+                </p>
+                <LaunchActionButton
+                  onClick={() => {
+                    const nextBlueprint = selectedBlueprint ?? blueprints[0];
+                    if (nextBlueprint) handleSelectBlueprint(nextBlueprint);
+                  }}
+                >
+                  <span className="i-ph:arrow-right text-base" />
+                  Continue
+                </LaunchActionButton>
+              </div>
             </ConsoleSection>
           )}
 
           {step === 'configure' && createJob && displayJob && (
             <div className="space-y-4">
-              <ConsoleSection title={`${entityLabel} Spec`}>
-                <div className="p-4">
-                  <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-[var(--sandbox-console-border)] pb-4">
-                    <div className="flex min-w-0 items-start gap-3">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)]">
-                        <div className={cn('text-xl text-[var(--sandbox-console-brand)]', selectedBlueprint?.icon)} />
-                      </div>
-                      <div className="min-w-0">
-                        <h2 className="truncate font-display text-lg font-semibold text-[var(--sandbox-console-text)]">
-                          {selectedBlueprint?.name ?? entityLabel}
-                        </h2>
-                        <p className="mt-1 text-sm text-[var(--sandbox-console-muted)]">
-                          {selectedBlueprint?.description}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <ConsoleChip tone="brand">service #{infra.serviceId || '--'}</ConsoleChip>
-                      <ConsoleChip tone={runtimeBackend === 'tee' ? 'warn' : 'ready'}>{runtimeLabel(runtimeBackend)}</ConsoleChip>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <BlueprintJobForm
-                      job={displayJob}
-                      values={values}
-                      onChange={onChange}
-                      errors={errors}
-                      sections={PRE_AGENT_SECTIONS}
-                    />
-
-                    {supportsAgentConfiguration && (
-                      <AgentConfigurationField
-                        image={selectedImage}
-                        value={configuredAgentIdentifier}
-                        usesBundledSelector={usesBundledAgentSelector}
-                        onChange={(next) => onChange('agentIdentifier', next)}
-                      />
-                    )}
-
-                    <AllHarnessCapabilityField
-                      enabled={allHarnessEnabled}
-                      onChange={(enabled) => onChange('capabilitiesJson', enabled ? JSON.stringify(['all_harness']) : JSON.stringify([]))}
-                    />
-
-                    {configuredAgentIdentifier && (
-                      <div className="mt-4 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2">
-                        <p className="text-xs text-amber-300">
-                          This agent needs AI credentials to chat. You can add them now in Environment Variables below, or inject them later in the Secrets tab.
-                        </p>
-                      </div>
-                    )}
-
-                    <BlueprintJobForm
-                      job={displayJob}
-                      values={values}
-                      onChange={onChange}
-                      errors={errors}
-                      sections={postAgentSections}
-                    />
-
-                    <div className="mt-6 space-y-1.5 border-t border-cloud-elements-dividerColor pt-4">
-                      <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
-                        Environment Variables
-                      </label>
-                      <EnvEditor
-                        value={String(values.envJson || '{}')}
-                        onChange={(json) => onChange('envJson', json)}
-                      />
-                      <p className="text-[11px] text-cloud-elements-textTertiary">
-                        Key-value pairs injected as environment variables into the sandbox.
-                      </p>
-                    </div>
-
-                    <div className="mt-6 space-y-1.5 border-t border-cloud-elements-dividerColor pt-4">
-                      <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
-                        Exposed Ports
-                      </label>
-                      <input
-                        type="text"
-                        value={portsInput}
-                        onChange={(e) => setPortsInput(e.target.value)}
-                        disabled={!supportsMetadataPorts}
-                        placeholder={supportsMetadataPorts ? 'e.g. 3000, 8080, 5432' : 'Not supported for Firecracker runtime'}
-                        className={cn(
-                          'w-full rounded-md border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 font-data text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary transition-colors focus:border-cloud-elements-borderColorActive focus:outline-none',
-                          !supportsMetadataPorts && 'cursor-not-allowed opacity-60',
-                        )}
-                      />
-                      <p className="text-[11px] text-cloud-elements-textTertiary">
-                        {supportsMetadataPorts
-                          ? 'Comma-separated container ports to expose through the operator API proxy.'
-                          : 'Firecracker backend currently does not support metadata_json.ports mappings.'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </ConsoleSection>
+              <LaunchSpecComposer
+                blueprint={selectedBlueprint}
+                job={displayJob}
+                values={values}
+                errors={errors}
+                entityLabel={entityLabel}
+                nameInputRef={nameInputRef}
+                attemptedContinue={attemptedContinue}
+                runtimeBackend={runtimeBackend}
+                selectedImage={selectedImage}
+                supportsAgentConfiguration={supportsAgentConfiguration}
+                usesBundledAgentSelector={usesBundledAgentSelector}
+                configuredAgentIdentifier={configuredAgentIdentifier}
+                allHarnessEnabled={allHarnessEnabled}
+                portsInput={portsInput}
+                supportsMetadataPorts={supportsMetadataPorts}
+                isTeeBlueprint={isTeeBlueprint}
+                onChange={onChange}
+                onPortsChange={setPortsInput}
+                onAdvancedOpen={() => setShowAdvanced(true)}
+              />
               <div className="flex justify-between">
-                <Button variant="secondary" onClick={() => setStep('blueprint')}>Back</Button>
-                <Button onClick={() => { if (validate()) setStep('deploy'); }} disabled={!createJob || !values.name}>Continue</Button>
+                <LaunchActionButton variant="secondary" onClick={() => setStep('blueprint')}>Back</LaunchActionButton>
+                <LaunchActionButton onClick={handleContinue} disabled={!createJob}>Continue</LaunchActionButton>
               </div>
             </div>
           )}
@@ -569,7 +484,7 @@ export default function CreatePage() {
           )}
         </main>
 
-        <LaunchReadinessRail
+        <LaunchSummaryPanel
           step={step}
           selectedBlueprint={selectedBlueprint}
           entityLabel={entityLabel}
@@ -592,12 +507,55 @@ export default function CreatePage() {
         />
       </div>
 
+      {createJob && displayJob ? (
+        <AdvancedOptionsModal
+          open={showAdvanced}
+          onOpenChange={setShowAdvanced}
+          job={displayJob}
+          values={values}
+          runtimeBackend={runtimeBackend}
+          isTeeBlueprint={isTeeBlueprint}
+          onChange={onChange}
+        />
+      ) : null}
+
       <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} />
     </ConsolePage>
   );
 }
 
-function LaunchModeRail({
+function LaunchActionButton({
+  variant = 'primary',
+  size = 'md',
+  className,
+  children,
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: 'primary' | 'secondary' | 'danger' | 'success';
+  size?: 'sm' | 'md' | 'lg';
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        'inline-flex items-center justify-center gap-2 rounded-md border font-display font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+        size === 'sm' && 'h-8 px-3 text-xs',
+        size === 'md' && 'h-10 px-4 text-sm',
+        size === 'lg' && 'h-11 px-5 text-sm',
+        variant === 'primary' && 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] hover:border-[var(--sandbox-console-brand)] hover:bg-[rgba(142,89,255,0.22)]',
+        variant === 'secondary' && 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] text-[var(--sandbox-console-secondary)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-panel-strong)] hover:text-[var(--sandbox-console-text)]',
+        variant === 'success' && 'border-[var(--sandbox-console-success-border)] bg-[var(--sandbox-console-success-soft)] text-[var(--sandbox-console-success)] hover:bg-[rgba(56,178,172,0.18)]',
+        variant === 'danger' && 'border-red-400/20 bg-red-400/10 text-[var(--sandbox-console-danger)] hover:bg-red-400/15',
+        className,
+      )}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+function LaunchModeStrip({
   blueprints,
   selectedBlueprint,
   onSelect,
@@ -607,28 +565,30 @@ function LaunchModeRail({
   onSelect: (bp: BlueprintDefinition) => void;
 }) {
   return (
-    <ConsoleSection title="Launch Modes">
-      <div className="grid gap-px bg-[var(--sandbox-console-border)] p-px">
+    <ConsoleSection title="Launch Mode">
+      <div className="grid gap-px bg-[var(--sandbox-console-border)] p-px lg:grid-cols-3">
         {blueprints.map((bp) => {
-          const isActive = selectedBlueprint?.id === bp.id;
+          const active = selectedBlueprint?.id === bp.id;
+          const recommended = bp.id === 'ai-agent-sandbox-blueprint';
+
           return (
             <button
               key={bp.id}
+              type="button"
               onClick={() => onSelect(bp)}
               className={cn(
-                'flex min-h-20 items-start gap-3 bg-[var(--sandbox-console-panel)] p-3 text-left transition-colors hover:bg-[var(--sandbox-console-hover)]',
-                isActive && 'bg-[var(--sandbox-console-brand-soft)]',
+                'min-h-28 bg-[var(--sandbox-console-panel)] p-4 text-left transition-colors hover:bg-[var(--sandbox-console-hover)]',
+                active && 'bg-[var(--sandbox-console-brand-soft)]',
               )}
             >
-              <span className={cn('mt-0.5 text-lg text-[var(--sandbox-console-brand)]', bp.icon)} />
-              <span className="min-w-0">
-                <span className="block truncate font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
-                  {bp.name}
-                </span>
-                <span className="mt-1 line-clamp-2 block text-xs leading-5 text-[var(--sandbox-console-muted)]">
-                  {bp.description}
-                </span>
-              </span>
+              <div className="flex items-start justify-between gap-3">
+                <span className={cn('text-2xl text-[var(--sandbox-console-brand)]', bp.icon)} />
+                {recommended ? <ConsoleChip tone="ready">recommended</ConsoleChip> : null}
+              </div>
+              <div className="mt-3">
+                <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">{bp.name}</p>
+                <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--sandbox-console-muted)]">{bp.description}</p>
+              </div>
             </button>
           );
         })}
@@ -637,49 +597,441 @@ function LaunchModeRail({
   );
 }
 
-function LaunchPhaseRail({
-  step,
-  currentIdx,
-  onStepChange,
+function LaunchField({
+  label,
+  detail,
+  error,
+  children,
 }: {
-  step: WizardStep;
-  currentIdx: number;
-  onStepChange: (step: WizardStep) => void;
+  label: string;
+  detail?: string;
+  error?: string;
+  children: ReactNode;
 }) {
   return (
-    <ConsoleSection title="Compiler Phases">
-      <div className="divide-y divide-[var(--sandbox-console-border)]">
-        {STEPS.map((phase, index) => {
-          const isCurrent = phase.key === step;
-          const isAvailable = index <= currentIdx;
+    <label className="block min-w-0 space-y-1.5">
+      <span className="flex items-center justify-between gap-3">
+        <span className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">{label}</span>
+        {detail ? <span className="font-data text-[11px] text-[var(--sandbox-console-subtle)]">{detail}</span> : null}
+      </span>
+      {children}
+      {error ? <span className="block text-xs text-[var(--sandbox-console-danger)]">{error}</span> : null}
+    </label>
+  );
+}
+
+const launchControlClass = 'w-full rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] px-3 py-2.5 font-data text-sm text-[var(--sandbox-console-text)] placeholder:text-[var(--sandbox-console-subtle)] transition-colors hover:border-[var(--sandbox-console-border-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+
+function LaunchInput({
+  label,
+  detail,
+  error,
+  inputRef,
+  className,
+  ...props
+}: Omit<InputHTMLAttributes<HTMLInputElement>, 'ref'> & {
+  label: string;
+  detail?: string;
+  error?: string;
+  inputRef?: RefObject<HTMLInputElement>;
+}) {
+  return (
+    <LaunchField label={label} detail={detail} error={error}>
+      <input ref={inputRef} aria-label={label} className={cn(launchControlClass, className)} {...props} />
+    </LaunchField>
+  );
+}
+
+function LaunchTextArea({
+  label,
+  detail,
+  error,
+  className,
+  ...props
+}: TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  label: string;
+  detail?: string;
+  error?: string;
+}) {
+  return (
+    <LaunchField label={label} detail={detail} error={error}>
+      <textarea aria-label={label} className={cn(launchControlClass, 'min-h-24 resize-y', className)} {...props} />
+    </LaunchField>
+  );
+}
+
+function LaunchNativeSelect({
+  label,
+  detail,
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  detail?: string;
+  value: string;
+  options: { label: string; value: string }[];
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <LaunchField label={label} detail={detail}>
+      <select
+        aria-label={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        className={cn(launchControlClass, 'appearance-none bg-[var(--sandbox-console-surface)]')}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </LaunchField>
+  );
+}
+
+function SegmentedControl({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: { label: string; value: string }[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <p className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">{label}</p>
+      <div className="grid gap-1 rounded-md bg-[var(--sandbox-console-surface)] p-1 sm:grid-cols-3">
+        {options.map((option) => {
+          const active = option.value === value;
           return (
             <button
-              key={phase.key}
-              onClick={() => {
-                if (isAvailable) onStepChange(phase.key);
-              }}
+              key={option.value}
+              type="button"
+              onClick={() => onChange(option.value)}
               className={cn(
-                'flex h-12 w-full items-center gap-3 px-3 text-left transition-colors',
-                isCurrent ? 'bg-[var(--sandbox-console-brand-soft)]' : 'hover:bg-[var(--sandbox-console-hover)]',
-                !isAvailable && 'cursor-default opacity-50 hover:bg-transparent',
+                'min-h-9 rounded px-3 text-center font-display text-xs font-semibold transition-colors',
+                active
+                  ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_0_0_0_1px_var(--sandbox-console-brand-border)]'
+                  : 'text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-hover)] hover:text-[var(--sandbox-console-text)]',
               )}
             >
-              <span className={cn('text-base', phase.icon, isCurrent ? 'text-[var(--sandbox-console-brand)]' : 'text-[var(--sandbox-console-muted)]')} />
-              <span className="font-data text-xs uppercase tracking-[0.12em] text-[var(--sandbox-console-text)]">
-                {phase.label}
-              </span>
-              {index < currentIdx ? (
-                <span className="ml-auto i-ph:check text-sm text-[var(--sandbox-console-success)]" />
-              ) : null}
+              {option.label.replace(' (default)', '')}
             </button>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function LaunchToggle({
+  label,
+  detail,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  detail?: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        'flex w-full items-center gap-3 rounded-md border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+        checked
+          ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)]'
+          : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-hover)]',
+      )}
+    >
+      <span
+        className={cn(
+          'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors',
+          checked
+            ? 'border-[var(--sandbox-console-brand)] bg-[var(--sandbox-console-brand)] text-white'
+            : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] text-transparent',
+        )}
+      >
+        <span className="i-ph:check-bold text-xs" />
+      </span>
+      <span className="min-w-0">
+        <span className="block font-display text-sm font-semibold text-[var(--sandbox-console-text)]">{label}</span>
+        {detail ? <span className="mt-0.5 block text-xs leading-5 text-[var(--sandbox-console-muted)]">{detail}</span> : null}
+      </span>
+    </button>
+  );
+}
+
+function ResourceSizingControls({
+  job,
+  values,
+  onChange,
+}: {
+  job: JobDefinition;
+  values: Record<string, unknown>;
+  onChange: (name: string, value: unknown) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <p className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">Resources</p>
+      <div className="grid grid-cols-3 gap-2">
+        <ResourceNumberInput
+          label="CPU Cores"
+          shortLabel="CPU"
+          field={field(job, 'cpuCores')}
+          value={valueNumber(values, 'cpuCores', 2)}
+          onChange={(value) => onChange('cpuCores', value)}
+        />
+        <ResourceNumberInput
+          label="Memory (MB)"
+          shortLabel="RAM"
+          field={field(job, 'memoryMb')}
+          value={valueNumber(values, 'memoryMb', 2048)}
+          onChange={(value) => onChange('memoryMb', value)}
+        />
+        <ResourceNumberInput
+          label="Disk (GB)"
+          shortLabel="Disk"
+          field={field(job, 'diskGb')}
+          value={valueNumber(values, 'diskGb', 10)}
+          onChange={(value) => onChange('diskGb', value)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ResourceNumberInput({
+  label,
+  shortLabel,
+  field: fieldDef,
+  value,
+  onChange,
+}: {
+  label: string;
+  shortLabel: string;
+  field?: JobFieldDef;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="block min-w-0 rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] p-2 transition-colors hover:border-[var(--sandbox-console-border-hover)]">
+      <span className="block truncate font-display text-[11px] font-semibold text-[var(--sandbox-console-muted)]">{shortLabel}</span>
+      <input
+        aria-label={label}
+        type="number"
+        min={fieldDef?.min}
+        max={fieldDef?.max}
+        step={fieldDef?.step ?? 1}
+        value={value}
+        onChange={(event) => onChange(clampNumber(Number(event.target.value), fieldDef?.min, fieldDef?.max))}
+        className="mt-1 w-full bg-transparent font-data text-base font-semibold text-[var(--sandbox-console-text)] outline-none"
+      />
+    </label>
+  );
+}
+
+function LaunchSpecComposer({
+  blueprint,
+  job,
+  values,
+  errors,
+  entityLabel,
+  nameInputRef,
+  attemptedContinue,
+  runtimeBackend,
+  selectedImage,
+  supportsAgentConfiguration,
+  usesBundledAgentSelector,
+  configuredAgentIdentifier,
+  allHarnessEnabled,
+  portsInput,
+  supportsMetadataPorts,
+  isTeeBlueprint,
+  onChange,
+  onPortsChange,
+  onAdvancedOpen,
+}: {
+  blueprint?: BlueprintDefinition;
+  job: JobDefinition;
+  values: Record<string, unknown>;
+  errors: Record<string, string | undefined>;
+  entityLabel: string;
+  nameInputRef: RefObject<HTMLInputElement>;
+  attemptedContinue: boolean;
+  runtimeBackend: string;
+  selectedImage: string;
+  supportsAgentConfiguration: boolean;
+  usesBundledAgentSelector: boolean;
+  configuredAgentIdentifier: string;
+  allHarnessEnabled: boolean;
+  portsInput: string;
+  supportsMetadataPorts: boolean;
+  isTeeBlueprint: boolean;
+  onChange: (name: string, value: unknown) => void;
+  onPortsChange: (value: string) => void;
+  onAdvancedOpen: () => void;
+}) {
+  const imageOptions = fieldOptions(job, 'image');
+  const imageListId = `${job.name}-image-options`;
+  const nameError = attemptedContinue && !String(values.name || '').trim()
+    ? `${entityLabel} name is required`
+    : errors.name;
+
+  return (
+    <ConsoleSection title={`${entityLabel} Spec`}>
+      <div className="space-y-5 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--sandbox-console-border)] pb-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)]">
+              <div className={cn('text-xl text-[var(--sandbox-console-brand)]', blueprint?.icon)} />
+            </div>
+            <div className="min-w-0">
+              <h2 className="truncate font-display text-lg font-semibold text-[var(--sandbox-console-text)]">
+                {blueprint?.name ?? entityLabel}
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm leading-5 text-[var(--sandbox-console-muted)]">
+                {blueprint?.description}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <ConsoleChip tone={runtimeBackend === 'tee' ? 'warn' : 'ready'}>{runtimeLabel(runtimeBackend)}</ConsoleChip>
+            {isTeeBlueprint ? <ConsoleChip tone="warn">TEE path</ConsoleChip> : null}
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(280px,0.95fr)]">
+          <div className="space-y-4">
+            <LaunchInput
+              label={`${entityLabel} Name`}
+              inputRef={nameInputRef}
+              value={valueString(values, 'name')}
+              onChange={(event) => onChange('name', event.target.value)}
+              placeholder={field(job, 'name')?.placeholder ?? 'agent-workspace'}
+              error={nameError}
+            />
+
+            <LaunchInput
+              label="Docker Image"
+              value={selectedImage}
+              onChange={(event) => onChange('image', event.target.value)}
+              placeholder={field(job, 'image')?.placeholder ?? 'ghcr.io/tangle-network/blueprint-sidecar:all-harness'}
+              list={imageListId}
+            />
+            <datalist id={imageListId}>
+              {imageOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </datalist>
+          </div>
+
+          <div className="space-y-4">
+            <SegmentedControl
+              label="Runtime Backend"
+              value={runtimeBackend}
+              options={fieldOptions(job, 'runtimeBackend')}
+              onChange={(value) => onChange('runtimeBackend', value)}
+            />
+            <LaunchNativeSelect
+              label="Stack"
+              value={valueString(values, 'stack', 'default')}
+              options={fieldOptions(job, 'stack')}
+              onChange={(value) => onChange('stack', value)}
+            />
+            <ResourceSizingControls job={job} values={values} onChange={onChange} />
+          </div>
+        </div>
+
+        {supportsAgentConfiguration ? (
+          <AgentConfigurationField
+            image={selectedImage}
+            value={configuredAgentIdentifier}
+            usesBundledSelector={usesBundledAgentSelector}
+            onChange={(next) => onChange('agentIdentifier', next)}
+          />
+        ) : null}
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <AllHarnessCapabilityField
+            enabled={allHarnessEnabled}
+            onChange={(enabled) => onChange('capabilitiesJson', enabled ? JSON.stringify(['all_harness']) : JSON.stringify([]))}
+          />
+          <LaunchToggle
+            label="Enable SSH"
+            checked={Boolean(values.sshEnabled)}
+            onChange={(enabled) => onChange('sshEnabled', enabled)}
+            detail="Expose an operator-managed SSH entrypoint after provisioning."
+          />
+        </div>
+
+        {Boolean(values.sshEnabled) ? (
+          <LaunchTextArea
+            label="SSH Public Key"
+            value={valueString(values, 'sshPublicKey')}
+            onChange={(event) => onChange('sshPublicKey', event.target.value)}
+            placeholder={field(job, 'sshPublicKey')?.placeholder ?? 'ssh-ed25519 AAAA...'}
+          />
+        ) : null}
+
+        {configuredAgentIdentifier ? (
+          <div className="rounded-md border border-amber-400/20 bg-amber-400/10 px-3 py-2">
+            <p className="text-xs leading-5 text-amber-200">
+              This agent needs AI credentials to chat. Add them as environment variables now or inject them later through Secrets.
+            </p>
+          </div>
+        ) : null}
+
+        <div className="grid gap-4 border-t border-[var(--sandbox-console-border)] pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <p className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">Environment Variables</p>
+              <span className="font-data text-[11px] text-[var(--sandbox-console-subtle)]">injected at boot</span>
+            </div>
+            <EnvEditor
+              value={String(values.envJson || '{}')}
+              onChange={(json) => onChange('envJson', json)}
+            />
+          </div>
+
+          <div className="space-y-4">
+            <LaunchInput
+              label="Exposed Ports"
+              value={portsInput}
+              onChange={(event) => onPortsChange(event.target.value)}
+              disabled={!supportsMetadataPorts}
+              placeholder={supportsMetadataPorts ? '3000, 8080, 5432' : 'Disabled for Firecracker'}
+              detail={supportsMetadataPorts ? 'comma separated' : 'not supported'}
+            />
+            <LaunchActionButton variant="secondary" className="w-full" onClick={onAdvancedOpen}>
+              <span className="i-ph:sliders-horizontal text-base" />
+              Advanced Settings
+            </LaunchActionButton>
+          </div>
+        </div>
       </div>
     </ConsoleSection>
   );
 }
 
-function LaunchReadinessRail({
+function LaunchSummaryPanel({
   step,
   selectedBlueprint,
   entityLabel,
@@ -739,57 +1091,57 @@ function LaunchReadinessRail({
 
   return (
     <aside className="space-y-4">
-      <ConsoleSection title="Launch Readiness">
+      <ConsoleSection title="Deploy Summary">
         <div className="divide-y divide-[var(--sandbox-console-border)]">
-          <ReadinessRow
+          <SummaryRow
             label="Mode"
             value={selectedBlueprint ? entityLabel : 'Unselected'}
             detail={selectedBlueprint?.name ?? 'Choose a blueprint'}
             tone={selectedBlueprint ? 'brand' : 'warn'}
           />
-          <ReadinessRow
+          <SummaryRow
             label="Spec"
             value={step === 'deploy' ? 'Locked' : step === 'configure' ? 'Editing' : 'Open'}
             detail={step === 'deploy' ? 'ready for transaction' : 'mutable'}
             tone={step === 'deploy' ? 'ready' : 'muted'}
           />
-          <ReadinessRow
+          <SummaryRow
             label="Runtime"
             value={runtimeLabel(runtimeBackend)}
             detail={runtimeBackend === 'tee' ? 'attestation path' : 'standard path'}
             tone={runtimeBackend === 'tee' ? 'warn' : 'ready'}
           />
-          <ReadinessRow
+          <SummaryRow
             label="Capacity"
             value={formatCapacityValue(capacity)}
             detail="available slots"
             tone={capacity !== undefined && Number(capacity) === 0 ? 'warn' : 'ready'}
           />
-          <ReadinessRow
+          <SummaryRow
             label="Wallet"
             value={isConnected ? 'Connected' : isReconnectingWallet ? 'Syncing' : 'Offline'}
             detail={isConnected ? 'can sign' : 'deploy blocked'}
             tone={isConnected ? 'ready' : isReconnectingWallet ? 'warn' : 'danger'}
           />
-          <ReadinessRow
+          <SummaryRow
             label="Service"
             value={serviceState}
             detail={`blueprint ${infra.blueprintId || '--'} / service ${infra.serviceId || '--'}`}
             tone={serviceTone({ serviceValidating, serviceError, hasValidService, isNewService })}
           />
-          <ReadinessRow
+          <SummaryRow
             label="Operators"
             value={operatorSummary}
             detail={isNewService ? 'service quorum' : 'operator service'}
             tone={operatorsError ? 'warn' : 'brand'}
           />
-          <ReadinessRow
+          <SummaryRow
             label="Agent mode"
             value={agentIdentifier || 'Compute only'}
             detail={agentIdentifier ? 'chat enabled' : 'no bundled agent'}
             tone={agentIdentifier ? 'brand' : 'muted'}
           />
-          <ReadinessRow
+          <SummaryRow
             label="Network"
             value={ports.length > 0 ? `${ports.length} port${ports.length === 1 ? '' : 's'}` : 'Default'}
             detail={ports.length > 0 ? ports.join(', ') : 'operator proxy'}
@@ -797,17 +1149,17 @@ function LaunchReadinessRail({
           />
         </div>
         <div className="border-t border-[var(--sandbox-console-border)] p-3">
-          <Button variant="secondary" size="sm" className="w-full justify-center" onClick={onOpenInfra}>
+          <LaunchActionButton variant="secondary" size="sm" className="w-full" onClick={onOpenInfra}>
             <span className="i-ph:sliders-horizontal text-sm" />
             Infrastructure
-          </Button>
+          </LaunchActionButton>
         </div>
       </ConsoleSection>
     </aside>
   );
 }
 
-function ReadinessRow({
+function SummaryRow({
   label,
   value,
   detail,
@@ -845,38 +1197,35 @@ function AgentConfigurationField({
   onChange: (value: string) => void;
 }) {
   const helpText = usesBundledSelector
-    ? 'Choose an agent already bundled in this image. “None” keeps the resource compute-only and hides chat.'
+    ? 'Choose an agent already bundled in this image. None keeps the resource compute-only and hides chat.'
     : 'Custom images must already register this agent identifier internally. Typing a new name here does not create a new agent.';
   const selectValue = value || BUNDLED_NO_AGENT_VALUE;
 
   return (
-    <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
-      <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
-        Agent
-      </label>
+    <div className="border-t border-[var(--sandbox-console-border)] pt-4">
       {usesBundledSelector ? (
-        <Select
+        <LaunchNativeSelect
+          label="Agent"
           value={selectValue}
-          onValueChange={(next) => onChange(sanitizeBundledAgentIdentifier(next))}
+          onChange={(next) => onChange(sanitizeBundledAgentIdentifier(next))}
           options={BUNDLED_AGENT_OPTIONS}
         />
       ) : (
-        <Input
+        <LaunchInput
+          label="Agent"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={image ? 'default' : 'Choose an image first'}
-          className="font-data text-sm"
         />
       )}
-      <p className="text-[11px] text-cloud-elements-textTertiary">
+      <p className="mt-1.5 text-xs leading-5 text-[var(--sandbox-console-muted)]">
         {helpText}
       </p>
       {!usesBundledSelector && value.trim() !== '' && (
-        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
-          <p className="text-xs text-amber-300">
+        <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-400/10 px-3 py-2">
+          <p className="text-xs leading-5 text-amber-200">
             Custom agent identifiers depend on the selected image registering the agent
-            internally. If the image doesn't recognize this name, chat will fail with a 502
-            once the sandbox is running. Smoke-test the agent endpoint after provision.
+            internally. If the image does not recognize this name, chat will fail after provision.
           </p>
         </div>
       )}
@@ -892,73 +1241,125 @@ function AllHarnessCapabilityField({
   onChange: (enabled: boolean) => void;
 }) {
   return (
-    <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor">
-      <label className="flex items-start gap-3">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => onChange(e.target.checked)}
-          className="mt-0.5 h-4 w-4 rounded border-cloud-elements-borderColor bg-cloud-elements-background-depth-2"
-        />
-        <span className="space-y-1">
-          <span className="block text-xs font-display font-medium text-cloud-elements-textSecondary">
-            All-Harness Runtime
-          </span>
-          <span className="block text-[11px] text-cloud-elements-textTertiary">
-            Request the open-source runtime with Claude, Codex, opencode, Kimi, and Gemini harnesses available in the sandbox image.
-          </span>
-        </span>
-      </label>
-    </div>
+    <LaunchToggle
+      label="All-Harness Runtime"
+      checked={enabled}
+      onChange={onChange}
+      detail="Request Claude, Codex, opencode, Kimi, and Gemini harnesses in the sidecar image."
+    />
   );
 }
 
-// ── Blueprint Selector ──
-
-function BlueprintSelector({
-  blueprints,
-  onSelect,
+function AdvancedOptionsModal({
+  open,
+  onOpenChange,
+  job,
+  values,
+  runtimeBackend,
+  isTeeBlueprint,
+  onChange,
 }: {
-  blueprints: BlueprintDefinition[];
-  onSelect: (bp: BlueprintDefinition) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  job: JobDefinition;
+  values: Record<string, unknown>;
+  runtimeBackend: string;
+  isTeeBlueprint: boolean;
+  onChange: (name: string, value: unknown) => void;
 }) {
-  const colorMap: Record<string, string> = {
-    teal: 'border-teal-500/20 hover:border-teal-500/40',
-    blue: 'border-blue-500/20 hover:border-blue-500/40',
-    violet: 'border-violet-500/20 hover:border-violet-500/40',
-  };
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onOpenChange(false);
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open, onOpenChange]);
 
-  const iconColorMap: Record<string, string> = {
-    teal: 'text-teal-400',
-    blue: 'text-blue-400',
-    violet: 'text-violet-400',
-  };
+  if (!open) return null;
+
+  const maxLifetimeHours = hoursFromSeconds(values.maxLifetimeSeconds, 86400);
+  const idleTimeoutMinutes = minutesFromSeconds(values.idleTimeoutSeconds, 3600);
+  const showTeeControls = isTeeBlueprint || runtimeBackend === 'tee';
+  const teeRequiredLocked = runtimeBackend === 'tee';
 
   return (
-    <div className="grid gap-px bg-[var(--sandbox-console-border)] p-px">
-      {blueprints.map((bp) => (
-        <button
-          key={bp.id}
-          onClick={() => onSelect(bp)}
-          className={cn(
-            'bg-[var(--sandbox-console-panel)] p-4 text-left transition-all cursor-pointer',
-            'hover:bg-cloud-elements-item-backgroundHover',
-            colorMap[bp.color] ?? 'border-cloud-elements-borderColor hover:border-cloud-elements-borderColorActive',
-          )}
-        >
-          <div className="flex items-start gap-4">
-            <div className={cn('text-3xl', iconColorMap[bp.color] ?? 'text-cloud-elements-textTertiary', bp.icon)} />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1">
-                <h3 className="text-lg font-display font-semibold text-cloud-elements-textPrimary">{bp.name}</h3>
-                <Badge variant="secondary">v{bp.version}</Badge>
-              </div>
-              <p className="text-sm text-cloud-elements-textSecondary">{bp.description}</p>
-            </div>
-            <div className="i-ph:arrow-right text-lg text-cloud-elements-textTertiary" />
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation" onMouseDown={() => onOpenChange(false)}>
+      <div
+        className="w-full max-w-2xl overflow-hidden rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] shadow-[var(--sandbox-console-shadow-lg)]"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Advanced Settings"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-[var(--sandbox-console-border)] px-4 py-3">
+          <div>
+            <h2 className="font-display text-base font-semibold text-[var(--sandbox-console-text)]">Advanced Settings</h2>
+            <p className="mt-0.5 text-xs text-[var(--sandbox-console-muted)]">Runtime limits, metadata, and confidential compute flags.</p>
           </div>
-        </button>
-      ))}
+          <button
+            type="button"
+            onClick={() => onOpenChange(false)}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--sandbox-console-muted)] transition-colors hover:bg-[var(--sandbox-console-hover)] hover:text-[var(--sandbox-console-text)]"
+            aria-label="Close advanced settings"
+          >
+            <span className="i-ph:x text-base" />
+          </button>
+        </div>
+
+        <div className="max-h-[70vh] space-y-4 overflow-y-auto p-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <LaunchInput
+              label="Max Lifetime"
+              detail="hours"
+              type="number"
+              min={0}
+              step={1}
+              value={maxLifetimeHours}
+              onChange={(event) => onChange('maxLifetimeSeconds', Math.max(0, Number(event.target.value)) * 3600)}
+            />
+            <LaunchInput
+              label="Idle Timeout"
+              detail="minutes"
+              type="number"
+              min={0}
+              step={5}
+              value={idleTimeoutMinutes}
+              onChange={(event) => onChange('idleTimeoutSeconds', Math.max(0, Number(event.target.value)) * 60)}
+            />
+          </div>
+
+          {showTeeControls ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <LaunchToggle
+                label="TEE Required"
+                checked={Boolean(values.teeRequired) || teeRequiredLocked}
+                disabled={teeRequiredLocked}
+                onChange={(enabled) => onChange('teeRequired', enabled)}
+                detail={teeRequiredLocked ? 'Pinned by TEE runtime' : 'Require attested hardware isolation.'}
+              />
+              <LaunchNativeSelect
+                label="TEE Type"
+                value={valueString(values, 'teeType', '0')}
+                options={fieldOptions(job, 'teeType')}
+                onChange={(value) => onChange('teeType', value)}
+              />
+            </div>
+          ) : null}
+
+          <LaunchTextArea
+            label="Metadata JSON"
+            value={valueString(values, 'metadataJson', '{}')}
+            onChange={(event) => onChange('metadataJson', event.target.value)}
+            placeholder="{}"
+            className="min-h-40 font-data"
+          />
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-[var(--sandbox-console-border)] p-3">
+          <LaunchActionButton variant="secondary" onClick={() => onOpenChange(false)}>Done</LaunchActionButton>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1240,7 +1641,7 @@ function DeployStep({
                 Open Infrastructure Settings to create a new service or verify a different one.
               </p>
             </div>
-            <Button variant="secondary" size="sm" onClick={onOpenInfra}>Settings</Button>
+            <LaunchActionButton variant="secondary" size="sm" onClick={onOpenInfra}>Settings</LaunchActionButton>
           </div>
         </div>
       )}
@@ -1277,12 +1678,12 @@ function DeployStep({
 
       {/* ── Actions ── */}
       <div className="flex justify-between pt-1">
-        <Button variant="secondary" onClick={onBack}>Back</Button>
+        <LaunchActionButton variant="secondary" onClick={onBack}>Back</LaunchActionButton>
         {isComplete ? (
-          <Button variant="success" onClick={onViewDetail}>
+          <LaunchActionButton variant="success" onClick={onViewDetail}>
             <div className="i-ph:check-bold text-sm" />
             View {entityLabel}
-          </Button>
+          </LaunchActionButton>
         ) : (
           <DeployButton
             status={status}
@@ -1389,7 +1790,7 @@ function TxStatusCard({
     failed: 'Transaction failed',
   };
 
-  const icons: Record<DeployStatus, React.ReactNode> = {
+  const icons: Record<DeployStatus, ReactNode> = {
     idle: null,
     signing: <div className="w-5 h-5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />,
     pending: <div className="w-5 h-5 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />,
@@ -1550,7 +1951,7 @@ function DeployButton({
   const isDisabled = !canDeploy || isBusy || priceLoading || serviceValidating;
 
   return (
-    <Button size="lg" onClick={onDeploy} disabled={isDisabled}>
+    <LaunchActionButton size="lg" onClick={onDeploy} disabled={isDisabled}>
       {isBusy ? (
         <>
           <div className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
@@ -1569,7 +1970,7 @@ function DeployButton({
           Deploy for {costDisplay}
         </>
       )}
-    </Button>
+    </LaunchActionButton>
   );
 }
 

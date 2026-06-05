@@ -1,5 +1,4 @@
 import { ConnectKitButton } from 'connectkit';
-import { Card, CardContent } from '@tangle-network/blueprint-ui/components';
 
 interface ConnectWalletPanelProps {
   // Optional override for the headline; defaults to the deploy-flow message.
@@ -16,42 +15,38 @@ export function ConnectWalletPanel({
   description = 'Provisioning and managing sandboxes requires a connected wallet on Tangle Network.',
 }: ConnectWalletPanelProps) {
   return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="py-10 text-center">
-          <div className="i-ph:wallet text-4xl text-cloud-elements-textTertiary mb-3 mx-auto" />
-          <p className="text-base font-display font-semibold text-cloud-elements-textPrimary">
-            {title}
-          </p>
-          <p className="text-sm text-cloud-elements-textSecondary mt-1 max-w-md mx-auto">
-            {description}
-          </p>
-          <div className="mt-5 inline-flex">
-            <ConnectKitButton.Custom>
-              {({ show, isConnecting }) => (
-                <button
-                  type="button"
-                  onClick={show}
-                  disabled={isConnecting}
-                  className="px-4 py-2.5 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-700 dark:text-violet-400 text-sm font-display font-medium hover:bg-violet-500/20 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                >
-                  {isConnecting ? (
-                    <span className="flex items-center gap-2">
-                      <span className="w-3 h-3 rounded-full border-2 border-violet-500/40 border-t-violet-600 dark:border-t-violet-400 animate-spin" />
-                      Connecting...
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-2">
-                      <span className="i-ph:plugs-connected text-base" />
-                      Connect Wallet
-                    </span>
-                  )}
-                </button>
-              )}
-            </ConnectKitButton.Custom>
-          </div>
+    <div className="sandbox-console-panel flex flex-col gap-3 rounded-md p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] text-[var(--sandbox-console-muted)]">
+          <span className="i-ph:wallet text-lg" />
         </div>
-      </CardContent>
-    </Card>
+        <div className="min-w-0">
+          <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">{title}</p>
+          <p className="mt-0.5 max-w-2xl text-xs leading-5 text-[var(--sandbox-console-muted)]">{description}</p>
+        </div>
+      </div>
+      <ConnectKitButton.Custom>
+        {({ show, isConnecting }) => (
+          <button
+            type="button"
+            onClick={show}
+            disabled={isConnecting}
+            className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] px-4 font-display text-sm font-semibold text-[var(--sandbox-console-text)] transition-colors hover:border-[var(--sandbox-console-brand)] hover:bg-[rgba(142,89,255,0.22)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isConnecting ? (
+              <>
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-[rgba(142,89,255,0.35)] border-t-[var(--sandbox-console-brand)]" />
+                Connecting
+              </>
+            ) : (
+              <>
+                <span className="i-ph:plugs-connected text-base" />
+                Connect Wallet
+              </>
+            )}
+          </button>
+        )}
+      </ConnectKitButton.Custom>
+    </div>
   );
 }

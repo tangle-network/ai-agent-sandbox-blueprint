@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import {
-  ChainSwitcher,
   TangleLogo,
   ThemeToggle,
 } from '@tangle-network/blueprint-ui/components';
 import { cn } from '@tangle-network/blueprint-ui';
 import { TxDropdown } from '~/components/layout/TxDropdown';
 import { WalletButton } from '~/components/layout/WalletButton';
+import { ConsoleChainSwitcher } from '~/components/console/ConsoleChainSwitcher';
 
 const navItems = [
   { label: 'Fleet', href: '/', icon: 'i-ph:activity' },
@@ -95,7 +95,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
           <div className="sandbox-console-panel space-y-3 rounded-md p-3">
             <div className="grid grid-cols-3 gap-2">
               <div className="min-w-0">
-                <ChainSwitcher />
+                <ConsoleChainSwitcher placement="up" />
               </div>
               <TxDropdown />
               <ThemeToggle />
@@ -137,7 +137,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
                   );
                 })}
                 <div className="flex items-center gap-2 p-3">
-                  <ChainSwitcher />
+                  <ConsoleChainSwitcher placement="down" />
                   <TxDropdown />
                   <ThemeToggle />
                 </div>
