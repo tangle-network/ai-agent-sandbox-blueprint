@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import {
   ChainSwitcher,
+  TangleLogo,
   ThemeToggle,
 } from '@tangle-network/blueprint-ui/components';
 import { cn } from '@tangle-network/blueprint-ui';
@@ -20,11 +21,8 @@ const navItems = [
 
 function BrandMark() {
   return (
-    <span className="flex items-center gap-2">
-      <img src="/favicon.svg" alt="" className="h-8 w-8 shrink-0" />
-      <span className="font-display text-lg font-semibold leading-none text-[var(--sandbox-console-text)]">
-        Tangle
-      </span>
+    <span className="flex min-w-0 items-center [&_span]:max-w-[76px] [&_span]:truncate [&_svg]:h-7 [&_svg]:w-[114px]">
+      <TangleLogo label="Sandbox" />
     </span>
   );
 }
@@ -66,18 +64,10 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
   return (
     <div className="sandbox-console flex h-[100dvh] overflow-hidden bg-[var(--sandbox-console-bg)] text-[var(--sandbox-console-text)]">
       <aside className="hidden w-[248px] shrink-0 border-r border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-rail)] lg:flex lg:flex-col">
-        <div className="flex h-16 shrink-0 items-center gap-3 border-b border-[var(--sandbox-console-border)] px-4">
-          <Link to="/" className="flex items-center" aria-label="Tangle Sandbox Console">
+        <div className="flex h-16 shrink-0 items-center border-b border-[var(--sandbox-console-border)] px-4">
+          <Link to="/" className="flex min-w-0 items-center" aria-label="Tangle Sandbox Console">
             <BrandMark />
           </Link>
-          <div className="min-w-0">
-            <p className="font-display text-sm font-semibold leading-tight text-[var(--sandbox-console-text)]">
-              Sandbox Console
-            </p>
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
-              Agent compute
-            </p>
-          </div>
         </div>
 
         <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
