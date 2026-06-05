@@ -27,6 +27,14 @@ import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
 import { OnChainVerificationCard } from '~/components/shared/OnChainVerificationCard';
+import { ResourceWorkspaceNav } from '~/components/console/ResourceWorkspaceNav';
+import { ConsoleMetricStrip, type ConsoleMetric } from '~/components/console/ConsolePrimitives';
+import {
+  AutomationWorkspace,
+  ResourceWorkspaceRail,
+  StorageWorkspace,
+  type WorkspaceRailRow,
+} from '~/components/console/ResourceWorkspacePanels';
 
 import { useAccount } from 'wagmi';
 import {
@@ -47,7 +55,21 @@ interface SshKey {
   publicKey: string;
 }
 
-type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation';
+type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation' | 'automation' | 'storage';
+
+function getInitialTabFromPath(pathname: string): ActionTab {
+  if (pathname.endsWith('/runtime')) return 'terminal';
+  if (pathname.endsWith('/sessions')) return 'chat';
+  if (pathname.endsWith('/automation')) return 'automation';
+  if (pathname.endsWith('/network')) return 'ssh';
+  if (pathname.endsWith('/security')) return 'secrets';
+  if (pathname.endsWith('/storage')) return 'storage';
+  return 'overview';
+}
+
+function getCurrentPathname() {
+  return typeof window === 'undefined' ? '' : window.location.pathname;
+}
 
 /** Extract human-readable error from operator API Error messages. */
 function parseApiError(err: Error): string {
@@ -65,6 +87,7 @@ function parseApiError(err: Error): string {
 
 export default function InstanceDetail() {
   const { id } = useParams<{ id: string }>();
+  const currentPathname = getCurrentPathname();
   const decodedId = id ? decodeURIComponent(id) : '';
   const instances = useStore(instanceListStore);
   const inst = getInstance(decodedId) ?? instances.find((s) => s.id === decodedId);
@@ -80,7 +103,7 @@ export default function InstanceDetail() {
     }
   }, [inst?.sidecarUrl]);
 
-  const [tab, setTab] = useState<ActionTab>('overview');
+  const [tab, setTab] = useState<ActionTab>(() => getInitialTabFromPath(currentPathname));
   const [systemPrompt, setSystemPrompt] = useState('');
   const [secretsJson, setSecretsJson] = useState('{\n  \n}');
   const [secretsVisible, setSecretsVisible] = useState(false);
@@ -488,10 +511,65 @@ export default function InstanceDetail() {
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal' },
     { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', hidden: !hasAgent },
+    { key: 'automation', label: 'Automation', icon: 'i-ph:flow-arrow' },
     { key: 'ssh' as const, label: 'SSH', icon: 'i-ph:key', hidden: !inst.sshPort },
     { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', hidden: !!inst.teeEnabled },
+    { key: 'storage', label: 'Storage', icon: 'i-ph:database' },
     ...(inst.teeEnabled ? [{ key: 'attestation' as const, label: 'Attestation', icon: 'i-ph:shield-check' }] : []),
   ];
+
+  const workspaceBasePath = `/instances/${encodeURIComponent(inst.id)}`;
+  const workspaceNavItems = [
+    { label: 'Runtime', href: `${workspaceBasePath}/runtime`, icon: 'i-ph:terminal' },
+    { label: 'Sessions', href: `${workspaceBasePath}/sessions`, icon: 'i-ph:chat-circle', disabled: !hasAgent },
+    { label: 'Automation', href: `${workspaceBasePath}/automation`, icon: 'i-ph:flow-arrow' },
+    { label: 'Network', href: `${workspaceBasePath}/network`, icon: 'i-ph:plugs', disabled: !inst.sshPort },
+    { label: 'Security', href: `${workspaceBasePath}/security`, icon: 'i-ph:shield-check' },
+    { label: 'Storage', href: `${workspaceBasePath}/storage`, icon: 'i-ph:database' },
+  ];
+  const exposedPortCount = ports?.length ?? 0;
+  const statusTone = inst.status === 'running' ? 'ready' : inst.status === 'creating' ? 'brand' : inst.status === 'error' ? 'danger' : 'muted';
+  const workspaceMetrics: ConsoleMetric[] = [
+    {
+      label: 'Status',
+      value: getInstanceStatusLabel(inst),
+      detail: inst.status === 'running' ? 'operator ready' : 'lifecycle',
+      tone: statusTone,
+    },
+    {
+      label: 'Runtime',
+      value: inst.teeEnabled ? 'TEE' : 'Docker',
+      detail: `${inst.cpuCores}c / ${Math.round(inst.memoryMb / 1024)}g / ${inst.diskGb}g`,
+      tone: inst.teeEnabled ? 'warn' : 'brand',
+    },
+    {
+      label: 'Network',
+      value: inst.sshPort ? `ssh:${inst.sshPort}` : exposedPortCount > 0 ? `${exposedPortCount} ports` : 'proxy',
+      detail: operatorUrl.replace(/^https?:\/\//, ''),
+      tone: inst.sshPort || exposedPortCount > 0 ? 'ready' : 'muted',
+    },
+    {
+      label: 'Agent',
+      value: configuredAgentIdentifier || 'none',
+      detail: hasAgent ? 'sessions enabled' : 'compute only',
+      tone: hasAgent ? 'brand' : 'muted',
+    },
+  ];
+  const contextRows: WorkspaceRailRow[] = [
+    { label: 'Instance ID', value: inst.id, detail: getInstanceSandboxDisplayValue(inst), tone: 'brand' },
+    { label: 'Blueprint', value: getBlueprint(bpId)?.name ?? bpId, detail: getInstanceServiceDisplayValue(inst), tone: 'brand' },
+    { label: 'Operator', value: inst.operator ? truncateAddress(inst.operator) : 'unknown', detail: inst.operator ?? 'operator not resolved', tone: inst.operator ? 'ready' : 'muted' },
+    { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted' },
+  ];
+  const storageRows: WorkspaceRailRow[] = [
+    { label: 'Image', value: inst.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand' },
+    { label: 'Disk', value: `${inst.diskGb} GB`, detail: 'allocated volume', tone: 'ready' },
+    { label: 'Lifecycle', value: inst.status, detail: new Date(inst.createdAt).toLocaleString(), tone: statusTone },
+    { label: 'Secrets', value: inst.credentialsAvailable === false ? 'missing' : 'available', detail: inst.teeEnabled ? 'TEE protected' : 'operator encrypted', tone: inst.credentialsAvailable === false ? 'warn' : 'ready' },
+  ];
+  const workflowCreateHref = inst.status === 'running' && inst.serviceId
+    ? `/workflows/create?target=${encodeURIComponent(`instance:${inst.id}`)}`
+    : undefined;
 
   return (
     <AnimatedPage className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
@@ -556,7 +634,14 @@ export default function InstanceDetail() {
         </div>
       )}
 
-      <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-6" />
+      <div className="mb-4">
+        <ConsoleMetricStrip metrics={workspaceMetrics} />
+      </div>
+
+      <div className="mb-4 grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0 space-y-4">
+          <ResourceWorkspaceNav items={workspaceNavItems} activePath={currentPathname} />
+          <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-0" />
 
       {agentConfigured && hasAgentValidationResult && !agentIdentifierValid && (
         <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
@@ -638,6 +723,24 @@ export default function InstanceDetail() {
             />
           )}
         </div>
+      )}
+
+      {tab === 'automation' && (
+        <AutomationWorkspace
+          createHref={workflowCreateHref}
+          scope={inst.teeEnabled ? 'tee-instance' : 'instance'}
+          target={inst.id}
+          status={inst.status}
+          hasAgent={hasAgent}
+        />
+      )}
+
+      {tab === 'storage' && (
+        <StorageWorkspace
+          rows={storageRows}
+          onSnapshot={() => setSnapshotOpen(true)}
+          snapshotEnabled={inst.status === 'running'}
+        />
       )}
 
       {/* Terminal */}
@@ -950,6 +1053,9 @@ export default function InstanceDetail() {
           />
         </div>
       )}
+        </div>
+        <ResourceWorkspaceRail rows={contextRows} />
+      </div>
 
       <SnapshotDialog
         open={snapshotOpen}

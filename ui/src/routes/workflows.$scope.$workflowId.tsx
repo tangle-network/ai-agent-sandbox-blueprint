@@ -27,6 +27,7 @@ import {
   type WorkflowBlueprintId,
   type WorkflowScope,
 } from '~/lib/workflows';
+import { ConsoleMetricStrip, ConsoleSection, type ConsoleMetric } from '~/components/console/ConsolePrimitives';
 import type { Address } from 'viem';
 
 function parseScope(value: string | undefined): WorkflowScope | null {
@@ -317,6 +318,32 @@ export default function WorkflowDetail() {
   const latestExecution = workflow.latestExecution ?? null;
   const lastRunAt = workflow.lastRunAt;
   const status = getWorkflowStatusPresentation(workflow);
+  const replayMetrics: ConsoleMetric[] = [
+    {
+      label: 'Workflow state',
+      value: status.label,
+      detail: workflow.running ? 'running now' : workflow.active ? 'active' : 'inactive',
+      tone: workflow.runnable ? 'ready' : workflow.targetStatus === 'missing' ? 'danger' : 'warn',
+    },
+    {
+      label: 'Trigger',
+      value: workflow.triggerType,
+      detail: workflow.triggerType === 'cron' ? workflow.triggerConfig || 'cron unset' : 'manual',
+      tone: workflow.triggerType === 'cron' ? 'brand' : 'muted',
+    },
+    {
+      label: 'Latest result',
+      value: latestExecution ? (latestExecution.success ? 'Success' : 'Failed') : 'None',
+      detail: latestExecution ? `${latestExecution.durationMs} ms` : 'no execution',
+      tone: latestExecution ? (latestExecution.success ? 'ready' : 'danger') : 'muted',
+    },
+    {
+      label: 'Token usage',
+      value: latestExecution ? String(latestExecution.inputTokens + latestExecution.outputTokens) : '--',
+      detail: latestExecution ? `${latestExecution.inputTokens} in / ${latestExecution.outputTokens} out` : 'unrecorded',
+      tone: latestExecution ? 'brand' : 'muted',
+    },
+  ];
 
   return (
     <AnimatedPage className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
@@ -370,6 +397,10 @@ export default function WorkflowDetail() {
             </Button>
           ) : null}
         </div>
+      </div>
+
+      <div className="mb-6">
+        <ConsoleMetricStrip metrics={replayMetrics} />
       </div>
 
       {!workflow.runnable ? (
@@ -499,14 +530,8 @@ export default function WorkflowDetail() {
 
       {latestExecution ? (
         <div className="grid grid-cols-1 gap-6 mb-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Latest Execution Output</CardTitle>
-              <CardDescription>
-                Captured from the operator&apos;s most recent workflow execution.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
+          <ConsoleSection title="Latest Execution Replay">
+            <div className="space-y-4 p-4">
               <pre className="overflow-x-auto rounded-lg border border-cloud-elements-dividerColor/30 bg-cloud-elements-background-depth-2 p-4 text-xs font-data text-cloud-elements-textSecondary whitespace-pre-wrap">
                 {latestExecution.result || 'No result output'}
               </pre>
@@ -518,8 +543,8 @@ export default function WorkflowDetail() {
                   </pre>
                 </div>
               ) : null}
-            </CardContent>
-          </Card>
+            </div>
+          </ConsoleSection>
         </div>
       ) : null}
 

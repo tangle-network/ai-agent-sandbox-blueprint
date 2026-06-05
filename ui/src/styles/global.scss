@@ -43,9 +43,31 @@
   }
 }
 
+#root {
+  min-height: 100vh;
+}
+
 /* Typography */
 .font-display {
   font-family: 'Outfit', system-ui, sans-serif;
+}
+
+.sandbox-console {
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] .sandbox-console {
+  color-scheme: light;
+}
+
+.sandbox-console-panel {
+  background: var(--sandbox-console-panel);
+  border: 1px solid var(--sandbox-console-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.sandbox-console-table {
+  border-color: var(--sandbox-console-border);
 }
 
 .font-body {

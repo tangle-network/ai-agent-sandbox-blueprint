@@ -2,16 +2,21 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useAccount } from 'wagmi';
 import { useStore } from '@nanostores/react';
-import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
 import { Input, Select } from '@tangle-network/blueprint-ui/components';
-import { InfrastructureModal, InfraBar } from '~/components/shared/InfrastructureModal';
+import { InfrastructureModal } from '~/components/shared/InfrastructureModal';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { infraStore, updateInfra } from '@tangle-network/blueprint-ui';
 import { BlueprintJobForm, type FormSection } from '@tangle-network/blueprint-ui/components';
 import { Identicon } from '@tangle-network/blueprint-ui/components';
+import {
+  ConsoleChip,
+  ConsoleMetricStrip,
+  ConsolePage,
+  ConsoleSection,
+  type ConsoleMetric,
+} from '~/components/console/ConsolePrimitives';
 
 import { useJobForm } from '@tangle-network/blueprint-ui';
 import { useJobPrice } from '@tangle-network/blueprint-ui';
@@ -23,7 +28,6 @@ import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefin
 import { updateSandboxStatus } from '~/lib/stores/sandboxes';
 import { updateInstanceStatus } from '~/lib/stores/instances';
 import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
-import { BlueprintBadgeInline } from '~/components/shared/InfraSummaryBits';
 import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { EnvEditor } from '~/components/shared/EnvEditor';
@@ -35,6 +39,8 @@ import {
   normalizeAgentIdentifier,
   sanitizeBundledAgentIdentifier,
 } from '~/lib/agents';
+
+type ConsoleTone = NonNullable<ConsoleMetric['tone']>;
 
 // ── Blueprint → on-chain ID mapping from env vars ──
 
@@ -75,9 +81,9 @@ function getPostAgentSections(isTee: boolean): FormSection[] {
 type WizardStep = 'blueprint' | 'configure' | 'deploy';
 
 const STEPS: { key: WizardStep; label: string; icon: string }[] = [
-  { key: 'blueprint', label: 'Blueprint', icon: 'i-ph:cube' },
-  { key: 'configure', label: 'Configure', icon: 'i-ph:gear' },
-  { key: 'deploy', label: 'Deploy', icon: 'i-ph:lightning' },
+  { key: 'blueprint', label: 'Mode', icon: 'i-ph:cube' },
+  { key: 'configure', label: 'Spec', icon: 'i-ph:gear' },
+  { key: 'deploy', label: 'Launch', icon: 'i-ph:rocket-launch' },
 ];
 
 function parsePortsInput(value: string): number[] {
@@ -99,6 +105,34 @@ function parseCapabilitiesJson(value: unknown): Set<string> {
   } catch {
     return new Set();
   }
+}
+
+function formatCapacityValue(value: number | bigint | undefined) {
+  if (value == null) return '--';
+  return typeof value === 'bigint' ? value.toString() : String(value);
+}
+
+function runtimeLabel(value: string) {
+  if (value === 'firecracker') return 'Firecracker';
+  if (value === 'tee') return 'TEE';
+  return 'Docker';
+}
+
+function serviceTone({
+  serviceValidating,
+  serviceError,
+  hasValidService,
+  isNewService,
+}: {
+  serviceValidating: boolean;
+  serviceError: string | null;
+  hasValidService: boolean;
+  isNewService: boolean;
+}): ConsoleTone {
+  if (serviceError) return 'danger';
+  if (serviceValidating) return 'warn';
+  if (hasValidService || isNewService) return 'ready';
+  return 'muted';
 }
 
 export default function CreatePage() {
@@ -266,6 +300,7 @@ export default function CreatePage() {
   const isSandbox = deploy.mode === 'sandbox';
   const entityLabel = isSandbox ? 'Sandbox' : 'Instance';
   const currentIdx = STEPS.findIndex((s) => s.key === step);
+  const blueprints = useMemo(() => getAllBlueprints(), []);
 
   // Per-job RFQ pricing
   const operatorRpcUrl = infra.serviceInfo?.operators?.[0]?.rpcAddress;
@@ -305,213 +340,496 @@ export default function CreatePage() {
   }, [resetForm, deployReset, address, validateService]);
 
   const showConnectPanel = !isConnected && !address && !isReconnectingWallet;
+  const parsedPorts = supportsMetadataPorts ? parsePortsInput(portsInput) : [];
+  const launchMetrics: ConsoleMetric[] = [
+    {
+      label: 'Blueprint',
+      value: selectedBlueprint ? entityLabel : 'Select',
+      detail: selectedBlueprint?.name ?? 'catalog',
+      tone: selectedBlueprint ? 'brand' : 'muted',
+    },
+    {
+      label: 'Runtime',
+      value: runtimeLabel(runtimeBackend),
+      detail: step === 'blueprint' ? 'pending' : 'backend',
+      tone: runtimeBackend === 'tee' ? 'warn' : 'ready',
+    },
+    {
+      label: 'Capacity',
+      value: formatCapacityValue(capacity),
+      detail: 'slots',
+      tone: capacity !== undefined && Number(capacity) === 0 ? 'warn' : 'ready',
+    },
+    {
+      label: 'Service',
+      value: serviceValidating
+        ? 'Checking'
+        : serviceError
+          ? 'Blocked'
+          : deploy.isNewService
+            ? 'New'
+            : deploy.hasValidService
+              ? 'Verified'
+              : 'Pending',
+      detail: `#${infra.serviceId || '--'}`,
+      tone: serviceTone({
+        serviceValidating,
+        serviceError,
+        hasValidService: deploy.hasValidService,
+        isNewService: deploy.isNewService,
+      }),
+    },
+  ];
 
   return (
-    <AnimatedPage className="mx-auto max-w-3xl px-4 sm:px-6 py-8">
-      <div className="mb-6">
-        <h1 className="text-2xl font-display font-bold text-cloud-elements-textPrimary">
-          Create {selectedBlueprint ? entityLabel : 'Resource'}
-        </h1>
-        <p className="text-sm text-cloud-elements-textSecondary mt-1">
-          {selectedBlueprint
-            ? selectedBlueprint.description
-            : 'Select a blueprint to provision a new AI agent resource on Tangle Network'}
-        </p>
-      </div>
-
-      {/* Wallet connect prompt — shown when no wallet is connected so the page
-          never lands on an empty, action-less surface inside the iframe. */}
-      {showConnectPanel && (
-        <div className="mb-6">
-          <ConnectWalletPanel
-            description="Provisioning a sandbox or instance requires a connected wallet on Tangle Network. You can browse blueprints below, but deploying will be blocked until you connect."
+    <ConsolePage
+      title="Launch Console"
+      eyebrow="Tangle sandbox compiler"
+      actions={step !== 'blueprint' ? (
+        <Button variant="secondary" onClick={() => setShowInfra(true)}>
+          <span className="i-ph:sliders-horizontal text-base" />
+          Infrastructure
+        </Button>
+      ) : null}
+    >
+      <div className="grid min-h-full gap-4 xl:grid-cols-[260px_minmax(0,1fr)_320px]">
+        <aside className="space-y-4">
+          <LaunchModeRail
+            blueprints={blueprints}
+            selectedBlueprint={selectedBlueprint}
+            onSelect={handleSelectBlueprint}
           />
-        </div>
-      )}
+          <LaunchPhaseRail
+            step={step}
+            currentIdx={currentIdx}
+            onStepChange={(nextStep) => setStep(nextStep)}
+          />
+        </aside>
 
-      {/* Infrastructure bar */}
-      {step !== 'blueprint' && (
-        <>
-          {isSandbox ? (
-            <InfraBar onOpenModal={() => setShowInfra(true)} />
-          ) : (
-            <InstanceInfraBar
-              infra={infra}
-              operators={deploy.operators}
-              operatorsLoading={deploy.operatorsLoading}
-              operatorsError={deploy.operatorsError}
-              operatorCount={deploy.operatorCount}
-              hasValidService={deploy.hasValidService}
-              onOpenModal={() => setShowInfra(true)}
+        <main className="min-w-0 space-y-4">
+          {showConnectPanel && (
+            <ConnectWalletPanel
+              description="Provisioning a sandbox or instance requires a connected wallet on Tangle Network. You can browse blueprints below, but deploying will be blocked until you connect."
             />
           )}
-          <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} />
-        </>
-      )}
 
-      {/* Step Indicator */}
-      <div className="flex items-center gap-2 mb-8">
-        {STEPS.map((s, i) => (
-          <div key={s.key} className="flex items-center gap-2 flex-1">
-            <button
-              onClick={() => i <= currentIdx && setStep(s.key)}
-              className={cn(
-                'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-display font-medium transition-all w-full',
-                s.key === step
-                  ? 'bg-violet-500/10 text-violet-700 dark:text-violet-400 border border-violet-500/20'
-                  : i < currentIdx
-                    ? 'bg-cloud-elements-background-depth-3 text-cloud-elements-textSecondary border border-cloud-elements-borderColor cursor-pointer'
-                    : 'bg-cloud-elements-background-depth-2 text-cloud-elements-textTertiary border border-transparent cursor-default',
-              )}
-            >
-              <div className={`${s.icon} text-base`} />
-              <span className="hidden sm:inline">{s.label}</span>
-              <span className="sm:hidden">{i + 1}</span>
-            </button>
-            {i < STEPS.length - 1 && <div className="w-4 h-px bg-cloud-elements-dividerColor shrink-0" />}
-          </div>
-        ))}
-      </div>
+          <ConsoleMetricStrip metrics={launchMetrics} />
 
-      {/* Step 1: Blueprint Selection */}
-      {step === 'blueprint' && <BlueprintSelector onSelect={handleSelectBlueprint} />}
+          {step === 'blueprint' && (
+            <ConsoleSection title="Blueprint Catalog">
+              <BlueprintSelector blueprints={blueprints} onSelect={handleSelectBlueprint} />
+            </ConsoleSection>
+          )}
 
-      {/* Step 2: Configure */}
-      {step === 'configure' && createJob && displayJob && (
-        <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <div className={`${selectedBlueprint?.icon} text-lg`} />
-                {entityLabel} Configuration
-              </CardTitle>
-              <CardDescription>Configure your {entityLabel.toLowerCase()} resources and settings</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <BlueprintJobForm
-                job={displayJob}
-                values={values}
-                onChange={onChange}
-                errors={errors}
-                sections={PRE_AGENT_SECTIONS}
-              />
+          {step === 'configure' && createJob && displayJob && (
+            <div className="space-y-4">
+              <ConsoleSection title={`${entityLabel} Spec`}>
+                <div className="p-4">
+                  <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-[var(--sandbox-console-border)] pb-4">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)]">
+                        <div className={cn('text-xl text-[var(--sandbox-console-brand)]', selectedBlueprint?.icon)} />
+                      </div>
+                      <div className="min-w-0">
+                        <h2 className="truncate font-display text-lg font-semibold text-[var(--sandbox-console-text)]">
+                          {selectedBlueprint?.name ?? entityLabel}
+                        </h2>
+                        <p className="mt-1 text-sm text-[var(--sandbox-console-muted)]">
+                          {selectedBlueprint?.description}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <ConsoleChip tone="brand">service #{infra.serviceId || '--'}</ConsoleChip>
+                      <ConsoleChip tone={runtimeBackend === 'tee' ? 'warn' : 'ready'}>{runtimeLabel(runtimeBackend)}</ConsoleChip>
+                    </div>
+                  </div>
 
-              {supportsAgentConfiguration && (
-                <AgentConfigurationField
-                  image={selectedImage}
-                  value={configuredAgentIdentifier}
-                  usesBundledSelector={usesBundledAgentSelector}
-                  onChange={(next) => onChange('agentIdentifier', next)}
-                />
-              )}
+                  <div className="space-y-1">
+                    <BlueprintJobForm
+                      job={displayJob}
+                      values={values}
+                      onChange={onChange}
+                      errors={errors}
+                      sections={PRE_AGENT_SECTIONS}
+                    />
 
-              <AllHarnessCapabilityField
-                enabled={allHarnessEnabled}
-                onChange={(enabled) => onChange('capabilitiesJson', enabled ? JSON.stringify(['all_harness']) : JSON.stringify([]))}
-              />
+                    {supportsAgentConfiguration && (
+                      <AgentConfigurationField
+                        image={selectedImage}
+                        value={configuredAgentIdentifier}
+                        usesBundledSelector={usesBundledAgentSelector}
+                        onChange={(next) => onChange('agentIdentifier', next)}
+                      />
+                    )}
 
-              {configuredAgentIdentifier && (
-                <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
-                  <p className="text-xs text-amber-300">
-                    This agent needs AI credentials to chat. You can add them now in Environment Variables below, or inject them later in the Secrets tab.
-                  </p>
+                    <AllHarnessCapabilityField
+                      enabled={allHarnessEnabled}
+                      onChange={(enabled) => onChange('capabilitiesJson', enabled ? JSON.stringify(['all_harness']) : JSON.stringify([]))}
+                    />
+
+                    {configuredAgentIdentifier && (
+                      <div className="mt-4 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                        <p className="text-xs text-amber-300">
+                          This agent needs AI credentials to chat. You can add them now in Environment Variables below, or inject them later in the Secrets tab.
+                        </p>
+                      </div>
+                    )}
+
+                    <BlueprintJobForm
+                      job={displayJob}
+                      values={values}
+                      onChange={onChange}
+                      errors={errors}
+                      sections={postAgentSections}
+                    />
+
+                    <div className="mt-6 space-y-1.5 border-t border-cloud-elements-dividerColor pt-4">
+                      <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+                        Environment Variables
+                      </label>
+                      <EnvEditor
+                        value={String(values.envJson || '{}')}
+                        onChange={(json) => onChange('envJson', json)}
+                      />
+                      <p className="text-[11px] text-cloud-elements-textTertiary">
+                        Key-value pairs injected as environment variables into the sandbox.
+                      </p>
+                    </div>
+
+                    <div className="mt-6 space-y-1.5 border-t border-cloud-elements-dividerColor pt-4">
+                      <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+                        Exposed Ports
+                      </label>
+                      <input
+                        type="text"
+                        value={portsInput}
+                        onChange={(e) => setPortsInput(e.target.value)}
+                        disabled={!supportsMetadataPorts}
+                        placeholder={supportsMetadataPorts ? 'e.g. 3000, 8080, 5432' : 'Not supported for Firecracker runtime'}
+                        className={cn(
+                          'w-full rounded-md border border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 px-3 py-2 font-data text-sm text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary transition-colors focus:border-cloud-elements-borderColorActive focus:outline-none',
+                          !supportsMetadataPorts && 'cursor-not-allowed opacity-60',
+                        )}
+                      />
+                      <p className="text-[11px] text-cloud-elements-textTertiary">
+                        {supportsMetadataPorts
+                          ? 'Comma-separated container ports to expose through the operator API proxy.'
+                          : 'Firecracker backend currently does not support metadata_json.ports mappings.'}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              )}
-
-              <BlueprintJobForm
-                job={displayJob}
-                values={values}
-                onChange={onChange}
-                errors={errors}
-                sections={postAgentSections}
-              />
-
-              {/* Environment variables — key-value editor instead of raw JSON */}
-              <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
-                <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
-                  Environment Variables
-                </label>
-                <EnvEditor
-                  value={String(values.envJson || '{}')}
-                  onChange={(json) => onChange('envJson', json)}
-                />
-                <p className="text-[11px] text-cloud-elements-textTertiary">
-                  Key-value pairs injected as environment variables into the sandbox.
-                </p>
+              </ConsoleSection>
+              <div className="flex justify-between">
+                <Button variant="secondary" onClick={() => setStep('blueprint')}>Back</Button>
+                <Button onClick={() => { if (validate()) setStep('deploy'); }} disabled={!createJob || !values.name}>Continue</Button>
               </div>
+            </div>
+          )}
 
-              {/* Extra ports — not an ABI field, merged into metadataJson */}
-              <div className="mt-6 pt-4 border-t border-cloud-elements-dividerColor space-y-1.5">
-                <label className="text-xs font-display font-medium text-cloud-elements-textSecondary">
-                  Exposed Ports
-                </label>
-                <input
-                  type="text"
-                  value={portsInput}
-                  onChange={(e) => setPortsInput(e.target.value)}
-                  disabled={!supportsMetadataPorts}
-                  placeholder={supportsMetadataPorts ? 'e.g. 3000, 8080, 5432' : 'Not supported for Firecracker runtime'}
-                  className={cn(
-                    'w-full px-3 py-2 rounded-lg bg-cloud-elements-background-depth-2 border border-cloud-elements-borderColor text-sm font-data text-cloud-elements-textPrimary placeholder:text-cloud-elements-textTertiary focus:outline-none focus:border-cloud-elements-borderColorActive transition-colors',
-                    !supportsMetadataPorts && 'opacity-60 cursor-not-allowed',
-                  )}
-                />
-                <p className="text-[11px] text-cloud-elements-textTertiary">
-                  {supportsMetadataPorts
-                    ? 'Comma-separated container ports to expose through the operator API proxy.'
-                    : 'Firecracker backend currently does not support metadata_json.ports mappings.'}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-          <div className="flex justify-between">
-            <Button variant="secondary" onClick={() => setStep('blueprint')}>Back</Button>
-            <Button onClick={() => { if (validate()) setStep('deploy'); }} disabled={!createJob || !values.name}>Continue</Button>
-          </div>
-        </div>
-      )}
+          {step === 'deploy' && createJob && displayJob && selectedBlueprint && (
+            <DeployStep
+              blueprint={selectedBlueprint}
+              job={displayJob}
+              values={values}
+              ports={parsedPorts}
+              infra={infra}
+              entityLabel={entityLabel}
+              deploy={deploy}
+              capacity={capacity}
+              provisionEstimate={provisionEstimate}
+              provisionPriceFormatted={provisionPriceFormatted}
+              hasProvisionRfq={hasProvisionRfq}
+              priceLoading={priceLoading}
+              serviceInfo={serviceInfo}
+              serviceValidating={serviceValidating}
+              serviceError={serviceError}
+              onBack={() => { setStep('configure'); deployReset(); }}
+              onDeploy={deploy.deploy}
+              onViewDetail={() => {
+                const key = isSandbox
+                  ? deploy.sandboxDraftKey
+                  : String(values.name || '');
+                if (key) navigate(`/${isSandbox ? 'sandboxes' : 'instances'}/${encodeURIComponent(key)}`);
+                else navigate(isSandbox ? '/sandboxes' : '/instances');
+              }}
+              onOpenInfra={() => setShowInfra(true)}
+              onProvisionReady={(sandboxId, sidecarUrl) => {
+                if (isSandbox) {
+                  if (deploy.sandboxDraftKey) {
+                    updateSandboxStatus(deploy.sandboxDraftKey, 'running', { sandboxId, sidecarUrl });
+                  }
+                } else {
+                  const name = String(values.name || '');
+                  updateInstanceStatus(name, 'running', { sandboxId, sidecarUrl });
+                }
+              }}
+            />
+          )}
+        </main>
 
-      {/* Step 3: Review & Deploy */}
-      {step === 'deploy' && createJob && displayJob && selectedBlueprint && (
-        <DeployStep
-          blueprint={selectedBlueprint}
-          job={displayJob}
-          values={values}
-          ports={supportsMetadataPorts ? parsePortsInput(portsInput) : []}
-          infra={infra}
+        <LaunchReadinessRail
+          step={step}
+          selectedBlueprint={selectedBlueprint}
           entityLabel={entityLabel}
-          deploy={deploy}
+          runtimeBackend={runtimeBackend}
+          infra={infra}
           capacity={capacity}
-          provisionEstimate={provisionEstimate}
-          provisionPriceFormatted={provisionPriceFormatted}
-          hasProvisionRfq={hasProvisionRfq}
-          priceLoading={priceLoading}
-          serviceInfo={serviceInfo}
+          isConnected={isConnected}
+          isReconnectingWallet={isReconnectingWallet}
+          hasValidService={deploy.hasValidService}
+          isNewService={deploy.isNewService}
           serviceValidating={serviceValidating}
           serviceError={serviceError}
-          onBack={() => { setStep('configure'); deployReset(); }}
-          onDeploy={deploy.deploy}
-          onViewDetail={() => {
-            const key = isSandbox
-              ? deploy.sandboxDraftKey
-              : String(values.name || '');
-            if (key) navigate(`/${isSandbox ? 'sandboxes' : 'instances'}/${encodeURIComponent(key)}`);
-            else navigate(isSandbox ? '/sandboxes' : '/instances');
-          }}
+          operatorsCount={deploy.operators.length}
+          operatorCount={deploy.operatorCount}
+          operatorsLoading={deploy.operatorsLoading}
+          operatorsError={deploy.operatorsError}
+          agentIdentifier={configuredAgentIdentifier}
+          ports={parsedPorts}
           onOpenInfra={() => setShowInfra(true)}
-          onProvisionReady={(sandboxId, sidecarUrl) => {
-            if (isSandbox) {
-              if (deploy.sandboxDraftKey) {
-                updateSandboxStatus(deploy.sandboxDraftKey, 'running', { sandboxId, sidecarUrl });
-              }
-            } else {
-              const name = String(values.name || '');
-              updateInstanceStatus(name, 'running', { sandboxId, sidecarUrl });
-            }
-          }}
         />
-      )}
-    </AnimatedPage>
+      </div>
+
+      <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} />
+    </ConsolePage>
+  );
+}
+
+function LaunchModeRail({
+  blueprints,
+  selectedBlueprint,
+  onSelect,
+}: {
+  blueprints: BlueprintDefinition[];
+  selectedBlueprint?: BlueprintDefinition;
+  onSelect: (bp: BlueprintDefinition) => void;
+}) {
+  return (
+    <ConsoleSection title="Launch Modes">
+      <div className="grid gap-px bg-[var(--sandbox-console-border)] p-px">
+        {blueprints.map((bp) => {
+          const isActive = selectedBlueprint?.id === bp.id;
+          return (
+            <button
+              key={bp.id}
+              onClick={() => onSelect(bp)}
+              className={cn(
+                'flex min-h-20 items-start gap-3 bg-[var(--sandbox-console-panel)] p-3 text-left transition-colors hover:bg-[var(--sandbox-console-hover)]',
+                isActive && 'bg-[var(--sandbox-console-brand-soft)]',
+              )}
+            >
+              <span className={cn('mt-0.5 text-lg text-[var(--sandbox-console-brand)]', bp.icon)} />
+              <span className="min-w-0">
+                <span className="block truncate font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
+                  {bp.name}
+                </span>
+                <span className="mt-1 line-clamp-2 block text-xs leading-5 text-[var(--sandbox-console-muted)]">
+                  {bp.description}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </ConsoleSection>
+  );
+}
+
+function LaunchPhaseRail({
+  step,
+  currentIdx,
+  onStepChange,
+}: {
+  step: WizardStep;
+  currentIdx: number;
+  onStepChange: (step: WizardStep) => void;
+}) {
+  return (
+    <ConsoleSection title="Compiler Phases">
+      <div className="divide-y divide-[var(--sandbox-console-border)]">
+        {STEPS.map((phase, index) => {
+          const isCurrent = phase.key === step;
+          const isAvailable = index <= currentIdx;
+          return (
+            <button
+              key={phase.key}
+              onClick={() => {
+                if (isAvailable) onStepChange(phase.key);
+              }}
+              className={cn(
+                'flex h-12 w-full items-center gap-3 px-3 text-left transition-colors',
+                isCurrent ? 'bg-[var(--sandbox-console-brand-soft)]' : 'hover:bg-[var(--sandbox-console-hover)]',
+                !isAvailable && 'cursor-default opacity-50 hover:bg-transparent',
+              )}
+            >
+              <span className={cn('text-base', phase.icon, isCurrent ? 'text-[var(--sandbox-console-brand)]' : 'text-[var(--sandbox-console-muted)]')} />
+              <span className="font-data text-xs uppercase tracking-[0.12em] text-[var(--sandbox-console-text)]">
+                {phase.label}
+              </span>
+              {index < currentIdx ? (
+                <span className="ml-auto i-ph:check text-sm text-[var(--sandbox-console-success)]" />
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </ConsoleSection>
+  );
+}
+
+function LaunchReadinessRail({
+  step,
+  selectedBlueprint,
+  entityLabel,
+  runtimeBackend,
+  infra,
+  capacity,
+  isConnected,
+  isReconnectingWallet,
+  hasValidService,
+  isNewService,
+  serviceValidating,
+  serviceError,
+  operatorsCount,
+  operatorCount,
+  operatorsLoading,
+  operatorsError,
+  agentIdentifier,
+  ports,
+  onOpenInfra,
+}: {
+  step: WizardStep;
+  selectedBlueprint?: BlueprintDefinition;
+  entityLabel: string;
+  runtimeBackend: string;
+  infra: { blueprintId: string; serviceId: string };
+  capacity?: number | bigint;
+  isConnected: boolean;
+  isReconnectingWallet: boolean;
+  hasValidService: boolean;
+  isNewService: boolean;
+  serviceValidating: boolean;
+  serviceError: string | null;
+  operatorsCount: number;
+  operatorCount: bigint;
+  operatorsLoading: boolean;
+  operatorsError?: Error | null;
+  agentIdentifier: string;
+  ports: number[];
+  onOpenInfra: () => void;
+}) {
+  const operatorSummary = operatorsLoading
+    ? 'Discovering'
+    : operatorsError && operatorCount > 0n
+      ? `${operatorCount.toString()} registered`
+      : operatorsError
+        ? 'Lookup failed'
+        : `${operatorsCount} verified`;
+  const serviceState = serviceValidating
+    ? 'Checking'
+    : serviceError
+      ? 'Blocked'
+      : isNewService
+        ? 'Create on deploy'
+        : hasValidService
+          ? 'Verified'
+          : 'Pending';
+
+  return (
+    <aside className="space-y-4">
+      <ConsoleSection title="Launch Readiness">
+        <div className="divide-y divide-[var(--sandbox-console-border)]">
+          <ReadinessRow
+            label="Mode"
+            value={selectedBlueprint ? entityLabel : 'Unselected'}
+            detail={selectedBlueprint?.name ?? 'Choose a blueprint'}
+            tone={selectedBlueprint ? 'brand' : 'warn'}
+          />
+          <ReadinessRow
+            label="Spec"
+            value={step === 'deploy' ? 'Locked' : step === 'configure' ? 'Editing' : 'Open'}
+            detail={step === 'deploy' ? 'ready for transaction' : 'mutable'}
+            tone={step === 'deploy' ? 'ready' : 'muted'}
+          />
+          <ReadinessRow
+            label="Runtime"
+            value={runtimeLabel(runtimeBackend)}
+            detail={runtimeBackend === 'tee' ? 'attestation path' : 'standard path'}
+            tone={runtimeBackend === 'tee' ? 'warn' : 'ready'}
+          />
+          <ReadinessRow
+            label="Capacity"
+            value={formatCapacityValue(capacity)}
+            detail="available slots"
+            tone={capacity !== undefined && Number(capacity) === 0 ? 'warn' : 'ready'}
+          />
+          <ReadinessRow
+            label="Wallet"
+            value={isConnected ? 'Connected' : isReconnectingWallet ? 'Syncing' : 'Offline'}
+            detail={isConnected ? 'can sign' : 'deploy blocked'}
+            tone={isConnected ? 'ready' : isReconnectingWallet ? 'warn' : 'danger'}
+          />
+          <ReadinessRow
+            label="Service"
+            value={serviceState}
+            detail={`blueprint ${infra.blueprintId || '--'} / service ${infra.serviceId || '--'}`}
+            tone={serviceTone({ serviceValidating, serviceError, hasValidService, isNewService })}
+          />
+          <ReadinessRow
+            label="Operators"
+            value={operatorSummary}
+            detail={isNewService ? 'service quorum' : 'operator service'}
+            tone={operatorsError ? 'warn' : 'brand'}
+          />
+          <ReadinessRow
+            label="Agent mode"
+            value={agentIdentifier || 'Compute only'}
+            detail={agentIdentifier ? 'chat enabled' : 'no bundled agent'}
+            tone={agentIdentifier ? 'brand' : 'muted'}
+          />
+          <ReadinessRow
+            label="Network"
+            value={ports.length > 0 ? `${ports.length} port${ports.length === 1 ? '' : 's'}` : 'Default'}
+            detail={ports.length > 0 ? ports.join(', ') : 'operator proxy'}
+            tone={ports.length > 0 ? 'brand' : 'muted'}
+          />
+        </div>
+        <div className="border-t border-[var(--sandbox-console-border)] p-3">
+          <Button variant="secondary" size="sm" className="w-full justify-center" onClick={onOpenInfra}>
+            <span className="i-ph:sliders-horizontal text-sm" />
+            Infrastructure
+          </Button>
+        </div>
+      </ConsoleSection>
+    </aside>
+  );
+}
+
+function ReadinessRow({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: ConsoleTone;
+}) {
+  return (
+    <div className="grid gap-1 px-3 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
+          {label}
+        </span>
+        <ConsoleChip tone={tone}>{value}</ConsoleChip>
+      </div>
+      <p className="truncate font-data text-[11px] text-[var(--sandbox-console-subtle)]">
+        {detail}
+      </p>
+    </div>
   );
 }
 
@@ -595,54 +913,15 @@ function AllHarnessCapabilityField({
   );
 }
 
-// ── Instance Infra Bar ──
-
-function InstanceInfraBar({
-  infra, operators, operatorsLoading, operatorsError, operatorCount, hasValidService, onOpenModal,
-}: {
-  infra: { blueprintId: string; serviceId: string };
-  operators: DiscoveredOperator[];
-  operatorsLoading: boolean;
-  operatorsError?: Error | null;
-  operatorCount: bigint;
-  hasValidService: boolean;
-  onOpenModal: () => void;
-}) {
-  const operatorSummary = operatorsLoading
-    ? 'Discovering...'
-    : operatorsError
-      ? operatorCount > 0n
-        ? `${operatorCount.toString()} registered (verification failed)`
-        : 'Lookup failed'
-      : `${operators.length} operators`;
-
-  return (
-    <div className="glass-card rounded-lg p-3 flex items-center justify-between mb-6">
-      <div className="flex items-center gap-4">
-        <BlueprintBadgeInline blueprintId={infra.blueprintId} />
-        <div className="flex items-center gap-2">
-          <div className="i-ph:users-three text-sm text-cloud-elements-textTertiary" />
-          <span className="text-xs text-cloud-elements-textTertiary">
-            {operatorSummary}
-          </span>
-        </div>
-        {hasValidService && (
-          <div className="flex items-center gap-2">
-            <div className="i-ph:info text-sm text-cloud-elements-textTertiary" />
-            <span className="text-xs text-cloud-elements-textTertiary">Verified service #{infra.serviceId} available</span>
-          </div>
-        )}
-      </div>
-      <Button variant="ghost" size="sm" onClick={onOpenModal}>Change</Button>
-    </div>
-  );
-}
-
 // ── Blueprint Selector ──
 
-function BlueprintSelector({ onSelect }: { onSelect: (bp: BlueprintDefinition) => void }) {
-  const blueprints = getAllBlueprints();
-
+function BlueprintSelector({
+  blueprints,
+  onSelect,
+}: {
+  blueprints: BlueprintDefinition[];
+  onSelect: (bp: BlueprintDefinition) => void;
+}) {
   const colorMap: Record<string, string> = {
     teal: 'border-teal-500/20 hover:border-teal-500/40',
     blue: 'border-blue-500/20 hover:border-blue-500/40',
@@ -656,13 +935,13 @@ function BlueprintSelector({ onSelect }: { onSelect: (bp: BlueprintDefinition) =
   };
 
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-px bg-[var(--sandbox-console-border)] p-px">
       {blueprints.map((bp) => (
         <button
           key={bp.id}
           onClick={() => onSelect(bp)}
           className={cn(
-            'glass-card rounded-xl p-6 text-left transition-all border-2 cursor-pointer',
+            'bg-[var(--sandbox-console-panel)] p-4 text-left transition-all cursor-pointer',
             'hover:bg-cloud-elements-item-backgroundHover',
             colorMap[bp.color] ?? 'border-cloud-elements-borderColor hover:border-cloud-elements-borderColorActive',
           )}

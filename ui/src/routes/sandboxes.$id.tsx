@@ -37,11 +37,19 @@ import { truncateAddress } from '~/lib/utils/truncate-address';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
 import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
+import { ResourceWorkspaceNav } from '~/components/console/ResourceWorkspaceNav';
+import { ConsoleMetricStrip, type ConsoleMetric } from '~/components/console/ConsolePrimitives';
+import {
+  AutomationWorkspace,
+  ResourceWorkspaceRail,
+  StorageWorkspace,
+  type WorkspaceRailRow,
+} from '~/components/console/ResourceWorkspacePanels';
 
 import { useAccount } from 'wagmi';
 import { normalizeAgentIdentifier } from '~/lib/agents';
 
-type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation';
+type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation' | 'automation' | 'storage';
 
 import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
 
@@ -54,6 +62,20 @@ interface AgentDescriptor {
   identifier: string;
   displayName?: string;
   description?: string;
+}
+
+function getInitialTabFromPath(pathname: string): ActionTab {
+  if (pathname.endsWith('/runtime')) return 'terminal';
+  if (pathname.endsWith('/sessions')) return 'chat';
+  if (pathname.endsWith('/automation')) return 'automation';
+  if (pathname.endsWith('/network')) return 'ssh';
+  if (pathname.endsWith('/security')) return 'secrets';
+  if (pathname.endsWith('/storage')) return 'storage';
+  return 'overview';
+}
+
+function getCurrentPathname() {
+  return typeof window === 'undefined' ? '' : window.location.pathname;
 }
 
 /** Extract human-readable error from operator API Error messages. */
@@ -93,6 +115,7 @@ function formatDuration(seconds: number): string {
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const currentPathname = getCurrentPathname();
   const decodedKey = id ? decodeURIComponent(id) : '';
   const sandboxes = useStore(sandboxListStore);
   const sb = findSandboxByKey(sandboxes, decodedKey);
@@ -111,7 +134,7 @@ export default function SandboxDetail() {
   const { submitJob } = useSubmitJob();
   const { address } = useAccount();
 
-  const [tab, setTab] = useState<ActionTab>('overview');
+  const [tab, setTab] = useState<ActionTab>(() => getInitialTabFromPath(currentPathname));
   const [systemPrompt, setSystemPrompt] = useState('');
   // SSH state
   const [sshPublicKey, setSshPublicKey] = useState('');
@@ -589,10 +612,65 @@ export default function SandboxDetail() {
     { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
     { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal', disabled: !hasProvisionedSandbox || !isRunning },
     { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !hasProvisionedSandbox || !isRunning, hidden: !hasAgent },
+    { key: 'automation', label: 'Automation', icon: 'i-ph:flow-arrow', disabled: !hasProvisionedSandbox || !isRunning },
     { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !hasProvisionedSandbox || !isRunning, hidden: !sb.sshPort },
     { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', disabled: !hasProvisionedSandbox || !isRunning },
+    { key: 'storage', label: 'Storage', icon: 'i-ph:database', disabled: !hasProvisionedSandbox },
     { key: 'attestation', label: 'Attestation', icon: 'i-ph:shield-check', hidden: !hasProvisionedSandbox || !sb.teeEnabled },
   ];
+
+  const workspaceBasePath = `/sandboxes/${encodeURIComponent(routeKey)}`;
+  const workspaceNavItems = [
+    { label: 'Runtime', href: `${workspaceBasePath}/runtime`, icon: 'i-ph:terminal' },
+    { label: 'Sessions', href: `${workspaceBasePath}/sessions`, icon: 'i-ph:chat-circle', disabled: !hasAgent },
+    { label: 'Automation', href: `${workspaceBasePath}/automation`, icon: 'i-ph:flow-arrow' },
+    { label: 'Network', href: `${workspaceBasePath}/network`, icon: 'i-ph:plugs', disabled: !sb.sshPort },
+    { label: 'Security', href: `${workspaceBasePath}/security`, icon: 'i-ph:shield-check' },
+    { label: 'Storage', href: `${workspaceBasePath}/storage`, icon: 'i-ph:database' },
+  ];
+  const exposedPortCount = ports?.length ?? 0;
+  const statusTone = isRunning ? 'ready' : isCreating ? 'brand' : isStopped ? 'warn' : sb.status === 'error' ? 'danger' : 'muted';
+  const workspaceMetrics: ConsoleMetric[] = [
+    {
+      label: 'Status',
+      value: sb.status,
+      detail: isRunning ? 'operator ready' : isCreating ? 'provisioning' : 'lifecycle',
+      tone: statusTone,
+    },
+    {
+      label: 'Runtime',
+      value: sb.teeEnabled ? 'TEE' : 'Docker',
+      detail: `${sb.cpuCores}c / ${Math.round(sb.memoryMb / 1024)}g / ${sb.diskGb}g`,
+      tone: sb.teeEnabled ? 'warn' : 'brand',
+    },
+    {
+      label: 'Network',
+      value: sb.sshPort ? `ssh:${sb.sshPort}` : exposedPortCount > 0 ? `${exposedPortCount} ports` : 'proxy',
+      detail: operatorUrl.replace(/^https?:\/\//, ''),
+      tone: sb.sshPort || exposedPortCount > 0 ? 'ready' : 'muted',
+    },
+    {
+      label: 'Agent',
+      value: configuredAgentIdentifier || 'none',
+      detail: hasAgent ? 'sessions enabled' : 'compute only',
+      tone: hasAgent ? 'brand' : 'muted',
+    },
+  ];
+  const contextRows: WorkspaceRailRow[] = [
+    { label: 'Sandbox ID', value: sb.sandboxId ? 'provisioned' : 'pending', detail: sb.sandboxId ?? sb.localId, tone: sb.sandboxId ? 'ready' : 'warn' },
+    { label: 'Blueprint', value: formatBlueprintLabel(sb.blueprintId), detail: `service ${formatServiceId(sb.serviceId)}`, tone: 'brand' },
+    { label: 'Operator', value: sb.operator ? truncateAddress(sb.operator) : 'unknown', detail: sb.operator ?? 'operator not resolved', tone: sb.operator ? 'ready' : 'muted' },
+    { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted' },
+  ];
+  const storageRows: WorkspaceRailRow[] = [
+    { label: 'Image', value: sb.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand' },
+    { label: 'Disk', value: `${sb.diskGb} GB`, detail: 'allocated volume', tone: 'ready' },
+    { label: 'Lifecycle', value: isStopped ? 'warm' : isGone ? 'gone' : sb.status, detail: sb.lastActivityAt ? new Date(sb.lastActivityAt).toLocaleString() : 'no activity timestamp', tone: statusTone },
+    { label: 'Secrets', value: sb.credentialsAvailable === false ? 'missing' : 'available', detail: sb.teeEnabled ? 'TEE protected' : 'operator encrypted', tone: sb.credentialsAvailable === false ? 'warn' : 'ready' },
+  ];
+  const workflowCreateHref = isRunning && sb.sandboxId
+    ? `/workflows/create?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`
+    : undefined;
 
   return (
     <AnimatedPage className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
@@ -663,7 +741,14 @@ export default function SandboxDetail() {
         </div>
       </div>
 
-      <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-6" />
+      <div className="mb-4">
+        <ConsoleMetricStrip metrics={workspaceMetrics} />
+      </div>
+
+      <div className="mb-4 grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0 space-y-4">
+          <ResourceWorkspaceNav items={workspaceNavItems} activePath={currentPathname} />
+          <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-0" />
 
       {agentConfigured && hasAgentValidationResult && !agentIdentifierValid && (
         <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
@@ -793,6 +878,24 @@ export default function SandboxDetail() {
             />
           )}
         </div>
+      )}
+
+      {tab === 'automation' && (
+        <AutomationWorkspace
+          createHref={workflowCreateHref}
+          scope="sandbox"
+          target={sb.sandboxId ?? sb.localId}
+          status={sb.status}
+          hasAgent={hasAgent}
+        />
+      )}
+
+      {tab === 'storage' && (
+        <StorageWorkspace
+          rows={storageRows}
+          onSnapshot={() => setSnapshotOpen(true)}
+          snapshotEnabled={hasProvisionedSandbox && !isGone}
+        />
       )}
 
       {/* Terminal Tab — operator-backed terminal */}
@@ -1117,6 +1220,9 @@ export default function SandboxDetail() {
           />
         </div>
       )}
+        </div>
+        <ResourceWorkspaceRail rows={contextRows} />
+      </div>
       <SnapshotDialog
         open={snapshotOpen}
         onOpenChange={setSnapshotOpen}

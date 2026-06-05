@@ -8,11 +8,11 @@ import './styles/global.scss';
 import '~/lib/blueprints'; // side-effect: register all blueprints
 
 import { Outlet, useRouteError, isRouteErrorResponse } from 'react-router';
-import { AppFooter, AppToaster } from '@tangle-network/blueprint-ui/components';
+import { AppToaster } from '@tangle-network/blueprint-ui/components';
 import { Web3Provider } from '~/providers/Web3Provider';
 import { SandboxSyncProvider } from '~/providers/SandboxSyncProvider';
-import { Header } from '~/components/layout/Header';
 import { IframeAppDocument } from '~/components/layout/IframeAppDocument';
+import { ConsoleShell } from '~/components/console/ConsoleShell';
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
@@ -56,13 +56,9 @@ export default function App() {
       <AppToaster tone="cloud" />
       <Web3Provider>
         <SandboxSyncProvider>
-          <div className="flex flex-col min-h-screen bg-cloud-elements-background-depth-1 text-cloud-elements-textPrimary bg-mesh bg-noise">
-            <Header />
-            <main className="flex-1 pt-[var(--header-height)] relative z-1">
-              <Outlet />
-            </main>
-            <AppFooter tone="cloud" brandText="Sandbox Cloud · Tangle Network" />
-          </div>
+          <ConsoleShell>
+            <Outlet />
+          </ConsoleShell>
         </SandboxSyncProvider>
       </Web3Provider>
     </>

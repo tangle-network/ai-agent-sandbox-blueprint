@@ -89,6 +89,28 @@
   --mesh-teal: rgba(56, 178, 172, 0.04);
   --mesh-violet: rgba(139, 92, 246, 0.04);
   --mesh-blue: rgba(0, 180, 255, 0.03);
+
+  /* Sandbox console tokens */
+  --sandbox-console-bg: #080a10;
+  --sandbox-console-rail: #0d1018;
+  --sandbox-console-surface: #121723;
+  --sandbox-console-panel: #171c2a;
+  --sandbox-console-panel-strong: #202638;
+  --sandbox-console-border: rgba(221, 226, 255, 0.13);
+  --sandbox-console-border-hover: rgba(168, 123, 255, 0.38);
+  --sandbox-console-text: #f3f5ff;
+  --sandbox-console-secondary: #c8ccdc;
+  --sandbox-console-muted: #8d94aa;
+  --sandbox-console-subtle: #626a80;
+  --sandbox-console-brand: #a87bff;
+  --sandbox-console-brand-soft: rgba(142, 89, 255, 0.14);
+  --sandbox-console-brand-border: rgba(168, 123, 255, 0.34);
+  --sandbox-console-success: #38b2ac;
+  --sandbox-console-success-soft: rgba(56, 178, 172, 0.12);
+  --sandbox-console-success-border: rgba(56, 178, 172, 0.28);
+  --sandbox-console-warning: #f2c066;
+  --sandbox-console-danger: #ff5d6c;
+  --sandbox-console-shadow-lg: 0 22px 80px rgba(0, 0, 0, 0.34);
 }
 
 /* Light Theme */
@@ -165,6 +187,27 @@
   --mesh-teal: rgba(44, 122, 123, 0.03);
   --mesh-violet: rgba(100, 60, 200, 0.03);
   --mesh-blue: rgba(0, 100, 180, 0.02);
+
+  --sandbox-console-bg: #f4f6fb;
+  --sandbox-console-rail: #ffffff;
+  --sandbox-console-surface: #eef1f8;
+  --sandbox-console-panel: #ffffff;
+  --sandbox-console-panel-strong: #e7eaf3;
+  --sandbox-console-border: rgba(20, 24, 38, 0.12);
+  --sandbox-console-border-hover: rgba(124, 58, 237, 0.34);
+  --sandbox-console-text: #101421;
+  --sandbox-console-secondary: #34394c;
+  --sandbox-console-muted: #626a80;
+  --sandbox-console-subtle: #858da3;
+  --sandbox-console-brand: #6d28d9;
+  --sandbox-console-brand-soft: rgba(124, 58, 237, 0.10);
+  --sandbox-console-brand-border: rgba(124, 58, 237, 0.28);
+  --sandbox-console-success: #2c7a7b;
+  --sandbox-console-success-soft: rgba(44, 122, 123, 0.10);
+  --sandbox-console-success-border: rgba(44, 122, 123, 0.24);
+  --sandbox-console-warning: #9a6700;
+  --sandbox-console-danger: #c81e34;
+  --sandbox-console-shadow-lg: 0 22px 70px rgba(20, 24, 38, 0.16);
 }
 
 :root {

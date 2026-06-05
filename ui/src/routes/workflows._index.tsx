@@ -37,6 +37,7 @@ import {
   type WorkflowBlueprintId,
   type WorkflowScope,
 } from '~/lib/workflows';
+import { ConsoleMetricStrip, type ConsoleMetric } from '~/components/console/ConsolePrimitives';
 
 const WORKFLOW_VISIBILITY_POLL_INTERVAL_MS = 3_000;
 const WORKFLOW_VISIBILITY_TIMEOUT_MS = 120_000;
@@ -341,6 +342,32 @@ export default function Workflows() {
       instanceWorkflowSummaries.error,
     ],
   );
+  const workflowMetrics: ConsoleMetric[] = [
+    {
+      label: 'Workflows',
+      value: String(workflows.length),
+      detail: address ? 'owner scoped' : 'wallet gated',
+      tone: workflows.length > 0 ? 'brand' : 'muted',
+    },
+    {
+      label: 'Runnable',
+      value: String(workflows.filter((workflow) => workflow.kind === 'remote' && workflow.data.runnable).length),
+      detail: 'operator ready',
+      tone: 'ready',
+    },
+    {
+      label: 'Pending visibility',
+      value: String(workflows.filter((workflow) => workflow.kind === 'pending').length),
+      detail: 'local receipts',
+      tone: 'warn',
+    },
+    {
+      label: 'Operator errors',
+      value: String(operatorErrors.length),
+      detail: operatorAuthPrompts.length > 0 ? `${operatorAuthPrompts.length} auth` : 'connected',
+      tone: operatorErrors.length > 0 ? 'danger' : operatorAuthPrompts.length > 0 ? 'warn' : 'ready',
+    },
+  ];
 
   const jobValue = (jobId: number): bigint =>
     BigInt(PRICING_TIERS[jobId]?.multiplier ?? 1) * 1_000_000_000_000_000n;
@@ -575,6 +602,10 @@ export default function Workflows() {
             New Workflow
           </Button>
         )}
+      </div>
+
+      <div className="mb-6">
+        <ConsoleMetricStrip metrics={workflowMetrics} />
       </div>
 
       {address && operatorAuthPrompts.length > 0 ? (

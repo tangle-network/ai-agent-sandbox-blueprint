@@ -1,58 +1,122 @@
+import { Link } from 'react-router';
+import { useMemo } from 'react';
 import { useStore } from '@nanostores/react';
-import { ProvisionedResourceListCard } from '~/components/shared/ProvisionedResourceListCard';
-import { ProvisionedResourceIndexPage } from '~/components/shared/ProvisionedResourceIndexPage';
-import { instanceListStore, activeInstances } from '~/lib/stores/instances';
+import { Button } from '@tangle-network/blueprint-ui/components';
+import {
+  ConsoleChip,
+  ConsoleMetricStrip,
+  ConsolePage,
+  ConsoleSection,
+  type ConsoleMetric,
+} from '~/components/console/ConsolePrimitives';
+import {
+  ResourceExplorerTable,
+  type ResourceExplorerRow,
+} from '~/components/console/ResourceExplorerTable';
+import {
+  activeInstances,
+  instanceListStore,
+  runningInstances,
+  type LocalInstance,
+} from '~/lib/stores/instances';
 import { getInstanceStatusLabel } from '~/lib/instances/display';
 
-export default function InstanceList() {
+function getSecurityState(instance: LocalInstance) {
+  if (instance.teeEnabled) return 'attested';
+  if (instance.credentialsAvailable) return 'secrets';
+  return 'session';
+}
+
+function getStorageState(status: string) {
+  if (status === 'stopped') return 'hot';
+  if (status === 'gone') return 'gone';
+  return 'ephemeral';
+}
+
+function instanceToRow(instance: LocalInstance): ResourceExplorerRow {
+  return {
+    key: instance.id,
+    href: `/instances/${encodeURIComponent(instance.id)}`,
+    name: instance.name,
+    id: instance.sandboxId ?? instance.id,
+    scope: instance.teeEnabled ? 'TEE' : 'Instance',
+    status: instance.status,
+    statusLabel: getInstanceStatusLabel(instance),
+    backend: instance.teeEnabled ? 'tee' : 'docker',
+    image: instance.image,
+    operator: instance.operator,
+    specs: `${instance.cpuCores}c/${Math.round(instance.memoryMb / 1024)}g/${instance.diskGb}g`,
+    sessions: instance.agentIdentifier ? 'agent' : '--',
+    workflows: '--',
+    network: instance.sshPort ? `ssh:${instance.sshPort}` : 'ports',
+    security: getSecurityState(instance),
+    storage: getStorageState(instance.status),
+    createdAt: instance.createdAt,
+    teeEnabled: instance.teeEnabled,
+    agentIdentifier: instance.agentIdentifier,
+  };
+}
+
+export default function InstanceExplorer() {
   const allInstances = useStore(instanceListStore);
   const active = useStore(activeInstances);
+  const running = useStore(runningInstances);
+
+  const rows = useMemo(
+    () => allInstances.map(instanceToRow)
+      .sort((left, right) => right.createdAt - left.createdAt),
+    [allInstances],
+  );
+
+  const metrics: ConsoleMetric[] = [
+    { label: 'Active', value: String(active.length), detail: 'dedicated', tone: 'ready' },
+    { label: 'Running', value: String(running.length), detail: 'operator-backed', tone: 'ready' },
+    { label: 'TEE instances', value: String(allInstances.filter((instance) => instance.teeEnabled).length), detail: 'sealed secrets', tone: 'brand' },
+    { label: 'Errors', value: String(allInstances.filter((instance) => instance.status === 'error').length), detail: 'attention', tone: 'danger' },
+  ];
 
   return (
-    <ProvisionedResourceIndexPage
-      title="Instances"
-      subtitle={
-        active.length > 0
-          ? `${active.length} active instance${active.length > 1 ? 's' : ''}`
-          : 'Subscription-based AI agent instances'
-      }
-      createTo="/create?blueprint=ai-agent-instance-blueprint"
-      createLabel="New Instance"
-      items={allInstances}
-      getKey={(inst) => inst.id}
-      renderItem={(inst) => (
-        <ProvisionedResourceListCard
-          to={`/instances/${encodeURIComponent(inst.id)}`}
-          name={inst.name}
-          status={inst.status}
-          statusLabel={getInstanceStatusLabel(inst)}
-          teeEnabled={inst.teeEnabled}
-          image={inst.image}
-          specs={`${inst.cpuCores} CPU · ${inst.memoryMb}MB`}
-          createdAt={inst.createdAt}
-          iconClassName={inst.teeEnabled ? 'i-ph:shield-check' : 'i-ph:cube'}
-          iconContainerClassName={
-            inst.status === 'running'
-              ? 'bg-blue-500/10'
-              : inst.status === 'creating'
-                ? 'bg-violet-500/10'
-                : 'bg-cloud-elements-background-depth-3'
-          }
-          iconToneClassName={
-            inst.status === 'running'
-              ? 'text-blue-400'
-              : inst.status === 'creating'
-                ? 'text-violet-400'
-                : 'text-cloud-elements-textTertiary'
-          }
-          teeStyle="text"
-        />
+    <ConsolePage
+      title="Dedicated Instances"
+      eyebrow="Singleton resources"
+      actions={(
+        <Link to="/create?blueprint=ai-agent-instance-blueprint">
+          <Button>
+            <span className="i-ph:plus text-base" />
+            New Instance
+          </Button>
+        </Link>
       )}
-      emptyIconClassName="i-ph:cube"
-      emptyTitle="No instances yet"
-      emptySubtitle="Provision an instance or TEE instance to get started"
-      emptyCreateTo="/create?blueprint=ai-agent-instance-blueprint"
-      emptyCreateLabel="Create Instance"
-    />
+    >
+      <div className="space-y-4">
+        <ConsoleMetricStrip metrics={metrics} />
+        <ConsoleSection title="Instances">
+          <ResourceExplorerTable
+            rows={rows}
+            emptyTitle="No instances indexed"
+            emptyDetail="Provision a dedicated instance or TEE instance to inspect lifecycle, sessions, and trust state here."
+            emptyActionTo="/create?blueprint=ai-agent-instance-blueprint"
+            emptyActionLabel="Launch Instance"
+          />
+        </ConsoleSection>
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="sandbox-console-panel rounded-md p-3">
+            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Modes</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ConsoleChip>instance</ConsoleChip>
+              <ConsoleChip tone="brand">tee instance</ConsoleChip>
+            </div>
+          </div>
+          <div className="sandbox-console-panel rounded-md p-3">
+            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Lifecycle</p>
+            <p className="mt-3 font-data text-xs text-[var(--sandbox-console-secondary)]">auto-provision · report provisioned · operator API</p>
+          </div>
+          <div className="sandbox-console-panel rounded-md p-3">
+            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Isolation</p>
+            <p className="mt-3 font-data text-xs text-[var(--sandbox-console-secondary)]">single tenant · optional attestation · sealed secrets</p>
+          </div>
+        </div>
+      </div>
+    </ConsolePage>
   );
 }
