@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CreatePage from './create';
@@ -9,9 +9,11 @@ const {
   mockNavigate,
   mockUpdateInfra,
   mockValidateService,
+  mockWriteContractAsync,
   serviceValidationRef,
   mockDeploy,
   mockDeployReset,
+  testOperator,
 } = vi.hoisted(() => ({
   currentSearchRef: { current: '?blueprint=ai-agent-instance-blueprint' },
   infraStateRef: {
@@ -25,6 +27,7 @@ const {
   mockNavigate: vi.fn(),
   mockUpdateInfra: vi.fn(),
   mockValidateService: vi.fn(),
+  mockWriteContractAsync: vi.fn(),
   serviceValidationRef: {
     current: {
       serviceInfo: null as null | Record<string, unknown>,
@@ -33,6 +36,11 @@ const {
   },
   mockDeploy: vi.fn(),
   mockDeployReset: vi.fn(),
+  testOperator: {
+    address: '0x5Af64C5Aa925b3871BA58E38950AA2a3DD5fe0ED',
+    ecdsaPublicKey: '0x',
+    rpcAddress: 'https://operator.example',
+  },
 }));
 
 const SIDECAR_IMAGE_OPTIONS = [
@@ -196,6 +204,16 @@ vi.mock('wagmi', () => ({
     isConnected: true,
     status: 'connected',
   }),
+  useWriteContract: () => ({
+    writeContractAsync: mockWriteContractAsync,
+    data: undefined,
+    isPending: false,
+  }),
+  useWaitForTransactionReceipt: () => ({
+    data: undefined,
+    isSuccess: false,
+    isLoading: false,
+  }),
 }));
 
 vi.mock('@nanostores/react', () => ({
@@ -335,7 +353,22 @@ vi.mock('@tangle-network/blueprint-ui', async () => {
       serviceInfo: serviceValidationRef.current.serviceInfo,
       error: serviceValidationRef.current.error,
     }),
+    useQuotes: () => ({
+      quotes: [],
+      isLoading: false,
+      isSolvingPow: false,
+      errors: new Map(),
+      totalCost: 0n,
+      refetch: vi.fn(),
+    }),
     formatCost: () => '0 TANGLE',
+    getAddresses: () => ({
+      services: '0x0000000000000000000000000000000000000001',
+    }),
+    publicClient: {
+      getLogs: vi.fn().mockResolvedValue([]),
+    },
+    tangleServicesAbi: [],
     getAllBlueprints: () => Object.values(PRESET_BLUEPRINTS),
     getBlueprint: (id: string) => Object.values(PRESET_BLUEPRINTS).find((blueprint) => blueprint.id === id),
     cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
@@ -396,10 +429,10 @@ vi.mock('~/lib/hooks/useCreateDeploy', () => ({
       callId: undefined,
       provision: undefined,
       sandboxDraftKey: undefined,
-      operators: [],
+      operators: mode === 'sandbox' ? [testOperator] : [],
       operatorsLoading: false,
       operatorsError: null,
-      operatorCount: 0n,
+      operatorCount: mode === 'sandbox' ? 1n : 0n,
       isNewService: mode === 'instance',
       isInstanceMode: mode === 'instance',
       isTeeInstance: blueprint?.id === 'ai-agent-tee-instance-blueprint',
@@ -447,6 +480,9 @@ describe('CreatePage agent configuration', () => {
     mockNavigate.mockReset();
     mockUpdateInfra.mockReset();
     mockValidateService.mockReset();
+    mockValidateService.mockResolvedValue(null);
+    mockWriteContractAsync.mockReset();
+    mockWriteContractAsync.mockResolvedValue('0xabc');
     serviceValidationRef.current = { serviceInfo: null, error: null };
     mockDeploy.mockReset();
     mockDeployReset.mockReset();
@@ -515,18 +551,15 @@ describe('CreatePage agent configuration', () => {
     expect(screen.getByRole('switch', { name: /Computer Use/i })).toBeInTheDocument();
   });
 
-  it('opens service settings from the deploy summary service row', () => {
+  it('keeps service settings out of the deploy summary', () => {
     renderSubject('?blueprint=ai-agent-sandbox-blueprint');
 
     expect(screen.getByText('Deploy Summary')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Verify ID' })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Service settings' }));
-
-    expect(screen.getByTestId('infra-modal')).toHaveTextContent('Infrastructure existing');
+    expect(screen.queryByRole('button', { name: 'Service settings' })).not.toBeInTheDocument();
   });
 
-  it('turns a missing sandbox service into a direct service creation path', () => {
+  it('turns a missing sandbox service into an inline service creation path', () => {
     infraStateRef.current = {
       blueprintId: '10',
       serviceId: '1',
@@ -545,13 +578,66 @@ describe('CreatePage agent configuration', () => {
     expect(screen.queryByText('Deploy Summary')).not.toBeInTheDocument();
     expect(screen.getByText(/capacity is not the blocker/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Verify ID' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Choose service' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Choose service' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Service settings' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Operators' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New service' })).toBeInTheDocument();
+    expect(screen.getByText('https://operator.example')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Operators' }));
-    expect(mockNavigate).toHaveBeenCalledWith('/operators');
+    fireEvent.click(screen.getByRole('button', { name: 'Create service' }));
 
-    fireEvent.click(screen.getByRole('button', { name: /Create service/i }));
-    expect(screen.getByTestId('infra-modal')).toHaveTextContent('Infrastructure new');
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockWriteContractAsync).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: 'requestService',
+      args: expect.arrayContaining([
+        10n,
+        [testOperator.address],
+      ]),
+    }));
+    expect(screen.getByText('Cloud Sandbox')).toBeInTheDocument();
+  });
+
+  it('checks and selects an existing service ID without leaving the wizard', async () => {
+    infraStateRef.current = {
+      blueprintId: '10',
+      serviceId: '1',
+      serviceValidated: false,
+      serviceInfo: null,
+    };
+    serviceValidationRef.current = { serviceInfo: null, error: 'Service not found' };
+    mockValidateService.mockImplementation(async (serviceId: bigint) => {
+      if (serviceId === 2n) {
+        return {
+          active: true,
+          permitted: true,
+          operatorCount: 1,
+          owner: '0x123400000000000000000000000000000000abcd',
+          blueprintId: 10n,
+          operators: [testOperator.address],
+        };
+      }
+      return null;
+    });
+
+    renderSubject('?blueprint=ai-agent-sandbox-blueprint');
+
+    fireEvent.change(screen.getByLabelText('Sandbox Name'), { target: { value: 'Cloud Sandbox' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Existing service' }));
+    fireEvent.change(screen.getByLabelText('Service ID'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Check service' }));
+
+    await waitFor(() => {
+      expect(mockValidateService).toHaveBeenCalledWith(2n, '0x123400000000000000000000000000000000abcd');
+    });
+    expect(mockUpdateInfra).toHaveBeenCalledWith(expect.objectContaining({
+      blueprintId: '10',
+      serviceId: '2',
+      serviceValidated: true,
+    }));
+    expect(screen.getByText('Service #2 is active and selected.')).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(screen.getByText('Cloud Sandbox')).toBeInTheDocument();
   });
 
   it('explains permitted-caller failures without a vague not-permitted badge', () => {
