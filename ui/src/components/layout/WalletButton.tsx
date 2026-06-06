@@ -1,3 +1,4 @@
+import { blo } from 'blo';
 import { ConnectKitButton } from 'connectkit';
 import { useAccount, useDisconnect } from 'wagmi';
 import { useStore } from '@nanostores/react';
@@ -6,15 +7,22 @@ import type { RefObject } from 'react';
 import type { Address } from 'viem';
 import { numberToHex } from 'viem';
 import { networks } from '~/lib/contracts/chains';
-import { publicClient, selectedChainIdStore, useWalletEthBalance } from '@tangle-network/blueprint-ui';
-import { ConnectWalletCta } from '@tangle-network/blueprint-ui/components';
+import { cn, publicClient, selectedChainIdStore, useWalletEthBalance } from '@tangle-network/blueprint-ui';
 import { useDropdownMenu } from '@tangle-network/sandbox-ui/hooks';
 import { copyText } from '@tangle-network/sandbox-ui/utils';
 import { truncateAddress } from '~/lib/utils/truncate-address';
 import { toast } from 'sonner';
 import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
-import { TangleOperatorMark } from '~/components/shared/TangleBrand';
+
+type DropdownAlign = 'start' | 'end';
+type DropdownSide = 'up' | 'down';
+
+interface WalletButtonProps {
+  align?: DropdownAlign;
+  side?: DropdownSide;
+  compact?: boolean;
+}
 
 /**
  * Build RPC URLs suitable for wallet_addEthereumChain.
@@ -65,7 +73,23 @@ function clearWagmiStorage() {
   }
 }
 
-export function WalletButton() {
+function WalletIdenticon({ address, size = 28 }: { address: Address; size?: number }) {
+  return (
+    <span
+      className="relative inline-flex shrink-0 overflow-hidden rounded-full border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+      style={{ width: size, height: size }}
+      aria-hidden="true"
+    >
+      <img src={blo(address)} alt="" className="h-full w-full object-cover" />
+    </span>
+  );
+}
+
+export function WalletButton({
+  align = 'end',
+  side = 'down',
+  compact = false,
+}: WalletButtonProps = {}) {
   const { open, ref, toggle, close } = useDropdownMenu();
   const dropdownRef = ref as RefObject<HTMLDivElement>;
   const { address, chainId, isConnected, status } = useAccount();
@@ -171,42 +195,77 @@ export function WalletButton() {
     <ConnectKitButton.Custom>
       {({ show }) => {
         if (!isConnected) {
-          return <ConnectWalletCta onClick={show} isReconnecting={isReconnecting} />;
+          return (
+            <button
+              type="button"
+              onClick={show}
+              disabled={isReconnecting}
+              className={cn(
+                'inline-flex h-10 max-w-full items-center justify-center gap-2 rounded-[5px] border border-[var(--sandbox-console-brand-border)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--sandbox-console-brand)_24%,var(--sandbox-console-panel-strong)),var(--sandbox-console-brand-soft))] font-display text-sm font-bold text-[var(--sandbox-console-text)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] transition-[background-color,border-color,box-shadow,color,opacity,transform] duration-150 hover:border-[var(--sandbox-console-brand)] hover:bg-[var(--sandbox-console-brand-soft)] hover:shadow-[0_0_0_3px_rgba(168,123,255,0.13),inset_3px_0_0_var(--sandbox-console-brand)] active:scale-[0.98] disabled:cursor-wait disabled:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sandbox-console-brand)]/60',
+                compact ? 'w-10 min-w-0 px-0' : 'w-full min-w-0 px-3',
+              )}
+              aria-label="Connect wallet"
+              title={compact ? 'Connect wallet' : undefined}
+            >
+              <span className="i-ph:plug-charging-bold shrink-0 text-base" aria-hidden="true" />
+              {!compact ? (
+                <span className="truncate">
+                  {isReconnecting ? 'Reconnecting...' : 'Connect Wallet'}
+                </span>
+              ) : null}
+            </button>
+          );
         }
 
         const truncated = truncateAddress(address);
         const displayBalance = ethBalance ?? '...';
 
         return (
-          <div className="flex items-center gap-2">
-            {/* Wrong-chain banner — always visible, prominent */}
-            {isWrongChain && (
-              <button
-                onClick={handleSwitchChain}
-                className="flex h-10 items-center gap-2 rounded-[5px] border border-amber-500/35 bg-amber-500/12 px-3 font-display text-sm font-semibold text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-300"
-              >
-                <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
-                <span>
-                  Switch to {targetChain?.name ?? `Chain ${selectedChainId}`}
+          <div ref={dropdownRef} className="relative min-w-0">
+            <button
+              type="button"
+              onClick={toggle}
+              className={cn(
+                'group inline-flex h-10 max-w-full items-center rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color,transform] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sandbox-console-brand)]/60',
+                compact ? 'w-10 justify-center px-0' : 'w-full min-w-0 justify-start gap-2.5 px-2.5',
+              )}
+              aria-label={`Account menu ${truncated}`}
+              aria-expanded={open}
+              title={compact ? truncated : undefined}
+            >
+              {address ? (
+                <span className="relative flex h-7 w-7 shrink-0 items-center justify-center">
+                  <WalletIdenticon address={address as Address} size={28} />
+                  {isWrongChain ? (
+                    <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-[var(--sandbox-console-control)]" title="Wrong chain" />
+                  ) : null}
                 </span>
-              </button>
-            )}
+              ) : null}
+              {!compact ? (
+                <>
+                  <span className="min-w-0 flex-1 truncate text-left font-data text-sm font-bold tabular-nums">
+                    {truncated}
+                  </span>
+                  <span className="shrink-0 font-data text-[11px] font-semibold text-[var(--sandbox-console-muted)]">
+                    {displayBalance} ETH
+                  </span>
+                  <span className={cn('i-ph:caret-up-down shrink-0 text-xs text-[var(--sandbox-console-muted)] transition-colors group-hover:text-[var(--sandbox-console-text)]', open && 'text-[var(--sandbox-console-brand)]')} />
+                </>
+              ) : null}
+            </button>
 
-            <div ref={dropdownRef} className="relative">
-              <button
-                onClick={toggle}
-                className="flex h-10 items-center gap-2.5 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3 text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]"
+            {open && (
+              <div
+                role="menu"
+                aria-label="Account actions"
+                className={cn(
+                  'absolute z-50 max-h-[min(28rem,calc(100vh-1rem))] w-[min(18rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] p-3 shadow-[var(--sandbox-console-shadow-lg)]',
+                  align === 'start' ? 'left-0' : 'right-0',
+                  side === 'up' ? 'bottom-full mb-2' : 'top-full mt-2',
+                )}
               >
-                {address && <TangleOperatorMark label={address} />}
-                <span className="font-data text-sm font-semibold">{truncated}</span>
-                <span className="font-data text-xs text-[var(--sandbox-console-muted)]">{displayBalance} ETH</span>
-                <div className={`i-ph:caret-down text-xs text-[var(--sandbox-console-muted)] transition-transform ${open ? 'rotate-180 text-[var(--sandbox-console-brand)]' : ''}`} />
-              </button>
-
-              {open && (
-                <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] p-4 shadow-[var(--sandbox-console-shadow-lg)]">
-                  <div className="flex items-center gap-3 mb-4">
-                    {address && <TangleOperatorMark label={address} className="h-9 w-9 p-1.5" />}
+                  <div className="mb-4 flex items-center gap-3">
+                    {address && <WalletIdenticon address={address as Address} size={36} />}
                     <div className="min-w-0 flex-1">
                       <button onClick={copyAddress} className="flex items-center gap-2 group w-full" title="Copy address">
                         <span className="truncate font-data text-sm font-semibold text-[var(--sandbox-console-text)]">{truncated}</span>
@@ -216,7 +275,7 @@ export function WalletButton() {
                     </div>
                   </div>
 
-                  <div className="mb-3 flex items-center gap-2.5 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3 py-2.5">
+                  <div className="mb-3 flex items-center gap-2.5 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3 py-2.5 shadow-[var(--sandbox-console-control-shadow)]">
                     <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${isWrongChain ? 'bg-amber-500 dark:bg-amber-400 animate-pulse' : 'bg-teal-600 dark:bg-teal-400'}`} />
                     <span className="flex-1 font-data text-sm text-[var(--sandbox-console-secondary)]">
                       {isWrongChain ? `Chain ${chainId}` : (targetChain?.name ?? 'Unknown')}
@@ -240,9 +299,8 @@ export function WalletButton() {
                       <span className="font-display text-sm font-semibold text-crimson-600 dark:text-crimson-400">Disconnect</span>
                     </button>
                   </div>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         );
       }}
