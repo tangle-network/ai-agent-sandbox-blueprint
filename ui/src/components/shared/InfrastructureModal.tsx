@@ -13,16 +13,17 @@ import { Button } from '@tangle-network/blueprint-ui/components';
 import { Input } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
 import { Card, CardContent } from '@tangle-network/blueprint-ui/components';
-import { Identicon } from '@tangle-network/blueprint-ui/components';
 import { infraStore, updateInfra } from '@tangle-network/blueprint-ui';
 import { useServiceValidation } from '@tangle-network/blueprint-ui';
-import { useOperators, type DiscoveredOperator } from '@tangle-network/blueprint-ui';
+import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { useQuotes, formatCost } from '@tangle-network/blueprint-ui';
 import { tangleServicesAbi } from '@tangle-network/blueprint-ui';
 import { getAddresses, publicClient } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { BlueprintBadgeInline } from './InfraSummaryBits';
 import { extractServiceRequestId } from '~/lib/contracts/serviceEvents';
+import { TangleOperatorMark } from '~/components/shared/TangleBrand';
+import { useReliableOperators } from '~/lib/hooks/useReliableOperators';
 import type { Address } from 'viem';
 
 interface InfrastructureModalProps {
@@ -88,7 +89,7 @@ export function InfrastructureModal({ open, onOpenChange, initialMode = 'existin
     isLoading: operatorsLoading,
     operatorCount,
     error: operatorsError,
-  } = useOperators(BigInt(blueprintId || '0'));
+  } = useReliableOperators(blueprintId || '0');
   const [selectedOperators, setSelectedOperators] = useState<Address[]>([]);
   const [operatorSelectionTouched, setOperatorSelectionTouched] = useState(false);
   const [manualAddr, setManualAddr] = useState('');
@@ -471,7 +472,7 @@ export function InfrastructureModal({ open, onOpenChange, initialMode = 'existin
                         <span className="text-xs text-cloud-elements-textTertiary">Operator Addresses</span>
                         {serviceInfo.operators.slice(0, 5).map((op) => (
                           <div key={op} className="flex items-center gap-2">
-                            <Identicon address={op} size={20} />
+                            <TangleOperatorMark label={op} />
                             <span className="text-xs font-data text-cloud-elements-textSecondary truncate">{op}</span>
                           </div>
                         ))}
@@ -524,7 +525,7 @@ export function InfrastructureModal({ open, onOpenChange, initialMode = 'existin
                               : 'border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 hover:bg-cloud-elements-background-depth-3',
                           )}
                         >
-                          <Identicon address={op.address} size={24} />
+                          <TangleOperatorMark label={op.address} />
                           <span className="text-xs font-data text-cloud-elements-textSecondary truncate flex-1">
                             {op.address.slice(0, 8)}...{op.address.slice(-6)}
                           </span>
@@ -574,7 +575,7 @@ export function InfrastructureModal({ open, onOpenChange, initialMode = 'existin
                         {quotes.map((q) => (
                           <div key={q.operator} className="flex items-center justify-between p-2 glass-card rounded-lg">
                             <div className="flex items-center gap-2">
-                              <Identicon address={q.operator} size={20} />
+                              <TangleOperatorMark label={q.operator} />
                               <span className="text-xs font-data text-cloud-elements-textSecondary">
                                 {q.operator.slice(0, 8)}...{q.operator.slice(-6)}
                               </span>

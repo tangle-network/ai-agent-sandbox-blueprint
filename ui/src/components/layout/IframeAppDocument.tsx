@@ -7,6 +7,8 @@ interface IframeAppDocumentProps {
   description: string;
 }
 
+const BRAND_ICON_VERSION = 'tangle-20260603';
+
 // Local replacement for blueprint-ui's `AppDocument`. The only behavioral
 // difference is the inline bootstrap script: this one honors the parent
 // shell's `?theme=light|dark` URL param so the iframe's first paint matches
@@ -21,7 +23,7 @@ export function IframeAppDocument({ children, description }: IframeAppDocumentPr
         <meta name="description" content={description} />
         <Meta />
         <Links />
-        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link rel="icon" href={`/favicon.svg?v=${BRAND_ICON_VERSION}`} type="image/svg+xml" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link

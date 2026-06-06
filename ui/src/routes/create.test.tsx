@@ -431,6 +431,11 @@ function selectAgentOption(optionName: string) {
   fireEvent.click(screen.getByRole('option', { name: optionName }));
 }
 
+function selectImageOption(optionName: string) {
+  fireEvent.click(screen.getByRole('button', { name: 'Docker Image' }));
+  fireEvent.click(screen.getByRole('option', { name: optionName }));
+}
+
 describe('CreatePage agent configuration', () => {
   beforeEach(() => {
     currentSearchRef.current = '?blueprint=ai-agent-instance-blueprint';
@@ -476,7 +481,8 @@ describe('CreatePage agent configuration', () => {
   it('switches to a free-text agent input for custom instance images', () => {
     renderSubject('?blueprint=ai-agent-instance-blueprint');
 
-    fireEvent.change(screen.getByLabelText('Docker Image'), { target: { value: 'custom/agent-sidecar:1.0.0' } });
+    selectImageOption('Custom image...');
+    fireEvent.change(screen.getByLabelText('Custom Image'), { target: { value: 'custom/agent-sidecar:1.0.0' } });
 
     expect(screen.getByPlaceholderText('default')).toBeInTheDocument();
     expect(screen.getByText(/Custom images must already register this agent identifier internally/i)).toBeInTheDocument();

@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useStore } from '@nanostores/react';
 import { Link } from 'react-router';
-import { useOperators, type DiscoveredOperator } from '@tangle-network/blueprint-ui';
+import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import {
   ConsoleChip,
   ConsoleMetricStrip,
@@ -18,6 +18,7 @@ import {
   SANDBOX_ONCHAIN_BLUEPRINT_ID,
   TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID,
 } from '~/lib/config';
+import { useReliableOperators, type ReliableOperatorsResult } from '~/lib/hooks/useReliableOperators';
 
 type OperatorRow = {
   operator: string;
@@ -64,9 +65,9 @@ export default function OperatorCapacity() {
   const sandboxes = useStore(sandboxListStore);
   const instances = useStore(instanceListStore);
   const { data: capacity } = useAvailableCapacity();
-  const sandboxOperators = useOperators(BigInt(SANDBOX_ONCHAIN_BLUEPRINT_ID || '0'));
-  const instanceOperators = useOperators(BigInt(INSTANCE_ONCHAIN_BLUEPRINT_ID || '0'));
-  const teeOperators = useOperators(BigInt(TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID || '0'));
+  const sandboxOperators = useReliableOperators(SANDBOX_ONCHAIN_BLUEPRINT_ID || '0');
+  const instanceOperators = useReliableOperators(INSTANCE_ONCHAIN_BLUEPRINT_ID || '0');
+  const teeOperators = useReliableOperators(TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID || '0');
 
   const localStats = useMemo<Map<string, LocalOperatorStats>>(() => {
     const byOperator = new Map<string, LocalOperatorStats>();
@@ -105,7 +106,7 @@ export default function OperatorCapacity() {
       blueprintId: string;
       blueprintLabel: string;
       blueprintParam: string;
-      query: ReturnType<typeof useOperators>;
+      query: ReliableOperatorsResult;
     }> = [
       {
         blueprintId: SANDBOX_ONCHAIN_BLUEPRINT_ID,
@@ -146,14 +147,17 @@ export default function OperatorCapacity() {
       });
   }, [instanceOperators, localStats, sandboxOperators, teeOperators]);
 
-  const loading = sandboxOperators.isLoading || instanceOperators.isLoading || teeOperators.isLoading;
-  const lookupErrors = [sandboxOperators.error, instanceOperators.error, teeOperators.error].filter(Boolean).length;
+  const groups = [sandboxOperators, instanceOperators, teeOperators];
+  const loading = groups.some((query) => query.isLoading);
+  const lookupErrors = groups.filter((query) => query.listError && query.source !== 'service-membership').length;
+  const fallbackReads = groups.filter((query) => query.source === 'service-membership').length;
   const registeredCount = sandboxOperators.operatorCount + instanceOperators.operatorCount + teeOperators.operatorCount;
+  const uniqueOperatorCount = new Set(rows.map((row) => row.operator.toLowerCase())).size;
   const metrics: ConsoleMetric[] = [
-    { label: 'Available capacity', value: capacity == null ? '--' : String(capacity), detail: 'contract read', tone: 'brand' },
-    { label: 'Registered operators', value: registeredCount.toString(), detail: loading ? 'discovering' : 'on-chain', tone: lookupErrors > 0 ? 'warn' : 'ready' },
-    { label: 'Running resources', value: String(rows.reduce((sum, row) => sum + row.running, 0)), detail: 'assigned', tone: 'ready' },
-    { label: 'Lookup issues', value: String(lookupErrors), detail: 'operator reads', tone: lookupErrors > 0 ? 'warn' : 'muted' },
+    { label: 'Sandbox slots', value: capacity == null ? '--' : String(capacity), detail: 'BSM capacity', tone: 'brand' },
+    { label: 'Blueprint registrations', value: loading && registeredCount === 0n ? '--' : registeredCount.toString(), detail: 'on-chain counts', tone: registeredCount > 0n ? 'ready' : 'warn' },
+    { label: 'Operator accounts', value: String(uniqueOperatorCount), detail: fallbackReads > 0 ? 'service-verified' : 'event index', tone: uniqueOperatorCount > 0 ? 'ready' : 'warn' },
+    { label: 'Directory status', value: lookupErrors > 0 ? 'blocked' : fallbackReads > 0 ? 'fallback' : 'live', detail: fallbackReads > 0 ? `${fallbackReads} log scans` : 'operator reads', tone: lookupErrors > 0 ? 'danger' : fallbackReads > 0 ? 'warn' : 'ready' },
   ];
 
   return (

@@ -5,7 +5,6 @@ import { useStore } from '@nanostores/react';
 import { InfrastructureModal } from '~/components/shared/InfrastructureModal';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { infraStore, updateInfra } from '@tangle-network/blueprint-ui';
-import { Identicon } from '@tangle-network/blueprint-ui/components';
 import {
   ConsoleChip,
   ConsolePage,
@@ -27,6 +26,7 @@ import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { EnvEditor } from '~/components/shared/EnvEditor';
 import { ConnectWalletPanel } from '~/components/shared/ConnectWalletPanel';
+import { TangleOperatorMark } from '~/components/shared/TangleBrand';
 import {
   BUNDLED_AGENT_OPTIONS,
   BUNDLED_NO_AGENT_VALUE,
@@ -66,6 +66,7 @@ const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }
 
 type WizardStep = 'blueprint' | 'configure' | 'deploy';
 type ServiceSetupMode = 'existing' | 'new';
+const CUSTOM_IMAGE_VALUE = '__custom_image__';
 
 function parsePortsInput(value: string): number[] {
   return value
@@ -780,6 +781,51 @@ function LaunchNativeSelect({
   );
 }
 
+function LaunchImageSelect({
+  value,
+  options,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  options: { label: string; value: string }[];
+  onChange: (value: string) => void;
+  placeholder: string;
+}) {
+  const selectedOption = options.find((option) => option.value === value);
+  const selectOptions = [
+    ...options,
+    { label: 'Custom image...', value: CUSTOM_IMAGE_VALUE },
+  ];
+  const selectValue = selectedOption ? selectedOption.value : CUSTOM_IMAGE_VALUE;
+
+  return (
+    <div className="space-y-2">
+      <LaunchNativeSelect
+        label="Docker Image"
+        value={selectValue}
+        options={selectOptions}
+        onChange={(next) => {
+          if (next === CUSTOM_IMAGE_VALUE) {
+            if (selectedOption) onChange('');
+            return;
+          }
+          onChange(next);
+        }}
+      />
+      {selectValue === CUSTOM_IMAGE_VALUE ? (
+        <LaunchInput
+          label="Custom Image"
+          value={selectedOption ? '' : value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          className="font-data"
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function SegmentedControl({
   label,
   value,
@@ -985,7 +1031,6 @@ function LaunchSpecComposer({
   onAdvancedOpen: () => void;
 }) {
   const imageOptions = fieldOptions(job, 'image');
-  const imageListId = `${job.name}-image-options`;
   const nameError = attemptedContinue && !String(values.name || '').trim()
     ? `${entityLabel} name is required`
     : errors.name;
@@ -1024,20 +1069,12 @@ function LaunchSpecComposer({
               error={nameError}
             />
 
-            <LaunchInput
-              label="Docker Image"
+            <LaunchImageSelect
               value={selectedImage}
-              onChange={(event) => onChange('image', event.target.value)}
+              options={imageOptions}
+              onChange={(value) => onChange('image', value)}
               placeholder={field(job, 'image')?.placeholder ?? 'ghcr.io/tangle-network/blueprint-sidecar:all-harness'}
-              list={imageListId}
             />
-            <datalist id={imageListId}>
-              {imageOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </datalist>
           </div>
 
           <div className="space-y-4">
@@ -2137,7 +2174,7 @@ function OperatorList({
         <div className="space-y-1.5">
           {operators.map((op) => (
             <div key={op.address} className="flex items-center gap-2 py-1">
-              <Identicon address={op.address} size={18} />
+              <TangleOperatorMark label={op.address} />
               <span className="truncate font-data text-xs text-[var(--sandbox-console-secondary)]">{op.address}</span>
             </div>
           ))}

@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import {
-  TangleLogo,
   ThemeToggle,
 } from '@tangle-network/blueprint-ui/components';
 import { cn } from '@tangle-network/blueprint-ui';
 import { TxDropdown } from '~/components/layout/TxDropdown';
 import { WalletButton } from '~/components/layout/WalletButton';
 import { ConsoleChainSwitcher } from '~/components/console/ConsoleChainSwitcher';
+import { TangleBrandLogo } from '~/components/shared/TangleBrand';
 
 const navItems = [
   { label: 'Fleet', href: '/', icon: 'i-ph:activity' },
@@ -21,8 +21,11 @@ const navItems = [
 
 function BrandMark() {
   return (
-    <span className="flex min-w-0 items-center [&_span]:max-w-[76px] [&_span]:truncate [&_svg]:h-7 [&_svg]:w-[114px]">
-      <TangleLogo label="Sandbox" />
+    <span className="flex min-w-0 items-center gap-2">
+      <TangleBrandLogo />
+      <span className="min-w-0 truncate font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
+        Sandbox
+      </span>
     </span>
   );
 }

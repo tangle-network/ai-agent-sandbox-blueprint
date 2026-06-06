@@ -3,8 +3,8 @@ import { Link, useLocation } from 'react-router';
 import { ChainSwitcher, ThemeToggle } from '@tangle-network/blueprint-ui/components';
 import { TxDropdown } from './TxDropdown';
 import { WalletButton } from './WalletButton';
-import { TangleLogo } from '@tangle-network/blueprint-ui/components';
 import { cn } from '@tangle-network/blueprint-ui';
+import { TangleBrandLogo } from '~/components/shared/TangleBrand';
 
 const navItems = [
   { label: 'Dashboard', href: '/', icon: 'i-ph:house' },
@@ -80,7 +80,7 @@ export function Header() {
           </div>
 
           <Link to="/" className="flex items-center group">
-            <TangleLogo />
+            <TangleBrandLogo />
           </Link>
         </div>
 
