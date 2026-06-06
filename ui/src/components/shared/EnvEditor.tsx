@@ -15,6 +15,8 @@ interface EnvRow {
 
 let nextId = 1;
 
+const envInputClass = 'min-w-0 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3 py-2 font-data text-sm text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow)] placeholder:text-[var(--sandbox-console-subtle)] transition-[background-color,border-color,box-shadow,color] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:bg-[var(--sandbox-console-control-hover)] focus:shadow-[var(--sandbox-console-control-shadow-focus)] focus:outline-none';
+
 function parseJsonToRows(json: string): EnvRow[] {
   try {
     const obj = JSON.parse(json);
@@ -88,7 +90,7 @@ export function EnvEditor({ value, onChange, className }: EnvEditorProps) {
             value={row.key}
             onChange={(e) => updateRow(row.id, 'key', e.target.value)}
             placeholder="KEY"
-            className="min-w-0 rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] px-3 py-2 font-data text-sm text-[var(--sandbox-console-text)] placeholder:text-[var(--sandbox-console-subtle)] transition-colors hover:border-[var(--sandbox-console-border-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:outline-none"
+            className={envInputClass}
           />
           <span className="font-data text-xs text-[var(--sandbox-console-subtle)]">=</span>
           <input
@@ -96,12 +98,12 @@ export function EnvEditor({ value, onChange, className }: EnvEditorProps) {
             value={row.value}
             onChange={(e) => updateRow(row.id, 'value', e.target.value)}
             placeholder="value"
-            className="min-w-0 rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] px-3 py-2 font-data text-sm text-[var(--sandbox-console-text)] placeholder:text-[var(--sandbox-console-subtle)] transition-colors hover:border-[var(--sandbox-console-border-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:outline-none"
+            className={envInputClass}
           />
           <button
             type="button"
             onClick={() => removeRow(row.id)}
-            className="flex h-9 w-9 items-center justify-center rounded-md text-[var(--sandbox-console-muted)] transition-colors hover:bg-red-400/10 hover:text-[var(--sandbox-console-danger)]"
+            className="flex h-9 w-9 items-center justify-center rounded-[4px] text-[var(--sandbox-console-muted)] transition-colors hover:bg-red-400/10 hover:text-[var(--sandbox-console-danger)]"
             aria-label="Remove environment variable"
           >
             <div className="i-ph:x text-sm" />
@@ -111,7 +113,7 @@ export function EnvEditor({ value, onChange, className }: EnvEditorProps) {
       <button
         type="button"
         onClick={addRow}
-        className="inline-flex h-8 items-center gap-2 rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] px-3 font-display text-xs font-semibold text-[var(--sandbox-console-secondary)] transition-colors hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-panel-strong)] hover:text-[var(--sandbox-console-text)]"
+        className="inline-flex h-8 items-center gap-2 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3 font-display text-xs font-semibold text-[var(--sandbox-console-secondary)] shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] hover:text-[var(--sandbox-console-text)]"
       >
         <div className="i-ph:plus text-sm" />
         Add variable

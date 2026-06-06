@@ -413,6 +413,11 @@ function renderSubject(search = '?blueprint=ai-agent-instance-blueprint') {
   return render(<CreatePage />);
 }
 
+function selectAgentOption(optionName: string) {
+  fireEvent.click(screen.getByRole('button', { name: 'Agent' }));
+  fireEvent.click(screen.getByRole('option', { name: optionName }));
+}
+
 describe('CreatePage agent configuration', () => {
   beforeEach(() => {
     currentSearchRef.current = '?blueprint=ai-agent-instance-blueprint';
@@ -433,7 +438,7 @@ describe('CreatePage agent configuration', () => {
     renderSubject('?blueprint=ai-agent-instance-blueprint');
 
     expect(screen.getByText('Agent')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('None (compute only)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Agent' })).toHaveTextContent('None (compute only)');
     expect(screen.getByText(/Choose an agent already bundled in this image/i)).toBeInTheDocument();
   });
 
@@ -441,14 +446,14 @@ describe('CreatePage agent configuration', () => {
     renderSubject('?blueprint=ai-agent-tee-instance-blueprint');
 
     expect(screen.getByText('Agent')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('None (compute only)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Agent' })).toHaveTextContent('None (compute only)');
   });
 
   it('shows the selected bundled agent in the review step for instances', () => {
     renderSubject('?blueprint=ai-agent-instance-blueprint');
 
     fireEvent.change(screen.getByLabelText('Instance Name'), { target: { value: 'Worker One' } });
-    fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'batch' } });
+    selectAgentOption('Batch');
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(screen.getByText('Agent: batch')).toBeInTheDocument();
@@ -467,8 +472,8 @@ describe('CreatePage agent configuration', () => {
     renderSubject('?blueprint=ai-agent-instance-blueprint');
 
     fireEvent.change(screen.getByLabelText('Instance Name'), { target: { value: 'Worker Two' } });
-    fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'batch' } });
-    fireEvent.change(screen.getByLabelText('Agent'), { target: { value: '__none__' } });
+    selectAgentOption('Batch');
+    selectAgentOption('None (compute only)');
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(screen.queryByText(/Agent:/)).not.toBeInTheDocument();
