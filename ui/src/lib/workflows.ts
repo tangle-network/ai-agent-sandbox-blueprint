@@ -1,7 +1,13 @@
 import type { WorkflowView } from '~/lib/hooks/useSandboxReads';
 import type { LocalInstance } from '~/lib/stores/instances';
 import type { LocalSandbox } from '~/lib/stores/sandboxes';
-import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
+import {
+  INSTANCE_ONCHAIN_SERVICE_ID,
+  INSTANCE_OPERATOR_API_URL,
+  OPERATOR_API_URL,
+  SANDBOX_ONCHAIN_SERVICE_ID,
+  TEE_INSTANCE_ONCHAIN_SERVICE_ID,
+} from '~/lib/config';
 
 export type WorkflowBlueprintId =
   | 'ai-agent-sandbox-blueprint'
@@ -43,8 +49,10 @@ export function getWorkflowServiceIdForBlueprintId(
   blueprintId: WorkflowBlueprintId,
 ): bigint | null {
   const rawValue = blueprintId === 'ai-agent-sandbox-blueprint'
-    ? import.meta.env.VITE_SANDBOX_SERVICE_ID
-    : import.meta.env.VITE_INSTANCE_SERVICE_ID;
+    ? SANDBOX_ONCHAIN_SERVICE_ID
+    : blueprintId === 'ai-agent-tee-instance-blueprint'
+      ? TEE_INSTANCE_ONCHAIN_SERVICE_ID
+      : INSTANCE_ONCHAIN_SERVICE_ID;
 
   if (!rawValue) return null;
 

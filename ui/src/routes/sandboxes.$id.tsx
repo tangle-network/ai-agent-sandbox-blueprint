@@ -51,7 +51,14 @@ import { normalizeAgentIdentifier } from '~/lib/agents';
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation' | 'automation' | 'storage';
 
-import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
+import {
+  INSTANCE_ONCHAIN_BLUEPRINT_ID,
+  INSTANCE_ONCHAIN_SERVICE_ID,
+  INSTANCE_OPERATOR_API_URL,
+  OPERATOR_API_URL,
+  TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID,
+  TEE_INSTANCE_ONCHAIN_SERVICE_ID,
+} from '~/lib/config';
 
 interface SshKey {
   username: string;
@@ -197,9 +204,14 @@ export default function SandboxDetail() {
   const terminalPath = `/home/${terminalUsername}`;
 
   // Resolve correct operator API URL (instance blueprints run on a different port)
-  const instanceBpId = import.meta.env.VITE_INSTANCE_BLUEPRINT_ID;
-  const teeBpId = import.meta.env.VITE_TEE_INSTANCE_BLUEPRINT_ID;
-  const isInstance = sb ? (sb.blueprintId === instanceBpId || sb.blueprintId === teeBpId) : false;
+  const isInstance = sb
+    ? (
+        sb.blueprintId === INSTANCE_ONCHAIN_BLUEPRINT_ID
+        || sb.blueprintId === TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID
+        || sb.serviceId === INSTANCE_ONCHAIN_SERVICE_ID
+        || (!!TEE_INSTANCE_ONCHAIN_SERVICE_ID && sb.serviceId === TEE_INSTANCE_ONCHAIN_SERVICE_ID)
+      )
+    : false;
   const operatorUrl = isInstance ? (INSTANCE_OPERATOR_API_URL || OPERATOR_API_URL) : OPERATOR_API_URL;
 
   // Operator API auth for lifecycle operations and browser access to live features.

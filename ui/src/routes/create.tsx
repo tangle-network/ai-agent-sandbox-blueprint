@@ -35,31 +35,31 @@ import {
   normalizeAgentIdentifier,
   sanitizeBundledAgentIdentifier,
 } from '~/lib/agents';
+import {
+  INSTANCE_ONCHAIN_BLUEPRINT_ID,
+  INSTANCE_ONCHAIN_SERVICE_ID,
+  SANDBOX_ONCHAIN_BLUEPRINT_ID,
+  SANDBOX_ONCHAIN_SERVICE_ID,
+  TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID,
+  TEE_INSTANCE_ONCHAIN_SERVICE_ID,
+} from '~/lib/config';
 
 type ConsoleTone = NonNullable<ConsoleMetric['tone']>;
 
 // ── Blueprint → on-chain ID mapping from env vars ──
 
-const LOCAL_NETWORK_ENABLED = import.meta.env.VITE_ENABLE_LOCAL_NETWORK === 'true';
-
 const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }> = {
   'ai-agent-sandbox-blueprint': {
-    blueprintId: import.meta.env.VITE_BASE_SEPOLIA_SANDBOX_BLUEPRINT_ID
-      ?? (LOCAL_NETWORK_ENABLED ? import.meta.env.VITE_SANDBOX_BLUEPRINT_ID : undefined)
-      ?? '10',
-    serviceId: import.meta.env.VITE_BASE_SEPOLIA_SANDBOX_SERVICE_ID ?? import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '1',
+    blueprintId: SANDBOX_ONCHAIN_BLUEPRINT_ID,
+    serviceId: SANDBOX_ONCHAIN_SERVICE_ID,
   },
   'ai-agent-instance-blueprint': {
-    blueprintId: import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_BLUEPRINT_ID
-      ?? (LOCAL_NETWORK_ENABLED ? import.meta.env.VITE_INSTANCE_BLUEPRINT_ID : undefined)
-      ?? '11',
-    serviceId: import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_SERVICE_ID ?? import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '2',
+    blueprintId: INSTANCE_ONCHAIN_BLUEPRINT_ID,
+    serviceId: INSTANCE_ONCHAIN_SERVICE_ID,
   },
   'ai-agent-tee-instance-blueprint': {
-    blueprintId: import.meta.env.VITE_BASE_SEPOLIA_TEE_INSTANCE_BLUEPRINT_ID
-      ?? (LOCAL_NETWORK_ENABLED ? import.meta.env.VITE_TEE_INSTANCE_BLUEPRINT_ID : undefined)
-      ?? '12',
-    serviceId: import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_SERVICE_ID ?? import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '2',
+    blueprintId: TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID,
+    serviceId: TEE_INSTANCE_ONCHAIN_SERVICE_ID,
   },
 };
 

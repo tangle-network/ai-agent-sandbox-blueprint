@@ -29,6 +29,12 @@ vi.mock('./useOperatorAuth', () => ({
 vi.mock('~/lib/config', () => ({
   OPERATOR_API_URL: 'http://operator:9100',
   INSTANCE_OPERATOR_API_URL: 'http://instance:9200',
+  SANDBOX_ONCHAIN_BLUEPRINT_ID: '1',
+  SANDBOX_ONCHAIN_SERVICE_ID: '1',
+  INSTANCE_ONCHAIN_BLUEPRINT_ID: '2',
+  INSTANCE_ONCHAIN_SERVICE_ID: '2',
+  TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID: '3',
+  TEE_INSTANCE_ONCHAIN_SERVICE_ID: '',
 }));
 
 vi.mock('@tangle-network/blueprint-ui', async () => {

@@ -4,7 +4,14 @@ import { publicClient, tangleJobsAbi } from '@tangle-network/blueprint-ui';
 import { decodeEventLog } from 'viem';
 import { useOperatorAuth } from './useOperatorAuth';
 import { sandboxListStore, type LocalSandbox } from '~/lib/stores/sandboxes';
-import { OPERATOR_API_URL, INSTANCE_OPERATOR_API_URL } from '~/lib/config';
+import {
+  INSTANCE_ONCHAIN_BLUEPRINT_ID,
+  INSTANCE_ONCHAIN_SERVICE_ID,
+  INSTANCE_OPERATOR_API_URL,
+  OPERATOR_API_URL,
+  SANDBOX_ONCHAIN_BLUEPRINT_ID,
+  SANDBOX_ONCHAIN_SERVICE_ID,
+} from '~/lib/config';
 import {
   fetchSandboxes,
   hasRecentPendingTx,
@@ -175,8 +182,8 @@ export function useSandboxHydration() {
           const sandboxes = await fetchSandboxes(
             OPERATOR_API_URL,
             sandboxToken,
-            import.meta.env.VITE_SANDBOX_BLUEPRINT_ID ?? '',
-            import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '',
+            SANDBOX_ONCHAIN_BLUEPRINT_ID,
+            SANDBOX_ONCHAIN_SERVICE_ID,
             interactive ? getSandboxToken : undefined,
             signal,
             { throwOnError: interactive },
@@ -217,8 +224,8 @@ export function useSandboxHydration() {
             const instances = await fetchSandboxes(
               INSTANCE_OPERATOR_API_URL,
               instanceToken,
-              import.meta.env.VITE_INSTANCE_BLUEPRINT_ID ?? '',
-              import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '',
+              INSTANCE_ONCHAIN_BLUEPRINT_ID,
+              INSTANCE_ONCHAIN_SERVICE_ID,
               interactive ? getInstanceToken : undefined,
               signal,
             );
