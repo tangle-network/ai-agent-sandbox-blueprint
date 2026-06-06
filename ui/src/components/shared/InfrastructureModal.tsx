@@ -22,7 +22,7 @@ import { getAddresses, publicClient } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { BlueprintBadgeInline } from './InfraSummaryBits';
 import { extractServiceRequestId } from '~/lib/contracts/serviceEvents';
-import { TangleOperatorMark } from '~/components/shared/TangleBrand';
+import { OperatorIdentity } from '~/components/shared/VisualIdentity';
 import { useReliableOperators } from '~/lib/hooks/useReliableOperators';
 import type { Address } from 'viem';
 
@@ -472,8 +472,7 @@ export function InfrastructureModal({ open, onOpenChange, initialMode = 'existin
                         <span className="text-xs text-cloud-elements-textTertiary">Operator Addresses</span>
                         {serviceInfo.operators.slice(0, 5).map((op) => (
                           <div key={op} className="flex items-center gap-2">
-                            <TangleOperatorMark label={op} />
-                            <span className="text-xs font-data text-cloud-elements-textSecondary truncate">{op}</span>
+                            <OperatorIdentity address={op} detail="service member" compact />
                           </div>
                         ))}
                       </div>
@@ -525,9 +524,8 @@ export function InfrastructureModal({ open, onOpenChange, initialMode = 'existin
                               : 'border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 hover:bg-cloud-elements-background-depth-3',
                           )}
                         >
-                          <TangleOperatorMark label={op.address} />
-                          <span className="text-xs font-data text-cloud-elements-textSecondary truncate flex-1">
-                            {op.address.slice(0, 8)}...{op.address.slice(-6)}
+                          <span className="min-w-0 flex-1">
+                            <OperatorIdentity address={op.address} detail="registered" compact />
                           </span>
                           {selectedOperators.includes(op.address) && (
                             <div className="i-ph:check-bold text-xs text-violet-400" />
@@ -574,12 +572,7 @@ export function InfrastructureModal({ open, onOpenChange, initialMode = 'existin
                       <div className="space-y-2 mb-3">
                         {quotes.map((q) => (
                           <div key={q.operator} className="flex items-center justify-between p-2 glass-card rounded-lg">
-                            <div className="flex items-center gap-2">
-                              <TangleOperatorMark label={q.operator} />
-                              <span className="text-xs font-data text-cloud-elements-textSecondary">
-                                {q.operator.slice(0, 8)}...{q.operator.slice(-6)}
-                              </span>
-                            </div>
+                            <OperatorIdentity address={q.operator} detail="quote" compact />
                             <span className="text-xs font-data font-semibold text-cloud-elements-textPrimary">
                               {formatCost(q.totalCost)}
                             </span>

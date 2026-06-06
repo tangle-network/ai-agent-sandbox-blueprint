@@ -45,6 +45,17 @@ import {
   StorageWorkspace,
   type WorkspaceRailRow,
 } from '~/components/console/ResourceWorkspacePanels';
+import {
+  IdentityMark,
+  getAgentIdentity,
+  getBlueprintIdentity,
+  getImageIdentity,
+  getOperatorIdentity,
+  getResourceIdentity,
+  getRuntimeIdentity,
+  getSecurityIdentity,
+  getStatusIdentity,
+} from '~/components/shared/VisualIdentity';
 
 import { useAccount } from 'wagmi';
 import { normalizeAgentIdentifier } from '~/lib/agents';
@@ -648,37 +659,41 @@ export default function SandboxDetail() {
       value: sb.status,
       detail: isRunning ? 'operator ready' : isCreating ? 'provisioning' : 'lifecycle',
       tone: statusTone,
+      identity: getStatusIdentity(sb.status),
     },
     {
       label: 'Runtime',
       value: sb.teeEnabled ? 'TEE' : 'Docker',
       detail: `${sb.cpuCores}c / ${Math.round(sb.memoryMb / 1024)}g / ${sb.diskGb}g`,
       tone: sb.teeEnabled ? 'warn' : 'brand',
+      identity: getRuntimeIdentity(sb.teeEnabled ? 'tee' : 'docker'),
     },
     {
       label: 'Network',
       value: sb.sshPort ? `ssh:${sb.sshPort}` : exposedPortCount > 0 ? `${exposedPortCount} ports` : 'proxy',
       detail: operatorUrl.replace(/^https?:\/\//, ''),
       tone: sb.sshPort || exposedPortCount > 0 ? 'ready' : 'muted',
+      identity: getResourceIdentity('network'),
     },
     {
       label: 'Agent',
       value: configuredAgentIdentifier || 'none',
       detail: hasAgent ? 'sessions enabled' : 'compute only',
       tone: hasAgent ? 'brand' : 'muted',
+      identity: getAgentIdentity(configuredAgentIdentifier),
     },
   ];
   const contextRows: WorkspaceRailRow[] = [
-    { label: 'Sandbox ID', value: sb.sandboxId ? 'provisioned' : 'pending', detail: sb.sandboxId ?? sb.localId, tone: sb.sandboxId ? 'ready' : 'warn' },
-    { label: 'Blueprint', value: formatBlueprintLabel(sb.blueprintId), detail: `service ${formatServiceId(sb.serviceId)}`, tone: 'brand' },
-    { label: 'Operator', value: sb.operator ? truncateAddress(sb.operator) : 'unknown', detail: sb.operator ?? 'operator not resolved', tone: sb.operator ? 'ready' : 'muted' },
-    { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted' },
+    { label: 'Sandbox ID', value: sb.sandboxId ? 'provisioned' : 'pending', detail: sb.sandboxId ?? sb.localId, tone: sb.sandboxId ? 'ready' : 'warn', identity: getStatusIdentity(sb.sandboxId ? 'running' : 'creating') },
+    { label: 'Blueprint', value: formatBlueprintLabel(sb.blueprintId), detail: `service ${formatServiceId(sb.serviceId)}`, tone: 'brand', identity: getBlueprintIdentity(sb.blueprintId) },
+    { label: 'Operator', value: sb.operator ? truncateAddress(sb.operator) : 'unknown', detail: sb.operator ?? 'operator not resolved', tone: sb.operator ? 'ready' : 'muted', identity: getOperatorIdentity(sb.operator) },
+    { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted', identity: getStatusIdentity('processing') },
   ];
   const storageRows: WorkspaceRailRow[] = [
-    { label: 'Image', value: sb.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand' },
-    { label: 'Disk', value: `${sb.diskGb} GB`, detail: 'allocated volume', tone: 'ready' },
-    { label: 'Lifecycle', value: isStopped ? 'warm' : isGone ? 'gone' : sb.status, detail: sb.lastActivityAt ? new Date(sb.lastActivityAt).toLocaleString() : 'no activity timestamp', tone: statusTone },
-    { label: 'Secrets', value: sb.credentialsAvailable === false ? 'missing' : 'available', detail: sb.teeEnabled ? 'TEE protected' : 'operator encrypted', tone: sb.credentialsAvailable === false ? 'warn' : 'ready' },
+    { label: 'Image', value: sb.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand', identity: getImageIdentity(sb.image) },
+    { label: 'Disk', value: `${sb.diskGb} GB`, detail: 'allocated volume', tone: 'ready', identity: getResourceIdentity('disk') },
+    { label: 'Lifecycle', value: isStopped ? 'warm' : isGone ? 'gone' : sb.status, detail: sb.lastActivityAt ? new Date(sb.lastActivityAt).toLocaleString() : 'no activity timestamp', tone: statusTone, identity: getStatusIdentity(isStopped ? 'stopped' : isGone ? 'error' : sb.status) },
+    { label: 'Secrets', value: sb.credentialsAvailable === false ? 'missing' : 'available', detail: sb.teeEnabled ? 'TEE protected' : 'operator encrypted', tone: sb.credentialsAvailable === false ? 'warn' : 'ready', identity: getSecurityIdentity(sb.credentialsAvailable === false ? 'session' : sb.teeEnabled ? 'attested' : 'secrets') },
   ];
   const workflowCreateHref = isRunning && sb.sandboxId
     ? `/workflows/create?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`
@@ -695,15 +710,7 @@ export default function SandboxDetail() {
 
       <div className="flex items-start justify-between mb-6">
         <div className="flex items-center gap-4">
-          <div className={cn(
-            'w-14 h-14 rounded-xl flex items-center justify-center',
-            isRunning ? 'bg-teal-500/10' : isStopped ? 'bg-amber-500/10' : 'bg-cloud-elements-background-depth-3',
-          )}>
-            <div className={cn(
-              sb.teeEnabled ? 'i-ph:shield-check text-2xl' : 'i-ph:hard-drives text-2xl',
-              isRunning ? 'text-teal-400' : isStopped ? 'text-amber-400' : 'text-cloud-elements-textTertiary',
-            )} />
-          </div>
+          <IdentityMark identity={getBlueprintIdentity(sb.teeEnabled ? 'ai-agent-tee-instance-blueprint' : sb.blueprintId)} size="lg" className="h-14 w-14 rounded-[6px]" />
           <ResourceIdentity
             name={sb.name}
             status={sb.status}
@@ -820,16 +827,17 @@ export default function SandboxDetail() {
                 copyable={!!sb.sandboxId}
                 copyValue={sb.sandboxId ?? undefined}
                 alignRight
+                identity={getStatusIdentity(sb.sandboxId ? 'running' : 'creating')}
               />
               {sb.sandboxId == null && (
-                <LabeledValueRow label="Draft Key" value={sb.localId} mono alignRight />
+                <LabeledValueRow label="Draft Key" value={sb.localId} mono alignRight identity={getStatusIdentity('creating')} />
               )}
-              <LabeledValueRow label="Image" value={sb.image} mono copyable alignRight />
-              <LabeledValueRow label="CPU" value={`${sb.cpuCores} cores`} alignRight />
-              <LabeledValueRow label="Memory" value={`${sb.memoryMb} MB`} alignRight />
-              <LabeledValueRow label="Disk" value={`${sb.diskGb} GB`} alignRight />
+              <LabeledValueRow label="Image" value={sb.image} mono copyable alignRight identity={getImageIdentity(sb.image)} />
+              <LabeledValueRow label="CPU" value={`${sb.cpuCores} cores`} alignRight identity={getResourceIdentity('cpu')} />
+              <LabeledValueRow label="Memory" value={`${sb.memoryMb} MB`} alignRight identity={getResourceIdentity('memory')} />
+              <LabeledValueRow label="Disk" value={`${sb.diskGb} GB`} alignRight identity={getResourceIdentity('disk')} />
               <LabeledValueRow label="Created" value={new Date(sb.createdAt).toLocaleString()} alignRight />
-              <LabeledValueRow label="Blueprint" value={formatBlueprintLabel(sb.blueprintId)} alignRight />
+              <LabeledValueRow label="Blueprint" value={formatBlueprintLabel(sb.blueprintId)} alignRight identity={getBlueprintIdentity(sb.blueprintId)} />
               <LabeledValueRow label="Service ID" value={formatServiceId(sb.serviceId)} alignRight />
             </CardContent>
           </Card>
@@ -846,6 +854,7 @@ export default function SandboxDetail() {
                 copyable={!!sb.operator}
                 copyValue={sb.operator}
                 alignRight
+                identity={getOperatorIdentity(sb.operator)}
               />
               {sb.txHash && <LabeledValueRow label="TX Hash" value={truncateAddress(sb.txHash)} mono copyable copyValue={sb.txHash} alignRight />}
             </CardContent>

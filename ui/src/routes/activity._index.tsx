@@ -11,6 +11,11 @@ import {
 import { sandboxListStore } from '~/lib/stores/sandboxes';
 import { instanceListStore } from '~/lib/stores/instances';
 import { pendingWorkflowStore } from '~/lib/stores/pendingWorkflows';
+import {
+  IdentityMark,
+  getBlueprintIdentity,
+  getStatusIdentity,
+} from '~/components/shared/VisualIdentity';
 
 type ActivityEvent = {
   key: string;
@@ -74,10 +79,10 @@ export default function ActivityTape() {
   );
 
   const metrics: ConsoleMetric[] = [
-    { label: 'Events', value: String(events.length), detail: 'local index', tone: 'brand' },
-    { label: 'Lifecycle', value: String(events.filter((event) => event.source !== 'workflow').length), detail: 'resources', tone: 'ready' },
-    { label: 'Workflow pending', value: String(pendingWorkflows.length), detail: 'operator visibility', tone: 'warn' },
-    { label: 'Errors', value: String(events.filter((event) => event.status === 'error').length), detail: 'attention', tone: 'danger' },
+    { label: 'Events', value: String(events.length), detail: 'local index', tone: 'brand', identity: getStatusIdentity('processing') },
+    { label: 'Lifecycle', value: String(events.filter((event) => event.source !== 'workflow').length), detail: 'resources', tone: 'ready', identity: getBlueprintIdentity('ai-agent-sandbox-blueprint') },
+    { label: 'Workflow pending', value: String(pendingWorkflows.length), detail: 'operator visibility', tone: 'warn', identity: getStatusIdentity('stopped') },
+    { label: 'Errors', value: String(events.filter((event) => event.status === 'error').length), detail: 'attention', tone: 'danger', identity: getStatusIdentity('error') },
   ];
 
   return (
@@ -101,7 +106,17 @@ export default function ActivityTape() {
                   {events.map((event) => (
                     <tr key={event.key} className="border-b border-[var(--sandbox-console-border)] hover:bg-[var(--sandbox-console-surface)]">
                       <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{formatTime(event.timestamp)}</td>
-                      <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{event.source}</td>
+                      <td className="px-3 py-3">
+                        <span className="flex items-center gap-2.5">
+                          <IdentityMark
+                            identity={event.source === 'workflow'
+                              ? { label: 'Workflow', mark: 'WF', detail: 'automation', icon: 'i-ph:flow-arrow', tone: 'blue' }
+                              : getBlueprintIdentity(event.source)}
+                            size="sm"
+                          />
+                          <span className="font-data text-xs font-bold text-[var(--sandbox-console-text)]">{event.source}</span>
+                        </span>
+                      </td>
                       <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-text)]">{event.action}</td>
                       <td className="px-3 py-3 font-display text-sm font-medium text-[var(--sandbox-console-text)]">{event.detail}</td>
                       <td className="px-3 py-3"><ConsoleChip tone={event.tone}>{event.status}</ConsoleChip></td>

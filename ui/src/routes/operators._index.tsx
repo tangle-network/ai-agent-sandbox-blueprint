@@ -19,6 +19,14 @@ import {
   TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID,
 } from '~/lib/config';
 import { useReliableOperators, type ReliableOperatorsResult } from '~/lib/hooks/useReliableOperators';
+import {
+  IdentityMark,
+  OperatorIdentity,
+  getBlueprintIdentity,
+  getOperatorIdentity,
+  getResourceIdentity,
+  getStatusIdentity,
+} from '~/components/shared/VisualIdentity';
 
 type OperatorRow = {
   operator: string;
@@ -44,11 +52,6 @@ function zeroStats(): LocalOperatorStats {
     backends: 'docker',
     lastSeen: 0,
   };
-}
-
-function shorten(value: string) {
-  if (value.length <= 14) return value;
-  return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
 function formatAge(timestamp: number) {
@@ -154,10 +157,10 @@ export default function OperatorCapacity() {
   const registeredCount = sandboxOperators.operatorCount + instanceOperators.operatorCount + teeOperators.operatorCount;
   const uniqueOperatorCount = new Set(rows.map((row) => row.operator.toLowerCase())).size;
   const metrics: ConsoleMetric[] = [
-    { label: 'Sandbox slots', value: capacity == null ? '--' : String(capacity), detail: 'BSM capacity', tone: 'brand' },
-    { label: 'Blueprint registrations', value: loading && registeredCount === 0n ? '--' : registeredCount.toString(), detail: 'on-chain counts', tone: registeredCount > 0n ? 'ready' : 'warn' },
-    { label: 'Operator accounts', value: String(uniqueOperatorCount), detail: fallbackReads > 0 ? 'service-verified' : 'event index', tone: uniqueOperatorCount > 0 ? 'ready' : 'warn' },
-    { label: 'Directory status', value: lookupErrors > 0 ? 'blocked' : fallbackReads > 0 ? 'fallback' : 'live', detail: fallbackReads > 0 ? `${fallbackReads} log scans` : 'operator reads', tone: lookupErrors > 0 ? 'danger' : fallbackReads > 0 ? 'warn' : 'ready' },
+    { label: 'Sandbox slots', value: capacity == null ? '--' : String(capacity), detail: 'BSM capacity', tone: 'brand', identity: getResourceIdentity('cpu') },
+    { label: 'Blueprint registrations', value: loading && registeredCount === 0n ? '--' : registeredCount.toString(), detail: 'on-chain counts', tone: registeredCount > 0n ? 'ready' : 'warn', identity: getBlueprintIdentity('ai-agent-sandbox-blueprint') },
+    { label: 'Operator accounts', value: String(uniqueOperatorCount), detail: fallbackReads > 0 ? 'service-verified' : 'event index', tone: uniqueOperatorCount > 0 ? 'ready' : 'warn', identity: getOperatorIdentity() },
+    { label: 'Directory status', value: lookupErrors > 0 ? 'blocked' : fallbackReads > 0 ? 'fallback' : 'live', detail: fallbackReads > 0 ? `${fallbackReads} log scans` : 'operator reads', tone: lookupErrors > 0 ? 'danger' : fallbackReads > 0 ? 'warn' : 'ready', identity: getStatusIdentity(lookupErrors > 0 ? 'blocked' : 'running') },
   ];
 
   return (
@@ -181,12 +184,17 @@ export default function OperatorCapacity() {
                   {rows.map((row) => (
                     <tr key={`${row.blueprintId}:${row.operator}`} className="border-b border-[var(--sandbox-console-border)] hover:bg-[var(--sandbox-console-surface)]">
                       <td className="px-3 py-3">
-                        <div className="space-y-1">
-                          <p className="font-display text-xs font-semibold text-[var(--sandbox-console-text)]">{row.blueprintLabel}</p>
-                          <p className="font-data text-[10px] text-[var(--sandbox-console-subtle)]">#{row.blueprintId}</p>
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <IdentityMark identity={getBlueprintIdentity(row.blueprintParam)} size="sm" />
+                          <div className="min-w-0">
+                            <p className="truncate font-display text-sm font-bold text-[var(--sandbox-console-text)]">{row.blueprintLabel}</p>
+                            <p className="font-data text-[11px] text-[var(--sandbox-console-subtle)]">#{row.blueprintId}</p>
+                          </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-text)]">{shorten(row.operator)}</td>
+                      <td className="px-3 py-3">
+                        <OperatorIdentity address={row.operator} detail={row.registered ? 'registered' : 'pending'} compact />
+                      </td>
                       <td className="max-w-[240px] truncate px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.rpcAddress || 'not advertised'}</td>
                       <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.resources}</td>
                       <td className="px-3 py-3"><ConsoleChip tone="ready">{row.running}</ConsoleChip></td>

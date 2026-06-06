@@ -1,5 +1,6 @@
 import { cn } from '@tangle-network/blueprint-ui';
 import { StatusBadge } from './StatusBadge';
+import { IdentityMark, getImageIdentity, getResourceIdentity, getRuntimeIdentity } from './VisualIdentity';
 
 interface ResourceIdentityProps {
   name: string;
@@ -41,9 +42,15 @@ export function ResourceIdentity({
         )}
       </div>
       <div className="flex items-center gap-3 mt-1">
-        <span className="text-xs font-data text-cloud-elements-textTertiary">{image}</span>
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <IdentityMark identity={getImageIdentity(image)} size="sm" className="h-5 w-5 rounded-[4px] text-[9px]" />
+          <span className="truncate text-xs font-data text-cloud-elements-textTertiary">{image}</span>
+        </span>
         <span className="text-cloud-elements-dividerColor">·</span>
-        <span className="text-xs font-data text-cloud-elements-textTertiary">{specs}</span>
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <IdentityMark identity={teeEnabled ? getRuntimeIdentity('tee') : getResourceIdentity('cpu')} size="sm" className="h-5 w-5 rounded-[4px] text-[9px]" />
+          <span className="truncate text-xs font-data text-cloud-elements-textTertiary">{specs}</span>
+        </span>
       </div>
     </div>
   );

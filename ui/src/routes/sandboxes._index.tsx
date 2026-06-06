@@ -20,6 +20,10 @@ import {
   getSandboxRouteKey,
   type LocalSandbox,
 } from '~/lib/stores/sandboxes';
+import {
+  getRuntimeIdentity,
+  getStatusIdentity,
+} from '~/components/shared/VisualIdentity';
 
 function getSecurityState(sandbox: LocalSandbox) {
   if (sandbox.teeEnabled) return 'attested';
@@ -70,10 +74,10 @@ export default function SandboxExplorer() {
   );
 
   const metrics: ConsoleMetric[] = [
-    { label: 'Running', value: String(running.length), detail: 'operator-backed', tone: 'ready' },
-    { label: 'Stopped', value: String(stopped.length), detail: 'resume path', tone: 'warn' },
-    { label: 'TEE enabled', value: String(allSandboxes.filter((sandbox) => sandbox.teeEnabled).length), detail: 'attested', tone: 'brand' },
-    { label: 'Errors', value: String(allSandboxes.filter((sandbox) => sandbox.status === 'error').length), detail: 'attention', tone: 'danger' },
+    { label: 'Running', value: String(running.length), detail: 'operator-backed', tone: 'ready', identity: getStatusIdentity('running') },
+    { label: 'Stopped', value: String(stopped.length), detail: 'resume path', tone: 'warn', identity: getStatusIdentity('stopped') },
+    { label: 'TEE enabled', value: String(allSandboxes.filter((sandbox) => sandbox.teeEnabled).length), detail: 'attested', tone: 'brand', identity: getRuntimeIdentity('tee') },
+    { label: 'Errors', value: String(allSandboxes.filter((sandbox) => sandbox.status === 'error').length), detail: 'attention', tone: 'danger', identity: getStatusIdentity('error') },
   ];
 
   return (
@@ -111,11 +115,19 @@ export default function SandboxExplorer() {
           </div>
           <div className="sandbox-console-panel rounded-md p-3">
             <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Operations</p>
-            <p className="mt-3 font-data text-xs text-[var(--sandbox-console-secondary)]">exec · prompt · task · stop · resume · snapshot</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ConsoleChip tone="brand">exec</ConsoleChip>
+              <ConsoleChip tone="brand">prompt</ConsoleChip>
+              <ConsoleChip>snapshot</ConsoleChip>
+            </div>
           </div>
           <div className="sandbox-console-panel rounded-md p-3">
             <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Trust envelope</p>
-            <p className="mt-3 font-data text-xs text-[var(--sandbox-console-secondary)]">session auth · secrets · attestation</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ConsoleChip>session</ConsoleChip>
+              <ConsoleChip tone="brand">secrets</ConsoleChip>
+              <ConsoleChip tone="warn">attestation</ConsoleChip>
+            </div>
           </div>
         </div>
       </div>

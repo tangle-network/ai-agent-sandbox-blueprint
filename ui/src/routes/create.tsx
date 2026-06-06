@@ -26,7 +26,19 @@ import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { EnvEditor } from '~/components/shared/EnvEditor';
 import { ConnectWalletPanel } from '~/components/shared/ConnectWalletPanel';
-import { TangleOperatorMark } from '~/components/shared/TangleBrand';
+import {
+  IdentityMark,
+  OperatorIdentity,
+  getAgentIdentity,
+  getBlueprintIdentity,
+  getCapabilityIdentity,
+  getImageIdentity,
+  getOperatorIdentity,
+  getResourceIdentity,
+  getRuntimeIdentity,
+  getStackIdentity,
+  type IdentityMeta,
+} from '~/components/shared/VisualIdentity';
 import {
   BUNDLED_AGENT_OPTIONS,
   BUNDLED_NO_AGENT_VALUE,
@@ -66,6 +78,7 @@ const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }
 
 type WizardStep = 'blueprint' | 'configure' | 'deploy';
 type ServiceSetupMode = 'existing' | 'new';
+type LaunchSelectOption = { label: string; value: string; detail?: string; identity?: IdentityMeta };
 const CUSTOM_IMAGE_VALUE = '__custom_image__';
 
 function parsePortsInput(value: string): number[] {
@@ -133,6 +146,21 @@ function clampNumber(value: number, min?: number, max?: number): number {
   if (typeof min === 'number' && value < min) return min;
   if (typeof max === 'number' && value > max) return max;
   return value;
+}
+
+function formatImageOptionLabel(value: string, fallback: string) {
+  const image = value.toLowerCase();
+  if (image.includes('blueprint-sidecar')) {
+    const tag = value.includes(':') ? value.split(':').pop() : '';
+    return tag ? `Tangle sidecar: ${tag}` : 'Tangle sidecar';
+  }
+  if (image.startsWith('ghcr.io/tangle-network/')) {
+    return value.replace(/^ghcr\.io\/tangle-network\//, 'Tangle image: ');
+  }
+  if (image.startsWith('ghcr.io/')) {
+    return value.replace(/^ghcr\.io\//, 'GHCR: ');
+  }
+  return fallback;
 }
 
 function hoursFromSeconds(value: unknown, fallbackSeconds: number): number {
@@ -592,6 +620,7 @@ function LaunchModeStrip({
         {blueprints.map((bp) => {
           const active = selectedBlueprint?.id === bp.id;
           const recommended = bp.id === 'ai-agent-sandbox-blueprint';
+          const identity = getBlueprintIdentity(bp.id);
 
           return (
             <button
@@ -604,7 +633,7 @@ function LaunchModeStrip({
               )}
             >
               <div className="flex items-start justify-between gap-3">
-                <span className={cn('text-3xl text-[var(--sandbox-console-brand)] transition-transform duration-150 group-hover:-translate-y-0.5', bp.icon)} />
+                <IdentityMark identity={identity} size="lg" className="transition-transform duration-150 group-hover:-translate-y-0.5" />
                 {recommended ? <ConsoleChip tone="ready">recommended</ConsoleChip> : null}
               </div>
               <div className="mt-3">
@@ -693,14 +722,13 @@ function LaunchNativeSelect({
   label: string;
   detail?: string;
   value: string;
-  options: { label: string; value: string }[];
+  options: LaunchSelectOption[];
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const selected = options.find((option) => option.value === value);
-  const displayValue = selected?.label ?? value;
   const isDisabled = disabled || options.length === 0;
 
   useEffect(() => {
@@ -742,7 +770,11 @@ function LaunchNativeSelect({
             : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-text)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]',
         )}
       >
-        <span className="min-w-0 truncate">{displayValue || 'Select option'}</span>
+        {selected ? (
+          <SelectOptionVisual option={selected} />
+        ) : (
+          <span className="min-w-0 truncate">{value || 'Select option'}</span>
+        )}
         <span className={cn('i-ph:caret-down shrink-0 text-sm text-[var(--sandbox-console-muted)] transition-transform group-hover:text-[var(--sandbox-console-text)]', open && 'rotate-180 text-[var(--sandbox-console-brand)]')} />
       </button>
       {open ? (
@@ -759,6 +791,7 @@ function LaunchNativeSelect({
                 type="button"
                 role="option"
                 aria-selected={active}
+                aria-label={option.label}
                 onClick={() => {
                   onChange(option.value);
                   setOpen(false);
@@ -770,7 +803,7 @@ function LaunchNativeSelect({
                     : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-border-hover)]',
                 )}
               >
-                <span className="min-w-0 truncate">{option.label}</span>
+                <SelectOptionVisual option={option} />
                 {active ? <span className="i-ph:check-bold shrink-0 text-xs text-[var(--sandbox-console-brand)]" /> : null}
               </button>
             );
@@ -778,6 +811,26 @@ function LaunchNativeSelect({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function SelectOptionVisual({ option }: { option: LaunchSelectOption }) {
+  if (!option.identity) {
+    return <span className="min-w-0 truncate">{option.label}</span>;
+  }
+
+  return (
+    <span className="flex min-w-0 items-center gap-3">
+      <IdentityMark identity={option.identity} size="sm" />
+      <span className="min-w-0">
+        <span className="block truncate">{option.label}</span>
+        {(option.detail ?? option.identity.detail) ? (
+          <span className="mt-0.5 block truncate font-data text-[11px] font-medium text-[var(--sandbox-console-subtle)]">
+            {option.detail ?? option.identity.detail}
+          </span>
+        ) : null}
+      </span>
+    </span>
   );
 }
 
@@ -794,8 +847,18 @@ function LaunchImageSelect({
 }) {
   const selectedOption = options.find((option) => option.value === value);
   const selectOptions = [
-    ...options,
-    { label: 'Custom image...', value: CUSTOM_IMAGE_VALUE },
+    ...options.map((option) => ({
+      ...option,
+      label: formatImageOptionLabel(option.value, option.label),
+      detail: getImageIdentity(option.value).detail,
+      identity: getImageIdentity(option.value),
+    })),
+    {
+      label: 'Custom image...',
+      value: CUSTOM_IMAGE_VALUE,
+      detail: getImageIdentity(CUSTOM_IMAGE_VALUE).detail,
+      identity: getImageIdentity(CUSTOM_IMAGE_VALUE),
+    },
   ];
   const selectValue = selectedOption ? selectedOption.value : CUSTOM_IMAGE_VALUE;
 
@@ -840,22 +903,29 @@ function SegmentedControl({
   return (
     <div className="space-y-2">
       <p className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">{label}</p>
-      <div className="grid gap-1 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] p-1 shadow-[var(--sandbox-console-control-shadow)] sm:grid-cols-3">
+      <div
+        className={cn(
+          'grid gap-1 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] p-1 shadow-[var(--sandbox-console-control-shadow)]',
+          options.length === 2 ? 'sm:grid-cols-2' : 'sm:grid-cols-3',
+        )}
+      >
         {options.map((option) => {
           const active = option.value === value;
+          const identity = getRuntimeIdentity(option.value);
           return (
             <button
               key={option.value}
               type="button"
               onClick={() => onChange(option.value)}
               className={cn(
-                'min-h-10 rounded-[4px] px-3 text-center font-display text-sm font-bold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.98]',
+                'flex min-h-12 items-center justify-center gap-2 rounded-[4px] px-3 text-center font-display text-sm font-bold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.98]',
                 active
                   ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_0_0_0_1px_var(--sandbox-console-brand-border),inset_0_3px_0_var(--sandbox-console-brand)]'
                   : 'text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_0_3px_0_var(--sandbox-console-border-hover)]',
               )}
             >
-              {option.label.replace(' (default)', '')}
+              <IdentityMark identity={identity} size="sm" />
+              <span className="whitespace-nowrap text-[13px] sm:text-sm">{option.label.replace(' (default)', '')}</span>
             </button>
           );
         })}
@@ -867,12 +937,14 @@ function SegmentedControl({
 function LaunchToggle({
   label,
   detail,
+  identity,
   checked,
   onChange,
   disabled,
 }: {
   label: string;
   detail?: string;
+  identity?: IdentityMeta;
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
@@ -891,16 +963,18 @@ function LaunchToggle({
           : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]',
       )}
     >
-      <span
-        className={cn(
-          'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors',
-          checked
-            ? 'border-[var(--sandbox-console-brand)] bg-[var(--sandbox-console-brand)] text-white'
-            : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] text-transparent',
-        )}
-      >
-        <span className="i-ph:check-bold text-xs" />
-      </span>
+      {identity ? <IdentityMark identity={identity} size="md" /> : (
+        <span
+          className={cn(
+            'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors',
+            checked
+              ? 'border-[var(--sandbox-console-brand)] bg-[var(--sandbox-console-brand)] text-white'
+              : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] text-transparent',
+          )}
+        >
+          <span className="i-ph:check-bold text-xs" />
+        </span>
+      )}
       <span className="min-w-0">
         <span className="block font-display text-base font-bold tracking-tight text-[var(--sandbox-console-text)]">{label}</span>
         {detail ? <span className="mt-0.5 block text-sm leading-6 text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{detail}</span> : null}
@@ -926,6 +1000,7 @@ function ResourceSizingControls({
           label="CPU Cores"
           shortLabel="CPU"
           unit="cores"
+          identity={getResourceIdentity('cpu')}
           field={field(job, 'cpuCores')}
           value={valueNumber(values, 'cpuCores', 2)}
           onChange={(value) => onChange('cpuCores', value)}
@@ -934,6 +1009,7 @@ function ResourceSizingControls({
           label="Memory (MB)"
           shortLabel="RAM"
           unit="MB"
+          identity={getResourceIdentity('memory')}
           field={field(job, 'memoryMb')}
           value={valueNumber(values, 'memoryMb', 2048)}
           onChange={(value) => onChange('memoryMb', value)}
@@ -942,6 +1018,7 @@ function ResourceSizingControls({
           label="Disk (GB)"
           shortLabel="Disk"
           unit="GB"
+          identity={getResourceIdentity('disk')}
           field={field(job, 'diskGb')}
           value={valueNumber(values, 'diskGb', 10)}
           onChange={(value) => onChange('diskGb', value)}
@@ -955,6 +1032,7 @@ function ResourceNumberInput({
   label,
   shortLabel,
   unit,
+  identity,
   field: fieldDef,
   value,
   onChange,
@@ -962,6 +1040,7 @@ function ResourceNumberInput({
   label: string;
   shortLabel: string;
   unit: string;
+  identity: IdentityMeta;
   field?: JobFieldDef;
   value: number;
   onChange: (value: number) => void;
@@ -969,8 +1048,11 @@ function ResourceNumberInput({
   return (
     <label className="group block min-w-0 cursor-text rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] p-3 shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] focus-within:border-[var(--sandbox-console-brand-border)] focus-within:bg-[var(--sandbox-console-control-hover)] focus-within:shadow-[var(--sandbox-console-control-shadow-focus)]">
       <span className="flex items-center justify-between gap-2">
-        <span className="truncate font-display text-xs font-bold uppercase tracking-[0.05em] text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{shortLabel}</span>
-        <span className="i-ph:pencil-simple-line shrink-0 text-sm text-[var(--sandbox-console-brand)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" />
+        <span className="flex min-w-0 items-center gap-1.5">
+          <IdentityMark identity={identity} size="sm" className="h-5 w-5 rounded-[4px] text-[9px]" />
+          <span className="whitespace-nowrap font-display text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{shortLabel}</span>
+        </span>
+        <span className="i-ph:pencil-simple-line hidden shrink-0 text-sm text-[var(--sandbox-console-brand)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 sm:inline-block" />
       </span>
       <span className="mt-1.5 flex min-w-0 items-baseline gap-1.5">
         <input
@@ -1040,9 +1122,7 @@ function LaunchSpecComposer({
       <div className="space-y-5 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--sandbox-console-border)] pb-5">
           <div className="flex min-w-0 items-start gap-4">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[5px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
-              <div className={cn('text-2xl text-[var(--sandbox-console-brand)]', blueprint?.icon)} />
-            </div>
+            <IdentityMark identity={getBlueprintIdentity(blueprint?.id)} size="lg" />
             <div className="min-w-0">
               <h2 className="truncate font-display text-2xl font-bold tracking-tight text-[var(--sandbox-console-text)]">
                 {blueprint?.name ?? entityLabel}
@@ -1087,7 +1167,11 @@ function LaunchSpecComposer({
             <LaunchNativeSelect
               label="Stack"
               value={valueString(values, 'stack', 'default')}
-              options={fieldOptions(job, 'stack')}
+              options={fieldOptions(job, 'stack').map((option) => ({
+                ...option,
+                detail: getStackIdentity(option.value).detail,
+                identity: getStackIdentity(option.value),
+              }))}
               onChange={(value) => onChange('stack', value)}
             />
             <ResourceSizingControls job={job} values={values} onChange={onChange} />
@@ -1119,6 +1203,7 @@ function LaunchSpecComposer({
             label="Enable SSH"
             checked={Boolean(values.sshEnabled)}
             onChange={(enabled) => onChange('sshEnabled', enabled)}
+            identity={getCapabilityIdentity('ssh')}
             detail="Expose an operator-managed SSH entrypoint after provisioning."
           />
         </div>
@@ -1237,54 +1322,67 @@ function LaunchSummaryPanel({
             label="Mode"
             value={selectedBlueprint ? entityLabel : 'Unselected'}
             detail={selectedBlueprint?.name ?? 'Choose a blueprint'}
+            identity={getBlueprintIdentity(selectedBlueprint?.id)}
             tone={selectedBlueprint ? 'brand' : 'warn'}
           />
           <SummaryRow
             label="Spec"
             value={step === 'deploy' ? 'Locked' : step === 'configure' ? 'Editing' : 'Open'}
             detail={step === 'deploy' ? 'ready for transaction' : 'mutable'}
+            identity={step === 'deploy'
+              ? { label: 'Locked', mark: 'OK', detail: 'ready for transaction', icon: 'i-ph:lock-key', tone: 'teal' }
+              : { label: 'Editing', mark: 'ED', detail: 'mutable config', icon: 'i-ph:pencil-simple-line', tone: 'slate' }}
             tone={step === 'deploy' ? 'ready' : 'muted'}
           />
           <SummaryRow
             label="Runtime"
             value={runtimeLabel(runtimeBackend)}
             detail={runtimeBackend === 'tee' ? 'attestation path' : 'standard path'}
+            identity={getRuntimeIdentity(runtimeBackend)}
             tone={runtimeBackend === 'tee' ? 'warn' : 'ready'}
           />
           <SummaryRow
             label="Capacity"
             value={formatCapacityValue(capacity)}
             detail="available slots"
+            identity={{ label: 'Capacity', mark: 'CAP', detail: 'available slots', icon: 'i-ph:database', tone: 'blue' }}
             tone={capacity !== undefined && Number(capacity) === 0 ? 'warn' : 'ready'}
           />
           <SummaryRow
             label="Wallet"
             value={isConnected ? 'Connected' : isReconnectingWallet ? 'Syncing' : 'Offline'}
             detail={isConnected ? 'can sign' : 'deploy blocked'}
+            identity={isConnected
+              ? { label: 'Wallet', mark: 'WAL', detail: 'connected signer', icon: 'i-ph:wallet', tone: 'teal' }
+              : { label: 'Wallet', mark: 'WAL', detail: 'deploy blocked', icon: 'i-ph:wallet', tone: 'danger' }}
             tone={isConnected ? 'ready' : isReconnectingWallet ? 'warn' : 'danger'}
           />
           <SummaryRow
             label="Service"
             value={serviceState}
             detail={`bp ${infra.blueprintId || '--'} / svc ${infra.serviceId || '--'}`}
+            identity={{ label: 'Service', mark: 'SVC', detail: 'on-chain service', icon: 'i-ph:tree-structure', tone: serviceState === 'Blocked' ? 'danger' : 'brand' }}
             tone={serviceTone({ serviceValidating, serviceError, hasValidService, isNewService })}
           />
           <SummaryRow
             label="Operators"
             value={operatorSummary}
             detail={isNewService ? 'service quorum' : 'operator service'}
+            identity={getOperatorIdentity()}
             tone={operatorsError ? 'warn' : 'brand'}
           />
           <SummaryRow
             label="Agent mode"
             value={agentIdentifier || 'Compute only'}
             detail={agentIdentifier ? 'chat enabled' : 'no bundled agent'}
+            identity={getAgentIdentity(agentIdentifier)}
             tone={agentIdentifier ? 'brand' : 'muted'}
           />
           <SummaryRow
             label="Network"
             value={ports.length > 0 ? `${ports.length} port${ports.length === 1 ? '' : 's'}` : 'Default'}
             detail={ports.length > 0 ? ports.join(', ') : 'operator proxy'}
+            identity={getResourceIdentity('network')}
             tone={ports.length > 0 ? 'brand' : 'muted'}
           />
         </div>
@@ -1303,21 +1401,26 @@ function SummaryRow({
   label,
   value,
   detail,
+  identity,
   tone,
 }: {
   label: string;
   value: string;
   detail: string;
+  identity?: IdentityMeta;
   tone: ConsoleTone;
 }) {
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 transition-colors hover:bg-[var(--sandbox-console-hover)]">
-      <span className="min-w-0">
-        <span className="block font-data text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
-          {label}
-        </span>
-        <span className="mt-1 block truncate font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">
-          {detail}
+      <span className="flex min-w-0 items-center gap-2.5">
+        {identity ? <IdentityMark identity={identity} size="sm" /> : null}
+        <span className="min-w-0">
+          <span className="block font-data text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
+            {label}
+          </span>
+          <span className="mt-1 block truncate font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">
+            {detail}
+          </span>
         </span>
       </span>
       <span className={cn('max-w-52 text-right font-data text-xl font-bold leading-tight tracking-tight', executionMetricToneClass[tone])}>
@@ -1350,7 +1453,11 @@ function AgentConfigurationField({
           label="Agent"
           value={selectValue}
           onChange={(next) => onChange(sanitizeBundledAgentIdentifier(next))}
-          options={BUNDLED_AGENT_OPTIONS}
+          options={BUNDLED_AGENT_OPTIONS.map((option) => ({
+            ...option,
+            detail: getAgentIdentity(option.value).detail,
+            identity: getAgentIdentity(option.value),
+          }))}
         />
       ) : (
         <LaunchInput
@@ -1387,6 +1494,7 @@ function AllHarnessCapabilityField({
       label="All-Harness Runtime"
       checked={enabled}
       onChange={onChange}
+      identity={getCapabilityIdentity('harness')}
       detail="Request Claude, Codex, opencode, Kimi, and Gemini harnesses in the sidecar image."
     />
   );
@@ -1404,6 +1512,7 @@ function ComputerUseCapabilityField({
       label="Computer Use"
       checked={enabled}
       onChange={onChange}
+      identity={getCapabilityIdentity('computer-use')}
       detail="Enable browser/computer-use tools for visual agent tasks when the sidecar image supports them."
     />
   );
@@ -1495,12 +1604,18 @@ function AdvancedOptionsModal({
                 checked={Boolean(values.teeRequired) || teeRequiredLocked}
                 disabled={teeRequiredLocked}
                 onChange={(enabled) => onChange('teeRequired', enabled)}
+                identity={getRuntimeIdentity('tee')}
                 detail={teeRequiredLocked ? 'Pinned by TEE runtime' : 'Require attested hardware isolation.'}
               />
               <LaunchNativeSelect
                 label="TEE Type"
                 value={valueString(values, 'teeType', '0')}
-                options={fieldOptions(job, 'teeType')}
+                options={fieldOptions(job, 'teeType').map((option) => ({
+                  ...option,
+                  identity: option.value === '0'
+                    ? { label: option.label, mark: 'OFF', detail: 'not required', icon: 'i-ph:minus-circle', tone: 'slate' }
+                    : { label: option.label, mark: option.label.slice(0, 3).toUpperCase(), detail: 'attestation target', icon: 'i-ph:shield-check', tone: 'amber' },
+                }))}
                 onChange={(value) => onChange('teeType', value)}
               />
             </div>
@@ -1626,9 +1741,7 @@ function DeployStep({
         <div className="grid gap-px bg-[var(--sandbox-console-border)] lg:grid-cols-[minmax(0,1fr)_240px]">
           <div className="bg-[var(--sandbox-console-panel)] p-5">
             <div className="flex items-start gap-4">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[5px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
-                <div className={cn('text-3xl text-[var(--sandbox-console-brand)]', blueprint.icon)} />
-              </div>
+              <IdentityMark identity={getBlueprintIdentity(blueprint.id)} size="lg" />
               <div className="min-w-0 flex-1">
                 <p className="font-data text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
                   {deploymentIntent}
@@ -1666,28 +1779,28 @@ function DeployStep({
             label="Blueprint"
             value={entityLabel}
             detail={serviceLabel}
-            icon="i-ph:cube"
+            identity={getBlueprintIdentity(blueprint.id)}
             tone={isNewService ? 'brand' : 'ready'}
           />
           <ExecutionMetric
             label="Runtime"
             value={runtimeLabel}
             detail={runtimeBackend === 'tee' ? 'attestation path' : 'standard path'}
-            icon="i-ph:stack"
+            identity={getRuntimeIdentity(runtimeBackend)}
             tone={runtimeBackend === 'tee' ? 'warn' : 'ready'}
           />
           <ExecutionMetric
             label="Resources"
             value={`${cpuCores} CPU`}
             detail={`${memoryMb} MB / ${diskGb} GB`}
-            icon="i-ph:cpu"
+            identity={getResourceIdentity('cpu')}
             tone="muted"
           />
           <ExecutionMetric
             label="Network"
             value={ports.length > 0 ? `${ports.length} port${ports.length === 1 ? '' : 's'}` : 'Proxy'}
             detail={ports.length > 0 ? ports.join(', ') : 'operator-managed'}
-            icon="i-ph:globe"
+            identity={getResourceIdentity('network')}
             tone={ports.length > 0 ? 'brand' : 'muted'}
           />
         </div>
@@ -1924,13 +2037,13 @@ function ExecutionMetric({
   label,
   value,
   detail,
-  icon,
+  identity,
   tone = 'muted',
 }: {
   label: string;
   value: string;
   detail: string;
-  icon: string;
+  identity: IdentityMeta;
   tone?: ConsoleTone;
 }) {
   return (
@@ -1939,7 +2052,7 @@ function ExecutionMetric({
         <p className="font-data text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
           {label}
         </p>
-        <span className={cn('text-lg', executionMetricToneClass[tone], icon)} />
+        <IdentityMark identity={identity} size="sm" />
       </div>
       <p className={cn('mt-2 font-data text-2xl font-bold leading-tight tracking-tight', executionMetricToneClass[tone])}>
         {value}
@@ -2174,8 +2287,7 @@ function OperatorList({
         <div className="space-y-1.5">
           {operators.map((op) => (
             <div key={op.address} className="flex items-center gap-2 py-1">
-              <TangleOperatorMark label={op.address} />
-              <span className="truncate font-data text-sm text-[var(--sandbox-console-secondary)]">{op.address}</span>
+              <OperatorIdentity address={op.address} detail="registered operator" />
             </div>
           ))}
           <p className="mt-2 text-sm leading-6 text-[var(--sandbox-console-muted)]">

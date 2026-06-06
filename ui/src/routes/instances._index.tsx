@@ -20,6 +20,11 @@ import {
   type LocalInstance,
 } from '~/lib/stores/instances';
 import { getInstanceStatusLabel } from '~/lib/instances/display';
+import {
+  getBlueprintIdentity,
+  getRuntimeIdentity,
+  getStatusIdentity,
+} from '~/components/shared/VisualIdentity';
 
 function getSecurityState(instance: LocalInstance) {
   if (instance.teeEnabled) return 'attested';
@@ -69,10 +74,10 @@ export default function InstanceExplorer() {
   );
 
   const metrics: ConsoleMetric[] = [
-    { label: 'Active', value: String(active.length), detail: 'dedicated', tone: 'ready' },
-    { label: 'Running', value: String(running.length), detail: 'operator-backed', tone: 'ready' },
-    { label: 'TEE instances', value: String(allInstances.filter((instance) => instance.teeEnabled).length), detail: 'sealed secrets', tone: 'brand' },
-    { label: 'Errors', value: String(allInstances.filter((instance) => instance.status === 'error').length), detail: 'attention', tone: 'danger' },
+    { label: 'Active', value: String(active.length), detail: 'dedicated', tone: 'ready', identity: getBlueprintIdentity('ai-agent-instance-blueprint') },
+    { label: 'Running', value: String(running.length), detail: 'operator-backed', tone: 'ready', identity: getStatusIdentity('running') },
+    { label: 'TEE instances', value: String(allInstances.filter((instance) => instance.teeEnabled).length), detail: 'sealed secrets', tone: 'brand', identity: getRuntimeIdentity('tee') },
+    { label: 'Errors', value: String(allInstances.filter((instance) => instance.status === 'error').length), detail: 'attention', tone: 'danger', identity: getStatusIdentity('error') },
   ];
 
   return (
@@ -109,11 +114,19 @@ export default function InstanceExplorer() {
           </div>
           <div className="sandbox-console-panel rounded-md p-3">
             <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Lifecycle</p>
-            <p className="mt-3 font-data text-xs text-[var(--sandbox-console-secondary)]">auto-provision · report provisioned · operator API</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ConsoleChip tone="brand">auto</ConsoleChip>
+              <ConsoleChip tone="ready">provisioned</ConsoleChip>
+              <ConsoleChip>operator API</ConsoleChip>
+            </div>
           </div>
           <div className="sandbox-console-panel rounded-md p-3">
             <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Isolation</p>
-            <p className="mt-3 font-data text-xs text-[var(--sandbox-console-secondary)]">single tenant · optional attestation · sealed secrets</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ConsoleChip>single tenant</ConsoleChip>
+              <ConsoleChip tone="warn">attestation</ConsoleChip>
+              <ConsoleChip tone="brand">secrets</ConsoleChip>
+            </div>
           </div>
         </div>
       </div>

@@ -1,7 +1,18 @@
 import { Link } from 'react-router';
 import { cn } from '@tangle-network/blueprint-ui';
 import { StatusBadge } from '~/components/shared/StatusBadge';
-import { ConsoleChip, EmptyConsoleState } from './ConsolePrimitives';
+import { EmptyConsoleState } from './ConsolePrimitives';
+import {
+  IdentityMark,
+  OperatorIdentity,
+  getAgentIdentity,
+  getBlueprintIdentity,
+  getImageIdentity,
+  getResourceIdentity,
+  getRuntimeIdentity,
+  getSecurityIdentity,
+  type IdentityMeta,
+} from '~/components/shared/VisualIdentity';
 
 export type ResourceExplorerRow = {
   key: string;
@@ -26,21 +37,55 @@ export type ResourceExplorerRow = {
   agentIdentifier?: string;
 };
 
-function formatAge(timestamp: number | undefined) {
-  if (!timestamp) return '--';
-  const deltaMs = Date.now() - timestamp;
-  if (deltaMs < 60_000) return '<1m';
-  const minutes = Math.floor(deltaMs / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
-
 function shorten(value: string | undefined) {
   if (!value) return '--';
   if (value.length <= 14) return value;
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function formatImageLabel(value: string) {
+  return value
+    .replace(/^ghcr\.io\/tangle-network\//, '')
+    .replace(/^ghcr\.io\//, '')
+    .replace(/^docker\.io\//, '');
+}
+
+function resourceIdentity(scope: ResourceExplorerRow['scope']) {
+  if (scope === 'TEE') return getBlueprintIdentity('ai-agent-tee-instance-blueprint');
+  if (scope === 'Instance') return getBlueprintIdentity('ai-agent-instance-blueprint');
+  return getBlueprintIdentity('ai-agent-sandbox-blueprint');
+}
+
+function ExplorerIdentityCell({
+  identity,
+  value,
+  detail,
+  truncateValue = true,
+}: {
+  identity: IdentityMeta;
+  value: string;
+  detail?: string;
+  truncateValue?: boolean;
+}) {
+  return (
+    <span className="flex min-w-0 items-center gap-2.5">
+      <IdentityMark identity={identity} size="sm" />
+      <span className="min-w-0">
+        <span className={cn(
+          'block font-data text-xs font-bold text-[var(--sandbox-console-text)]',
+          truncateValue ? 'truncate' : 'whitespace-nowrap',
+        )}
+        >
+          {value}
+        </span>
+        {detail ? (
+          <span className="block truncate font-data text-[11px] text-[var(--sandbox-console-subtle)]">
+            {detail}
+          </span>
+        ) : null}
+      </span>
+    </span>
+  );
 }
 
 export function ResourceExplorerTable({
@@ -70,10 +115,20 @@ export function ResourceExplorerTable({
 
   return (
     <div className="overflow-auto">
-      <table className="min-w-[1120px] w-full border-collapse">
+      <table className="w-full table-fixed border-collapse">
+        <colgroup>
+          <col className="w-[22%]" />
+          <col className="w-[9%]" />
+          <col className="w-[16%]" />
+          <col className="w-[9%]" />
+          <col className="w-[13%]" />
+          <col className="w-[9%]" />
+          <col className="w-[10%]" />
+          <col className="w-[12%]" />
+        </colgroup>
         <thead>
           <tr className="border-b border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)]">
-            {['Resource', 'Status', 'Backend', 'Operator', 'Spec', 'Sessions', 'Workflows', 'Network', 'Security', 'Storage', 'Last'].map((label) => (
+            {['Resource', 'Status', 'Image', 'Runtime', 'Operator', 'Spec', 'Agent', 'Trust'].map((label) => (
               <th
                 key={label}
                 className="px-3 py-2 text-left font-data text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--sandbox-console-muted)]"
@@ -91,16 +146,7 @@ export function ResourceExplorerTable({
             >
               <td className="px-3 py-3">
                 <Link to={row.href} className="flex min-w-0 items-center gap-3">
-                  <span
-                    className={cn(
-                      'flex h-8 w-8 shrink-0 items-center justify-center rounded border',
-                      row.teeEnabled
-                        ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-brand)]'
-                        : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] text-[var(--sandbox-console-muted)]',
-                    )}
-                  >
-                    <span className={cn('text-base', row.teeEnabled ? 'i-ph:shield-check' : 'i-ph:cube')} />
-                  </span>
+                  <IdentityMark identity={resourceIdentity(row.scope)} size="md" />
                   <span className="min-w-0">
                     <span className="block truncate font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
                       {row.name}
@@ -115,22 +161,46 @@ export function ResourceExplorerTable({
                 <StatusBadge status={row.status} labelOverride={row.statusLabel} />
               </td>
               <td className="px-3 py-3">
-                <ConsoleChip tone={row.backend === 'tee' ? 'brand' : row.backend === 'firecracker' ? 'warn' : 'muted'}>
-                  {row.backend}
-                </ConsoleChip>
+                <ExplorerIdentityCell
+                  identity={getImageIdentity(row.image)}
+                  value={formatImageLabel(row.image)}
+                />
               </td>
-              <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{shorten(row.operator)}</td>
-              <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.specs}</td>
-              <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.sessions}</td>
-              <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.workflows}</td>
-              <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.network}</td>
-              <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.security}</td>
-              <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.storage}</td>
-              <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{formatAge(row.lastEvent ?? row.createdAt)}</td>
+              <td className="px-3 py-3">
+                <ExplorerIdentityCell
+                  identity={getRuntimeIdentity(row.backend)}
+                  value={row.backend}
+                  truncateValue={false}
+                />
+              </td>
+              <td className="px-3 py-3">
+                {row.operator ? (
+                  <OperatorIdentity address={row.operator} compact />
+                ) : (
+                  <ExplorerIdentityCell identity={getOperatorPlaceholderIdentity()} value="unassigned" detail="operator pending" />
+                )}
+              </td>
+              <td className="px-3 py-3">
+                <ExplorerIdentityCell identity={getResourceIdentity('cpu')} value={row.specs} truncateValue={false} />
+              </td>
+              <td className="px-3 py-3">
+                <ExplorerIdentityCell
+                  identity={getAgentIdentity(row.agentIdentifier ?? '')}
+                  value={row.sessions}
+                  truncateValue={false}
+                />
+              </td>
+              <td className="px-3 py-3">
+                <ExplorerIdentityCell identity={getSecurityIdentity(row.security)} value={row.security} truncateValue={false} />
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
   );
+}
+
+function getOperatorPlaceholderIdentity(): IdentityMeta {
+  return { label: 'Operator pending', mark: 'OP', detail: 'unassigned', image: 'tangle', tone: 'slate' };
 }

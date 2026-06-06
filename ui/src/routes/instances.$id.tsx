@@ -35,6 +35,17 @@ import {
   StorageWorkspace,
   type WorkspaceRailRow,
 } from '~/components/console/ResourceWorkspacePanels';
+import {
+  IdentityMark,
+  getAgentIdentity,
+  getBlueprintIdentity,
+  getImageIdentity,
+  getOperatorIdentity,
+  getResourceIdentity,
+  getRuntimeIdentity,
+  getSecurityIdentity,
+  getStatusIdentity,
+} from '~/components/shared/VisualIdentity';
 
 import { useAccount } from 'wagmi';
 import {
@@ -535,37 +546,41 @@ export default function InstanceDetail() {
       value: getInstanceStatusLabel(inst),
       detail: inst.status === 'running' ? 'operator ready' : 'lifecycle',
       tone: statusTone,
+      identity: getStatusIdentity(inst.status),
     },
     {
       label: 'Runtime',
       value: inst.teeEnabled ? 'TEE' : 'Docker',
       detail: `${inst.cpuCores}c / ${Math.round(inst.memoryMb / 1024)}g / ${inst.diskGb}g`,
       tone: inst.teeEnabled ? 'warn' : 'brand',
+      identity: getRuntimeIdentity(inst.teeEnabled ? 'tee' : 'docker'),
     },
     {
       label: 'Network',
       value: inst.sshPort ? `ssh:${inst.sshPort}` : exposedPortCount > 0 ? `${exposedPortCount} ports` : 'proxy',
       detail: operatorUrl.replace(/^https?:\/\//, ''),
       tone: inst.sshPort || exposedPortCount > 0 ? 'ready' : 'muted',
+      identity: getResourceIdentity('network'),
     },
     {
       label: 'Agent',
       value: configuredAgentIdentifier || 'none',
       detail: hasAgent ? 'sessions enabled' : 'compute only',
       tone: hasAgent ? 'brand' : 'muted',
+      identity: getAgentIdentity(configuredAgentIdentifier),
     },
   ];
   const contextRows: WorkspaceRailRow[] = [
-    { label: 'Instance ID', value: inst.id, detail: getInstanceSandboxDisplayValue(inst), tone: 'brand' },
-    { label: 'Blueprint', value: getBlueprint(bpId)?.name ?? bpId, detail: getInstanceServiceDisplayValue(inst), tone: 'brand' },
-    { label: 'Operator', value: inst.operator ? truncateAddress(inst.operator) : 'unknown', detail: inst.operator ?? 'operator not resolved', tone: inst.operator ? 'ready' : 'muted' },
-    { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted' },
+    { label: 'Instance ID', value: inst.id, detail: getInstanceSandboxDisplayValue(inst), tone: 'brand', identity: getBlueprintIdentity(bpId) },
+    { label: 'Blueprint', value: getBlueprint(bpId)?.name ?? bpId, detail: getInstanceServiceDisplayValue(inst), tone: 'brand', identity: getBlueprintIdentity(bpId) },
+    { label: 'Operator', value: inst.operator ? truncateAddress(inst.operator) : 'unknown', detail: inst.operator ?? 'operator not resolved', tone: inst.operator ? 'ready' : 'muted', identity: getOperatorIdentity(inst.operator) },
+    { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted', identity: getStatusIdentity('processing') },
   ];
   const storageRows: WorkspaceRailRow[] = [
-    { label: 'Image', value: inst.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand' },
-    { label: 'Disk', value: `${inst.diskGb} GB`, detail: 'allocated volume', tone: 'ready' },
-    { label: 'Lifecycle', value: inst.status, detail: new Date(inst.createdAt).toLocaleString(), tone: statusTone },
-    { label: 'Secrets', value: inst.credentialsAvailable === false ? 'missing' : 'available', detail: inst.teeEnabled ? 'TEE protected' : 'operator encrypted', tone: inst.credentialsAvailable === false ? 'warn' : 'ready' },
+    { label: 'Image', value: inst.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand', identity: getImageIdentity(inst.image) },
+    { label: 'Disk', value: `${inst.diskGb} GB`, detail: 'allocated volume', tone: 'ready', identity: getResourceIdentity('disk') },
+    { label: 'Lifecycle', value: inst.status, detail: new Date(inst.createdAt).toLocaleString(), tone: statusTone, identity: getStatusIdentity(inst.status) },
+    { label: 'Secrets', value: inst.credentialsAvailable === false ? 'missing' : 'available', detail: inst.teeEnabled ? 'TEE protected' : 'operator encrypted', tone: inst.credentialsAvailable === false ? 'warn' : 'ready', identity: getSecurityIdentity(inst.credentialsAvailable === false ? 'session' : inst.teeEnabled ? 'attested' : 'secrets') },
   ];
   const workflowCreateHref = inst.status === 'running' && inst.serviceId
     ? `/workflows/create?target=${encodeURIComponent(`instance:${inst.id}`)}`
@@ -583,15 +598,7 @@ export default function InstanceDetail() {
       {/* Header */}
       <div className="flex items-start mb-6">
         <div className="flex items-center gap-4">
-          <div className={cn(
-            'w-14 h-14 rounded-xl flex items-center justify-center',
-            inst.status === 'running' ? 'bg-teal-500/10' : inst.status === 'creating' ? 'bg-violet-500/10' : 'bg-cloud-elements-background-depth-3',
-          )}>
-            <div className={cn(
-              inst.teeEnabled ? 'i-ph:shield-check text-2xl' : 'i-ph:cube text-2xl',
-              inst.status === 'running' ? 'text-teal-400' : inst.status === 'creating' ? 'text-violet-400' : 'text-cloud-elements-textTertiary',
-            )} />
-          </div>
+          <IdentityMark identity={getBlueprintIdentity(bpId)} size="lg" className="h-14 w-14 rounded-[6px]" />
           <ResourceIdentity
             name={inst.name}
             status={inst.status}
@@ -662,20 +669,21 @@ export default function InstanceDetail() {
               <CardTitle>Instance Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <LabeledValueRow label="ID" value={inst.id} mono copyable />
+              <LabeledValueRow label="ID" value={inst.id} mono copyable identity={getBlueprintIdentity(bpId)} />
               <LabeledValueRow
                 label="Sandbox"
                 value={getInstanceSandboxDisplayValue(inst)}
                 mono={!!inst.sandboxId}
                 copyable={!!inst.sandboxId}
                 copyValue={inst.sandboxId ?? undefined}
+                identity={getStatusIdentity(inst.sandboxId ? 'running' : 'creating')}
               />
-              <LabeledValueRow label="Image" value={inst.image} mono copyable />
-              <LabeledValueRow label="CPU" value={`${inst.cpuCores} cores`} />
-              <LabeledValueRow label="Memory" value={`${inst.memoryMb} MB`} />
-              <LabeledValueRow label="Disk" value={`${inst.diskGb} GB`} />
+              <LabeledValueRow label="Image" value={inst.image} mono copyable identity={getImageIdentity(inst.image)} />
+              <LabeledValueRow label="CPU" value={`${inst.cpuCores} cores`} identity={getResourceIdentity('cpu')} />
+              <LabeledValueRow label="Memory" value={`${inst.memoryMb} MB`} identity={getResourceIdentity('memory')} />
+              <LabeledValueRow label="Disk" value={`${inst.diskGb} GB`} identity={getResourceIdentity('disk')} />
               <LabeledValueRow label="Created" value={new Date(inst.createdAt).toLocaleString()} />
-              <LabeledValueRow label="Blueprint" value={getBlueprint(bpId)?.name ?? bpId} />
+              <LabeledValueRow label="Blueprint" value={getBlueprint(bpId)?.name ?? bpId} identity={getBlueprintIdentity(bpId)} />
               <LabeledValueRow label="Service" value={getInstanceServiceDisplayValue(inst)} />
             </CardContent>
           </Card>
@@ -690,6 +698,7 @@ export default function InstanceDetail() {
                 mono
                 copyable={!!inst.operator}
                 copyValue={inst.operator}
+                identity={getOperatorIdentity(inst.operator)}
               />
               {inst.txHash && (
                 <LabeledValueRow
