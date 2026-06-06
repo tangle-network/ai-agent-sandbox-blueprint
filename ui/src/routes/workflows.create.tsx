@@ -430,7 +430,7 @@ export default function WorkflowCreate() {
                 <Input
                   value={triggerConfig}
                   onChange={(event) => setTriggerConfig(event.target.value)}
-                  placeholder="0 */6 * * *"
+                  placeholder="0 */6 * * * *"
                 />
               </div>
             )}

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
-import { useExposedPorts } from './useExposedPorts';
+import { normalizeExposedPorts, useExposedPorts } from './useExposedPorts';
 
 type OperatorApiCall = (
   action: string,
@@ -73,6 +73,20 @@ describe('successful fetch', () => {
       expect(result.current).toEqual(MOCK_PORTS);
     });
   });
+
+  it('normalizes the operator API object response shape', async () => {
+    mockApiCall.mockResolvedValue(new Response(JSON.stringify({
+      ports: {
+        '3000': 32001,
+        '8080': { host_port: 32002, protocol: 'tcp' },
+      },
+    })));
+    const { result } = setup('running');
+
+    await waitFor(() => {
+      expect(result.current).toEqual(MOCK_PORTS);
+    });
+  });
 });
 
 describe('error handling', () => {
@@ -85,7 +99,7 @@ describe('error handling', () => {
     expect(result.current).toBeNull();
   });
 
-  it('ignores non-array response data', async () => {
+  it('ignores response data without usable ports', async () => {
     mockApiCall.mockResolvedValue(new Response(JSON.stringify({ error: 'not found' })));
     const { result } = setup('running');
 
@@ -108,5 +122,31 @@ describe('cleanup', () => {
 
     // result.current is the last value before unmount — still null
     expect(result.current).toBeNull();
+  });
+});
+
+describe('normalizeExposedPorts', () => {
+  it('accepts array responses', () => {
+    expect(normalizeExposedPorts(MOCK_PORTS)).toEqual(MOCK_PORTS);
+  });
+
+  it('accepts { ports } map responses from the operator API', () => {
+    expect(normalizeExposedPorts({
+      ports: {
+        3000: 32001,
+        8080: { host_port: 32002, protocol: 'tcp' },
+      },
+    })).toEqual(MOCK_PORTS);
+  });
+
+  it('drops invalid port entries', () => {
+    expect(normalizeExposedPorts({
+      ports: {
+        0: 32001,
+        65536: 32002,
+        3000: 'nope',
+        8080: 32002,
+      },
+    })).toEqual([{ container_port: 8080, host_port: 32002, protocol: 'tcp' }]);
   });
 });

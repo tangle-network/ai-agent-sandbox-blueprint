@@ -118,7 +118,7 @@ const SANDBOX_JOBS: JobDefinition[] = [
         { label: 'Webhook', value: 'webhook' },
         { label: 'Manual', value: 'manual' },
       ] },
-      { name: 'triggerConfig', label: 'Trigger Config', type: 'text', placeholder: '0 */6 * * *', helperText: 'Cron expression or webhook URL', abiType: 'string', abiParam: 'trigger_config' },
+      { name: 'triggerConfig', label: 'Trigger Config', type: 'text', placeholder: '0 */6 * * * *', helperText: 'Cron expression or webhook URL', abiType: 'string', abiParam: 'trigger_config' },
       { name: 'sandboxConfigJson', label: 'Sandbox Config (JSON)', type: 'json', placeholder: '{}', abiType: 'string', abiParam: 'sandbox_config_json' },
       { name: 'targetKind', label: 'Target Kind', type: 'number', defaultValue: 0, abiType: 'uint8', abiParam: 'target_kind', internal: true },
       { name: 'targetSandboxId', label: 'Target Sandbox ID', type: 'text', defaultValue: '', abiType: 'string', abiParam: 'target_sandbox_id', internal: true },

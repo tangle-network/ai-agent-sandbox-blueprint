@@ -33,6 +33,11 @@ const SIDECAR_IMAGE_OPTIONS = [
   { label: 'Local: blueprint-sidecar:all-harness', value: 'blueprint-sidecar:all-harness' },
 ];
 
+const RUNTIME_BACKEND_OPTIONS = [
+  { label: 'Docker', value: 'docker' },
+  { label: 'Firecracker', value: 'firecracker' },
+];
+
 const PRESET_BLUEPRINTS = {
   sandbox: {
     id: 'ai-agent-sandbox-blueprint',
@@ -52,7 +57,7 @@ const PRESET_BLUEPRINTS = {
         fields: [
           { name: 'name', label: 'Sandbox Name', type: 'text', required: true },
           { name: 'image', label: 'Docker Image', type: 'combobox', defaultValue: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', options: SIDECAR_IMAGE_OPTIONS },
-          { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: [{ label: 'Docker', value: 'docker' }] },
+          { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: RUNTIME_BACKEND_OPTIONS },
           { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', options: [{ label: 'Default', value: 'default' }] },
           { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', internal: true },
           { name: 'metadataJson', label: 'Metadata (JSON)', type: 'json', defaultValue: '{}' },
@@ -89,7 +94,7 @@ const PRESET_BLUEPRINTS = {
         fields: [
           { name: 'name', label: 'Instance Name', type: 'text', required: true },
           { name: 'image', label: 'Docker Image', type: 'combobox', defaultValue: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', options: SIDECAR_IMAGE_OPTIONS },
-          { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: [{ label: 'Docker', value: 'docker' }] },
+          { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: RUNTIME_BACKEND_OPTIONS },
           { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', options: [{ label: 'Default', value: 'default' }] },
           { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', internal: true },
           { name: 'metadataJson', label: 'Metadata (JSON)', type: 'json', defaultValue: '{}' },
@@ -135,7 +140,7 @@ const PRESET_BLUEPRINTS = {
         fields: [
           { name: 'name', label: 'Instance Name', type: 'text', required: true },
           { name: 'image', label: 'Docker Image', type: 'combobox', defaultValue: 'ghcr.io/tangle-network/blueprint-sidecar:all-harness', options: SIDECAR_IMAGE_OPTIONS },
-          { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: [{ label: 'Docker', value: 'docker' }] },
+          { name: 'runtimeBackend', label: 'Runtime Backend', type: 'select', defaultValue: 'docker', options: RUNTIME_BACKEND_OPTIONS },
           { name: 'stack', label: 'Stack', type: 'select', defaultValue: 'default', options: [{ label: 'Default', value: 'default' }] },
           { name: 'agentIdentifier', label: 'Agent Identifier', type: 'text', internal: true },
           { name: 'metadataJson', label: 'Metadata (JSON)', type: 'json', defaultValue: '{}' },
@@ -467,5 +472,22 @@ describe('CreatePage agent configuration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(screen.queryByText(/Agent:/)).not.toBeInTheDocument();
+  });
+
+  it('keeps exposed ports configurable for Firecracker launches', () => {
+    renderSubject('?blueprint=ai-agent-instance-blueprint');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Firecracker' }));
+    const ports = screen.getByLabelText('Exposed Ports') as HTMLInputElement;
+
+    expect(ports).not.toBeDisabled();
+    expect(screen.getByText('Firecracker DNAT')).toBeInTheDocument();
+  });
+
+  it('exposes all-harness and computer-use capability controls', () => {
+    renderSubject('?blueprint=ai-agent-instance-blueprint');
+
+    expect(screen.getByRole('switch', { name: /All-Harness Runtime/i })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: /Computer Use/i })).toBeInTheDocument();
   });
 });

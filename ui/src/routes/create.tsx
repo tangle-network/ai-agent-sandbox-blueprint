@@ -88,6 +88,16 @@ function parseCapabilitiesJson(value: unknown): Set<string> {
   }
 }
 
+function setCapabilityJson(value: unknown, capability: string, enabled: boolean): string {
+  const capabilities = parseCapabilitiesJson(value);
+  if (enabled) {
+    capabilities.add(capability);
+  } else {
+    capabilities.delete(capability);
+  }
+  return JSON.stringify(Array.from(capabilities).sort());
+}
+
 function formatCapacityValue(value: number | bigint | undefined) {
   if (value == null) return '--';
   return typeof value === 'bigint' ? value.toString() : String(value);
@@ -233,11 +243,12 @@ export default function CreatePage() {
     };
   }, [createJob, isTeeBlueprint]);
 
-  // Extra ports input (not an ABI field — merged into metadataJson before deploy)
+  // Extra ports input (not an ABI field; merged into metadataJson before deploy)
   const [portsInput, setPortsInput] = useState('');
-  const allHarnessEnabled = parseCapabilitiesJson(values.capabilitiesJson).has('all_harness');
+  const capabilities = parseCapabilitiesJson(values.capabilitiesJson);
+  const allHarnessEnabled = capabilities.has('all_harness');
+  const computerUseEnabled = capabilities.has('computer_use');
   const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
-  const supportsMetadataPorts = runtimeBackend !== 'firecracker';
   const selectedImage = String(values.image || '');
   const supportsAgentConfiguration = !!createJob?.fields.some((field) => field.name === 'agentIdentifier');
   const usesBundledAgentSelector = supportsAgentConfiguration && isBundledSandboxImage(selectedImage);
@@ -258,13 +269,6 @@ export default function CreatePage() {
       }
     }
   }, [runtimeBackend, values.teeRequired, values.teeType, onChange]);
-
-  // Firecracker backend does not support metadata_json.ports in this runtime.
-  useEffect(() => {
-    if (!supportsMetadataPorts && portsInput.trim().length > 0) {
-      setPortsInput('');
-    }
-  }, [supportsMetadataPorts, portsInput]);
 
   useEffect(() => {
     if (!usesBundledAgentSelector) return;
@@ -288,16 +292,18 @@ export default function CreatePage() {
     }
 
     metadata.runtime_backend = runtimeBackend;
-    if (supportsMetadataPorts && ports.length > 0) {
+    if (ports.length > 0) {
       metadata.ports = ports;
     } else {
       delete metadata.ports;
     }
 
+    const nextCapabilities = Array.from(parseCapabilitiesJson(values.capabilitiesJson)).sort();
+
     const nextValues: Record<string, unknown> = {
       ...values,
       metadataJson: JSON.stringify(metadata),
-      capabilitiesJson: allHarnessEnabled ? JSON.stringify(['all_harness']) : JSON.stringify([]),
+      capabilitiesJson: JSON.stringify(nextCapabilities),
       // Keep the deprecated ABI field pinned for backward-compatible encoding.
       webTerminalEnabled: true,
     };
@@ -309,7 +315,7 @@ export default function CreatePage() {
     }
 
     return nextValues;
-  }, [runtimeBackend, supportsMetadataPorts, values, portsInput, allHarnessEnabled]);
+  }, [runtimeBackend, values, portsInput]);
 
   // Unified deploy hook — manages both submitJob and requestService paths
   const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values: mergedValues, infra, validate, capacity });
@@ -367,7 +373,7 @@ export default function CreatePage() {
   }, [validate, values.name]);
 
   const showConnectPanel = !isConnected && !address && !isReconnectingWallet;
-  const parsedPorts = supportsMetadataPorts ? parsePortsInput(portsInput) : [];
+  const parsedPorts = parsePortsInput(portsInput);
 
   return (
     <ConsolePage
@@ -429,8 +435,8 @@ export default function CreatePage() {
                 usesBundledAgentSelector={usesBundledAgentSelector}
                 configuredAgentIdentifier={configuredAgentIdentifier}
                 allHarnessEnabled={allHarnessEnabled}
+                computerUseEnabled={computerUseEnabled}
                 portsInput={portsInput}
-                supportsMetadataPorts={supportsMetadataPorts}
                 isTeeBlueprint={isTeeBlueprint}
                 onChange={onChange}
                 onPortsChange={setPortsInput}
@@ -860,8 +866,8 @@ function LaunchSpecComposer({
   usesBundledAgentSelector,
   configuredAgentIdentifier,
   allHarnessEnabled,
+  computerUseEnabled,
   portsInput,
-  supportsMetadataPorts,
   isTeeBlueprint,
   onChange,
   onPortsChange,
@@ -880,8 +886,8 @@ function LaunchSpecComposer({
   usesBundledAgentSelector: boolean;
   configuredAgentIdentifier: string;
   allHarnessEnabled: boolean;
+  computerUseEnabled: boolean;
   portsInput: string;
-  supportsMetadataPorts: boolean;
   isTeeBlueprint: boolean;
   onChange: (name: string, value: unknown) => void;
   onPortsChange: (value: string) => void;
@@ -972,8 +978,15 @@ function LaunchSpecComposer({
         <div className="grid gap-3 lg:grid-cols-2">
           <AllHarnessCapabilityField
             enabled={allHarnessEnabled}
-            onChange={(enabled) => onChange('capabilitiesJson', enabled ? JSON.stringify(['all_harness']) : JSON.stringify([]))}
+            onChange={(enabled) => onChange('capabilitiesJson', setCapabilityJson(values.capabilitiesJson, 'all_harness', enabled))}
           />
+          <ComputerUseCapabilityField
+            enabled={computerUseEnabled}
+            onChange={(enabled) => onChange('capabilitiesJson', setCapabilityJson(values.capabilitiesJson, 'computer_use', enabled))}
+          />
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
           <LaunchToggle
             label="Enable SSH"
             checked={Boolean(values.sshEnabled)}
@@ -1016,9 +1029,8 @@ function LaunchSpecComposer({
               label="Exposed Ports"
               value={portsInput}
               onChange={(event) => onPortsChange(event.target.value)}
-              disabled={!supportsMetadataPorts}
-              placeholder={supportsMetadataPorts ? '3000, 8080, 5432' : 'Disabled for Firecracker'}
-              detail={supportsMetadataPorts ? 'comma separated' : 'not supported'}
+              placeholder="3000, 8080, 5432"
+              detail={runtimeBackend === 'firecracker' ? 'Firecracker DNAT' : 'operator proxy'}
             />
             <LaunchActionButton variant="secondary" className="w-full" onClick={onAdvancedOpen}>
               <span className="i-ph:sliders-horizontal text-base" />
@@ -1246,6 +1258,23 @@ function AllHarnessCapabilityField({
       checked={enabled}
       onChange={onChange}
       detail="Request Claude, Codex, opencode, Kimi, and Gemini harnesses in the sidecar image."
+    />
+  );
+}
+
+function ComputerUseCapabilityField({
+  enabled,
+  onChange,
+}: {
+  enabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  return (
+    <LaunchToggle
+      label="Computer Use"
+      checked={enabled}
+      onChange={onChange}
+      detail="Enable browser/computer-use tools for visual agent tasks when the sidecar image supports them."
     />
   );
 }
