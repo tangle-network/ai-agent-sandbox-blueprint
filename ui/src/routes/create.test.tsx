@@ -9,6 +9,7 @@ const {
   mockNavigate,
   mockUpdateInfra,
   mockValidateService,
+  serviceValidationRef,
   mockDeploy,
   mockDeployReset,
 } = vi.hoisted(() => ({
@@ -24,6 +25,12 @@ const {
   mockNavigate: vi.fn(),
   mockUpdateInfra: vi.fn(),
   mockValidateService: vi.fn(),
+  serviceValidationRef: {
+    current: {
+      serviceInfo: null as null | Record<string, unknown>,
+      error: null as string | null,
+    },
+  },
   mockDeploy: vi.fn(),
   mockDeployReset: vi.fn(),
 }));
@@ -326,8 +333,8 @@ vi.mock('@tangle-network/blueprint-ui', async () => {
     useServiceValidation: () => ({
       validate: mockValidateService,
       isValidating: false,
-      serviceInfo: null,
-      error: null,
+      serviceInfo: serviceValidationRef.current.serviceInfo,
+      error: serviceValidationRef.current.error,
     }),
     formatCost: () => '0 TANGLE',
     getAllBlueprints: () => Object.values(PRESET_BLUEPRINTS),
@@ -337,7 +344,13 @@ vi.mock('@tangle-network/blueprint-ui', async () => {
 });
 
 vi.mock('~/components/shared/InfrastructureModal', () => ({
-  InfrastructureModal: () => null,
+  InfrastructureModal: ({
+    open,
+    initialMode,
+  }: {
+    open: boolean;
+    initialMode?: 'existing' | 'new';
+  }) => open ? <div data-testid="infra-modal">Infrastructure {initialMode}</div> : null,
   InfraBar: () => <div>Infra Bar</div>,
 }));
 
@@ -430,6 +443,7 @@ describe('CreatePage agent configuration', () => {
     mockNavigate.mockReset();
     mockUpdateInfra.mockReset();
     mockValidateService.mockReset();
+    serviceValidationRef.current = { serviceInfo: null, error: null };
     mockDeploy.mockReset();
     mockDeployReset.mockReset();
   });
@@ -494,5 +508,27 @@ describe('CreatePage agent configuration', () => {
 
     expect(screen.getByRole('switch', { name: /All-Harness Runtime/i })).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: /Computer Use/i })).toBeInTheDocument();
+  });
+
+  it('turns a missing sandbox service into a direct service creation path', () => {
+    infraStateRef.current = {
+      blueprintId: '10',
+      serviceId: '1',
+      serviceValidated: false,
+      serviceInfo: null,
+    };
+    serviceValidationRef.current = { serviceInfo: null, error: 'Service not found' };
+
+    renderSubject('?blueprint=ai-agent-sandbox-blueprint');
+
+    fireEvent.change(screen.getByLabelText('Sandbox Name'), { target: { value: 'Cloud Sandbox' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(screen.getByText('Service #1 not found')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Operators' }));
+    expect(mockNavigate).toHaveBeenCalledWith('/operators');
+
+    fireEvent.click(screen.getByRole('button', { name: /Create Service/i }));
+    expect(screen.getByTestId('infra-modal')).toHaveTextContent('Infrastructure new');
   });
 });

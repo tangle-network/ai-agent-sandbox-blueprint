@@ -65,6 +65,7 @@ const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }
 // ── Wizard Steps ──
 
 type WizardStep = 'blueprint' | 'configure' | 'deploy';
+type ServiceSetupMode = 'existing' | 'new';
 
 function parsePortsInput(value: string): number[] {
   return value
@@ -176,9 +177,11 @@ export default function CreatePage() {
   const [selectedBlueprint, setSelectedBlueprint] = useState<BlueprintDefinition | undefined>(preselected);
   const [step, setStep] = useState<WizardStep>(preselected ? 'configure' : 'blueprint');
   const [showInfra, setShowInfra] = useState(false);
+  const [infraMode, setInfraMode] = useState<ServiceSetupMode>('existing');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [attemptedContinue, setAttemptedContinue] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const requestedServiceMode = searchParams.get('serviceMode');
 
   // Refs for values that should not re-trigger the init effect
   const addressRef = useRef(address);
@@ -199,6 +202,12 @@ export default function CreatePage() {
       }
     }
   }, [preselected]);
+
+  useEffect(() => {
+    if (requestedServiceMode !== 'new') return;
+    setInfraMode('new');
+    setShowInfra(true);
+  }, [requestedServiceMode]);
 
   // Sync service validation result back to infraStore so useCreateDeploy can read it.
   // useServiceValidation stores results in local state; useCreateDeploy reads infra.serviceInfo.
@@ -371,6 +380,11 @@ export default function CreatePage() {
     if (validate()) setStep('deploy');
   }, [validate, values.name]);
 
+  const openInfra = useCallback((mode: ServiceSetupMode = 'existing') => {
+    setInfraMode(mode);
+    setShowInfra(true);
+  }, []);
+
   const showConnectPanel = !isConnected && !address && !isReconnectingWallet;
   const parsedPorts = parsePortsInput(portsInput);
 
@@ -379,7 +393,7 @@ export default function CreatePage() {
       title="Launch Workspace"
       eyebrow="Tangle agent compute"
       actions={step !== 'blueprint' ? (
-        <LaunchActionButton variant="secondary" onClick={() => setShowInfra(true)}>
+        <LaunchActionButton variant="secondary" onClick={() => openInfra('existing')}>
           <span className="i-ph:sliders-horizontal text-base" />
           Infrastructure
         </LaunchActionButton>
@@ -467,6 +481,9 @@ export default function CreatePage() {
               serviceError={serviceError}
               onBack={() => { setStep('configure'); deployReset(); }}
               onDeploy={deploy.deploy}
+              onCreateService={() => openInfra('new')}
+              onOpenInfra={() => openInfra('existing')}
+              onOpenOperators={() => navigate('/operators')}
               onViewDetail={() => {
                 const key = isSandbox
                   ? deploy.sandboxDraftKey
@@ -474,7 +491,6 @@ export default function CreatePage() {
                 if (key) navigate(`/${isSandbox ? 'sandboxes' : 'instances'}/${encodeURIComponent(key)}`);
                 else navigate(isSandbox ? '/sandboxes' : '/instances');
               }}
-              onOpenInfra={() => setShowInfra(true)}
               onProvisionReady={(sandboxId, sidecarUrl) => {
                 if (isSandbox) {
                   if (deploy.sandboxDraftKey) {
@@ -508,7 +524,7 @@ export default function CreatePage() {
           operatorsError={deploy.operatorsError}
           agentIdentifier={configuredAgentIdentifier}
           ports={parsedPorts}
-          onOpenInfra={() => setShowInfra(true)}
+          onOpenInfra={() => openInfra('existing')}
         />
       </div>
 
@@ -524,7 +540,7 @@ export default function CreatePage() {
         />
       ) : null}
 
-      <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} />
+      <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} initialMode={infraMode} />
     </ConsolePage>
   );
 }
@@ -1490,8 +1506,10 @@ interface DeployStepProps {
   serviceError: string | null;
   onBack: () => void;
   onDeploy: () => void;
-  onViewDetail: () => void;
+  onCreateService: () => void;
   onOpenInfra: () => void;
+  onOpenOperators: () => void;
+  onViewDetail: () => void;
   onProvisionReady: (sandboxId: string, sidecarUrl: string) => void;
 }
 
@@ -1500,7 +1518,7 @@ function DeployStep({
   capacity, provisionEstimate, provisionPriceFormatted,
   hasProvisionRfq, priceLoading,
   serviceInfo, serviceValidating, serviceError,
-  onBack, onDeploy, onViewDetail, onOpenInfra, onProvisionReady,
+  onBack, onDeploy, onCreateService, onOpenInfra, onOpenOperators, onViewDetail, onProvisionReady,
 }: DeployStepProps) {
   const { address, isConnected, status: walletStatus } = useAccount();
   const isReconnecting = walletStatus === 'reconnecting';
@@ -1558,6 +1576,10 @@ function DeployStep({
   const activeConfigCount = activeExtras.length + (configuredAgentIdentifier ? 1 : 0);
   const serviceLabel = isNewService ? 'new service' : `service ${infra.serviceId || '--'}`;
   const deploymentIntent = isNewService ? `Create service + ${entityLabel}` : `Deploy ${entityLabel}`;
+  const serviceNeedsSetup = isSandbox && status === 'idle' && (
+    !!serviceError ||
+    !!(serviceInfo && (!serviceInfo.active || !serviceInfo.permitted))
+  );
 
   const otherJobs = blueprint.jobs.filter((j) => j.id !== job.id);
 
@@ -1756,23 +1778,24 @@ function DeployStep({
         <InstanceProvisionCard provision={provision} />
       )}
 
-      {/* ── Operators (instance mode, new service, idle) ── */}
-      {isNewService && status === 'idle' && (
+      {/* ── Operators (new service or missing cloud service, idle) ── */}
+      {(isNewService || serviceNeedsSetup) && status === 'idle' && (
         <OperatorList
           operators={operators}
           operatorsLoading={operatorsLoading}
           operatorsError={operatorsError}
           operatorCount={operatorCount}
           blueprintId={infra.blueprintId}
+          purpose={serviceNeedsSetup ? 'service' : 'instance'}
         />
       )}
 
       {/* ── Service warning (sandbox mode only) ── */}
-      {status === 'idle' && !isInstanceMode && (serviceError || (serviceInfo && (!serviceInfo.active || !serviceInfo.permitted))) && (
+      {serviceNeedsSetup && (
         <div className="rounded-none border border-amber-400/25 bg-amber-400/[0.06] p-4">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <div className="i-ph:warning-circle text-lg text-amber-400" />
-            <div className="flex-1">
+            <div className="min-w-0 flex-1">
               <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
                 {serviceError
                   ? `Service #${infra.serviceId} not found`
@@ -1781,10 +1804,17 @@ function DeployStep({
                     : `You're not a permitted caller on service #${infra.serviceId}`}
               </p>
               <p className="mt-0.5 text-xs text-[var(--sandbox-console-muted)]">
-                Open Infrastructure Settings to create a new service or verify a different one.
+                Capacity is available, but this blueprint still needs an active service before sandbox jobs can run.
               </p>
             </div>
-            <LaunchActionButton variant="secondary" size="sm" onClick={onOpenInfra}>Settings</LaunchActionButton>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <LaunchActionButton size="sm" onClick={onCreateService}>
+                <span className="i-ph:plus-circle text-sm" />
+                Create Service
+              </LaunchActionButton>
+              <LaunchActionButton variant="secondary" size="sm" onClick={onOpenInfra}>Verify ID</LaunchActionButton>
+              <LaunchActionButton variant="secondary" size="sm" onClick={onOpenOperators}>Operators</LaunchActionButton>
+            </div>
           </div>
         </div>
       )}
@@ -2056,12 +2086,14 @@ function OperatorList({
   operatorsError,
   operatorCount,
   blueprintId,
+  purpose = 'instance',
 }: {
   operators: DiscoveredOperator[];
   operatorsLoading: boolean;
   operatorsError?: Error | null;
   operatorCount: bigint;
   blueprintId: string;
+  purpose?: 'instance' | 'service';
 }) {
   const titleCount = operatorsLoading
     ? '...'
@@ -2110,7 +2142,9 @@ function OperatorList({
             </div>
           ))}
           <p className="mt-2 text-[11px] text-[var(--sandbox-console-muted)]">
-            A new service will be created with these operators. Your sandbox config will be passed as service request inputs.
+            {purpose === 'service'
+              ? 'Use Create Service to request an active cloud service with these registered operators, then deploy the sandbox into that service.'
+              : 'A new service will be created with these operators. Your sandbox config will be passed as service request inputs.'}
           </p>
         </div>
       )}

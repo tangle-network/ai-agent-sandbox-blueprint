@@ -15,7 +15,7 @@ const navItems = [
   { label: 'Instances', href: '/instances', icon: 'i-ph:cube' },
   { label: 'Automation', href: '/workflows', icon: 'i-ph:flow-arrow' },
   { label: 'Activity', href: '/activity', icon: 'i-ph:pulse' },
-  { label: 'Capacity', href: '/operators', icon: 'i-ph:hard-drives' },
+  { label: 'Operators', href: '/operators', icon: 'i-ph:users-three' },
   { label: 'Launch', href: '/create', icon: 'i-ph:plus-circle' },
 ];
 

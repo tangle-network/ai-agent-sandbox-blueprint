@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useStore } from '@nanostores/react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { decodeEventLog } from 'viem';
 import {
   Dialog,
   DialogContent,
@@ -18,24 +19,67 @@ import { useServiceValidation } from '@tangle-network/blueprint-ui';
 import { useOperators, type DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { useQuotes, formatCost } from '@tangle-network/blueprint-ui';
 import { tangleServicesAbi } from '@tangle-network/blueprint-ui';
-import { getAddresses } from '@tangle-network/blueprint-ui';
+import { getAddresses, publicClient } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { BlueprintBadgeInline } from './InfraSummaryBits';
+import { extractServiceRequestId } from '~/lib/contracts/serviceEvents';
 import type { Address } from 'viem';
 
 interface InfrastructureModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialMode?: ServiceMode;
 }
 
 type ServiceMode = 'existing' | 'new';
 
-export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalProps) {
+type ServiceReceiptLog = {
+  data: `0x${string}`;
+  topics: readonly `0x${string}`[];
+};
+
+function getRequestIdFromServiceReceiptLogs(logs: ServiceReceiptLog[]): number | null {
+  for (const log of logs) {
+    const requestId = extractServiceRequestId(log);
+    if (requestId != null) return requestId;
+  }
+
+  return null;
+}
+
+async function resolveActivatedServiceId(requestId: number): Promise<string | null> {
+  const addrs = getAddresses();
+  const logs = await publicClient.getLogs({
+    address: addrs.services,
+    fromBlock: 0n,
+    toBlock: 'latest',
+  });
+
+  for (const log of logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: tangleServicesAbi,
+        data: log.data,
+        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
+      });
+      if (decoded.eventName !== 'ServiceActivated') continue;
+      if (!('requestId' in decoded.args) || !('serviceId' in decoded.args)) continue;
+      if (Number(decoded.args.requestId) !== requestId) continue;
+      return String(decoded.args.serviceId);
+    } catch {
+      // Ignore unrelated logs while scanning the service manager.
+    }
+  }
+
+  return null;
+}
+
+export function InfrastructureModal({ open, onOpenChange, initialMode = 'existing' }: InfrastructureModalProps) {
   const { address } = useAccount();
   const infra = useStore(infraStore);
   const [blueprintId, setBlueprintId] = useState(infra.blueprintId);
   const [serviceId, setServiceId] = useState(infra.serviceId);
-  const [mode, setMode] = useState<ServiceMode>('existing');
+  const [mode, setMode] = useState<ServiceMode>(initialMode);
   const { validate, isValidating, serviceInfo, error: validationError, reset: resetValidation } = useServiceValidation();
 
   // Operator discovery for "Create New"
@@ -46,7 +90,10 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
     error: operatorsError,
   } = useOperators(BigInt(blueprintId || '0'));
   const [selectedOperators, setSelectedOperators] = useState<Address[]>([]);
+  const [operatorSelectionTouched, setOperatorSelectionTouched] = useState(false);
   const [manualAddr, setManualAddr] = useState('');
+  const [resolvedServiceId, setResolvedServiceId] = useState<string | null>(null);
+  const wasOpenRef = useRef(false);
 
   // RFQ quotes — memoize filtered operators to prevent useQuotes from re-running every render
   const TTL_BLOCKS = 864000n; // ~30 days at 3s blocks
@@ -69,7 +116,37 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
 
   // Service creation TX
   const { writeContractAsync, data: createTxHash, isPending: isCreating } = useWriteContract();
-  const { isSuccess: createConfirmed } = useWaitForTransactionReceipt({ hash: createTxHash });
+  const {
+    data: createReceipt,
+    isSuccess: createConfirmed,
+    isLoading: createPending,
+  } = useWaitForTransactionReceipt({ hash: createTxHash });
+
+  const serviceRequestId = useMemo(() => {
+    if (!createReceipt?.logs) return null;
+    return getRequestIdFromServiceReceiptLogs(createReceipt.logs as ServiceReceiptLog[]);
+  }, [createReceipt]);
+
+  useEffect(() => {
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!justOpened) return;
+
+    setBlueprintId(infra.blueprintId);
+    setServiceId(infra.serviceId);
+    setMode(initialMode);
+    setSelectedOperators([]);
+    setOperatorSelectionTouched(false);
+    setManualAddr('');
+    setResolvedServiceId(null);
+    resetValidation();
+  }, [open, infra.blueprintId, infra.serviceId, initialMode, resetValidation]);
+
+  useEffect(() => {
+    if (mode !== 'new') return;
+    if (operatorSelectionTouched || selectedOperators.length > 0 || operators.length === 0) return;
+    setSelectedOperators([operators[0].address]);
+  }, [mode, operatorSelectionTouched, operators, selectedOperators.length]);
 
   // Handle Verify
   const handleVerify = useCallback(async () => {
@@ -99,6 +176,72 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
       });
     }
   }, [serviceId, blueprintId, address, validate, operators]);
+
+  const commitResolvedService = useCallback(async (nextServiceId: string) => {
+    setResolvedServiceId(nextServiceId);
+    setServiceId(nextServiceId);
+
+    try {
+      const info = await validate(BigInt(nextServiceId), address);
+      if (info?.active) {
+        const operatorInfos = info.operators
+          .map((addr) => {
+            const discovered = operators.find((op) => op.address === addr);
+            return { address: addr, rpcAddress: discovered?.rpcAddress ?? '' };
+          })
+          .filter((op) => op.rpcAddress);
+
+        updateInfra({
+          serviceId: nextServiceId,
+          blueprintId,
+          serviceValidated: true,
+          serviceInfo: {
+            active: info.active,
+            operatorCount: info.operatorCount,
+            owner: info.owner,
+            blueprintId: String(info.blueprintId),
+            permitted: info.permitted,
+            operators: operatorInfos,
+          },
+        });
+        return;
+      }
+    } catch {
+      // Keep the resolved ID selected even if validation needs a later retry.
+    }
+
+    updateInfra({
+      serviceId: nextServiceId,
+      blueprintId,
+      serviceValidated: false,
+    });
+  }, [address, blueprintId, operators, validate]);
+
+  useEffect(() => {
+    if (!open || !createConfirmed || serviceRequestId == null || resolvedServiceId) return;
+
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const nextServiceId = await resolveActivatedServiceId(serviceRequestId);
+        if (!cancelled && nextServiceId) {
+          await commitResolvedService(nextServiceId);
+        }
+      } catch {
+        // Service requests may need operator approval before activation.
+      }
+    };
+
+    void tick();
+    const intervalId = window.setInterval(() => {
+      void tick();
+    }, 5_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [commitResolvedService, createConfirmed, open, resolvedServiceId, serviceRequestId]);
 
   // Handle Create Service from quotes
   const handleCreateFromQuotes = useCallback(async () => {
@@ -175,6 +318,7 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
 
   // Toggle operator selection
   const toggleOperator = (addr: Address) => {
+    setOperatorSelectionTouched(true);
     setSelectedOperators((prev) =>
       prev.includes(addr) ? prev.filter((a) => a !== addr) : [...prev, addr],
     );
@@ -182,6 +326,7 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
 
   const addManualOperator = () => {
     if (/^0x[a-fA-F0-9]{40}$/.test(manualAddr) && !selectedOperators.includes(manualAddr as Address)) {
+      setOperatorSelectionTouched(true);
       setSelectedOperators((prev) => [...prev, manualAddr as Address]);
       setManualAddr('');
     }
@@ -205,7 +350,7 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
         <DialogHeader>
           <DialogTitle className="font-display">Infrastructure Settings</DialogTitle>
           <DialogDescription>
-            Configure the blueprint and service for sandbox provisioning
+            Select an active service or create one from registered operators.
           </DialogDescription>
         </DialogHeader>
 
@@ -250,7 +395,11 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
                 Use Existing
               </button>
               <button
-                onClick={() => { setMode('new'); resetValidation(); }}
+                onClick={() => {
+                  setMode('new');
+                  setOperatorSelectionTouched(false);
+                  resetValidation();
+                }}
                 className={cn(
                   'flex-1 py-2 px-3 rounded-lg text-sm font-display font-medium transition-all border',
                   mode === 'new'
@@ -458,18 +607,18 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
                         <Button
                           className="flex-1"
                           onClick={handleCreateFromQuotes}
-                          disabled={isCreating}
+                          disabled={isCreating || createPending}
                         >
-                          {isCreating ? 'Creating...' : `Create Service (${formatCost(totalCost)})`}
+                          {isCreating || createPending ? 'Creating...' : `Create Service (${formatCost(totalCost)})`}
                         </Button>
                       ) : (
                         <Button
                           className="flex-1"
                           variant="secondary"
                           onClick={handleRequestService}
-                          disabled={isCreating || selectedOperators.length === 0}
+                          disabled={isCreating || createPending || selectedOperators.length === 0}
                         >
-                          {isCreating ? 'Creating...' : 'Request Service (No Quotes)'}
+                          {isCreating || createPending ? 'Creating...' : 'Request Service (No Quotes)'}
                         </Button>
                       )}
                     </div>
@@ -478,9 +627,18 @@ export function InfrastructureModal({ open, onOpenChange }: InfrastructureModalP
                       <div className="glass-card rounded-lg p-3 border-teal-500/30 mt-3">
                         <div className="flex items-center gap-2">
                           <div className="i-ph:check-circle-fill text-sm text-teal-400" />
-                          <p className="text-xs text-cloud-elements-textPrimary">
-                            Service creation submitted. Watch for ServiceActivated event to get the new service ID.
-                          </p>
+                          <div className="min-w-0">
+                            <p className="text-xs text-cloud-elements-textPrimary">
+                              {resolvedServiceId
+                                ? `Service #${resolvedServiceId} is active and selected.`
+                                : serviceRequestId != null
+                                  ? `Service request #${serviceRequestId} submitted. Waiting for activation.`
+                                  : 'Service creation submitted. Waiting for activation.'}
+                            </p>
+                            {createTxHash ? (
+                              <p className="mt-1 truncate font-data text-[11px] text-cloud-elements-textTertiary">{createTxHash}</p>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
                     )}
