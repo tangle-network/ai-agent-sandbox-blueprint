@@ -1383,6 +1383,8 @@ function LaunchSummaryPanel({
             detail={`bp ${infra.blueprintId || '--'} / svc ${infra.serviceId || '--'}`}
             identity={{ label: 'Service', mark: 'SVC', detail: 'on-chain service', icon: 'i-ph:tree-structure', tone: serviceState === 'Blocked' ? 'danger' : 'brand' }}
             tone={serviceTone({ serviceValidating, serviceError, hasValidService, isNewService })}
+            actionLabel="Service settings"
+            onAction={onOpenInfra}
           />
           <SummaryRow
             label="Operators"
@@ -1406,12 +1408,6 @@ function LaunchSummaryPanel({
             tone={ports.length > 0 ? 'brand' : 'muted'}
           />
         </div>
-        <div className="border-t border-[var(--sandbox-console-border)] p-3">
-          <LaunchActionButton variant="secondary" size="sm" className="w-full" onClick={onOpenInfra}>
-            <span className="i-ph:sliders-horizontal text-sm" />
-            Infrastructure
-          </LaunchActionButton>
-        </div>
       </ConsoleSection>
     </aside>
   );
@@ -1423,12 +1419,16 @@ function SummaryRow({
   detail,
   identity,
   tone,
+  actionLabel,
+  onAction,
 }: {
   label: string;
   value: string;
   detail: string;
   identity?: IdentityMeta;
   tone: ConsoleTone;
+  actionLabel?: string;
+  onAction?: () => void;
 }) {
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 transition-colors hover:bg-[var(--sandbox-console-hover)]">
@@ -1443,8 +1443,20 @@ function SummaryRow({
           </span>
         </span>
       </span>
-      <span className={cn('max-w-52 text-right font-data text-xl font-bold leading-tight tracking-tight', executionMetricToneClass[tone])}>
-        {value}
+      <span className="flex min-w-0 flex-col items-end gap-2">
+        <span className={cn('max-w-52 text-right font-data text-xl font-bold leading-tight tracking-tight', executionMetricToneClass[tone])}>
+          {value}
+        </span>
+        {onAction && actionLabel ? (
+          <button
+            type="button"
+            onClick={onAction}
+            className="inline-flex h-8 items-center gap-1.5 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-2.5 font-display text-xs font-bold text-[var(--sandbox-console-secondary)] shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]"
+          >
+            <span className="i-ph:sliders-horizontal text-sm" />
+            {actionLabel}
+          </button>
+        ) : null}
       </span>
     </div>
   );

@@ -515,6 +515,17 @@ describe('CreatePage agent configuration', () => {
     expect(screen.getByRole('switch', { name: /Computer Use/i })).toBeInTheDocument();
   });
 
+  it('opens service settings from the deploy summary service row', () => {
+    renderSubject('?blueprint=ai-agent-sandbox-blueprint');
+
+    expect(screen.getByText('Deploy Summary')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Verify ID' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Service settings' }));
+
+    expect(screen.getByTestId('infra-modal')).toHaveTextContent('Infrastructure existing');
+  });
+
   it('turns a missing sandbox service into a direct service creation path', () => {
     infraStateRef.current = {
       blueprintId: '10',
