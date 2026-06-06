@@ -530,10 +530,38 @@ describe('CreatePage agent configuration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(screen.getByText('Service #1 not found')).toBeInTheDocument();
+    expect(screen.queryByText('Launch Mode')).not.toBeInTheDocument();
+    expect(screen.queryByText('Deploy Summary')).not.toBeInTheDocument();
+    expect(screen.getByText(/capacity is not the blocker/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Verify ID' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Choose service' })).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole('button', { name: 'Operators' }));
     expect(mockNavigate).toHaveBeenCalledWith('/operators');
 
-    fireEvent.click(screen.getByRole('button', { name: /Create Service/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Create service/i }));
     expect(screen.getByTestId('infra-modal')).toHaveTextContent('Infrastructure new');
+  });
+
+  it('explains permitted-caller failures without a vague not-permitted badge', () => {
+    infraStateRef.current = {
+      blueprintId: '10',
+      serviceId: '1',
+      serviceValidated: false,
+      serviceInfo: null,
+    };
+    serviceValidationRef.current = {
+      serviceInfo: { active: true, permitted: false },
+      error: null,
+    };
+
+    renderSubject('?blueprint=ai-agent-sandbox-blueprint');
+
+    fireEvent.change(screen.getByLabelText('Sandbox Name'), { target: { value: 'Cloud Sandbox' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(screen.getByText('Wallet not permitted on service #1')).toBeInTheDocument();
+    expect(screen.getByText(/cannot submit jobs to this service/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Not permitted$/i)).not.toBeInTheDocument();
   });
 });

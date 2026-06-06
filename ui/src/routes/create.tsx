@@ -26,6 +26,7 @@ import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { EnvEditor } from '~/components/shared/EnvEditor';
 import { ConnectWalletPanel } from '~/components/shared/ConnectWalletPanel';
+import { truncateAddress } from '~/lib/utils/truncate-address';
 import {
   IdentityMark,
   OperatorIdentity,
@@ -424,23 +425,25 @@ export default function CreatePage() {
       actions={step !== 'blueprint' ? (
         <LaunchActionButton variant="secondary" onClick={() => openInfra('existing')}>
           <span className="i-ph:sliders-horizontal text-base" />
-          Infrastructure
+          {step === 'deploy' ? 'Service settings' : 'Infrastructure'}
         </LaunchActionButton>
       ) : null}
     >
-      <div className="grid min-h-full gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className={cn('grid min-h-full gap-5', step !== 'deploy' && 'xl:grid-cols-[minmax(0,1fr)_360px]')}>
         <main className="min-w-0 space-y-5">
-          {showConnectPanel && (
+          {showConnectPanel && step !== 'deploy' && (
             <ConnectWalletPanel
               description="Provisioning a sandbox or instance requires a connected wallet on Tangle Network. You can browse blueprints below, but deploying will be blocked until you connect."
             />
           )}
 
-          <LaunchModeStrip
-            blueprints={blueprints}
-            selectedBlueprint={selectedBlueprint}
-            onSelect={handleSelectBlueprint}
-          />
+          {step !== 'deploy' ? (
+            <LaunchModeStrip
+              blueprints={blueprints}
+              selectedBlueprint={selectedBlueprint}
+              onSelect={handleSelectBlueprint}
+            />
+          ) : null}
 
           {step === 'blueprint' && (
             <ConsoleSection title="Next">
@@ -534,27 +537,29 @@ export default function CreatePage() {
           )}
         </main>
 
-        <LaunchSummaryPanel
-          step={step}
-          selectedBlueprint={selectedBlueprint}
-          entityLabel={entityLabel}
-          runtimeBackend={runtimeBackend}
-          infra={infra}
-          capacity={capacity}
-          isConnected={isConnected}
-          isReconnectingWallet={isReconnectingWallet}
-          hasValidService={deploy.hasValidService}
-          isNewService={deploy.isNewService}
-          serviceValidating={serviceValidating}
-          serviceError={serviceError}
-          operatorsCount={deploy.operators.length}
-          operatorCount={deploy.operatorCount}
-          operatorsLoading={deploy.operatorsLoading}
-          operatorsError={deploy.operatorsError}
-          agentIdentifier={configuredAgentIdentifier}
-          ports={parsedPorts}
-          onOpenInfra={() => openInfra('existing')}
-        />
+        {step !== 'deploy' ? (
+          <LaunchSummaryPanel
+            step={step}
+            selectedBlueprint={selectedBlueprint}
+            entityLabel={entityLabel}
+            runtimeBackend={runtimeBackend}
+            infra={infra}
+            capacity={capacity}
+            isConnected={isConnected}
+            isReconnectingWallet={isReconnectingWallet}
+            hasValidService={deploy.hasValidService}
+            isNewService={deploy.isNewService}
+            serviceValidating={serviceValidating}
+            serviceError={serviceError}
+            operatorsCount={deploy.operators.length}
+            operatorCount={deploy.operatorCount}
+            operatorsLoading={deploy.operatorsLoading}
+            operatorsError={deploy.operatorsError}
+            agentIdentifier={configuredAgentIdentifier}
+            ports={parsedPorts}
+            onOpenInfra={() => openInfra('existing')}
+          />
+        ) : null}
       </div>
 
       {createJob && displayJob ? (
@@ -1680,6 +1685,192 @@ interface DeployStepProps {
   onProvisionReady: (sandboxId: string, sidecarUrl: string) => void;
 }
 
+type DeployBlocker = {
+  title: string;
+  detail: string;
+  icon: string;
+  tone: ConsoleTone;
+};
+
+const preflightToneClass: Record<ConsoleTone, string> = {
+  brand: 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-brand)]',
+  ready: 'bg-[var(--sandbox-console-success-soft)] text-[var(--sandbox-console-success)]',
+  warn: 'bg-amber-400/10 text-amber-300',
+  danger: 'bg-red-400/10 text-[var(--sandbox-console-danger)]',
+  muted: 'bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-secondary)]',
+};
+
+const preflightPanelClass: Record<ConsoleTone, string> = {
+  brand: 'bg-[var(--sandbox-console-brand-soft)] ring-[var(--sandbox-console-brand-border)]',
+  ready: 'bg-[var(--sandbox-console-success-soft)] ring-[var(--sandbox-console-success-border)]',
+  warn: 'bg-amber-400/[0.08] ring-amber-400/25',
+  danger: 'bg-red-400/[0.08] ring-red-400/25',
+  muted: 'bg-[var(--sandbox-console-control)] ring-[var(--sandbox-console-border)]',
+};
+
+function getServiceProblem({
+  serviceInfo,
+  serviceError,
+  serviceId,
+  blueprintId,
+  address,
+}: {
+  serviceInfo: { active: boolean; permitted: boolean } | null;
+  serviceError: string | null;
+  serviceId: string;
+  blueprintId: string;
+  address?: string;
+}): DeployBlocker | null {
+  const formattedService = serviceId || '--';
+  const formattedBlueprint = blueprintId || '--';
+
+  if (serviceError) {
+    return {
+      title: `Service #${formattedService} not found`,
+      detail: `Create a service for blueprint #${formattedBlueprint}, or choose an active service before deploying this sandbox.`,
+      icon: 'i-ph:x-circle',
+      tone: 'danger',
+    };
+  }
+
+  if (serviceInfo && !serviceInfo.active) {
+    return {
+      title: `Service #${formattedService} is inactive`,
+      detail: 'Choose an active service or create a replacement service before deploying this sandbox.',
+      icon: 'i-ph:power',
+      tone: 'warn',
+    };
+  }
+
+  if (serviceInfo && !serviceInfo.permitted) {
+    return {
+      title: `Wallet not permitted on service #${formattedService}`,
+      detail: `${address ? truncateAddress(address) : 'This wallet'} cannot submit jobs to this service. Choose or create a service where this wallet is allowed.`,
+      icon: 'i-ph:lock-key',
+      tone: 'danger',
+    };
+  }
+
+  return null;
+}
+
+function getDeployBlocker({
+  status,
+  serviceValidating,
+  serviceProblem,
+  contractsDeployed,
+  isConnected,
+  isReconnecting,
+  isSandbox,
+  capacity,
+  isNewService,
+  operatorsLoading,
+  operatorCount,
+  priceLoading,
+}: {
+  status: DeployStatus;
+  serviceValidating: boolean;
+  serviceProblem: DeployBlocker | null;
+  contractsDeployed: boolean;
+  isConnected: boolean;
+  isReconnecting: boolean;
+  isSandbox: boolean;
+  capacity?: number | bigint;
+  isNewService: boolean;
+  operatorsLoading: boolean;
+  operatorCount: number;
+  priceLoading: boolean;
+}): DeployBlocker | null {
+  if (status !== 'idle') return null;
+  if (serviceValidating) {
+    return {
+      title: 'Checking service',
+      detail: 'Reading the selected service before the transaction can be built.',
+      icon: 'i-ph:spinner',
+      tone: 'warn',
+    };
+  }
+  if (!contractsDeployed) {
+    return {
+      title: 'Contracts unavailable',
+      detail: 'Switch to a supported network before deploying.',
+      icon: 'i-ph:warning-circle',
+      tone: 'danger',
+    };
+  }
+  if (isReconnecting) {
+    return {
+      title: 'Wallet reconnecting',
+      detail: 'Wait for the wallet session to finish reconnecting.',
+      icon: 'i-ph:wallet',
+      tone: 'warn',
+    };
+  }
+  if (!isConnected) {
+    return {
+      title: 'Connect wallet',
+      detail: 'A connected wallet is required to create services and submit jobs.',
+      icon: 'i-ph:wallet',
+      tone: 'danger',
+    };
+  }
+  if (isSandbox && capacity !== undefined && Number(capacity) === 0) {
+    return {
+      title: 'No sandbox capacity',
+      detail: 'All operator slots are in use. Delete unused sandboxes or try again later.',
+      icon: 'i-ph:database',
+      tone: 'warn',
+    };
+  }
+  if (serviceProblem) return serviceProblem;
+  if (isNewService && operatorsLoading) {
+    return {
+      title: 'Finding operators',
+      detail: 'Operator discovery must finish before a new service request can be created.',
+      icon: 'i-ph:users-three',
+      tone: 'warn',
+    };
+  }
+  if (isNewService && operatorCount === 0) {
+    return {
+      title: 'No operators available',
+      detail: 'This blueprint needs at least one registered operator before a service can be created.',
+      icon: 'i-ph:users-three',
+      tone: 'danger',
+    };
+  }
+  if (priceLoading) {
+    return {
+      title: 'Loading price',
+      detail: 'Waiting for the operator quote before showing the deploy transaction.',
+      icon: 'i-ph:receipt',
+      tone: 'warn',
+    };
+  }
+
+  return null;
+}
+
+function DeploySpecPill({
+  icon,
+  label,
+  value,
+}: {
+  icon: string;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-[4px] bg-[var(--sandbox-console-control)] px-3 py-2 shadow-[var(--sandbox-console-control-shadow)]">
+      <div className="flex items-center gap-2">
+        <span className={cn(icon, 'shrink-0 text-sm text-[var(--sandbox-console-brand)]')} />
+        <span className="truncate font-display text-sm font-bold text-[var(--sandbox-console-text)]">{label}</span>
+      </div>
+      <p className="mt-1 truncate font-data text-xs font-semibold text-[var(--sandbox-console-muted)]">{value}</p>
+    </div>
+  );
+}
+
 function DeployStep({
   blueprint, job, values, ports, infra, entityLabel, deploy,
   capacity, provisionEstimate, provisionPriceFormatted,
@@ -1711,7 +1902,6 @@ function DeployStep({
     error,
     isNewService,
     isInstanceMode,
-    hasValidService,
     operators,
     operatorsLoading,
     operatorsError,
@@ -1741,83 +1931,174 @@ function DeployStep({
   });
   const configuredAgentIdentifier = normalizeAgentIdentifier(values.agentIdentifier);
   const activeConfigCount = activeExtras.length + (configuredAgentIdentifier ? 1 : 0);
-  const serviceLabel = isNewService ? 'new service' : `service ${infra.serviceId || '--'}`;
   const deploymentIntent = isNewService ? `Create service + ${entityLabel}` : `Deploy ${entityLabel}`;
   const serviceNeedsSetup = isSandbox && status === 'idle' && (
     !!serviceError ||
     !!(serviceInfo && (!serviceInfo.active || !serviceInfo.permitted))
   );
+  const serviceProblem = getServiceProblem({
+    serviceInfo,
+    serviceError,
+    serviceId: infra.serviceId,
+    blueprintId: infra.blueprintId,
+    address,
+  });
+  const deployBlocker = getDeployBlocker({
+    status,
+    serviceValidating,
+    serviceProblem,
+    contractsDeployed,
+    isConnected: isConnected && !!address,
+    isReconnecting,
+    isSandbox,
+    capacity,
+    isNewService,
+    operatorsLoading,
+    operatorCount: operators.length,
+    priceLoading,
+  });
+  const preflightTone: ConsoleTone = isComplete
+    ? 'ready'
+    : deployBlocker
+      ? deployBlocker.tone
+      : isNewService
+        ? 'brand'
+        : 'ready';
+  const preflightIcon = isComplete
+    ? 'i-ph:check-circle-fill'
+    : deployBlocker
+      ? deployBlocker.icon
+      : isNewService
+        ? 'i-ph:plus-circle'
+        : 'i-ph:rocket-launch';
+  const preflightTitle = isComplete
+    ? `${entityLabel} ready`
+    : deployBlocker
+      ? deployBlocker.title
+      : isNewService
+        ? 'Ready to create service'
+        : `Ready to deploy to service #${infra.serviceId}`;
+  const preflightDetail = deployBlocker
+    ? deployBlocker.detail
+    : isNewService
+      ? `${operators.length} operator${operators.length === 1 ? '' : 's'} selected for a dedicated service request.`
+      : 'Service is active, your wallet is permitted, and capacity is available.';
+  const capacityText = capacity === undefined
+    ? 'Capacity unknown'
+    : `${formatCapacityValue(capacity)} slot${Number(capacity) === 1 ? '' : 's'} open`;
+  const dueNowLabel = hasProvisionRfq ? 'Operator quote' : 'Estimate';
 
   const otherJobs = blueprint.jobs.filter((j) => j.id !== job.id);
 
   return (
     <div className="space-y-4">
-      <section className="sandbox-console-panel overflow-hidden rounded-[5px]">
-        <div className="grid gap-px bg-[var(--sandbox-console-border)] lg:grid-cols-[minmax(0,1fr)_240px]">
-          <div className="bg-[var(--sandbox-console-panel)] p-5">
+      <section className={cn(
+        'overflow-hidden rounded-[4px] bg-[var(--sandbox-console-surface)] shadow-[0_18px_44px_rgba(0,0,0,0.14)] ring-1',
+        preflightTone === 'danger'
+          ? 'ring-red-400/30'
+          : preflightTone === 'warn'
+            ? 'ring-amber-400/30'
+            : 'ring-[var(--sandbox-console-border)]',
+      )}>
+        <div className="grid gap-px bg-[var(--sandbox-console-border)] xl:grid-cols-[minmax(0,1fr)_minmax(300px,380px)]">
+          <div className="bg-[var(--sandbox-console-panel)] p-4 sm:p-5">
             <div className="flex items-start gap-4">
               <IdentityMark identity={getBlueprintIdentity(blueprint.id)} size="lg" />
               <div className="min-w-0 flex-1">
-                <p className="font-data text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
+                <p className="font-data text-[11px] font-bold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
                   {deploymentIntent}
                 </p>
-                <h3 className="mt-1 truncate font-display text-3xl font-bold leading-tight tracking-tight text-[var(--sandbox-console-text)]">
+                <h2 className="mt-1 truncate font-display text-3xl font-black leading-tight tracking-tight text-[var(--sandbox-console-text)] sm:text-4xl">
                   {name || entityLabel}
-                </h3>
-                <p className="mt-2 truncate font-data text-sm font-medium text-[var(--sandbox-console-muted)]">
+                </h2>
+                <p className="mt-2 truncate font-data text-sm font-semibold text-[var(--sandbox-console-secondary)]">
                   {image}
                 </p>
               </div>
             </div>
-          </div>
-          <div className="bg-[var(--sandbox-console-panel-strong)] p-5 lg:text-right">
-            <p className="font-data text-[11px] font-bold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
-              Deploy Cost
-            </p>
-            <p className="mt-1 font-data text-4xl font-bold leading-none tracking-tight text-[var(--sandbox-console-text)]">
-              {costDisplay}
-            </p>
-            <div className="mt-4 flex items-center gap-1.5 text-xs lg:justify-end">
-              <ServiceStatusBadge
-                infra={infra}
-                serviceInfo={serviceInfo}
-                serviceValidating={serviceValidating}
-                serviceError={serviceError}
-                isInstanceMode={isInstanceMode}
-              />
+
+            <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <DeploySpecPill icon="i-ph:cube" label={entityLabel} value={`Blueprint #${infra.blueprintId || '--'}`} />
+              <DeploySpecPill icon={getRuntimeIdentity(runtimeBackend).icon ?? 'i-ph:cube'} label={runtimeLabel} value={runtimeBackend === 'tee' ? 'Attested runtime' : 'Standard runtime'} />
+              <DeploySpecPill icon="i-ph:cpu" label={`${cpuCores} CPU`} value={`${memoryMb} MB / ${diskGb} GB`} />
+              <DeploySpecPill icon="i-ph:plugs-connected" label={ports.length > 0 ? `${ports.length} port${ports.length === 1 ? '' : 's'}` : 'Proxy'} value={ports.length > 0 ? ports.join(', ') : 'Operator managed'} />
             </div>
           </div>
-        </div>
 
-        <div className="grid gap-px bg-[var(--sandbox-console-border)] sm:grid-cols-2 xl:grid-cols-4">
-          <ExecutionMetric
-            label="Blueprint"
-            value={entityLabel}
-            detail={serviceLabel}
-            identity={getBlueprintIdentity(blueprint.id)}
-            tone={isNewService ? 'brand' : 'ready'}
-          />
-          <ExecutionMetric
-            label="Runtime"
-            value={runtimeLabel}
-            detail={runtimeBackend === 'tee' ? 'attestation path' : 'standard path'}
-            identity={getRuntimeIdentity(runtimeBackend)}
-            tone={runtimeBackend === 'tee' ? 'warn' : 'ready'}
-          />
-          <ExecutionMetric
-            label="Resources"
-            value={`${cpuCores} CPU`}
-            detail={`${memoryMb} MB / ${diskGb} GB`}
-            identity={getResourceIdentity('cpu')}
-            tone="muted"
-          />
-          <ExecutionMetric
-            label="Network"
-            value={ports.length > 0 ? `${ports.length} port${ports.length === 1 ? '' : 's'}` : 'Proxy'}
-            detail={ports.length > 0 ? ports.join(', ') : 'operator-managed'}
-            identity={getResourceIdentity('network')}
-            tone={ports.length > 0 ? 'brand' : 'muted'}
-          />
+          <div className="flex flex-col justify-between bg-[var(--sandbox-console-panel-strong)] p-4 sm:p-5">
+            <div>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="font-data text-[11px] font-bold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
+                    {dueNowLabel}
+                  </p>
+                  <p className="mt-1 font-data text-4xl font-black leading-none tracking-tight text-[var(--sandbox-console-text)]">
+                    {costDisplay}
+                  </p>
+                </div>
+                <div className={cn('rounded-[4px] px-2.5 py-1.5 font-data text-xs font-bold uppercase tracking-[0.08em]', preflightToneClass[preflightTone])}>
+                  {isComplete ? 'Ready' : deployBlocker ? 'Blocked' : 'Ready'}
+                </div>
+              </div>
+
+              <div className={cn('mt-5 rounded-[4px] p-3.5 ring-1', preflightPanelClass[preflightTone])}>
+                <div className="flex items-start gap-3">
+                  <span className={cn('mt-0.5 text-lg', preflightIcon, executionMetricToneClass[preflightTone])} />
+                  <div className="min-w-0">
+                    <p className="font-display text-lg font-bold leading-tight text-[var(--sandbox-console-text)]">
+                      {preflightTitle}
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-[var(--sandbox-console-secondary)]">
+                      {preflightDetail}
+                    </p>
+                    {serviceNeedsSetup && capacity !== undefined && Number(capacity) > 0 ? (
+                      <p className="mt-2 font-data text-xs font-semibold text-[var(--sandbox-console-muted)]">
+                        {capacityText}; capacity is not the blocker.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2">
+              {isComplete ? (
+                <LaunchActionButton variant="success" size="lg" className="w-full" onClick={onViewDetail}>
+                  <span className="i-ph:check-bold text-sm" />
+                  View {entityLabel}
+                </LaunchActionButton>
+              ) : serviceNeedsSetup ? (
+                <>
+                  <LaunchActionButton size="lg" className="w-full" onClick={onCreateService}>
+                    <span className="i-ph:plus-circle text-base" />
+                    Create service
+                  </LaunchActionButton>
+                  <div className="grid grid-cols-2 gap-2">
+                    <LaunchActionButton variant="secondary" size="sm" onClick={onOpenInfra}>
+                      <span className="i-ph:magnifying-glass text-sm" />
+                      Choose service
+                    </LaunchActionButton>
+                    <LaunchActionButton variant="secondary" size="sm" onClick={onOpenOperators}>
+                      <span className="i-ph:users-three text-sm" />
+                      Operators
+                    </LaunchActionButton>
+                  </div>
+                </>
+              ) : (
+                <DeployButton
+                  status={status}
+                  canDeploy={deploy.canDeploy}
+                  isNewService={isNewService}
+                  priceLoading={priceLoading}
+                  serviceValidating={serviceValidating}
+                  costDisplay={costDisplay}
+                  blockedTitle={deployBlocker?.title}
+                  onDeploy={onDeploy}
+                />
+              )}
+              <LaunchActionButton variant="secondary" size="sm" className="w-full" onClick={onBack}>Back to edit</LaunchActionButton>
+            </div>
+          </div>
         </div>
 
         {(activeConfigCount > 0 || configuredAgentIdentifier) && (
@@ -1876,31 +2157,6 @@ function DeployStep({
         </div>
       )}
 
-      {/* ── Capacity ── */}
-      {capacity !== undefined && Number(capacity) > 0 && (
-        <div className="flex items-center gap-2 px-1">
-          <div className="i-ph:shield-check text-sm text-[var(--sandbox-console-success)]" />
-          <span className="text-xs text-[var(--sandbox-console-muted)]">
-            <span className="font-data font-semibold text-[var(--sandbox-console-secondary)]">{String(capacity)}</span> capacity slots available
-          </span>
-        </div>
-      )}
-      {capacity !== undefined && Number(capacity) === 0 && isSandbox && status === 'idle' && (
-        <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/[0.08] p-4">
-          <div className="flex items-center gap-3">
-            <div className="i-ph:warning-circle text-lg text-amber-400" />
-            <div className="flex-1">
-              <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">
-                No capacity available
-              </p>
-              <p className="mt-1 text-sm text-[var(--sandbox-console-muted)]">
-                All operator slots are in use. Delete unused sandboxes or try again later.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
       {status === 'idle' && runtimeBackend === 'firecracker' && (
         <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/[0.08] p-4">
           <div className="flex items-center gap-3">
@@ -1955,85 +2211,6 @@ function DeployStep({
         />
       )}
 
-      {/* ── Service warning (sandbox mode only) ── */}
-      {serviceNeedsSetup && (
-        <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/[0.08] p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="i-ph:warning-circle text-lg text-amber-400" />
-            <div className="min-w-0 flex-1">
-              <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">
-                {serviceError
-                  ? `Service #${infra.serviceId} not found`
-                  : !serviceInfo?.active
-                    ? `Service #${infra.serviceId} is inactive`
-                    : `You're not a permitted caller on service #${infra.serviceId}`}
-              </p>
-              <p className="mt-1 text-sm text-[var(--sandbox-console-muted)]">
-                Capacity is available, but this blueprint still needs an active service before sandbox jobs can run.
-              </p>
-            </div>
-            <div className="flex shrink-0 flex-wrap gap-2">
-              <LaunchActionButton size="sm" onClick={onCreateService}>
-                <span className="i-ph:plus-circle text-sm" />
-                Create Service
-              </LaunchActionButton>
-              <LaunchActionButton variant="secondary" size="sm" onClick={onOpenInfra}>Verify ID</LaunchActionButton>
-              <LaunchActionButton variant="secondary" size="sm" onClick={onOpenOperators}>Operators</LaunchActionButton>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Contracts not deployed warning ── */}
-      {!contractsDeployed && status === 'idle' && (
-        <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/[0.08] p-4">
-          <div className="flex items-center gap-3">
-            <div className="i-ph:warning-circle text-lg text-amber-400" />
-            <div className="flex-1">
-              <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
-                Contracts not yet deployed on this network
-              </p>
-              <p className="mt-0.5 text-xs text-[var(--sandbox-console-muted)]">
-                Please switch to a supported network where the blueprint contracts have been deployed.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Wallet warning ── */}
-      {status === 'idle' && (!isConnected || !address) && (
-        <div className="flex items-center gap-2 px-1">
-          <div className="i-ph:wallet text-sm text-amber-400" />
-          <span className="text-xs text-amber-400/80">
-            {isReconnecting ? 'Reconnecting wallet...' : 'Connect wallet to deploy'}
-          </span>
-          {isReconnecting && (
-            <div className="w-3 h-3 rounded-full border border-amber-400/40 border-t-amber-400 animate-spin" />
-          )}
-        </div>
-      )}
-
-      {/* ── Actions ── */}
-      <div className="flex justify-between gap-3 pt-1">
-        <LaunchActionButton variant="secondary" onClick={onBack}>Back</LaunchActionButton>
-        {isComplete ? (
-          <LaunchActionButton variant="success" onClick={onViewDetail}>
-            <div className="i-ph:check-bold text-sm" />
-            View {entityLabel}
-          </LaunchActionButton>
-        ) : (
-          <DeployButton
-            status={status}
-            canDeploy={deploy.canDeploy}
-            isNewService={isNewService}
-            priceLoading={priceLoading}
-            serviceValidating={serviceValidating}
-            costDisplay={costDisplay}
-            onDeploy={onDeploy}
-          />
-        )}
-      </div>
     </div>
   );
 }
@@ -2047,102 +2224,6 @@ const executionMetricToneClass: Record<ConsoleTone, string> = {
   danger: 'text-[var(--sandbox-console-danger)]',
   muted: 'text-[var(--sandbox-console-text)]',
 };
-
-function ExecutionMetric({
-  label,
-  value,
-  detail,
-  identity,
-  tone = 'muted',
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  identity: IdentityMeta;
-  tone?: ConsoleTone;
-}) {
-  return (
-    <div className="min-w-0 bg-[var(--sandbox-console-panel)] p-4 transition-colors hover:bg-[var(--sandbox-console-control-hover)]">
-      <div className="flex items-center justify-between gap-3">
-        <p className="font-data text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
-          {label}
-        </p>
-        <IdentityMark identity={identity} size="sm" />
-      </div>
-      <p className={cn('mt-2 font-data text-2xl font-bold leading-tight tracking-tight', executionMetricToneClass[tone])}>
-        {value}
-      </p>
-      <p className="mt-1 truncate font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">
-        {detail}
-      </p>
-    </div>
-  );
-}
-
-function ServiceStatusBadge({
-  infra, serviceInfo, serviceValidating, serviceError, isInstanceMode,
-}: {
-  infra: { serviceId: string };
-  serviceInfo: { active: boolean; permitted: boolean } | null;
-  serviceValidating: boolean;
-  serviceError: string | null;
-  isInstanceMode: boolean;
-}) {
-  if (serviceValidating) {
-    return (
-      <>
-        <div className="h-3 w-3 animate-spin rounded-full border border-[var(--sandbox-console-muted)] border-t-transparent" />
-        <span className="text-[var(--sandbox-console-muted)]">Checking service...</span>
-      </>
-    );
-  }
-  if (isInstanceMode) {
-    return (
-      <>
-        <div className="i-ph:plus-circle text-sm text-violet-400" />
-        <span className="text-violet-400">New service</span>
-      </>
-    );
-  }
-  if (serviceInfo?.active && serviceInfo?.permitted) {
-    return (
-      <>
-        <div className="i-ph:check-circle-fill text-sm text-teal-400" />
-        <span className="text-teal-400">Service #{infra.serviceId}</span>
-      </>
-    );
-  }
-  if (serviceInfo && !serviceInfo.active) {
-    return (
-      <>
-        <div className="i-ph:x-circle text-sm text-crimson-400" />
-        <span className="text-crimson-400">Service #{infra.serviceId} inactive</span>
-      </>
-    );
-  }
-  if (serviceInfo && !serviceInfo.permitted) {
-    return (
-      <>
-        <div className="i-ph:warning text-sm text-amber-400" />
-        <span className="text-amber-400">Not permitted</span>
-      </>
-    );
-  }
-  if (serviceError) {
-    return (
-      <>
-        <div className="i-ph:x-circle text-sm text-crimson-400" />
-        <span className="text-crimson-400">Service not found</span>
-      </>
-    );
-  }
-  return (
-    <>
-      <div className="i-ph:globe-simple text-sm text-[var(--sandbox-console-muted)]" />
-      <span className="text-[var(--sandbox-console-muted)]">Service #{infra.serviceId}</span>
-    </>
-  );
-}
 
 function TxStatusCard({
   status, txHash, error, entityLabel, isNewService,
@@ -2317,7 +2398,7 @@ function OperatorList({
 }
 
 function DeployButton({
-  status, canDeploy, isNewService, priceLoading, serviceValidating, costDisplay, onDeploy,
+  status, canDeploy, isNewService, priceLoading, serviceValidating, costDisplay, blockedTitle, onDeploy,
 }: {
   status: DeployStatus;
   canDeploy: boolean;
@@ -2325,13 +2406,14 @@ function DeployButton({
   priceLoading: boolean;
   serviceValidating: boolean;
   costDisplay: string;
+  blockedTitle?: string;
   onDeploy: () => void;
 }) {
   const isBusy = status === 'signing' || status === 'pending';
   const isDisabled = !canDeploy || isBusy || priceLoading || serviceValidating;
 
   return (
-    <LaunchActionButton size="lg" onClick={onDeploy} disabled={isDisabled}>
+    <LaunchActionButton size="lg" className="w-full" onClick={onDeploy} disabled={isDisabled}>
       {isBusy ? (
         <>
           <div className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
@@ -2339,6 +2421,11 @@ function DeployButton({
         </>
       ) : priceLoading ? (
         'Loading price...'
+      ) : blockedTitle ? (
+        <>
+          <div className="i-ph:lock-key text-base" />
+          {blockedTitle}
+        </>
       ) : isNewService ? (
         <>
           <div className="i-ph:lightning text-base" />
