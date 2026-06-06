@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type RefObject, type ReactNode, type TextareaHTMLAttributes } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useAccount, useWaitForTransactionReceipt, useWriteContract } from 'wagmi';
+import { ConnectKitButton } from 'connectkit';
 import { decodeEventLog, type Address } from 'viem';
 import { useStore } from '@nanostores/react';
 import { InfrastructureModal } from '~/components/shared/InfrastructureModal';
@@ -135,6 +136,21 @@ function parsePortsInput(value: string): number[] {
     .split(',')
     .map((s) => parseInt(s.trim(), 10))
     .filter((n) => n > 0 && n <= 65535);
+}
+
+function parsePositiveServiceId(value: string): bigint | null {
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) return null;
+
+  try {
+    return BigInt(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function isValidAddress(value: string): value is Address {
+  return /^0x[a-fA-F0-9]{40}$/.test(value.trim());
 }
 
 function parseCapabilitiesJson(value: unknown): Set<string> {
@@ -1956,6 +1972,10 @@ function ServiceSetupPanel({
     }),
     [operators, selectedOperators],
   );
+  const manualOperatorRecords = selectedOperatorRecords.filter((operator) =>
+    !operators.some((item) => item.address.toLowerCase() === operator.address.toLowerCase()),
+  );
+  const serviceIdToCheck = parsePositiveServiceId(serviceIdInput);
 
   const { quotes, isLoading: quotesLoading, isSolvingPow, errors: quoteErrors, totalCost, refetch: refetchQuotes } = useQuotes(
     selectedOperatorRecords,
@@ -2002,25 +2022,32 @@ function ServiceSetupPanel({
   }, [blueprintId, operators]);
 
   const validateAndSelectService = useCallback(async (nextServiceId: string) => {
-    if (!nextServiceId.trim()) return;
+    const parsedServiceId = parsePositiveServiceId(nextServiceId);
     setServiceCheckMessage(null);
     setServiceCheckError(null);
-    updateInfra({ blueprintId, serviceId: nextServiceId, serviceValidated: false });
+
+    if (!parsedServiceId) {
+      setServiceCheckError('Enter a positive whole-number service ID.');
+      return;
+    }
+
+    const normalizedServiceId = parsedServiceId.toString();
+    updateInfra({ blueprintId, serviceId: normalizedServiceId, serviceValidated: false });
 
     try {
-      const info = await validateService(BigInt(nextServiceId), address as `0x${string}` | undefined);
-      updateServiceFromValidation(nextServiceId, info);
+      const info = await validateService(parsedServiceId, address as `0x${string}` | undefined);
+      updateServiceFromValidation(normalizedServiceId, info);
       if (!info) {
-        setServiceCheckError(`Service #${nextServiceId} was not found.`);
+        setServiceCheckError(`Service #${normalizedServiceId} was not found.`);
       } else if (!info.active) {
-        setServiceCheckError(`Service #${nextServiceId} exists but is inactive.`);
+        setServiceCheckError(`Service #${normalizedServiceId} exists but is inactive.`);
       } else if (!info.permitted) {
-        setServiceCheckError(`This wallet is not permitted on service #${nextServiceId}.`);
+        setServiceCheckError(`This wallet is not permitted on service #${normalizedServiceId}.`);
       } else {
-        setServiceCheckMessage(`Service #${nextServiceId} is active and selected.`);
+        setServiceCheckMessage(`Service #${normalizedServiceId} is active and selected.`);
       }
     } catch (error) {
-      setServiceCheckError(error instanceof Error ? error.message : `Service #${nextServiceId} could not be checked.`);
+      setServiceCheckError(error instanceof Error ? error.message : `Service #${normalizedServiceId} could not be checked.`);
     }
   }, [address, blueprintId, updateServiceFromValidation, validateService]);
 
@@ -2064,9 +2091,13 @@ function ServiceSetupPanel({
     );
   };
 
+  const removeOperator = (operator: Address) => {
+    setSelectedOperators((current) => current.filter((item) => item.toLowerCase() !== operator.toLowerCase()));
+  };
+
   const addManualOperator = () => {
     const next = manualOperator.trim() as Address;
-    if (!/^0x[a-fA-F0-9]{40}$/.test(next)) return;
+    if (!isValidAddress(next)) return;
     setSelectedOperators((current) =>
       current.some((item) => item.toLowerCase() === next.toLowerCase()) ? current : [...current, next],
     );
@@ -2155,13 +2186,19 @@ function ServiceSetupPanel({
           <button
             key={value}
             type="button"
-            onClick={() => setMode(value)}
+            onClick={() => {
+              setMode(value);
+              setServiceCheckMessage(null);
+              setServiceCheckError(null);
+              setServiceCreateError(null);
+            }}
             className={cn(
               'h-9 rounded-[3px] font-display text-xs font-bold transition-[background-color,box-shadow,color]',
               mode === value
                 ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_0_0_0_1px_var(--sandbox-console-brand-border)]'
                 : 'text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)]',
             )}
+            aria-pressed={mode === value}
           >
             {label}
           </button>
@@ -2218,6 +2255,12 @@ function ServiceSetupPanel({
               aria-label="Manual operator address"
               value={manualOperator}
               onChange={(event) => setManualOperator(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && isValidAddress(manualOperator)) {
+                  event.preventDefault();
+                  addManualOperator();
+                }
+              }}
               placeholder="0x... operator"
               className={cn(launchControlClass, 'min-h-9 py-2 text-xs')}
             />
@@ -2225,11 +2268,35 @@ function ServiceSetupPanel({
               variant="secondary"
               size="sm"
               onClick={addManualOperator}
-              disabled={!/^0x[a-fA-F0-9]{40}$/.test(manualOperator.trim())}
+              disabled={!isValidAddress(manualOperator)}
             >
               Add
             </LaunchActionButton>
           </div>
+
+          {manualOperatorRecords.length > 0 ? (
+            <div className="space-y-1.5">
+              <p className="font-data text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--sandbox-console-muted)]">
+                Added manually
+              </p>
+              {manualOperatorRecords.map((operator) => (
+                <div
+                  key={operator.address}
+                  className="flex items-center justify-between gap-2 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-2.5 py-2"
+                >
+                  <OperatorIdentity address={operator.address} detail="manual operator" compact />
+                  <button
+                    type="button"
+                    onClick={() => removeOperator(operator.address)}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[3px] text-[var(--sandbox-console-muted)] transition-colors hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-danger)]"
+                    aria-label={`Remove operator ${truncateAddress(operator.address)}`}
+                  >
+                    <span className="i-ph:x text-sm" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
 
           <div className="rounded-[4px] bg-[var(--sandbox-console-control)] px-3 py-2">
             <div className="flex items-center justify-between gap-2">
@@ -2285,13 +2352,19 @@ function ServiceSetupPanel({
             min={1}
             value={serviceIdInput}
             onChange={(event) => setServiceIdInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && serviceIdToCheck) {
+                event.preventDefault();
+                void validateAndSelectService(serviceIdInput);
+              }
+            }}
             placeholder="1"
           />
           <LaunchActionButton
             size="lg"
             className="w-full"
             onClick={() => validateAndSelectService(serviceIdInput)}
-            disabled={!serviceIdInput.trim()}
+            disabled={!serviceIdToCheck}
           >
             <span className="i-ph:magnifying-glass text-base" />
             Check service
@@ -2427,15 +2500,15 @@ function DeployStep({
   return (
     <div className="space-y-4">
       <section className={cn(
-        'overflow-hidden rounded-[4px] bg-[var(--sandbox-console-surface)] shadow-[0_18px_44px_rgba(0,0,0,0.14)] ring-1',
+        'min-w-0 overflow-hidden rounded-[4px] bg-[var(--sandbox-console-surface)] shadow-[0_18px_44px_rgba(0,0,0,0.14)] ring-1',
         preflightTone === 'danger'
           ? 'ring-red-400/30'
           : preflightTone === 'warn'
             ? 'ring-amber-400/30'
             : 'ring-[var(--sandbox-console-border)]',
       )}>
-        <div className="grid gap-px bg-[var(--sandbox-console-border)] xl:grid-cols-[minmax(0,1fr)_minmax(300px,380px)]">
-          <div className="bg-[var(--sandbox-console-panel)] p-4 sm:p-5">
+        <div className="grid min-w-0 gap-px bg-[var(--sandbox-console-border)] xl:grid-cols-[minmax(0,1fr)_minmax(300px,380px)]">
+          <div className="min-w-0 bg-[var(--sandbox-console-panel)] p-4 sm:p-5">
             <div className="flex items-start gap-4">
               <IdentityMark identity={getBlueprintIdentity(blueprint.id)} size="lg" />
               <div className="min-w-0 flex-1">
@@ -2459,7 +2532,7 @@ function DeployStep({
             </div>
           </div>
 
-          <div className="flex flex-col justify-between bg-[var(--sandbox-console-panel-strong)] p-4 sm:p-5">
+          <div className="flex min-w-0 flex-col justify-between bg-[var(--sandbox-console-panel-strong)] p-4 sm:p-5">
             <div>
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -2520,6 +2593,7 @@ function DeployStep({
                   serviceValidating={serviceValidating}
                   costDisplay={costDisplay}
                   blockedTitle={deployBlocker?.title}
+                  connectWalletBlocked={deployBlocker?.title === 'Connect wallet'}
                   onDeploy={onDeploy}
                 />
               )}
@@ -2825,7 +2899,7 @@ function OperatorList({
 }
 
 function DeployButton({
-  status, canDeploy, isNewService, priceLoading, serviceValidating, costDisplay, blockedTitle, onDeploy,
+  status, canDeploy, isNewService, priceLoading, serviceValidating, costDisplay, blockedTitle, connectWalletBlocked, onDeploy,
 }: {
   status: DeployStatus;
   canDeploy: boolean;
@@ -2834,10 +2908,33 @@ function DeployButton({
   serviceValidating: boolean;
   costDisplay: string;
   blockedTitle?: string;
+  connectWalletBlocked?: boolean;
   onDeploy: () => void;
 }) {
   const isBusy = status === 'signing' || status === 'pending';
   const isDisabled = !canDeploy || isBusy || priceLoading || serviceValidating;
+
+  if (connectWalletBlocked) {
+    return (
+      <ConnectKitButton.Custom>
+        {({ show, isConnecting }) => (
+          <LaunchActionButton size="lg" className="w-full" onClick={show} disabled={isConnecting}>
+            {isConnecting ? (
+              <>
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                Connecting wallet
+              </>
+            ) : (
+              <>
+                <div className="i-ph:plugs-connected text-base" />
+                Connect wallet
+              </>
+            )}
+          </LaunchActionButton>
+        )}
+      </ConnectKitButton.Custom>
+    );
+  }
 
   return (
     <LaunchActionButton size="lg" className="w-full" onClick={onDeploy} disabled={isDisabled}>

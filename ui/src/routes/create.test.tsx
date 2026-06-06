@@ -6,10 +6,14 @@ import CreatePage from './create';
 const {
   currentSearchRef,
   infraStateRef,
+  accountRef,
+  deployOverridesRef,
   mockNavigate,
   mockUpdateInfra,
   mockValidateService,
   mockWriteContractAsync,
+  mockShowConnect,
+  mockRefetchQuotes,
   serviceValidationRef,
   mockDeploy,
   mockDeployReset,
@@ -24,10 +28,22 @@ const {
       serviceInfo: null as null | Record<string, unknown>,
     },
   },
+  accountRef: {
+    current: {
+      address: '0x123400000000000000000000000000000000abcd' as `0x${string}` | undefined,
+      isConnected: true,
+      status: 'connected',
+    },
+  },
+  deployOverridesRef: {
+    current: {} as Record<string, unknown>,
+  },
   mockNavigate: vi.fn(),
   mockUpdateInfra: vi.fn(),
   mockValidateService: vi.fn(),
   mockWriteContractAsync: vi.fn(),
+  mockShowConnect: vi.fn(),
+  mockRefetchQuotes: vi.fn(),
   serviceValidationRef: {
     current: {
       serviceInfo: null as null | Record<string, unknown>,
@@ -200,9 +216,9 @@ vi.mock('react-router', () => ({
 
 vi.mock('wagmi', () => ({
   useAccount: () => ({
-    address: '0x123400000000000000000000000000000000abcd',
-    isConnected: true,
-    status: 'connected',
+    address: accountRef.current.address,
+    isConnected: accountRef.current.isConnected,
+    status: accountRef.current.status,
   }),
   useWriteContract: () => ({
     writeContractAsync: mockWriteContractAsync,
@@ -214,6 +230,14 @@ vi.mock('wagmi', () => ({
     isSuccess: false,
     isLoading: false,
   }),
+}));
+
+vi.mock('connectkit', () => ({
+  ConnectKitButton: {
+    Custom: ({ children }: { children: (props: { show: () => void; isConnecting: boolean }) => React.ReactNode }) => (
+      <>{children({ show: mockShowConnect, isConnecting: false })}</>
+    ),
+  },
 }));
 
 vi.mock('@nanostores/react', () => ({
@@ -359,7 +383,7 @@ vi.mock('@tangle-network/blueprint-ui', async () => {
       isSolvingPow: false,
       errors: new Map(),
       totalCost: 0n,
-      refetch: vi.fn(),
+      refetch: mockRefetchQuotes,
     }),
     formatCost: () => '0 TANGLE',
     getAddresses: () => ({
@@ -429,10 +453,10 @@ vi.mock('~/lib/hooks/useCreateDeploy', () => ({
       callId: undefined,
       provision: undefined,
       sandboxDraftKey: undefined,
-      operators: mode === 'sandbox' ? [testOperator] : [],
+      operators: [testOperator],
       operatorsLoading: false,
       operatorsError: null,
-      operatorCount: mode === 'sandbox' ? 1n : 0n,
+      operatorCount: 1n,
       isNewService: mode === 'instance',
       isInstanceMode: mode === 'instance',
       isTeeInstance: blueprint?.id === 'ai-agent-tee-instance-blueprint',
@@ -441,6 +465,7 @@ vi.mock('~/lib/hooks/useCreateDeploy', () => ({
       canDeploy: true,
       deploy: mockDeploy,
       reset: mockDeployReset,
+      ...deployOverridesRef.current,
     };
   },
 }));
@@ -468,9 +493,29 @@ function selectImageOption(optionName: string) {
   fireEvent.click(screen.getByRole('option', { name: optionName }));
 }
 
+function openMissingSandboxServiceReview() {
+  infraStateRef.current = {
+    blueprintId: '10',
+    serviceId: '1',
+    serviceValidated: false,
+    serviceInfo: null,
+  };
+  serviceValidationRef.current = { serviceInfo: null, error: 'Service not found' };
+
+  renderSubject('?blueprint=ai-agent-sandbox-blueprint');
+  fireEvent.change(screen.getByLabelText('Sandbox Name'), { target: { value: 'Cloud Sandbox' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+}
+
 describe('CreatePage agent configuration', () => {
   beforeEach(() => {
     currentSearchRef.current = '?blueprint=ai-agent-instance-blueprint';
+    accountRef.current = {
+      address: '0x123400000000000000000000000000000000abcd',
+      isConnected: true,
+      status: 'connected',
+    };
+    deployOverridesRef.current = {};
     infraStateRef.current = {
       blueprintId: '2',
       serviceId: '2',
@@ -483,6 +528,8 @@ describe('CreatePage agent configuration', () => {
     mockValidateService.mockResolvedValue(null);
     mockWriteContractAsync.mockReset();
     mockWriteContractAsync.mockResolvedValue('0xabc');
+    mockShowConnect.mockReset();
+    mockRefetchQuotes.mockReset();
     serviceValidationRef.current = { serviceInfo: null, error: null };
     mockDeploy.mockReset();
     mockDeployReset.mockReset();
@@ -501,6 +548,63 @@ describe('CreatePage agent configuration', () => {
 
     expect(screen.getByText('Agent')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Agent' })).toHaveTextContent('None (compute only)');
+  });
+
+  it('selects launch modes and opens infrastructure settings from configure', () => {
+    renderSubject('');
+
+    fireEvent.click(screen.getByText('AI Agent TEE Instance'));
+    expect(mockUpdateInfra).toHaveBeenCalledWith(expect.objectContaining({
+      blueprintId: '12',
+      serviceId: '',
+      serviceValidated: false,
+    }));
+    expect(screen.getByText('Instance Spec')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Infrastructure' }));
+    expect(screen.getByTestId('infra-modal')).toHaveTextContent('Infrastructure existing');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByText('Next')).toBeInTheDocument();
+  });
+
+  it('keeps Continue inert until a name is entered', () => {
+    renderSubject('?blueprint=ai-agent-instance-blueprint');
+
+    const nameInput = screen.getByLabelText('Instance Name');
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(nameInput).toHaveFocus();
+    expect(screen.getByText('Instance name is required')).toBeInTheDocument();
+    expect(screen.queryByText('Create service + Instance')).not.toBeInTheDocument();
+  });
+
+  it('wires configure controls: runtime, resources, SSH, ports, and advanced modal', () => {
+    renderSubject('?blueprint=ai-agent-instance-blueprint');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Firecracker' }));
+    expect(screen.getByText('Firecracker DNAT')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('CPU Cores'), { target: { value: '6' } });
+    fireEvent.change(screen.getByLabelText('Memory (MB)'), { target: { value: '8192' } });
+    fireEvent.change(screen.getByLabelText('Disk (GB)'), { target: { value: '40' } });
+    expect(screen.getByLabelText('CPU Cores')).toHaveValue(6);
+    expect(screen.getByLabelText('Memory (MB)')).toHaveValue(8192);
+    expect(screen.getByLabelText('Disk (GB)')).toHaveValue(40);
+
+    fireEvent.click(screen.getByRole('switch', { name: /Enable SSH/i }));
+    expect(screen.getByLabelText('SSH Public Key')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Exposed Ports'), { target: { value: '3000, 8080' } });
+    expect(screen.getByLabelText('Exposed Ports')).toHaveValue('3000, 8080');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced Settings' }));
+    expect(screen.getByRole('dialog', { name: 'Advanced Settings' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close advanced settings' }));
+    expect(screen.queryByRole('dialog', { name: 'Advanced Settings' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog', { name: 'Advanced Settings' })).not.toBeInTheDocument();
   });
 
   it('shows the selected bundled agent in the review step for instances', () => {
@@ -549,6 +653,11 @@ describe('CreatePage agent configuration', () => {
 
     expect(screen.getByRole('switch', { name: /All-Harness Runtime/i })).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: /Computer Use/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('switch', { name: /All-Harness Runtime/i }));
+    fireEvent.click(screen.getByRole('switch', { name: /Computer Use/i }));
+    expect(screen.getByRole('switch', { name: /All-Harness Runtime/i })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('switch', { name: /Computer Use/i })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('keeps service settings out of the deploy summary', () => {
@@ -560,18 +669,7 @@ describe('CreatePage agent configuration', () => {
   });
 
   it('turns a missing sandbox service into an inline service creation path', () => {
-    infraStateRef.current = {
-      blueprintId: '10',
-      serviceId: '1',
-      serviceValidated: false,
-      serviceInfo: null,
-    };
-    serviceValidationRef.current = { serviceInfo: null, error: 'Service not found' };
-
-    renderSubject('?blueprint=ai-agent-sandbox-blueprint');
-
-    fireEvent.change(screen.getByLabelText('Sandbox Name'), { target: { value: 'Cloud Sandbox' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    openMissingSandboxServiceReview();
 
     expect(screen.getByText('Service #1 not found')).toBeInTheDocument();
     expect(screen.queryByText('Launch Mode')).not.toBeInTheDocument();
@@ -584,6 +682,9 @@ describe('CreatePage agent configuration', () => {
     expect(screen.getByRole('button', { name: 'New service' })).toBeInTheDocument();
     expect(screen.getByText('https://operator.example')).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(mockRefetchQuotes).toHaveBeenCalledTimes(1);
+
     fireEvent.click(screen.getByRole('button', { name: 'Create service' }));
 
     expect(mockNavigate).not.toHaveBeenCalled();
@@ -595,6 +696,56 @@ describe('CreatePage agent configuration', () => {
       ]),
     }));
     expect(screen.getByText('Cloud Sandbox')).toBeInTheDocument();
+  });
+
+  it('makes manually added operators visible, removable, and part of the service request', () => {
+    const manualOperator = '0x1111111111111111111111111111111111111111';
+    openMissingSandboxServiceReview();
+
+    fireEvent.change(screen.getByLabelText('Manual operator address'), { target: { value: manualOperator } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(screen.getByText('Added manually')).toBeInTheDocument();
+    expect(screen.getByText('manual operator')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create service' }));
+    expect(mockWriteContractAsync).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: 'requestService',
+      args: expect.arrayContaining([
+        10n,
+        [testOperator.address, manualOperator],
+      ]),
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Remove operator/i }));
+    expect(screen.queryByText('manual operator')).not.toBeInTheDocument();
+  });
+
+  it('rejects invalid existing service IDs before contract validation', () => {
+    openMissingSandboxServiceReview();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Existing service' }));
+    fireEvent.change(screen.getByLabelText('Service ID'), { target: { value: '0' } });
+
+    expect(screen.getByRole('button', { name: 'Check service' })).toBeDisabled();
+    expect(mockValidateService).not.toHaveBeenCalledWith(0n, expect.anything());
+  });
+
+  it('turns the wallet blocker into a real connect action', () => {
+    accountRef.current = {
+      address: undefined,
+      isConnected: false,
+      status: 'disconnected',
+    };
+
+    renderSubject('?blueprint=ai-agent-instance-blueprint');
+
+    fireEvent.change(screen.getByLabelText('Instance Name'), { target: { value: 'Needs Wallet' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wallet' }));
+
+    expect(mockShowConnect).toHaveBeenCalledTimes(1);
+    expect(mockDeploy).not.toHaveBeenCalled();
   });
 
   it('checks and selects an existing service ID without leaving the wizard', async () => {
@@ -660,5 +811,50 @@ describe('CreatePage agent configuration', () => {
     expect(screen.getByText('Wallet not permitted on service #1')).toBeInTheDocument();
     expect(screen.getByText(/cannot submit jobs to this service/i)).toBeInTheDocument();
     expect(screen.queryByText(/^Not permitted$/i)).not.toBeInTheDocument();
+  });
+
+  it('calls deploy from the ready deploy review and toggles per-job pricing', () => {
+    serviceValidationRef.current = {
+      serviceInfo: { active: true, permitted: true },
+      error: null,
+    };
+    infraStateRef.current = {
+      blueprintId: '2',
+      serviceId: '2',
+      serviceValidated: true,
+      serviceInfo: { active: true, permitted: true },
+    };
+
+    renderSubject('?blueprint=ai-agent-instance-blueprint');
+
+    fireEvent.change(screen.getByLabelText('Instance Name'), { target: { value: 'Worker Ready' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: /Per-job pricing/i }));
+    expect(screen.getByText('Price')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Create Service & Deploy/i }));
+    expect(mockDeploy).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the created resource from the completed review state', () => {
+    serviceValidationRef.current = {
+      serviceInfo: { active: true, permitted: true },
+      error: null,
+    };
+    deployOverridesRef.current = {
+      status: 'ready',
+      sandboxDraftKey: 'local-sandbox-1',
+      isInstanceMode: false,
+      isNewService: false,
+      hasValidService: true,
+    };
+
+    renderSubject('?blueprint=ai-agent-sandbox-blueprint');
+
+    fireEvent.change(screen.getByLabelText('Sandbox Name'), { target: { value: 'Ready Sandbox' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'View Sandbox' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/sandboxes/local-sandbox-1');
   });
 });
