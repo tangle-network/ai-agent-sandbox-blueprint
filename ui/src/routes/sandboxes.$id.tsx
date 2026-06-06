@@ -47,10 +47,10 @@ import {
 } from '~/components/console/ResourceWorkspacePanels';
 import {
   IdentityMark,
+  OperatorIdenticon,
   getAgentIdentity,
   getBlueprintIdentity,
   getImageIdentity,
-  getOperatorIdentity,
   getResourceIdentity,
   getRuntimeIdentity,
   getSecurityIdentity,
@@ -686,7 +686,7 @@ export default function SandboxDetail() {
   const contextRows: WorkspaceRailRow[] = [
     { label: 'Sandbox ID', value: sb.sandboxId ? 'provisioned' : 'pending', detail: sb.sandboxId ?? sb.localId, tone: sb.sandboxId ? 'ready' : 'warn', identity: getStatusIdentity(sb.sandboxId ? 'running' : 'creating') },
     { label: 'Blueprint', value: formatBlueprintLabel(sb.blueprintId), detail: `service ${formatServiceId(sb.serviceId)}`, tone: 'brand', identity: getBlueprintIdentity(sb.blueprintId) },
-    { label: 'Operator', value: sb.operator ? truncateAddress(sb.operator) : 'unknown', detail: sb.operator ?? 'operator not resolved', tone: sb.operator ? 'ready' : 'muted', identity: getOperatorIdentity(sb.operator) },
+    { label: 'Operator', value: sb.operator ? truncateAddress(sb.operator) : 'unknown', detail: sb.operator ?? 'operator not resolved', tone: sb.operator ? 'ready' : 'muted', leading: sb.operator ? <OperatorIdenticon address={sb.operator} size="sm" /> : undefined },
     { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted', identity: getStatusIdentity('processing') },
   ];
   const storageRows: WorkspaceRailRow[] = [
@@ -854,7 +854,7 @@ export default function SandboxDetail() {
                 copyable={!!sb.operator}
                 copyValue={sb.operator}
                 alignRight
-                identity={getOperatorIdentity(sb.operator)}
+                leading={sb.operator ? <OperatorIdenticon address={sb.operator} size="sm" /> : undefined}
               />
               {sb.txHash && <LabeledValueRow label="TX Hash" value={truncateAddress(sb.txHash)} mono copyable copyValue={sb.txHash} alignRight />}
             </CardContent>

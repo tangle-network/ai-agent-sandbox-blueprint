@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAccount } from 'wagmi';
-import { AnimatedPage, StaggerContainer, StaggerItem } from '@tangle-network/blueprint-ui/components';
-import { Card, CardContent } from '@tangle-network/blueprint-ui/components';
-import { Button } from '@tangle-network/blueprint-ui/components';
-import { Badge } from '@tangle-network/blueprint-ui/components';
 import {
   useWorkflowOperatorAccess,
   useWorkflowSummaries,
@@ -37,7 +33,18 @@ import {
   type WorkflowBlueprintId,
   type WorkflowScope,
 } from '~/lib/workflows';
-import { ConsoleMetricStrip, type ConsoleMetric } from '~/components/console/ConsolePrimitives';
+import {
+  ConsoleChip,
+  ConsoleMetricStrip,
+  ConsolePage,
+  ConsoleSection,
+  EmptyConsoleState,
+  type ConsoleMetric,
+} from '~/components/console/ConsolePrimitives';
+import {
+  IdentityMark,
+  getBlueprintIdentity,
+} from '~/components/shared/VisualIdentity';
 
 const WORKFLOW_VISIBILITY_POLL_INTERVAL_MS = 3_000;
 const WORKFLOW_VISIBILITY_TIMEOUT_MS = 120_000;
@@ -577,57 +584,49 @@ export default function Workflows() {
   }, [resolvePendingWorkflow]);
 
   return (
-    <AnimatedPage className="mx-auto max-w-7xl px-4 sm:px-6 py-8">
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-2xl font-display font-bold text-cloud-elements-textPrimary">Workflows</h1>
-          <p className="text-sm text-cloud-elements-textSecondary mt-1">
-            {!address
-              ? 'Connect your wallet to view workflows you own'
-              : workflows.length > 0
-                ? `${workflows.length} workflow${workflows.length > 1 ? 's' : ''}`
-                : 'Automation across your sandboxes and instances'}
-          </p>
-        </div>
-        {address ? (
-          <Link to="/workflows/create">
-            <Button>
-              <div className="i-ph:plus text-base" />
-              New Workflow
-            </Button>
-          </Link>
-        ) : (
-          <Button disabled>
-            <div className="i-ph:plus text-base" />
-            New Workflow
-          </Button>
-        )}
-      </div>
-
-      <div className="mb-6">
+    <ConsolePage
+      title="Automation"
+      eyebrow={address ? `${workflows.length} workflow${workflows.length === 1 ? '' : 's'}` : 'Wallet scoped'}
+      actions={address ? (
+        <Link
+          to="/workflows/create"
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-[5px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] px-3 font-display text-sm font-bold text-[var(--sandbox-console-text)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-[var(--sandbox-console-brand)] hover:bg-[rgba(142,89,255,0.24)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] active:scale-[0.98]"
+        >
+          <span className="i-ph:plus-bold text-sm" />
+          New Workflow
+        </Link>
+      ) : (
+        <button
+          type="button"
+          disabled
+          className="inline-flex h-10 cursor-not-allowed items-center justify-center gap-2 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3 font-display text-sm font-bold text-[var(--sandbox-console-muted)] opacity-70"
+        >
+          <span className="i-ph:plus-bold text-sm" />
+          New Workflow
+        </button>
+      )}
+    >
+      <div className="space-y-4">
         <ConsoleMetricStrip metrics={workflowMetrics} />
-      </div>
 
-      {address && operatorAuthPrompts.length > 0 ? (
-        <div className="space-y-3 mb-6">
-          {operatorAuthPrompts.map(({ key, label, query }) => (
-            <Card key={key}>
-              <CardContent className="p-5">
-                <div className="flex items-center justify-between gap-4 flex-wrap">
-                  <div>
-                    <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+        {address && operatorAuthPrompts.length > 0 ? (
+          <ConsoleSection title="Operator Access">
+            <div className="divide-y divide-[var(--sandbox-console-border)]">
+              {operatorAuthPrompts.map(({ key, label, query }) => (
+                <div key={key} className="flex flex-wrap items-center justify-between gap-4 px-3.5 py-3 transition-colors hover:bg-[var(--sandbox-console-hover)]">
+                  <div className="min-w-0">
+                    <p className="font-display text-sm font-bold text-[var(--sandbox-console-text)]">
                       Connect {label}
                     </p>
-                    <p className="text-xs text-cloud-elements-textTertiary mt-1">
-                      Sign once to load the workflows this wallet can access on that operator.
+                    <p className="mt-0.5 text-xs text-[var(--sandbox-console-muted)]">
+                      Sign once to load workflows this wallet can access.
                     </p>
                     {query.authError ? (
-                      <p className="text-xs text-rose-300 mt-2">{query.authError}</p>
+                      <p className="mt-1 text-xs text-[var(--sandbox-console-danger)]">{query.authError}</p>
                     ) : null}
                   </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
+                  <WorkflowActionButton
+                    tone="secondary"
                     disabled={query.isAuthenticating}
                     onClick={() => {
                       void query.authenticate().then((token) => {
@@ -641,80 +640,119 @@ export default function Workflows() {
                     }}
                   >
                     {query.isAuthenticating ? 'Signing...' : `Connect ${label}`}
-                  </Button>
+                  </WorkflowActionButton>
                 </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+              ))}
+            </div>
+          </ConsoleSection>
       ) : null}
 
       {operatorErrors.length > 0 ? (
-        <div className="space-y-3 mb-6">
-          {operatorErrors.map((entry) => (
-            <Card key={entry.key}>
-              <CardContent className="p-5">
-                <p className="text-sm font-display font-medium text-rose-300">
+        <ConsoleSection title="Operator Issues">
+          <div className="divide-y divide-[var(--sandbox-console-border)]">
+            {operatorErrors.map((entry) => (
+              <div key={entry.key} className="px-3.5 py-3">
+                <p className="font-display text-sm font-bold text-[var(--sandbox-console-danger)]">
                   {entry.label} error
                 </p>
-                <p className="text-xs text-rose-200 mt-1">{entry.message}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+                <p className="mt-1 text-xs text-[var(--sandbox-console-muted)]">{entry.message}</p>
+              </div>
+            ))}
+          </div>
+        </ConsoleSection>
       ) : null}
 
-      {workflows.length > 0 ? (
-        <StaggerContainer className="space-y-3">
-          {workflows.map((workflow) => (
-            <StaggerItem key={`${workflow.kind}:${workflow.blueprintId}:${String(workflow.id)}`}>
-              <WorkflowCard
-                workflow={workflow}
-                onTrigger={workflow.kind === 'remote'
-                  ? () => void handleWorkflowAction(workflow, 'trigger')
-                  : undefined}
-                onCancel={workflow.kind === 'remote'
-                  ? () => void handleWorkflowAction(workflow, 'cancel')
-                  : undefined}
-                onResolvePending={workflow.kind === 'pending'
-                  ? () => void handleResolvePendingWorkflow(workflow.pending)
-                  : undefined}
-                pendingActionLoading={workflow.kind === 'pending' && !!resolvingPendingKeys[workflow.pending.key]}
-                txPending={txStatus === 'pending' || txStatus === 'signing'}
-              />
-            </StaggerItem>
-          ))}
-        </StaggerContainer>
-      ) : (
-        <Card>
-          <CardContent className="p-6">
-            <div className="py-16 text-center">
-              <div className="i-ph:flow-arrow text-4xl text-cloud-elements-textTertiary mb-3 mx-auto" />
-              <p className="text-cloud-elements-textSecondary font-display">
-                {!address
-                  ? 'Connect your wallet to view workflows'
-                  : isLoading
-                    ? 'Loading workflows...'
-                    : operatorAuthPrompts.length > 0
-                      ? 'Authenticate with your operator to load workflows'
-                      : 'No workflows configured'}
-              </p>
-              <p className="text-sm text-cloud-elements-textTertiary mt-1">
-                {!address
-                  ? 'Workflow visibility is owner-scoped, so the list stays empty until you connect the owner wallet'
+        <ConsoleSection title="Workflow Directory">
+          {workflows.length > 0 ? (
+            <WorkflowTable
+              workflows={workflows}
+              onTrigger={(workflow) => void handleWorkflowAction(workflow, 'trigger')}
+              onCancel={(workflow) => void handleWorkflowAction(workflow, 'cancel')}
+              onResolvePending={(pending) => void handleResolvePendingWorkflow(pending)}
+              resolvingPendingKeys={resolvingPendingKeys}
+              txPending={txStatus === 'pending' || txStatus === 'signing'}
+            />
+          ) : (
+            <EmptyConsoleState
+              icon="i-ph:flow-arrow"
+              title={!address
+                ? 'Connect your wallet to view workflows'
+                : isLoading
+                  ? 'Loading workflows'
                   : operatorAuthPrompts.length > 0
-                    ? 'Owned workflows now come from the operator API, so you need an operator session before the list can load'
-                    : 'Create a workflow from a running sandbox or instance to automate recurring tasks'}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-    </AnimatedPage>
+                    ? 'Authenticate with your operator'
+                    : 'No workflows configured'}
+              detail={!address
+                ? 'Workflow visibility is owner-scoped, so this directory stays empty until the owner wallet is connected.'
+                : operatorAuthPrompts.length > 0
+                  ? 'Owned workflows are loaded from operator APIs after wallet-scoped authentication.'
+                  : 'Create a workflow from a running sandbox or instance to automate recurring tasks.'}
+            />
+          )}
+        </ConsoleSection>
+      </div>
+    </ConsolePage>
   );
 }
 
-function WorkflowCard({
+function WorkflowTable({
+  workflows,
+  onTrigger,
+  onCancel,
+  onResolvePending,
+  resolvingPendingKeys,
+  txPending,
+}: {
+  workflows: WorkflowRecord[];
+  onTrigger: (workflow: RemoteWorkflowRecord) => void;
+  onCancel: (workflow: RemoteWorkflowRecord) => void;
+  onResolvePending: (pending: PendingWorkflowCreation) => void;
+  resolvingPendingKeys: Record<string, boolean>;
+  txPending: boolean;
+}) {
+  return (
+    <div className="overflow-auto">
+      <table className="min-w-[980px] w-full table-fixed border-collapse">
+        <colgroup>
+          <col className="w-[25%]" />
+          <col className="w-[12%]" />
+          <col className="w-[12%]" />
+          <col className="w-[18%]" />
+          <col className="w-[13%]" />
+          <col className="w-[10%]" />
+          <col className="w-[10%]" />
+        </colgroup>
+        <thead>
+          <tr className="border-b border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)]">
+            {['Workflow', 'Status', 'Trigger', 'Target', 'Last run', 'Next run', 'Actions'].map((label) => (
+              <th
+                key={label}
+                className="px-3 py-2 text-left font-data text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--sandbox-console-muted)]"
+              >
+                {label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {workflows.map((workflow) => (
+            <WorkflowTableRow
+              key={`${workflow.kind}:${workflow.blueprintId}:${String(workflow.id)}`}
+              workflow={workflow}
+              onTrigger={onTrigger}
+              onCancel={onCancel}
+              onResolvePending={onResolvePending}
+              pendingActionLoading={workflow.kind === 'pending' && !!resolvingPendingKeys[workflow.pending.key]}
+              txPending={txPending}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function WorkflowTableRow({
   workflow,
   onTrigger,
   onCancel,
@@ -723,9 +761,9 @@ function WorkflowCard({
   txPending,
 }: {
   workflow: WorkflowRecord;
-  onTrigger?: () => void;
-  onCancel?: () => void;
-  onResolvePending?: () => void;
+  onTrigger: (workflow: RemoteWorkflowRecord) => void;
+  onCancel: (workflow: RemoteWorkflowRecord) => void;
+  onResolvePending: (pending: PendingWorkflowCreation) => void;
   pendingActionLoading: boolean;
   txPending: boolean;
 }) {
@@ -744,101 +782,141 @@ function WorkflowCard({
   const detailPath = isPending ? null : buildWorkflowDetailPath(workflow.scope, workflow.id);
   const canTrigger = !isPending && workflow.data.runnable && workflow.data.targetServiceId !== 0;
   const canCancel = !isPending && workflow.data.active && workflow.data.targetServiceId !== 0;
-  const navigate = useNavigate();
 
   return (
-    <Card
-      className={detailPath ? 'cursor-pointer transition-colors hover:bg-cloud-elements-background-depth-2' : undefined}
-      onClick={detailPath ? () => navigate(detailPath) : undefined}
-    >
-      <CardContent className="p-5">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-4 min-w-0">
-            <div className={cn(
-              'w-10 h-10 rounded-lg flex items-center justify-center shrink-0',
-              isPending
-                ? 'bg-amber-500/10'
-                : workflow.data.active
-                  ? 'bg-teal-500/10'
-                  : 'bg-cloud-elements-background-depth-3',
-            )}>
-              <div className={cn(
-                'i-ph:flow-arrow text-lg',
-                isPending
-                  ? 'text-amber-300'
-                  : workflow.data.active
-                    ? 'text-teal-400'
-                    : 'text-cloud-elements-textTertiary',
-              )} />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm font-display font-semibold text-cloud-elements-textPrimary">
-                  {name || `Workflow #${String(workflow.id)}`}
-                </span>
-                <Badge variant={status.variant}>
-                  {status.label}
-                </Badge>
-                <Badge variant="accent">
-                  {triggerLabel[triggerType] ?? triggerType}
-                </Badge>
-                <Badge variant="secondary">{workflow.kindLabel}</Badge>
-              </div>
-              <div className="flex items-center gap-3 mt-1 text-xs text-cloud-elements-textTertiary flex-wrap">
-                <span>
-                  {isPending
-                    ? `Will run on ${workflow.targetLabel}`
-                    : workflow.data.targetStatus === 'missing'
-                      ? `Target missing: ${workflow.targetLabel}`
-                      : `Runs on ${workflow.targetLabel}`}
-                </span>
-                {triggerConfig ? (
-                  <>
-                    <span className="text-cloud-elements-dividerColor">·</span>
-                    <span className="font-data">{triggerConfig}</span>
-                  </>
-                ) : null}
-                <span className="text-cloud-elements-dividerColor">·</span>
-                <span>{status.detail}</span>
-                {!isPending && workflow.data.lastRunAt && workflow.data.lastRunAt > 0 ? (
-                  <>
-                    <span className="text-cloud-elements-dividerColor">·</span>
-                    <span>Last: {new Date(workflow.data.lastRunAt * 1000).toLocaleString()}</span>
-                  </>
-                ) : null}
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            {isPending ? (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={onResolvePending}
-                disabled={pendingActionLoading}
+    <tr className="group border-b border-[var(--sandbox-console-border)] transition-colors hover:bg-[var(--sandbox-console-surface)]">
+      <td className="px-3 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <IdentityMark identity={getBlueprintIdentity(workflow.blueprintId)} size="md" />
+          <span className="min-w-0">
+            {detailPath ? (
+              <Link
+                to={detailPath}
+                className="block truncate font-display text-sm font-bold text-[var(--sandbox-console-text)] transition-colors hover:text-[var(--sandbox-console-brand)]"
               >
-                {pendingActionLoading
-                  ? 'Checking...'
-                  : workflow.pending.status === 'awaiting-auth'
-                    ? 'Connect Operator'
-                    : 'Check Status'}
-              </Button>
-            ) : null}
-            {!isPending && workflow.data.active && workflow.data.targetServiceId !== 0 ? (
-              <Button variant="success" size="sm" onClick={onTrigger} disabled={txPending || !canTrigger}>
-                <div className="i-ph:play text-xs" />
-                Trigger
-              </Button>
-            ) : null}
-            {!isPending && canCancel ? (
-              <Button variant="secondary" size="sm" onClick={onCancel} disabled={txPending}>
-                <div className="i-ph:stop text-xs" />
-                Cancel
-              </Button>
-            ) : null}
-          </div>
+                {name || `Workflow #${String(workflow.id)}`}
+              </Link>
+            ) : (
+              <span className="block truncate font-display text-sm font-bold text-[var(--sandbox-console-text)]">
+                {name || `Workflow #${String(workflow.id)}`}
+              </span>
+            )}
+            <span className="block truncate font-data text-[11px] text-[var(--sandbox-console-subtle)]">
+              {workflow.kindLabel} · #{String(workflow.id)}
+            </span>
+          </span>
         </div>
-      </CardContent>
-    </Card>
+      </td>
+      <td className="px-3 py-3">
+        <ConsoleChip tone={workflowStatusTone(status.variant)}>{status.label}</ConsoleChip>
+      </td>
+      <td className="px-3 py-3">
+        <span className="block truncate font-display text-sm font-bold text-[var(--sandbox-console-text)]">
+          {triggerLabel[triggerType] ?? triggerType}
+        </span>
+        <span className="block truncate font-data text-[11px] text-[var(--sandbox-console-subtle)]">
+          {triggerConfig || 'manual'}
+        </span>
+      </td>
+      <td className="px-3 py-3">
+        <span className="block truncate font-data text-xs font-bold text-[var(--sandbox-console-text)]">
+          {isPending
+            ? workflow.targetLabel
+            : workflow.data.targetStatus === 'missing'
+              ? `Target missing: ${workflow.targetLabel}`
+              : workflow.targetLabel}
+        </span>
+        <span className="block truncate font-data text-[11px] text-[var(--sandbox-console-subtle)]">
+          {status.detail}
+        </span>
+      </td>
+      <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">
+        {isPending ? formatWorkflowDate(workflow.pending.submittedAt, 'ms') : formatWorkflowDate(workflow.data.lastRunAt, 's')}
+      </td>
+      <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">
+        {isPending ? 'pending' : formatWorkflowDate(workflow.data.nextRunAt, 's')}
+      </td>
+      <td className="px-3 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {isPending ? (
+            <WorkflowActionButton
+              tone="secondary"
+              onClick={() => onResolvePending(workflow.pending)}
+              disabled={pendingActionLoading}
+            >
+              {pendingActionLoading
+                ? 'Checking...'
+                : workflow.pending.status === 'awaiting-auth'
+                  ? 'Connect Operator'
+                  : 'Check Status'}
+            </WorkflowActionButton>
+          ) : null}
+          {!isPending && workflow.data.active && workflow.data.targetServiceId !== 0 ? (
+            <WorkflowActionButton
+              tone="success"
+              onClick={() => onTrigger(workflow)}
+              disabled={txPending || !canTrigger}
+              icon="i-ph:play-bold"
+            >
+              Trigger
+            </WorkflowActionButton>
+          ) : null}
+          {!isPending && canCancel ? (
+            <WorkflowActionButton
+              tone="secondary"
+              onClick={() => onCancel(workflow)}
+              disabled={txPending}
+              icon="i-ph:stop-bold"
+            >
+              Cancel
+            </WorkflowActionButton>
+          ) : null}
+        </div>
+      </td>
+    </tr>
   );
+}
+
+function WorkflowActionButton({
+  children,
+  disabled,
+  icon,
+  onClick,
+  tone = 'secondary',
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  icon?: string;
+  onClick?: () => void;
+  tone?: 'secondary' | 'success';
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        'inline-flex h-8 items-center justify-center gap-1.5 rounded-[4px] border px-2.5 font-display text-xs font-bold transition-[background-color,border-color,box-shadow,color,transform] duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-55',
+        tone === 'success'
+          ? 'border-[var(--sandbox-console-success-border)] bg-[var(--sandbox-console-success-soft)] text-[var(--sandbox-console-success)] hover:border-[var(--sandbox-console-success)] hover:bg-[color-mix(in_srgb,var(--sandbox-console-success)_18%,transparent)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-success)]'
+          : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-secondary)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]',
+      )}
+    >
+      {icon ? <span className={cn('text-xs', icon)} /> : null}
+      {children}
+    </button>
+  );
+}
+
+function workflowStatusTone(variant: 'stopped' | 'running' | 'secondary' | 'accent') {
+  if (variant === 'running') return 'ready';
+  if (variant === 'accent') return 'brand';
+  if (variant === 'stopped') return 'warn';
+  return 'muted';
+}
+
+function formatWorkflowDate(value: number | null | undefined, unit: 's' | 'ms') {
+  if (value == null || value <= 0) return '--';
+  const timestampMs = unit === 's' ? value * 1000 : value;
+  return new Date(timestampMs).toLocaleString();
 }

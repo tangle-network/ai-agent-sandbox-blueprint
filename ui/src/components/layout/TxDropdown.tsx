@@ -54,7 +54,7 @@ export function TxDropdown({
       {open && (
         <div
           className={cn(
-            'absolute z-50 max-h-[min(28rem,calc(100vh-1rem))] w-[min(24rem,calc(100vw-1rem))] overflow-hidden rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] shadow-[var(--sandbox-console-shadow-lg)]',
+            'absolute z-50 max-h-[min(28rem,calc(100vh-1rem))] w-[min(24rem,calc(100vw-1rem))] overflow-hidden rounded-[5px] border border-[var(--sandbox-console-menu-border)] bg-[var(--sandbox-console-menu)] shadow-[var(--sandbox-console-menu-shadow)]',
             align === 'start' ? 'left-0' : 'right-0',
             side === 'up' ? 'bottom-full mb-2' : 'top-full mt-2',
           )}
@@ -78,7 +78,7 @@ export function TxDropdown({
               </div>
             ) : (
               txs.map((tx) => (
-                <div key={tx.hash} className="flex items-center gap-3 border-b border-[var(--sandbox-console-border)] px-4 py-3 transition-colors last:border-b-0 hover:bg-[var(--sandbox-console-control-hover)]">
+                <div key={tx.hash} className="flex items-center gap-3 border-b border-[var(--sandbox-console-border)] px-4 py-3 transition-colors last:border-b-0 hover:bg-[var(--sandbox-console-menu-strong)]">
                   <StatusIcon status={tx.status} />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-display font-semibold text-[var(--sandbox-console-text)]">{tx.label}</div>

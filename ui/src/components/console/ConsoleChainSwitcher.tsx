@@ -101,7 +101,7 @@ export function ConsoleChainSwitcher({
       {open ? (
         <div
           className={cn(
-            'absolute z-50 max-h-[min(24rem,calc(100vh-1rem))] w-[min(18rem,calc(100vw-1rem))] overflow-hidden rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] p-1.5 shadow-[var(--sandbox-console-shadow-lg)]',
+            'absolute z-50 max-h-[min(24rem,calc(100vh-1rem))] w-[min(18rem,calc(100vw-1rem))] overflow-hidden rounded-[5px] border border-[var(--sandbox-console-menu-border)] bg-[var(--sandbox-console-menu)] p-1.5 shadow-[var(--sandbox-console-menu-shadow)]',
             align === 'start' ? 'left-0' : 'right-0',
             placement === 'up' ? 'bottom-full mb-2' : 'top-full mt-2',
           )}
@@ -125,7 +125,7 @@ export function ConsoleChainSwitcher({
                     'grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-2 rounded-[5px] px-2 py-2 text-left transition-[background-color,color,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sandbox-console-brand)]/60',
                     selected
                       ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
-                      : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-border-hover)]',
+                      : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-menu-strong)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-border-hover)]',
                   )}
                   role="menuitemradio"
                   aria-checked={selected}

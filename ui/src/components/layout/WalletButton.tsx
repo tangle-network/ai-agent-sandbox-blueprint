@@ -259,7 +259,7 @@ export function WalletButton({
                 role="menu"
                 aria-label="Account actions"
                 className={cn(
-                  'absolute z-50 max-h-[min(28rem,calc(100vh-1rem))] w-[min(18rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] p-3 shadow-[var(--sandbox-console-shadow-lg)]',
+                  'absolute z-50 max-h-[min(28rem,calc(100vh-1rem))] w-[min(18rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain rounded-[5px] border border-[var(--sandbox-console-menu-border)] bg-[var(--sandbox-console-menu)] p-3 shadow-[var(--sandbox-console-menu-shadow)]',
                   align === 'start' ? 'left-0' : 'right-0',
                   side === 'up' ? 'bottom-full mb-2' : 'top-full mt-2',
                 )}
@@ -290,7 +290,7 @@ export function WalletButton({
                         <span className="font-display text-sm font-semibold text-[var(--sandbox-console-secondary)]">Switch to {targetChain?.name ?? 'Unknown'}</span>
                       </button>
                     )}
-                    <button onClick={copyAddress} className="flex w-full items-center gap-2.5 rounded-[5px] px-3 py-2.5 text-left transition-colors hover:bg-[var(--sandbox-console-control-hover)]">
+                    <button onClick={copyAddress} className="flex w-full items-center gap-2.5 rounded-[5px] px-3 py-2.5 text-left transition-colors hover:bg-[var(--sandbox-console-menu-strong)]">
                       <div className="i-ph:copy text-base text-[var(--sandbox-console-muted)]" />
                       <span className="font-display text-sm font-semibold text-[var(--sandbox-console-secondary)]">Copy Address</span>
                     </button>

@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type RefObject, type ReactNode, type TextareaHTMLAttributes } from 'react';
+import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type RefObject, type ReactNode, type TextareaHTMLAttributes } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useAccount } from 'wagmi';
 import { useStore } from '@nanostores/react';
@@ -727,6 +727,7 @@ function LaunchNativeSelect({
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState<'down' | 'up'>('down');
   const rootRef = useRef<HTMLDivElement>(null);
   const selected = options.find((option) => option.value === value);
   const isDisabled = disabled || options.length === 0;
@@ -749,6 +750,17 @@ function LaunchNativeSelect({
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const estimatedMenuHeight = Math.min(288, (options.length * 56) + 12);
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    setPlacement(spaceBelow < estimatedMenuHeight + 12 && spaceAbove > spaceBelow ? 'up' : 'down');
+  }, [open, options.length]);
 
   return (
     <div ref={rootRef} className="relative space-y-2">
@@ -781,7 +793,10 @@ function LaunchNativeSelect({
         <div
           role="listbox"
           aria-label={label}
-          className="absolute left-0 right-0 top-full z-[70] mt-2 max-h-72 overflow-y-auto rounded-[5px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-panel-strong)] p-1.5 shadow-[var(--sandbox-console-shadow-lg)]"
+          className={cn(
+            'absolute left-0 right-0 z-[70] max-h-72 overflow-y-auto rounded-[5px] border border-[var(--sandbox-console-menu-border)] bg-[var(--sandbox-console-menu)] p-1.5 shadow-[var(--sandbox-console-menu-shadow)]',
+            placement === 'up' ? 'bottom-full mb-2' : 'top-full mt-2',
+          )}
         >
           {options.map((option) => {
             const active = option.value === value;
@@ -800,7 +815,7 @@ function LaunchNativeSelect({
                   'flex w-full items-center justify-between gap-3 rounded-[4px] px-3 py-2.5 text-left font-display text-[15px] font-semibold transition-[background-color,color,box-shadow] duration-150',
                   active
                     ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
-                    : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-border-hover)]',
+                    : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-menu-strong)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-border-hover)]',
                 )}
               >
                 <SelectOptionVisual option={option} />

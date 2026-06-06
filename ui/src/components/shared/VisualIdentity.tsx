@@ -1,3 +1,4 @@
+import { blo, type Address as BloAddress } from 'blo';
 import { cn } from '@tangle-network/blueprint-ui';
 
 export type IdentityTone = 'brand' | 'teal' | 'blue' | 'amber' | 'violet' | 'slate' | 'danger';
@@ -47,7 +48,6 @@ export function IdentityMark({
   className?: string;
 }) {
   const tone = identity.tone ?? 'slate';
-  const showTextMark = identity.image !== 'tangle';
 
   return (
     <span
@@ -65,15 +65,6 @@ export function IdentityMark({
       ) : (
         <span className="relative z-10">{identity.mark}</span>
       )}
-      {identity.icon && showTextMark ? (
-        <span
-          className={cn(
-            'pointer-events-none absolute -bottom-1 -right-1 opacity-20',
-            size === 'lg' ? 'text-3xl' : size === 'md' ? 'text-2xl' : 'text-xl',
-            identity.icon,
-          )}
-        />
-      ) : null}
     </span>
   );
 }
@@ -134,11 +125,15 @@ export function OperatorIdentity({
   compact?: boolean;
 }) {
   const shortened = shortenAddress(address);
-  const identity = getOperatorIdentity(address);
+  const normalizedAddress = normalizeOperatorAddress(address);
 
   return (
     <span className="flex min-w-0 items-center gap-2.5">
-      <IdentityMark identity={identity} size={compact ? 'sm' : 'md'} />
+      {normalizedAddress ? (
+        <OperatorIdenticon address={normalizedAddress} size={compact ? 'sm' : 'md'} />
+      ) : (
+        <IdentityMark identity={getOperatorIdentity()} size={compact ? 'sm' : 'md'} />
+      )}
       <span className="min-w-0">
         <span className="block truncate font-data text-sm font-bold text-[var(--sandbox-console-text)]">
           {shortened}
@@ -149,6 +144,36 @@ export function OperatorIdentity({
           </span>
         ) : null}
       </span>
+    </span>
+  );
+}
+
+export function OperatorIdenticon({
+  address,
+  size = 'md',
+  className,
+}: {
+  address: string;
+  size?: keyof typeof sizeClass;
+  className?: string;
+}) {
+  const normalizedAddress = normalizeOperatorAddress(address);
+  if (!normalizedAddress) {
+    return <IdentityMark identity={getOperatorIdentity()} size={size} className={className} />;
+  }
+
+  return (
+    <span
+      className={cn(
+        'relative inline-flex shrink-0 overflow-hidden rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] shadow-[inset_0_1px_0_rgba(255,255,255,0.14)]',
+        sizeClass[size],
+        className,
+      )}
+      aria-hidden="true"
+      title={shortenAddress(normalizedAddress)}
+    >
+      <img src={blo(normalizedAddress, 96)} alt="" className="h-full w-full scale-110 object-cover" />
+      <span className="pointer-events-none absolute inset-0 rounded-[inherit] ring-1 ring-inset ring-white/10" />
     </span>
   );
 }
@@ -296,6 +321,11 @@ export function getOperatorIdentity(address?: string): IdentityMeta {
 function shortenAddress(value: string) {
   if (value.length <= 16) return value;
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
+}
+
+function normalizeOperatorAddress(value?: string): BloAddress | undefined {
+  if (!value || !/^0x[a-f0-9]{40}$/i.test(value)) return undefined;
+  return value as BloAddress;
 }
 
 function operatorShard(value: string) {

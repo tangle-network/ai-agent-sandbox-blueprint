@@ -1,4 +1,5 @@
 import { cn } from '@tangle-network/blueprint-ui';
+import type { ReactNode } from 'react';
 import { CopyButton } from './CopyButton';
 import { IdentityMark, type IdentityMeta } from './VisualIdentity';
 
@@ -11,6 +12,7 @@ interface LabeledValueRowProps {
   copyValue?: string;
   alignRight?: boolean;
   identity?: IdentityMeta;
+  leading?: ReactNode;
 }
 
 export function LabeledValueRow({
@@ -21,11 +23,12 @@ export function LabeledValueRow({
   copyValue,
   alignRight = false,
   identity,
+  leading,
 }: LabeledValueRowProps) {
   return (
     <div className="group flex justify-between gap-2 text-sm">
       <span className="flex shrink-0 items-center gap-2 text-cloud-elements-textSecondary">
-        {identity ? <IdentityMark identity={identity} size="sm" /> : null}
+        {leading ?? (identity ? <IdentityMark identity={identity} size="sm" /> : null)}
         <span>{label}</span>
       </span>
       <div className="flex items-center gap-1 min-w-0">

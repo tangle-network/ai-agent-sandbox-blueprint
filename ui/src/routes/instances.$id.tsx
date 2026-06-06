@@ -37,10 +37,10 @@ import {
 } from '~/components/console/ResourceWorkspacePanels';
 import {
   IdentityMark,
+  OperatorIdenticon,
   getAgentIdentity,
   getBlueprintIdentity,
   getImageIdentity,
-  getOperatorIdentity,
   getResourceIdentity,
   getRuntimeIdentity,
   getSecurityIdentity,
@@ -573,7 +573,7 @@ export default function InstanceDetail() {
   const contextRows: WorkspaceRailRow[] = [
     { label: 'Instance ID', value: inst.id, detail: getInstanceSandboxDisplayValue(inst), tone: 'brand', identity: getBlueprintIdentity(bpId) },
     { label: 'Blueprint', value: getBlueprint(bpId)?.name ?? bpId, detail: getInstanceServiceDisplayValue(inst), tone: 'brand', identity: getBlueprintIdentity(bpId) },
-    { label: 'Operator', value: inst.operator ? truncateAddress(inst.operator) : 'unknown', detail: inst.operator ?? 'operator not resolved', tone: inst.operator ? 'ready' : 'muted', identity: getOperatorIdentity(inst.operator) },
+    { label: 'Operator', value: inst.operator ? truncateAddress(inst.operator) : 'unknown', detail: inst.operator ?? 'operator not resolved', tone: inst.operator ? 'ready' : 'muted', leading: inst.operator ? <OperatorIdenticon address={inst.operator} size="sm" /> : undefined },
     { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted', identity: getStatusIdentity('processing') },
   ];
   const storageRows: WorkspaceRailRow[] = [
@@ -698,7 +698,7 @@ export default function InstanceDetail() {
                 mono
                 copyable={!!inst.operator}
                 copyValue={inst.operator}
-                identity={getOperatorIdentity(inst.operator)}
+                leading={inst.operator ? <OperatorIdenticon address={inst.operator} size="sm" /> : undefined}
               />
               {inst.txHash && (
                 <LabeledValueRow
