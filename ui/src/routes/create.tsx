@@ -400,8 +400,8 @@ export default function CreatePage() {
         </LaunchActionButton>
       ) : null}
     >
-      <div className="grid min-h-full gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <main className="min-w-0 space-y-4">
+      <div className="grid min-h-full gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <main className="min-w-0 space-y-5">
           {showConnectPanel && (
             <ConnectWalletPanel
               description="Provisioning a sandbox or instance requires a connected wallet on Tangle Network. You can browse blueprints below, but deploying will be blocked until you connect."
@@ -434,7 +434,7 @@ export default function CreatePage() {
           )}
 
           {step === 'configure' && createJob && displayJob && (
-            <div className="space-y-4">
+            <div className="space-y-5">
               <LaunchSpecComposer
                 blueprint={selectedBlueprint}
                 job={displayJob}
@@ -456,7 +456,7 @@ export default function CreatePage() {
                 onPortsChange={setPortsInput}
                 onAdvancedOpen={() => setShowAdvanced(true)}
               />
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-3">
                 <LaunchActionButton variant="secondary" onClick={() => setStep('blueprint')}>Back</LaunchActionButton>
                 <LaunchActionButton onClick={handleContinue} disabled={!createJob}>Continue</LaunchActionButton>
               </div>
@@ -560,13 +560,13 @@ function LaunchActionButton({
     <button
       type="button"
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-[4px] border font-display font-semibold transition-[background-color,border-color,box-shadow,color] disabled:cursor-not-allowed disabled:opacity-50',
-        size === 'sm' && 'h-8 px-3 text-xs',
-        size === 'md' && 'h-10 px-4 text-sm',
-        size === 'lg' && 'h-11 px-5 text-sm',
-        variant === 'primary' && 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] hover:border-[var(--sandbox-console-brand)] hover:bg-[rgba(142,89,255,0.22)] hover:shadow-[0_0_0_3px_rgba(168,123,255,0.10)]',
+        'inline-flex items-center justify-center gap-2 rounded-[5px] border font-display font-bold transition-[background-color,border-color,box-shadow,color,transform] duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50',
+        size === 'sm' && 'h-9 px-3 text-sm',
+        size === 'md' && 'h-11 px-4 text-[15px]',
+        size === 'lg' && 'h-12 px-5 text-[15px]',
+        variant === 'primary' && 'border-[var(--sandbox-console-brand-border)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--sandbox-console-brand)_22%,var(--sandbox-console-panel-strong)),var(--sandbox-console-brand-soft))] text-[var(--sandbox-console-text)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] hover:border-[var(--sandbox-console-brand)] hover:bg-[rgba(142,89,255,0.26)] hover:shadow-[0_0_0_3px_rgba(168,123,255,0.13),inset_0_1px_0_rgba(255,255,255,0.08)]',
         variant === 'secondary' && 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-secondary)] shadow-[var(--sandbox-console-control-shadow)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] hover:text-[var(--sandbox-console-text)]',
-        variant === 'success' && 'border-[var(--sandbox-console-success-border)] bg-[var(--sandbox-console-success-soft)] text-[var(--sandbox-console-success)] hover:bg-[rgba(56,178,172,0.18)]',
+        variant === 'success' && 'border-[var(--sandbox-console-success-border)] bg-[var(--sandbox-console-success-soft)] text-[var(--sandbox-console-success)] hover:bg-[rgba(56,178,172,0.20)]',
         variant === 'danger' && 'border-red-400/20 bg-red-400/10 text-[var(--sandbox-console-danger)] hover:bg-red-400/15',
         className,
       )}
@@ -599,17 +599,17 @@ function LaunchModeStrip({
               type="button"
               onClick={() => onSelect(bp)}
               className={cn(
-                'min-h-28 bg-[var(--sandbox-console-panel)] p-4 text-left transition-colors hover:bg-[var(--sandbox-console-hover)]',
-                active && 'bg-[var(--sandbox-console-brand-soft)]',
+                'group min-h-32 bg-[var(--sandbox-console-panel)] p-5 text-left transition-[background-color,box-shadow,transform] duration-150 hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[inset_0_3px_0_var(--sandbox-console-border-hover)] active:scale-[0.995]',
+                active && 'bg-[var(--sandbox-console-brand-soft)] shadow-[inset_0_3px_0_var(--sandbox-console-brand)]',
               )}
             >
               <div className="flex items-start justify-between gap-3">
-                <span className={cn('text-2xl text-[var(--sandbox-console-brand)]', bp.icon)} />
+                <span className={cn('text-3xl text-[var(--sandbox-console-brand)] transition-transform duration-150 group-hover:-translate-y-0.5', bp.icon)} />
                 {recommended ? <ConsoleChip tone="ready">recommended</ConsoleChip> : null}
               </div>
               <div className="mt-3">
-                <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">{bp.name}</p>
-                <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--sandbox-console-muted)]">{bp.description}</p>
+                <p className="font-display text-lg font-bold tracking-tight text-[var(--sandbox-console-text)]">{bp.name}</p>
+                <p className="mt-1 line-clamp-2 text-sm leading-6 text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{bp.description}</p>
               </div>
             </button>
           );
@@ -631,18 +631,18 @@ function LaunchField({
   children: ReactNode;
 }) {
   return (
-    <label className="block min-w-0 space-y-1.5">
+    <label className="block min-w-0 space-y-2">
       <span className="flex items-center justify-between gap-3">
-        <span className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">{label}</span>
-        {detail ? <span className="font-data text-[11px] text-[var(--sandbox-console-subtle)]">{detail}</span> : null}
+        <span className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">{label}</span>
+        {detail ? <span className="font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">{detail}</span> : null}
       </span>
       {children}
-      {error ? <span className="block text-xs text-[var(--sandbox-console-danger)]">{error}</span> : null}
+      {error ? <span className="block text-sm text-[var(--sandbox-console-danger)]">{error}</span> : null}
     </label>
   );
 }
 
-const launchControlClass = 'w-full rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3 py-2.5 font-data text-sm text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow)] placeholder:text-[var(--sandbox-console-subtle)] transition-[background-color,border-color,box-shadow,color] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:bg-[var(--sandbox-console-control-hover)] focus:shadow-[var(--sandbox-console-control-shadow-focus)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+const launchControlClass = 'min-h-11 w-full rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3.5 py-2.5 font-data text-[15px] font-medium text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow)] placeholder:text-[var(--sandbox-console-subtle)] transition-[background-color,border-color,box-shadow,color] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:bg-[var(--sandbox-console-control-hover)] focus:shadow-[var(--sandbox-console-control-shadow-focus)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 
 function LaunchInput({
   label,
@@ -723,10 +723,10 @@ function LaunchNativeSelect({
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative space-y-1.5">
+    <div ref={rootRef} className="relative space-y-2">
       <span className="flex items-center justify-between gap-2">
-        <span className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">{label}</span>
-        {detail ? <span className="font-data text-[11px] text-[var(--sandbox-console-subtle)]">{detail}</span> : null}
+        <span className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">{label}</span>
+        {detail ? <span className="font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">{detail}</span> : null}
       </span>
       <button
         type="button"
@@ -736,7 +736,7 @@ function LaunchNativeSelect({
         disabled={isDisabled}
         onClick={() => setOpen((current) => !current)}
         className={cn(
-          'group flex min-h-10 w-full items-center justify-between gap-3 rounded-[4px] border px-3 py-2.5 text-left font-data text-sm shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color] duration-150 disabled:cursor-not-allowed disabled:opacity-60',
+          'group flex min-h-11 w-full items-center justify-between gap-3 rounded-[5px] border px-3.5 py-2.5 text-left font-data text-[15px] font-medium shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color] duration-150 disabled:cursor-not-allowed disabled:opacity-60',
           open
             ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-control-hover)] text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow-focus)]'
             : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-text)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]',
@@ -749,7 +749,7 @@ function LaunchNativeSelect({
         <div
           role="listbox"
           aria-label={label}
-          className="absolute left-0 right-0 top-full z-[70] mt-2 max-h-72 overflow-y-auto rounded-[4px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-panel-strong)] p-1 shadow-[var(--sandbox-console-shadow-lg)]"
+          className="absolute left-0 right-0 top-full z-[70] mt-2 max-h-72 overflow-y-auto rounded-[5px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-panel-strong)] p-1.5 shadow-[var(--sandbox-console-shadow-lg)]"
         >
           {options.map((option) => {
             const active = option.value === value;
@@ -764,10 +764,10 @@ function LaunchNativeSelect({
                   setOpen(false);
                 }}
                 className={cn(
-                  'flex w-full items-center justify-between gap-3 rounded-[3px] px-2.5 py-2 text-left font-display text-sm transition-colors',
+                  'flex w-full items-center justify-between gap-3 rounded-[4px] px-3 py-2.5 text-left font-display text-[15px] font-semibold transition-[background-color,color,box-shadow] duration-150',
                   active
-                    ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)]'
-                    : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)]',
+                    ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
+                    : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-border-hover)]',
                 )}
               >
                 <span className="min-w-0 truncate">{option.label}</span>
@@ -838,9 +838,9 @@ function SegmentedControl({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="space-y-1.5">
-      <p className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">{label}</p>
-      <div className="grid gap-1 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] p-1 shadow-[var(--sandbox-console-control-shadow)] sm:grid-cols-3">
+    <div className="space-y-2">
+      <p className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">{label}</p>
+      <div className="grid gap-1 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] p-1 shadow-[var(--sandbox-console-control-shadow)] sm:grid-cols-3">
         {options.map((option) => {
           const active = option.value === value;
           return (
@@ -849,10 +849,10 @@ function SegmentedControl({
               type="button"
               onClick={() => onChange(option.value)}
               className={cn(
-                'min-h-9 rounded-[3px] px-3 text-center font-display text-xs font-semibold transition-colors',
+                'min-h-10 rounded-[4px] px-3 text-center font-display text-sm font-bold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.98]',
                 active
-                  ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_0_0_0_1px_var(--sandbox-console-brand-border)]'
-                  : 'text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)]',
+                  ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_0_0_0_1px_var(--sandbox-console-brand-border),inset_0_3px_0_var(--sandbox-console-brand)]'
+                  : 'text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_0_3px_0_var(--sandbox-console-border-hover)]',
               )}
             >
               {option.label.replace(' (default)', '')}
@@ -885,9 +885,9 @@ function LaunchToggle({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        'group flex w-full items-center gap-3 rounded-[4px] border p-3 text-left shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color] duration-150 disabled:cursor-not-allowed disabled:opacity-60',
+        'group flex w-full items-center gap-3 rounded-[5px] border p-3.5 text-left shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color,transform] duration-150 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60',
         checked
-          ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)]'
+          ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
           : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]',
       )}
     >
@@ -902,8 +902,8 @@ function LaunchToggle({
         <span className="i-ph:check-bold text-xs" />
       </span>
       <span className="min-w-0">
-        <span className="block font-display text-sm font-semibold text-[var(--sandbox-console-text)]">{label}</span>
-        {detail ? <span className="mt-0.5 block text-xs leading-5 text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{detail}</span> : null}
+        <span className="block font-display text-base font-bold tracking-tight text-[var(--sandbox-console-text)]">{label}</span>
+        {detail ? <span className="mt-0.5 block text-sm leading-6 text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{detail}</span> : null}
       </span>
     </button>
   );
@@ -920,7 +920,7 @@ function ResourceSizingControls({
 }) {
   return (
     <div className="space-y-2">
-      <p className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">Resources</p>
+      <p className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">Resources</p>
       <div className="grid grid-cols-3 gap-2">
         <ResourceNumberInput
           label="CPU Cores"
@@ -967,12 +967,12 @@ function ResourceNumberInput({
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="group block min-w-0 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] p-2.5 shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] focus-within:border-[var(--sandbox-console-brand-border)] focus-within:bg-[var(--sandbox-console-control-hover)] focus-within:shadow-[var(--sandbox-console-control-shadow-focus)]">
+    <label className="group block min-w-0 cursor-text rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] p-3 shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] focus-within:border-[var(--sandbox-console-brand-border)] focus-within:bg-[var(--sandbox-console-control-hover)] focus-within:shadow-[var(--sandbox-console-control-shadow-focus)]">
       <span className="flex items-center justify-between gap-2">
-        <span className="truncate font-display text-[11px] font-semibold text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{shortLabel}</span>
-        <span className="i-ph:pencil-simple-line shrink-0 text-xs text-[var(--sandbox-console-subtle)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" />
+        <span className="truncate font-display text-xs font-bold uppercase tracking-[0.05em] text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{shortLabel}</span>
+        <span className="i-ph:pencil-simple-line shrink-0 text-sm text-[var(--sandbox-console-brand)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" />
       </span>
-      <span className="mt-1 flex min-w-0 items-baseline gap-1.5">
+      <span className="mt-1.5 flex min-w-0 items-baseline gap-1.5">
         <input
           aria-label={label}
           type="number"
@@ -981,9 +981,9 @@ function ResourceNumberInput({
           step={fieldDef?.step ?? 1}
           value={value}
           onChange={(event) => onChange(clampNumber(Number(event.target.value), fieldDef?.min, fieldDef?.max))}
-          className="min-w-0 flex-1 bg-transparent font-data text-xl font-semibold leading-none text-[var(--sandbox-console-text)] outline-none"
+          className="min-w-0 flex-1 bg-transparent font-data text-xl font-bold leading-none text-[var(--sandbox-console-text)] outline-none"
         />
-        <span className="shrink-0 font-data text-[10px] font-semibold uppercase text-[var(--sandbox-console-subtle)]">{unit}</span>
+        <span className="shrink-0 font-data text-[11px] font-bold uppercase text-[var(--sandbox-console-subtle)]">{unit}</span>
       </span>
     </label>
   );
@@ -1037,17 +1037,17 @@ function LaunchSpecComposer({
 
   return (
     <ConsoleSection title={`${entityLabel} Spec`}>
-      <div className="space-y-5 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--sandbox-console-border)] pb-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[4px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)]">
-              <div className={cn('text-xl text-[var(--sandbox-console-brand)]', blueprint?.icon)} />
+      <div className="space-y-5 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--sandbox-console-border)] pb-5">
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[5px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <div className={cn('text-2xl text-[var(--sandbox-console-brand)]', blueprint?.icon)} />
             </div>
             <div className="min-w-0">
-              <h2 className="truncate font-display text-lg font-semibold text-[var(--sandbox-console-text)]">
+              <h2 className="truncate font-display text-2xl font-bold tracking-tight text-[var(--sandbox-console-text)]">
                 {blueprint?.name ?? entityLabel}
               </h2>
-              <p className="mt-1 max-w-2xl text-sm leading-5 text-[var(--sandbox-console-muted)]">
+              <p className="mt-1 max-w-2xl text-[15px] leading-6 text-[var(--sandbox-console-muted)]">
                 {blueprint?.description}
               </p>
             </div>
@@ -1058,7 +1058,7 @@ function LaunchSpecComposer({
           </div>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(280px,0.95fr)]">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(280px,0.95fr)]">
           <div className="space-y-4">
             <LaunchInput
               label={`${entityLabel} Name`}
@@ -1133,18 +1133,18 @@ function LaunchSpecComposer({
         ) : null}
 
         {configuredAgentIdentifier ? (
-          <div className="rounded-[4px] border border-amber-400/20 bg-amber-400/10 px-3 py-2">
-            <p className="text-xs leading-5 text-amber-200">
+          <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/10 px-3.5 py-2.5">
+            <p className="text-sm leading-6 text-amber-200">
               This agent needs AI credentials to chat. Add them as environment variables now or inject them later through Secrets.
             </p>
           </div>
         ) : null}
 
-        <div className="grid gap-4 border-t border-[var(--sandbox-console-border)] pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
+        <div className="grid gap-5 border-t border-[var(--sandbox-console-border)] pt-5 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <p className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">Environment Variables</p>
-              <span className="font-data text-[11px] text-[var(--sandbox-console-subtle)]">injected at boot</span>
+              <p className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">Environment Variables</p>
+              <span className="font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">injected at boot</span>
             </div>
             <EnvEditor
               value={String(values.envJson || '{}')}
@@ -1231,7 +1231,7 @@ function LaunchSummaryPanel({
 
   return (
     <aside className="space-y-4">
-      <ConsoleSection title="Deploy Summary">
+      <ConsoleSection title="Deploy Summary" className="xl:sticky xl:top-0">
         <div className="divide-y divide-[var(--sandbox-console-border)]">
           <SummaryRow
             label="Mode"
@@ -1266,7 +1266,7 @@ function LaunchSummaryPanel({
           <SummaryRow
             label="Service"
             value={serviceState}
-            detail={`blueprint ${infra.blueprintId || '--'} / service ${infra.serviceId || '--'}`}
+            detail={`bp ${infra.blueprintId || '--'} / svc ${infra.serviceId || '--'}`}
             tone={serviceTone({ serviceValidating, serviceError, hasValidService, isNewService })}
           />
           <SummaryRow
@@ -1311,16 +1311,16 @@ function SummaryRow({
   tone: ConsoleTone;
 }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-3.5">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 transition-colors hover:bg-[var(--sandbox-console-hover)]">
       <span className="min-w-0">
-        <span className="block font-data text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
+        <span className="block font-data text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
           {label}
         </span>
-        <span className="mt-1 block truncate font-data text-[11px] text-[var(--sandbox-console-subtle)]">
+        <span className="mt-1 block truncate font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">
           {detail}
         </span>
       </span>
-      <span className={cn('max-w-36 truncate text-right font-data text-base font-semibold leading-none', executionMetricToneClass[tone])}>
+      <span className={cn('max-w-52 text-right font-data text-xl font-bold leading-tight tracking-tight', executionMetricToneClass[tone])}>
         {value}
       </span>
     </div>
@@ -1360,12 +1360,12 @@ function AgentConfigurationField({
           placeholder={image ? 'default' : 'Choose an image first'}
         />
       )}
-      <p className="mt-1.5 text-xs leading-5 text-[var(--sandbox-console-muted)]">
+      <p className="mt-2 text-sm leading-6 text-[var(--sandbox-console-muted)]">
         {helpText}
       </p>
       {!usesBundledSelector && value.trim() !== '' && (
-        <div className="mt-3 rounded-[4px] border border-amber-400/20 bg-amber-400/10 px-3 py-2">
-          <p className="text-xs leading-5 text-amber-200">
+        <div className="mt-3 rounded-[5px] border border-amber-400/25 bg-amber-400/10 px-3.5 py-2.5">
+          <p className="text-sm leading-6 text-amber-200">
             Custom agent identifiers depend on the selected image registering the agent
             internally. If the image does not recognize this name, chat will fail after provision.
           </p>
@@ -1622,31 +1622,31 @@ function DeployStep({
 
   return (
     <div className="space-y-4">
-      <section className="overflow-hidden rounded-none border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] shadow-none">
+      <section className="sandbox-console-panel overflow-hidden rounded-[5px]">
         <div className="grid gap-px bg-[var(--sandbox-console-border)] lg:grid-cols-[minmax(0,1fr)_240px]">
           <div className="bg-[var(--sandbox-console-panel)] p-5">
             <div className="flex items-start gap-4">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[4px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)]">
-                <div className={cn('text-2xl text-[var(--sandbox-console-brand)]', blueprint.icon)} />
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[5px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+                <div className={cn('text-3xl text-[var(--sandbox-console-brand)]', blueprint.icon)} />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="font-data text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
                   {deploymentIntent}
                 </p>
-                <h3 className="mt-1 truncate font-display text-2xl font-semibold leading-tight text-[var(--sandbox-console-text)]">
+                <h3 className="mt-1 truncate font-display text-3xl font-bold leading-tight tracking-tight text-[var(--sandbox-console-text)]">
                   {name || entityLabel}
                 </h3>
-                <p className="mt-2 truncate font-data text-xs text-[var(--sandbox-console-muted)]">
+                <p className="mt-2 truncate font-data text-sm font-medium text-[var(--sandbox-console-muted)]">
                   {image}
                 </p>
               </div>
             </div>
           </div>
           <div className="bg-[var(--sandbox-console-panel-strong)] p-5 lg:text-right">
-            <p className="font-data text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
+            <p className="font-data text-[11px] font-bold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
               Deploy Cost
             </p>
-            <p className="mt-1 font-data text-3xl font-semibold leading-none text-[var(--sandbox-console-text)]">
+            <p className="mt-1 font-data text-4xl font-bold leading-none tracking-tight text-[var(--sandbox-console-text)]">
               {costDisplay}
             </p>
             <div className="mt-4 flex items-center gap-1.5 text-xs lg:justify-end">
@@ -1664,7 +1664,7 @@ function DeployStep({
         <div className="grid gap-px bg-[var(--sandbox-console-border)] sm:grid-cols-2 xl:grid-cols-4">
           <ExecutionMetric
             label="Blueprint"
-            value={blueprint.name}
+            value={entityLabel}
             detail={serviceLabel}
             icon="i-ph:cube"
             tone={isNewService ? 'brand' : 'ready'}
@@ -1678,8 +1678,8 @@ function DeployStep({
           />
           <ExecutionMetric
             label="Resources"
-            value={`${cpuCores} / ${memoryMb} / ${diskGb}`}
-            detail="CPU / MB RAM / GB disk"
+            value={`${cpuCores} CPU`}
+            detail={`${memoryMb} MB / ${diskGb} GB`}
             icon="i-ph:cpu"
             tone="muted"
           />
@@ -1703,14 +1703,14 @@ function DeployStep({
                     : String(v)
                 }`;
                 return (
-                  <span key={f.name} className="inline-flex items-center gap-1.5 rounded-[3px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] px-2 py-1 font-data text-[11px] text-[var(--sandbox-console-secondary)]">
+                  <span key={f.name} className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] px-2.5 py-1.5 font-data text-xs font-medium text-[var(--sandbox-console-secondary)]">
                     <span className="i-ph:check text-[10px] text-[var(--sandbox-console-success)]" />
                     {display}
                   </span>
                 );
               })}
               {configuredAgentIdentifier && (
-                <span className="inline-flex items-center gap-1.5 rounded-[3px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] px-2 py-1 font-data text-[11px] text-[var(--sandbox-console-text)]">
+                <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] px-2.5 py-1.5 font-data text-xs font-semibold text-[var(--sandbox-console-text)]">
                   <span className="i-ph:robot text-[10px] text-[var(--sandbox-console-brand)]" />
                   Agent: {configuredAgentIdentifier}
                 </span>
@@ -1722,14 +1722,14 @@ function DeployStep({
 
       {/* ── Per-job pricing (collapsible) ── */}
       {otherJobs.length > 0 && (
-        <div className="overflow-hidden rounded-none border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)]">
+        <div className="sandbox-console-panel overflow-hidden rounded-[5px]">
           <button
             onClick={() => setShowAllJobs(!showAllJobs)}
             className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[var(--sandbox-console-hover)]"
           >
             <div className="flex items-center gap-2">
-              <div className="i-ph:receipt text-sm text-[var(--sandbox-console-muted)]" />
-              <span className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">
+              <div className="i-ph:receipt text-base text-[var(--sandbox-console-muted)]" />
+              <span className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">
                 Per-job pricing ({otherJobs.length} operations)
               </span>
             </div>
@@ -1758,14 +1758,14 @@ function DeployStep({
         </div>
       )}
       {capacity !== undefined && Number(capacity) === 0 && isSandbox && status === 'idle' && (
-        <div className="rounded-none border border-amber-400/25 bg-amber-400/[0.06] p-4">
+        <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/[0.08] p-4">
           <div className="flex items-center gap-3">
             <div className="i-ph:warning-circle text-lg text-amber-400" />
             <div className="flex-1">
-              <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
+              <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">
                 No capacity available
               </p>
-              <p className="mt-0.5 text-xs text-[var(--sandbox-console-muted)]">
+              <p className="mt-1 text-sm text-[var(--sandbox-console-muted)]">
                 All operator slots are in use. Delete unused sandboxes or try again later.
               </p>
             </div>
@@ -1774,14 +1774,14 @@ function DeployStep({
       )}
 
       {status === 'idle' && runtimeBackend === 'firecracker' && (
-        <div className="rounded-none border border-amber-400/25 bg-amber-400/[0.06] p-4">
+        <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/[0.08] p-4">
           <div className="flex items-center gap-3">
             <div className="i-ph:warning-circle text-lg text-amber-400" />
             <div className="flex-1">
-              <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
+              <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">
                 Firecracker requires an operator runtime with Firecracker provisioning enabled
               </p>
-              <p className="mt-0.5 text-xs text-[var(--sandbox-console-muted)]">
+              <p className="mt-1 text-sm text-[var(--sandbox-console-muted)]">
                 This mode is mutually exclusive with TEE in the current release.
               </p>
             </div>
@@ -1829,18 +1829,18 @@ function DeployStep({
 
       {/* ── Service warning (sandbox mode only) ── */}
       {serviceNeedsSetup && (
-        <div className="rounded-none border border-amber-400/25 bg-amber-400/[0.06] p-4">
+        <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/[0.08] p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <div className="i-ph:warning-circle text-lg text-amber-400" />
             <div className="min-w-0 flex-1">
-              <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
+              <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">
                 {serviceError
                   ? `Service #${infra.serviceId} not found`
                   : !serviceInfo?.active
                     ? `Service #${infra.serviceId} is inactive`
                     : `You're not a permitted caller on service #${infra.serviceId}`}
               </p>
-              <p className="mt-0.5 text-xs text-[var(--sandbox-console-muted)]">
+              <p className="mt-1 text-sm text-[var(--sandbox-console-muted)]">
                 Capacity is available, but this blueprint still needs an active service before sandbox jobs can run.
               </p>
             </div>
@@ -1858,7 +1858,7 @@ function DeployStep({
 
       {/* ── Contracts not deployed warning ── */}
       {!contractsDeployed && status === 'idle' && (
-        <div className="rounded-none border border-amber-400/25 bg-amber-400/[0.06] p-4">
+        <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/[0.08] p-4">
           <div className="flex items-center gap-3">
             <div className="i-ph:warning-circle text-lg text-amber-400" />
             <div className="flex-1">
@@ -1887,7 +1887,7 @@ function DeployStep({
       )}
 
       {/* ── Actions ── */}
-      <div className="flex justify-between pt-1">
+      <div className="flex justify-between gap-3 pt-1">
         <LaunchActionButton variant="secondary" onClick={onBack}>Back</LaunchActionButton>
         {isComplete ? (
           <LaunchActionButton variant="success" onClick={onViewDetail}>
@@ -1934,17 +1934,17 @@ function ExecutionMetric({
   tone?: ConsoleTone;
 }) {
   return (
-    <div className="min-w-0 bg-[var(--sandbox-console-panel)] p-3.5">
+    <div className="min-w-0 bg-[var(--sandbox-console-panel)] p-4 transition-colors hover:bg-[var(--sandbox-console-control-hover)]">
       <div className="flex items-center justify-between gap-3">
-        <p className="font-data text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
+        <p className="font-data text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
           {label}
         </p>
-        <span className={cn('text-base', executionMetricToneClass[tone], icon)} />
+        <span className={cn('text-lg', executionMetricToneClass[tone], icon)} />
       </div>
-      <p className={cn('mt-2 truncate font-data text-xl font-semibold leading-none', executionMetricToneClass[tone])}>
+      <p className={cn('mt-2 font-data text-2xl font-bold leading-tight tracking-tight', executionMetricToneClass[tone])}>
         {value}
       </p>
-      <p className="mt-1 truncate font-data text-[11px] text-[var(--sandbox-console-subtle)]">
+      <p className="mt-1 truncate font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">
         {detail}
       </p>
     </div>
@@ -2050,15 +2050,15 @@ function TxStatusCard({
   };
 
   return (
-    <div className={cn('rounded-none border p-4', borderClass)}>
+    <div className={cn('rounded-[5px] border p-4', borderClass)}>
       <div className="flex items-center gap-3">
         {icons[status]}
         <div className="flex-1 min-w-0">
-          <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
+          <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">
             {messages[status]}
           </p>
           {txHash && (
-            <p className="mt-0.5 truncate font-data text-[11px] text-[var(--sandbox-console-muted)]">{txHash}</p>
+            <p className="mt-1 truncate font-data text-xs text-[var(--sandbox-console-muted)]">{txHash}</p>
           )}
           {error && (
             <div className="mt-1">
@@ -2089,7 +2089,7 @@ function TxStatusCard({
 function InstanceProvisionCard({ provision }: { provision?: { sandboxId: string; sidecarUrl: string } }) {
   return (
     <div className={cn(
-      'rounded-none border p-4',
+      'rounded-[5px] border p-4',
       provision ? 'border-teal-500/20 bg-teal-500/[0.03]' : 'border-violet-500/20 bg-violet-500/[0.03]',
     )}>
       <div className="flex items-center gap-3">
@@ -2097,8 +2097,8 @@ function InstanceProvisionCard({ provision }: { provision?: { sandboxId: string;
           <>
             <div className="i-ph:check-circle-fill text-lg text-teal-400" />
             <div>
-              <p className="text-sm font-display font-medium text-teal-400">Instance ready</p>
-              <p className="mt-0.5 max-w-sm truncate font-data text-[11px] text-[var(--sandbox-console-muted)]">
+              <p className="font-display text-base font-bold text-teal-400">Instance ready</p>
+              <p className="mt-1 max-w-sm truncate font-data text-xs text-[var(--sandbox-console-muted)]">
                 {provision.sidecarUrl}
               </p>
             </div>
@@ -2107,8 +2107,8 @@ function InstanceProvisionCard({ provision }: { provision?: { sandboxId: string;
           <>
             <div className="w-5 h-5 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
             <div>
-              <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">Waiting for operator...</p>
-              <p className="mt-0.5 text-[11px] text-[var(--sandbox-console-muted)]">Watching for on-chain provisioning event</p>
+              <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">Waiting for operator...</p>
+              <p className="mt-1 text-xs text-[var(--sandbox-console-muted)]">Watching for on-chain provisioning event</p>
             </div>
           </>
         )}
@@ -2139,10 +2139,10 @@ function OperatorList({
       : String(operators.length);
 
   return (
-    <div className="rounded-none border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] p-4">
+    <div className="sandbox-console-panel rounded-[5px] p-4">
       <div className="flex items-center gap-2 mb-3">
-        <div className="i-ph:users-three text-sm text-[var(--sandbox-console-muted)]" />
-        <span className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">
+        <div className="i-ph:users-three text-base text-[var(--sandbox-console-muted)]" />
+        <span className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">
           Operators ({titleCount})
         </span>
       </div>
@@ -2161,7 +2161,7 @@ function OperatorList({
                 : 'Operator lookup failed for this blueprint'}
             </span>
           </div>
-          <p className="text-[11px] text-[var(--sandbox-console-muted)]">
+          <p className="text-sm leading-6 text-[var(--sandbox-console-muted)]">
             This is usually a local RPC or multicall issue. The app could not build a verified operator list for service creation.
           </p>
         </div>
@@ -2175,10 +2175,10 @@ function OperatorList({
           {operators.map((op) => (
             <div key={op.address} className="flex items-center gap-2 py-1">
               <TangleOperatorMark label={op.address} />
-              <span className="truncate font-data text-xs text-[var(--sandbox-console-secondary)]">{op.address}</span>
+              <span className="truncate font-data text-sm text-[var(--sandbox-console-secondary)]">{op.address}</span>
             </div>
           ))}
-          <p className="mt-2 text-[11px] text-[var(--sandbox-console-muted)]">
+          <p className="mt-2 text-sm leading-6 text-[var(--sandbox-console-muted)]">
             {purpose === 'service'
               ? 'Use Create Service to request an active cloud service with these registered operators, then deploy the sandbox into that service.'
               : 'A new service will be created with these operators. Your sandbox config will be passed as service request inputs.'}

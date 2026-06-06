@@ -7,13 +7,14 @@ import type { Address } from 'viem';
 import { numberToHex } from 'viem';
 import { networks } from '~/lib/contracts/chains';
 import { publicClient, selectedChainIdStore, useWalletEthBalance } from '@tangle-network/blueprint-ui';
-import { ConnectWalletCta, Identicon } from '@tangle-network/blueprint-ui/components';
+import { ConnectWalletCta } from '@tangle-network/blueprint-ui/components';
 import { useDropdownMenu } from '@tangle-network/sandbox-ui/hooks';
 import { copyText } from '@tangle-network/sandbox-ui/utils';
 import { truncateAddress } from '~/lib/utils/truncate-address';
 import { toast } from 'sonner';
 import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
+import { TangleOperatorMark } from '~/components/shared/TangleBrand';
 
 /**
  * Build RPC URLs suitable for wallet_addEthereumChain.
@@ -182,58 +183,61 @@ export function WalletButton() {
             {isWrongChain && (
               <button
                 onClick={handleSwitchChain}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/15 border border-amber-500/30 hover:bg-amber-500/25 transition-colors"
+                className="flex h-10 items-center gap-2 rounded-[5px] border border-amber-500/35 bg-amber-500/12 px-3 font-display text-sm font-semibold text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-300"
               >
                 <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
-                <span className="text-xs font-display font-medium text-amber-700 dark:text-amber-300">
+                <span>
                   Switch to {targetChain?.name ?? `Chain ${selectedChainId}`}
                 </span>
               </button>
             )}
 
             <div ref={dropdownRef} className="relative">
-              <button onClick={toggle} className="flex items-center gap-2.5 px-3 py-2 rounded-lg glass-card hover:border-violet-500/20 transition-all">
-                {address && <Identicon address={address as Address} size={22} />}
-                <span className="text-sm font-data text-cloud-elements-textPrimary">{truncated}</span>
-                <span className="text-xs font-data text-cloud-elements-textSecondary">{displayBalance} ETH</span>
-                <div className={`i-ph:caret-down text-xs text-cloud-elements-textTertiary transition-transform ${open ? 'rotate-180' : ''}`} />
+              <button
+                onClick={toggle}
+                className="flex h-10 items-center gap-2.5 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3 text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]"
+              >
+                {address && <TangleOperatorMark label={address} />}
+                <span className="font-data text-sm font-semibold">{truncated}</span>
+                <span className="font-data text-xs text-[var(--sandbox-console-muted)]">{displayBalance} ETH</span>
+                <div className={`i-ph:caret-down text-xs text-[var(--sandbox-console-muted)] transition-transform ${open ? 'rotate-180 text-[var(--sandbox-console-brand)]' : ''}`} />
               </button>
 
               {open && (
-                <div className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-cloud-elements-dividerColor/50 p-4 z-50 shadow-lg bg-[var(--cloud-elements-bg-depth-2)]">
+                <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] p-4 shadow-[var(--sandbox-console-shadow-lg)]">
                   <div className="flex items-center gap-3 mb-4">
-                    {address && <Identicon address={address as Address} size={32} />}
+                    {address && <TangleOperatorMark label={address} className="h-9 w-9 p-1.5" />}
                     <div className="min-w-0 flex-1">
                       <button onClick={copyAddress} className="flex items-center gap-2 group w-full" title="Copy address">
-                        <span className="text-sm font-data text-cloud-elements-textPrimary truncate">{truncated}</span>
-                        <div className="i-ph:copy text-sm text-cloud-elements-textTertiary group-hover:text-violet-700 dark:group-hover:text-violet-400 transition-colors shrink-0" />
+                        <span className="truncate font-data text-sm font-semibold text-[var(--sandbox-console-text)]">{truncated}</span>
+                        <div className="i-ph:copy shrink-0 text-sm text-[var(--sandbox-console-muted)] transition-colors group-hover:text-[var(--sandbox-console-brand)]" />
                       </button>
-                      <div className="text-xs font-data text-cloud-elements-textSecondary">{displayBalance} ETH</div>
+                      <div className="font-data text-xs text-[var(--sandbox-console-muted)]">{displayBalance} ETH</div>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-cloud-elements-item-backgroundActive mb-3">
+                  <div className="mb-3 flex items-center gap-2.5 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3 py-2.5">
                     <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${isWrongChain ? 'bg-amber-500 dark:bg-amber-400 animate-pulse' : 'bg-teal-600 dark:bg-teal-400'}`} />
-                    <span className="text-sm font-data text-cloud-elements-textSecondary flex-1">
+                    <span className="flex-1 font-data text-sm text-[var(--sandbox-console-secondary)]">
                       {isWrongChain ? `Chain ${chainId}` : (targetChain?.name ?? 'Unknown')}
                     </span>
-                    {isWrongChain && <span className="text-xs font-data text-amber-600 dark:text-amber-400 uppercase tracking-wider font-semibold">wrong chain</span>}
+                    {isWrongChain && <span className="font-data text-xs font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">wrong chain</span>}
                   </div>
 
                   <div className="space-y-1">
                     {isWrongChain && (
-                      <button onClick={handleSwitchChain} className="flex items-center gap-2.5 w-full px-3 py-2.5 rounded-lg hover:bg-violet-500/10 transition-colors text-left">
-                        <div className="i-ph:swap text-base text-violet-700 dark:text-violet-400" />
-                        <span className="text-sm font-display text-cloud-elements-textSecondary">Switch to {targetChain?.name ?? 'Unknown'}</span>
+                      <button onClick={handleSwitchChain} className="flex w-full items-center gap-2.5 rounded-[5px] px-3 py-2.5 text-left transition-colors hover:bg-[var(--sandbox-console-brand-soft)]">
+                        <div className="i-ph:swap text-base text-[var(--sandbox-console-brand)]" />
+                        <span className="font-display text-sm font-semibold text-[var(--sandbox-console-secondary)]">Switch to {targetChain?.name ?? 'Unknown'}</span>
                       </button>
                     )}
-                    <button onClick={copyAddress} className="flex items-center gap-2.5 w-full px-3 py-2.5 rounded-lg hover:bg-cloud-elements-item-backgroundHover transition-colors text-left">
-                      <div className="i-ph:copy text-base text-cloud-elements-textTertiary" />
-                      <span className="text-sm font-display text-cloud-elements-textSecondary">Copy Address</span>
+                    <button onClick={copyAddress} className="flex w-full items-center gap-2.5 rounded-[5px] px-3 py-2.5 text-left transition-colors hover:bg-[var(--sandbox-console-control-hover)]">
+                      <div className="i-ph:copy text-base text-[var(--sandbox-console-muted)]" />
+                      <span className="font-display text-sm font-semibold text-[var(--sandbox-console-secondary)]">Copy Address</span>
                     </button>
-                    <button onClick={() => { revokeSession(); disconnect(); clearWagmiStorage(); close(); }} className="flex items-center gap-2.5 w-full px-3 py-2.5 rounded-lg hover:bg-crimson-500/10 transition-colors text-left">
+                    <button onClick={() => { revokeSession(); disconnect(); clearWagmiStorage(); close(); }} className="flex w-full items-center gap-2.5 rounded-[5px] px-3 py-2.5 text-left transition-colors hover:bg-crimson-500/10">
                       <div className="i-ph:sign-out text-base text-crimson-600 dark:text-crimson-400" />
-                      <span className="text-sm font-display text-crimson-600 dark:text-crimson-400">Disconnect</span>
+                      <span className="font-display text-sm font-semibold text-crimson-600 dark:text-crimson-400">Disconnect</span>
                     </button>
                   </div>
                 </div>

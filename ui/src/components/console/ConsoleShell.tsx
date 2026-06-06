@@ -21,9 +21,9 @@ const navItems = [
 
 function BrandMark() {
   return (
-    <span className="flex min-w-0 items-center gap-2">
+    <span className="flex min-w-0 items-center gap-2.5">
       <TangleBrandLogo />
-      <span className="min-w-0 truncate font-display text-sm font-semibold text-[var(--sandbox-console-text)]">
+      <span className="min-w-0 truncate font-display text-base font-bold tracking-tight text-[var(--sandbox-console-text)]">
         Sandbox
       </span>
     </span>
@@ -66,7 +66,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="sandbox-console flex h-[100dvh] overflow-hidden bg-[var(--sandbox-console-bg)] text-[var(--sandbox-console-text)]">
-      <aside className="hidden w-[248px] shrink-0 border-r border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-rail)] lg:flex lg:flex-col">
+      <aside className="hidden w-[268px] shrink-0 border-r border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-rail)] lg:flex lg:flex-col">
         <div className="flex h-16 shrink-0 items-center border-b border-[var(--sandbox-console-border)] px-4">
           <Link to="/" className="flex min-w-0 items-center" aria-label="Tangle Sandbox Console">
             <BrandMark />
@@ -81,21 +81,21 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
                 key={item.href}
                 to={item.href}
                 className={cn(
-                  'group flex h-10 items-center gap-3 rounded-md border px-3 text-sm font-medium transition-colors',
+                  'group flex h-11 items-center gap-3 rounded-[5px] border px-3.5 font-display text-[15px] font-semibold transition-[background-color,border-color,color,box-shadow,transform] duration-150 active:scale-[0.99]',
                   active
-                    ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)]'
-                    : 'border-transparent text-[var(--sandbox-console-muted)] hover:border-[var(--sandbox-console-border)] hover:bg-[var(--sandbox-console-surface)] hover:text-[var(--sandbox-console-text)]',
+                    ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
+                    : 'border-transparent text-[var(--sandbox-console-muted)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-border-hover)]',
                 )}
               >
-                <span className={cn('text-base', item.icon)} />
+                <span className={cn('text-lg', item.icon)} />
                 <span>{item.label}</span>
               </Link>
             );
           })}
         </nav>
 
-        <div className="shrink-0 border-t border-[var(--sandbox-console-border)] p-3">
-          <div className="sandbox-console-panel space-y-3 rounded-md p-3">
+        <div className="shrink-0 border-t border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] p-3">
+          <div className="space-y-3">
             <div className="grid grid-cols-3 gap-2">
               <div className="min-w-0">
                 <ConsoleChainSwitcher placement="up" />
@@ -109,18 +109,18 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-bg)] px-3 lg:hidden">
+        <header className="flex h-16 shrink-0 items-center justify-between border-b border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-bg)] px-3 lg:hidden">
           <div ref={mobileMenuRef} className="relative">
             <button
               type="button"
               onClick={() => setMobileNavOpen((open) => !open)}
-              className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] text-[var(--sandbox-console-text)]"
+              className="flex h-10 w-10 items-center justify-center rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow)] transition-colors hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)]"
               aria-label="Navigation menu"
             >
               <span className={cn('text-lg', mobileNavOpen ? 'i-ph:x' : 'i-ph:list')} />
             </button>
             {mobileNavOpen ? (
-              <nav className="absolute left-0 top-11 z-50 w-64 overflow-hidden rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] shadow-[var(--sandbox-console-shadow-lg)]">
+              <nav className="absolute left-0 top-12 z-50 w-64 overflow-hidden rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] shadow-[var(--sandbox-console-shadow-lg)]">
                 {navItems.map((item) => {
                   const active = isActivePath(location.pathname, item.href);
                   return (
@@ -128,13 +128,13 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
                       key={item.href}
                       to={item.href}
                       className={cn(
-                        'flex items-center gap-3 border-b border-[var(--sandbox-console-border)] px-3 py-3 text-sm',
+                        'flex items-center gap-3 border-b border-[var(--sandbox-console-border)] px-3 py-3 font-display text-[15px] font-semibold transition-colors',
                         active
                           ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)]'
-                          : 'text-[var(--sandbox-console-muted)]',
+                          : 'text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)]',
                       )}
                     >
-                      <span className={cn('text-base', item.icon)} />
+                      <span className={cn('text-lg', item.icon)} />
                       {item.label}
                     </Link>
                   );

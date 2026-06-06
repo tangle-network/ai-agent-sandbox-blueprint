@@ -290,7 +290,6 @@ vi.mock('@tangle-network/blueprint-ui/components', () => ({
       </div>
     );
   },
-  Identicon: () => <div>Identicon</div>,
 }));
 
 vi.mock('@tangle-network/blueprint-ui', async () => {
