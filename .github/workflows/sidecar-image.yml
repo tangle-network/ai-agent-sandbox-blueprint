@@ -39,6 +39,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Smoke sidecar terminal API
+        run: |
+          node --check sidecar/server/server.js
+          sidecar/scripts/smoke-terminal-api.sh
+
       - name: Build harness layer
         run: |
           docker build \

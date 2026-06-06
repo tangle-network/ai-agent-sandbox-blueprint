@@ -11,6 +11,8 @@ const authToken = process.env.SIDECAR_AUTH_TOKEN || ''
 const workspaceRoot = process.env.AGENT_WORKSPACE_ROOT || '/home/agent/workspace'
 const childUid = Number(process.env.AGENT_SUBPROCESS_UID || 1000)
 const childGid = Number(process.env.AGENT_SUBPROCESS_GID || 1000)
+const terminalShell = process.env.SIDECAR_TERMINAL_SHELL || '/bin/bash'
+const terminalSessions = new Map()
 
 const agents = [
   {
@@ -163,6 +165,108 @@ function shellCommand(command, payload) {
   })
 }
 
+function terminalSummary(session) {
+  return {
+    sessionId: session.id,
+    session_id: session.id,
+    title: session.title,
+    streamPath: `/terminals/${session.id}/stream`,
+    stream_path: `/terminals/${session.id}/stream`,
+    cwd: session.cwd,
+    cols: session.cols,
+    rows: session.rows,
+    running: session.running,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+  }
+}
+
+function createTerminalSession(payload = {}) {
+  const cwd = typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd)
+    ? payload.cwd
+    : workspaceRoot
+  const id = randomUUID()
+  const childEnv = {
+    ...process.env,
+    HOME: process.env.AGENT_HOME || '/home/agent',
+    TERM: process.env.TERM || 'xterm-256color',
+    PS1: '\\u@\\h:\\w\\$ ',
+    ...parseEnv(payload.env),
+  }
+  const child = spawn(terminalShell, ['-i'], {
+    cwd,
+    env: childEnv,
+    shell: false,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    uid: process.getuid && process.getuid() === 0 ? childUid : undefined,
+    gid: process.getuid && process.getuid() === 0 ? childGid : undefined,
+  })
+  const session = {
+    id,
+    title: typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim() : 'Shell',
+    cwd,
+    cols: Number(payload.cols || 80),
+    rows: Number(payload.rows || 24),
+    child,
+    running: true,
+    subscribers: new Set(),
+    backlog: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+
+  const publish = (event, data) => {
+    session.updatedAt = Date.now()
+    const frame = { sessionId: id, session_id: id, ...data }
+    session.backlog.push({ event, data: frame })
+    if (session.backlog.length > 200) session.backlog.shift()
+    for (const subscriber of session.subscribers) {
+      writeSse(subscriber, event, frame)
+    }
+  }
+
+  child.stdout.on('data', (chunk) => {
+    publish('output', { data: chunk.toString() })
+  })
+  child.stderr.on('data', (chunk) => {
+    publish('output', { data: chunk.toString() })
+  })
+  child.on('error', (err) => {
+    publish('error', { message: err.message })
+  })
+  child.on('close', (code, signal) => {
+    session.running = false
+    publish('exit', { code, signal })
+    for (const subscriber of session.subscribers) subscriber.end()
+    session.subscribers.clear()
+  })
+
+  terminalSessions.set(id, session)
+  return session
+}
+
+function getTerminalSession(id, res) {
+  const session = terminalSessions.get(id)
+  if (!session) {
+    sendError(res, 404, 'TERMINAL_NOT_FOUND', 'Terminal session not found')
+    return null
+  }
+  return session
+}
+
+function closeTerminalSession(session) {
+  terminalSessions.delete(session.id)
+  session.running = false
+  if (!session.child.killed) {
+    session.child.kill('SIGTERM')
+    setTimeout(() => {
+      if (!session.child.killed) session.child.kill('SIGKILL')
+    }, 2000).unref()
+  }
+  for (const subscriber of session.subscribers) subscriber.end()
+  session.subscribers.clear()
+}
+
 function selectHarness(identifier, backend) {
   const requested = (identifier || backend?.type || '').trim().toLowerCase()
   if (requested && requested !== 'default') return requested
@@ -299,6 +403,81 @@ async function handle(req, res) {
     return
   }
 
+  if (req.method === 'GET' && url.pathname === '/terminals') {
+    const data = Array.from(terminalSessions.values()).map(terminalSummary)
+    sendJson(res, 200, { data, terminals: data })
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/terminals') {
+    const payload = await readBody(req)
+    const summary = terminalSummary(createTerminalSession(payload))
+    sendJson(res, 200, { data: summary, ...summary })
+    return
+  }
+
+  const terminalMatch = url.pathname.match(/^\/terminals\/([^/]+)(?:\/([^/]+))?$/)
+  if (terminalMatch) {
+    const [, sessionId, action] = terminalMatch
+    const session = getTerminalSession(sessionId, res)
+    if (!session) return
+
+    if (req.method === 'GET' && !action) {
+      const summary = terminalSummary(session)
+      sendJson(res, 200, { data: summary, ...summary })
+      return
+    }
+
+    if (req.method === 'GET' && action === 'stream') {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+      })
+      session.subscribers.add(res)
+      for (const frame of session.backlog.slice(-20)) {
+        writeSse(res, frame.event, frame.data)
+      }
+      req.on('close', () => {
+        session.subscribers.delete(res)
+      })
+      return
+    }
+
+    if (req.method === 'POST' && (action === 'input' || action === 'execute')) {
+      const payload = await readBody(req)
+      const data = typeof payload.data === 'string'
+        ? payload.data
+        : (typeof payload.command === 'string' ? `${payload.command}\n` : '')
+      if (!data) {
+        sendError(res, 400, 'INVALID_INPUT', 'data is required')
+        return
+      }
+      if (!session.running || session.child.killed) {
+        sendError(res, 409, 'TERMINAL_CLOSED', 'Terminal session is not running')
+        return
+      }
+      session.child.stdin.write(data)
+      sendJson(res, 200, { success: true })
+      return
+    }
+
+    if (req.method === 'PATCH' && !action) {
+      const payload = await readBody(req)
+      session.cols = Number(payload.cols || session.cols)
+      session.rows = Number(payload.rows || session.rows)
+      session.updatedAt = Date.now()
+      sendJson(res, 200, { success: true, data: terminalSummary(session) })
+      return
+    }
+
+    if (req.method === 'DELETE' && !action) {
+      closeTerminalSession(session)
+      sendJson(res, 200, { deleted: true, sessionId, session_id: sessionId })
+      return
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/agents/run') {
     const payload = await readBody(req)
     const result = await runAgent(payload)
@@ -366,4 +545,10 @@ const server = http.createServer((req, res) => {
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`blueprint sidecar listening on ${port}`)
+})
+
+process.on('exit', () => {
+  for (const session of terminalSessions.values()) {
+    if (!session.child.killed) session.child.kill('SIGTERM')
+  }
 })
