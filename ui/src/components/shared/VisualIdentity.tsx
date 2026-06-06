@@ -8,6 +8,7 @@ export type IdentityMeta = {
   mark: string;
   detail?: string;
   icon?: string;
+  symbol?: string;
   tone?: IdentityTone;
   image?: 'tangle';
 };
@@ -62,6 +63,8 @@ export function IdentityMark({
     >
       {identity.image === 'tangle' ? (
         <img src="/tangle-mark.svg" alt="" className="h-full w-full object-contain" />
+      ) : identity.symbol ? (
+        <span className={cn('relative z-10 text-base', size === 'sm' && 'text-sm', size === 'lg' && 'text-lg', identity.symbol)} />
       ) : (
         <span className="relative z-10">{identity.mark}</span>
       )}
@@ -210,11 +213,11 @@ export function getImageIdentity(value: string): IdentityMeta {
 export function getStackIdentity(value: string): IdentityMeta {
   switch (value) {
     case 'python':
-      return { label: 'Python', mark: 'Py', detail: 'notebooks, agents, scripts', icon: 'i-ph:brackets-curly', tone: 'blue' };
+      return { label: 'Python', mark: '', detail: 'notebooks, agents, scripts', symbol: 'i-ph:terminal-window', tone: 'blue' };
     case 'nodejs':
-      return { label: 'Node.js', mark: 'JS', detail: 'web apps and tool servers', icon: 'i-ph:hexagon', tone: 'teal' };
+      return { label: 'Node.js', mark: '', detail: 'web apps and tool servers', symbol: 'i-ph:graph', tone: 'teal' };
     case 'rust':
-      return { label: 'Rust', mark: 'Rs', detail: 'systems and operators', icon: 'i-ph:gear-six', tone: 'amber' };
+      return { label: 'Rust', mark: '', detail: 'systems and operators', symbol: 'i-ph:gear-six', tone: 'amber' };
     default:
       return { label: 'Default', mark: 'TK', detail: 'Tangle sidecar baseline', image: 'tangle', tone: 'brand' };
   }

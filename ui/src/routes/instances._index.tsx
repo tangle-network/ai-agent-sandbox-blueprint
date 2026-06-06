@@ -3,7 +3,6 @@ import { useMemo } from 'react';
 import { useStore } from '@nanostores/react';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import {
-  ConsoleChip,
   ConsoleMetricStrip,
   ConsolePage,
   ConsoleSection,
@@ -20,11 +19,6 @@ import {
   type LocalInstance,
 } from '~/lib/stores/instances';
 import { getInstanceStatusLabel } from '~/lib/instances/display';
-import {
-  getBlueprintIdentity,
-  getRuntimeIdentity,
-  getStatusIdentity,
-} from '~/components/shared/VisualIdentity';
 
 function getSecurityState(instance: LocalInstance) {
   if (instance.teeEnabled) return 'attested';
@@ -74,16 +68,16 @@ export default function InstanceExplorer() {
   );
 
   const metrics: ConsoleMetric[] = [
-    { label: 'Active', value: String(active.length), detail: 'dedicated', tone: 'ready', identity: getBlueprintIdentity('ai-agent-instance-blueprint') },
-    { label: 'Running', value: String(running.length), detail: 'operator-backed', tone: 'ready', identity: getStatusIdentity('running') },
-    { label: 'TEE instances', value: String(allInstances.filter((instance) => instance.teeEnabled).length), detail: 'sealed secrets', tone: 'brand', identity: getRuntimeIdentity('tee') },
-    { label: 'Errors', value: String(allInstances.filter((instance) => instance.status === 'error').length), detail: 'attention', tone: 'danger', identity: getStatusIdentity('error') },
+    { label: 'Instances', value: String(active.length), tone: 'ready' },
+    { label: 'Running', value: String(running.length), tone: 'ready' },
+    { label: 'TEE', value: String(allInstances.filter((instance) => instance.teeEnabled).length), tone: 'brand' },
+    { label: 'Issues', value: String(allInstances.filter((instance) => instance.status === 'error').length), tone: 'danger' },
   ];
 
   return (
     <ConsolePage
-      title="Dedicated Instances"
-      eyebrow="Singleton resources"
+      title="Instances"
+      eyebrow="Cloud resources"
       actions={(
         <Link to="/create?blueprint=ai-agent-instance-blueprint">
           <Button>
@@ -99,36 +93,11 @@ export default function InstanceExplorer() {
           <ResourceExplorerTable
             rows={rows}
             emptyTitle="No instances indexed"
-            emptyDetail="Provision a dedicated instance or TEE instance to inspect lifecycle, sessions, and trust state here."
+            emptyDetail="Create an instance to inspect runtime, sessions, network, and storage."
             emptyActionTo="/create?blueprint=ai-agent-instance-blueprint"
             emptyActionLabel="Launch Instance"
           />
         </ConsoleSection>
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="sandbox-console-panel rounded-md p-3">
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Modes</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ConsoleChip>instance</ConsoleChip>
-              <ConsoleChip tone="brand">tee instance</ConsoleChip>
-            </div>
-          </div>
-          <div className="sandbox-console-panel rounded-md p-3">
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Lifecycle</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ConsoleChip tone="brand">auto</ConsoleChip>
-              <ConsoleChip tone="ready">provisioned</ConsoleChip>
-              <ConsoleChip>operator API</ConsoleChip>
-            </div>
-          </div>
-          <div className="sandbox-console-panel rounded-md p-3">
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Isolation</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ConsoleChip>single tenant</ConsoleChip>
-              <ConsoleChip tone="warn">attestation</ConsoleChip>
-              <ConsoleChip tone="brand">secrets</ConsoleChip>
-            </div>
-          </div>
-        </div>
       </div>
     </ConsolePage>
   );

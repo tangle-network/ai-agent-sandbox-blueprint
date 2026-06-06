@@ -1,7 +1,7 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { IdentityMark, OperatorIdentity, getRuntimeIdentity } from './VisualIdentity';
+import { IdentityMark, OperatorIdentity, getRuntimeIdentity, getStackIdentity } from './VisualIdentity';
 
 describe('VisualIdentity', () => {
   it('renders operator addresses as address-derived identicons', () => {
@@ -23,5 +23,13 @@ describe('VisualIdentity', () => {
     );
 
     expect(overlayIcon).toBeUndefined();
+  });
+
+  it('uses icon marks instead of language initials for stack options', () => {
+    const { container } = render(<IdentityMark identity={getStackIdentity('python')} />);
+    const mark = container.querySelector('[title="Python"]');
+
+    expect(mark?.textContent).toBe('');
+    expect(mark?.querySelector('.i-ph\\:terminal-window')).toBeInTheDocument();
   });
 });

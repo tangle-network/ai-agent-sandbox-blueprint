@@ -1,9 +1,9 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useStore } from '@nanostores/react';
 import { Link } from 'react-router';
+import { cn } from '@tangle-network/blueprint-ui';
 import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import {
-  ConsoleChip,
   ConsoleMetricStrip,
   ConsolePage,
   ConsoleSection,
@@ -20,12 +20,7 @@ import {
 } from '~/lib/config';
 import { useReliableOperators, type ReliableOperatorsResult } from '~/lib/hooks/useReliableOperators';
 import {
-  IdentityMark,
   OperatorIdentity,
-  getBlueprintIdentity,
-  getOperatorIdentity,
-  getResourceIdentity,
-  getStatusIdentity,
 } from '~/components/shared/VisualIdentity';
 
 type OperatorRow = {
@@ -41,6 +36,10 @@ type OperatorRow = {
   backends: string;
   lastSeen: number;
 };
+
+type BlueprintFilter = 'all' | OperatorRow['blueprintParam'];
+type SortKey = 'blueprint' | 'operator' | 'resources' | 'running' | 'tee' | 'lastSeen';
+type SortDirection = 'asc' | 'desc';
 
 type LocalOperatorStats = Pick<OperatorRow, 'resources' | 'running' | 'tee' | 'backends' | 'lastSeen'>;
 
@@ -64,9 +63,59 @@ function formatAge(timestamp: number) {
   return `${Math.floor(hours / 24)}d`;
 }
 
+function compareRows(left: OperatorRow, right: OperatorRow, key: SortKey) {
+  if (key === 'operator') return left.operator.localeCompare(right.operator);
+  if (key === 'resources') return left.resources - right.resources;
+  if (key === 'running') return left.running - right.running;
+  if (key === 'tee') return left.tee - right.tee;
+  if (key === 'lastSeen') return left.lastSeen - right.lastSeen;
+  return left.blueprintLabel.localeCompare(right.blueprintLabel);
+}
+
+function SortableHeader({
+  label,
+  sortKey,
+  activeKey,
+  direction,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  activeKey: SortKey;
+  direction: SortDirection;
+  onSort: (key: SortKey) => void;
+}) {
+  const active = activeKey === sortKey;
+
+  return (
+    <th className="px-3 py-2 text-left">
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={cn(
+          'inline-flex items-center gap-1.5 font-data text-[11px] font-semibold uppercase tracking-[0.1em] transition-colors',
+          active ? 'text-[var(--sandbox-console-text)]' : 'text-[var(--sandbox-console-muted)] hover:text-[var(--sandbox-console-text)]',
+        )}
+      >
+        {label}
+        <span className={cn(
+          'text-xs transition-transform',
+          active ? 'text-[var(--sandbox-console-brand)]' : 'text-[var(--sandbox-console-subtle)]',
+          active && direction === 'asc' && 'rotate-180',
+          active ? 'i-ph:caret-down-bold' : 'i-ph:caret-up-down',
+        )}
+        />
+      </button>
+    </th>
+  );
+}
+
 export default function OperatorCapacity() {
   const sandboxes = useStore(sandboxListStore);
   const instances = useStore(instanceListStore);
+  const [blueprintFilter, setBlueprintFilter] = useState<BlueprintFilter>('all');
+  const [sortKey, setSortKey] = useState<SortKey>('resources');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const { data: capacity } = useAvailableCapacity();
   const sandboxOperators = useReliableOperators(SANDBOX_ONCHAIN_BLUEPRINT_ID || '0');
   const instanceOperators = useReliableOperators(INSTANCE_ONCHAIN_BLUEPRINT_ID || '0');
@@ -153,54 +202,108 @@ export default function OperatorCapacity() {
   const groups = [sandboxOperators, instanceOperators, teeOperators];
   const loading = groups.some((query) => query.isLoading);
   const lookupErrors = groups.filter((query) => query.listError && query.source !== 'service-membership').length;
-  const fallbackReads = groups.filter((query) => query.source === 'service-membership').length;
   const registeredCount = sandboxOperators.operatorCount + instanceOperators.operatorCount + teeOperators.operatorCount;
   const uniqueOperatorCount = new Set(rows.map((row) => row.operator.toLowerCase())).size;
+  const runningResources = rows.reduce((total, row) => total + row.running, 0);
+  const filterOptions = [
+    { value: 'all' as const, label: 'All', count: rows.length },
+    { value: 'ai-agent-sandbox-blueprint' as const, label: 'Sandbox', count: rows.filter((row) => row.blueprintParam === 'ai-agent-sandbox-blueprint').length },
+    { value: 'ai-agent-instance-blueprint' as const, label: 'Instance', count: rows.filter((row) => row.blueprintParam === 'ai-agent-instance-blueprint').length },
+    { value: 'ai-agent-tee-instance-blueprint' as const, label: 'TEE', count: rows.filter((row) => row.blueprintParam === 'ai-agent-tee-instance-blueprint').length },
+  ];
+  const visibleRows = useMemo(
+    () => rows
+      .filter((row) => blueprintFilter === 'all' || row.blueprintParam === blueprintFilter)
+      .sort((left, right) => {
+        const result = compareRows(left, right, sortKey);
+        if (result !== 0) return sortDirection === 'asc' ? result : -result;
+        return left.operator.localeCompare(right.operator);
+      }),
+    [blueprintFilter, rows, sortDirection, sortKey],
+  );
   const metrics: ConsoleMetric[] = [
-    { label: 'Sandbox slots', value: capacity == null ? '--' : String(capacity), detail: 'BSM capacity', tone: 'brand', identity: getResourceIdentity('cpu') },
-    { label: 'Blueprint registrations', value: loading && registeredCount === 0n ? '--' : registeredCount.toString(), detail: 'on-chain counts', tone: registeredCount > 0n ? 'ready' : 'warn', identity: getBlueprintIdentity('ai-agent-sandbox-blueprint') },
-    { label: 'Operator accounts', value: String(uniqueOperatorCount), detail: fallbackReads > 0 ? 'service-verified' : 'event index', tone: uniqueOperatorCount > 0 ? 'ready' : 'warn', identity: getOperatorIdentity() },
-    { label: 'Directory status', value: lookupErrors > 0 ? 'blocked' : fallbackReads > 0 ? 'fallback' : 'live', detail: fallbackReads > 0 ? `${fallbackReads} log scans` : 'operator reads', tone: lookupErrors > 0 ? 'danger' : fallbackReads > 0 ? 'warn' : 'ready', identity: getStatusIdentity(lookupErrors > 0 ? 'blocked' : 'running') },
+    { label: 'Available slots', value: capacity == null ? '--' : String(capacity), tone: 'brand' },
+    { label: 'Operators', value: String(uniqueOperatorCount), tone: uniqueOperatorCount > 0 ? 'ready' : 'warn' },
+    { label: 'Registrations', value: loading && registeredCount === 0n ? '--' : registeredCount.toString(), tone: registeredCount > 0n ? 'ready' : 'warn' },
+    { label: 'Running', value: String(runningResources), tone: runningResources > 0 ? 'ready' : lookupErrors > 0 ? 'danger' : 'muted' },
   ];
 
+  function toggleSort(nextKey: SortKey) {
+    if (sortKey === nextKey) {
+      setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setSortKey(nextKey);
+    setSortDirection(nextKey === 'blueprint' || nextKey === 'operator' ? 'asc' : 'desc');
+  }
+
   return (
-    <ConsolePage title="Operators" eyebrow="Blueprint services">
+    <ConsolePage title="Operators" eyebrow="Directory">
       <div className="space-y-4">
         <ConsoleMetricStrip metrics={metrics} />
-        <ConsoleSection title="Registered Operators">
+        <ConsoleSection title="Operator Directory">
           {rows.length > 0 ? (
-            <div className="overflow-auto">
-              <table className="min-w-[920px] w-full border-collapse">
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--sandbox-console-border)] px-3.5 py-3">
+                <div className="flex flex-wrap gap-1.5">
+                  {filterOptions.map((option) => {
+                    const selected = option.value === blueprintFilter;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        aria-label={`${option.label} ${option.count}`}
+                        onClick={() => setBlueprintFilter(option.value)}
+                        className={cn(
+                          'inline-flex h-8 items-center gap-2 rounded-[4px] border px-2.5 font-display text-sm font-bold transition-[background-color,border-color,box-shadow,color]',
+                          selected
+                            ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
+                            : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-secondary)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)]',
+                        )}
+                      >
+                        <span>{option.label}</span>
+                        <span className="font-data text-xs text-[var(--sandbox-console-muted)]">{option.count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="font-data text-sm font-semibold text-[var(--sandbox-console-muted)]">
+                  {visibleRows.length} shown
+                </p>
+              </div>
+              <div className="overflow-auto">
+              <table className="min-w-[980px] w-full border-collapse">
                 <thead>
                   <tr className="border-b border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)]">
-                    {['Blueprint', 'Operator', 'RPC', 'Resources', 'Running', 'TEE', 'Backends', 'Last seen', 'Service'].map((label) => (
-                      <th key={label} className="px-3 py-2 text-left font-data text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--sandbox-console-muted)]">
-                        {label}
-                      </th>
-                    ))}
+                    <SortableHeader label="Blueprint" sortKey="blueprint" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="Operator" sortKey="operator" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <th className="px-3 py-2 text-left font-data text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--sandbox-console-muted)]">RPC</th>
+                    <SortableHeader label="Resources" sortKey="resources" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="Running" sortKey="running" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="TEE" sortKey="tee" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <th className="px-3 py-2 text-left font-data text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--sandbox-console-muted)]">Runtime</th>
+                    <SortableHeader label="Last seen" sortKey="lastSeen" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <th className="px-3 py-2 text-left font-data text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--sandbox-console-muted)]">Launch</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row) => (
+                  {visibleRows.map((row) => (
                     <tr key={`${row.blueprintId}:${row.operator}`} className="border-b border-[var(--sandbox-console-border)] hover:bg-[var(--sandbox-console-surface)]">
                       <td className="px-3 py-3">
-                        <div className="flex min-w-0 items-center gap-2.5">
-                          <IdentityMark identity={getBlueprintIdentity(row.blueprintParam)} size="sm" />
-                          <div className="min-w-0">
-                            <p className="truncate font-display text-sm font-bold text-[var(--sandbox-console-text)]">{row.blueprintLabel}</p>
-                            <p className="font-data text-[11px] text-[var(--sandbox-console-subtle)]">#{row.blueprintId}</p>
-                          </div>
+                        <div className="min-w-0">
+                          <p className="truncate font-display text-base font-bold text-[var(--sandbox-console-text)]">{row.blueprintLabel}</p>
+                          <p className="font-data text-xs text-[var(--sandbox-console-subtle)]">#{row.blueprintId}</p>
                         </div>
                       </td>
                       <td className="px-3 py-3">
-                        <OperatorIdentity address={row.operator} detail={row.registered ? 'registered' : 'pending'} compact />
+                        <OperatorIdentity address={row.operator} compact />
                       </td>
-                      <td className="max-w-[240px] truncate px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.rpcAddress || 'not advertised'}</td>
-                      <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.resources}</td>
-                      <td className="px-3 py-3"><ConsoleChip tone="ready">{row.running}</ConsoleChip></td>
-                      <td className="px-3 py-3"><ConsoleChip tone={row.tee > 0 ? 'brand' : 'muted'}>{row.tee}</ConsoleChip></td>
-                      <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.backends}</td>
-                      <td className="px-3 py-3 font-data text-xs text-[var(--sandbox-console-muted)]">{row.lastSeen > 0 ? formatAge(row.lastSeen) : '--'}</td>
+                      <td className="max-w-[260px] truncate px-3 py-3 font-data text-sm text-[var(--sandbox-console-secondary)]">{row.rpcAddress || 'not advertised'}</td>
+                      <td className="px-3 py-3 font-data text-base font-bold text-[var(--sandbox-console-text)]">{row.resources}</td>
+                      <td className="px-3 py-3 font-data text-base font-bold text-[var(--sandbox-console-text)]">{row.running}</td>
+                      <td className="px-3 py-3 font-data text-base font-bold text-[var(--sandbox-console-text)]">{row.tee}</td>
+                      <td className="px-3 py-3 font-data text-sm text-[var(--sandbox-console-secondary)]">{row.backends}</td>
+                      <td className="px-3 py-3 font-data text-sm text-[var(--sandbox-console-secondary)]">{row.lastSeen > 0 ? formatAge(row.lastSeen) : '--'}</td>
                       <td className="px-3 py-3">
                         <Link
                           to={`/create?blueprint=${row.blueprintParam}&serviceMode=new`}
@@ -214,6 +317,7 @@ export default function OperatorCapacity() {
                 </tbody>
               </table>
             </div>
+            </>
           ) : (
             <EmptyConsoleState
               icon="i-ph:users-three"

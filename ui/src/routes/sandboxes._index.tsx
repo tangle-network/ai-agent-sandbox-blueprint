@@ -3,7 +3,6 @@ import { useMemo } from 'react';
 import { useStore } from '@nanostores/react';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import {
-  ConsoleChip,
   ConsoleMetricStrip,
   ConsolePage,
   ConsoleSection,
@@ -20,10 +19,6 @@ import {
   getSandboxRouteKey,
   type LocalSandbox,
 } from '~/lib/stores/sandboxes';
-import {
-  getRuntimeIdentity,
-  getStatusIdentity,
-} from '~/components/shared/VisualIdentity';
 
 function getSecurityState(sandbox: LocalSandbox) {
   if (sandbox.teeEnabled) return 'attested';
@@ -74,10 +69,10 @@ export default function SandboxExplorer() {
   );
 
   const metrics: ConsoleMetric[] = [
-    { label: 'Running', value: String(running.length), detail: 'operator-backed', tone: 'ready', identity: getStatusIdentity('running') },
-    { label: 'Stopped', value: String(stopped.length), detail: 'resume path', tone: 'warn', identity: getStatusIdentity('stopped') },
-    { label: 'TEE enabled', value: String(allSandboxes.filter((sandbox) => sandbox.teeEnabled).length), detail: 'attested', tone: 'brand', identity: getRuntimeIdentity('tee') },
-    { label: 'Errors', value: String(allSandboxes.filter((sandbox) => sandbox.status === 'error').length), detail: 'attention', tone: 'danger', identity: getStatusIdentity('error') },
+    { label: 'Running', value: String(running.length), tone: 'ready' },
+    { label: 'Paused', value: String(stopped.length), tone: 'warn' },
+    { label: 'TEE', value: String(allSandboxes.filter((sandbox) => sandbox.teeEnabled).length), tone: 'brand' },
+    { label: 'Issues', value: String(allSandboxes.filter((sandbox) => sandbox.status === 'error').length), tone: 'danger' },
   ];
 
   return (
@@ -104,32 +99,6 @@ export default function SandboxExplorer() {
             emptyActionLabel="Launch Sandbox"
           />
         </ConsoleSection>
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="sandbox-console-panel rounded-md p-3">
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Runtime backends</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ConsoleChip>docker</ConsoleChip>
-              <ConsoleChip tone="warn">firecracker</ConsoleChip>
-              <ConsoleChip tone="brand">tee</ConsoleChip>
-            </div>
-          </div>
-          <div className="sandbox-console-panel rounded-md p-3">
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Operations</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ConsoleChip tone="brand">exec</ConsoleChip>
-              <ConsoleChip tone="brand">prompt</ConsoleChip>
-              <ConsoleChip>snapshot</ConsoleChip>
-            </div>
-          </div>
-          <div className="sandbox-console-panel rounded-md p-3">
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Trust envelope</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ConsoleChip>session</ConsoleChip>
-              <ConsoleChip tone="brand">secrets</ConsoleChip>
-              <ConsoleChip tone="warn">attestation</ConsoleChip>
-            </div>
-          </div>
-        </div>
       </div>
     </ConsolePage>
   );
