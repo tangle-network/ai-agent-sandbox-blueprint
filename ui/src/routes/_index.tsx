@@ -58,7 +58,11 @@ function formatAge(timestamp: number | undefined) {
 }
 
 function getSecurityState(resource: Pick<LocalSandbox | LocalInstance, 'teeEnabled' | 'credentialsAvailable'>) {
-  if (resource.teeEnabled) return 'attested';
+  // `teeEnabled` is a deploy-config flag, not an attestation verdict. The list
+  // view does not fetch a per-row attestation, so it can only claim the TEE
+  // capability ("tee-enabled"), never "attested" — which is reserved for a
+  // resource whose server verdict is `verified` (see getSecurityIdentity).
+  if (resource.teeEnabled) return 'tee-enabled';
   if (resource.credentialsAvailable) return 'secrets';
   return 'session';
 }

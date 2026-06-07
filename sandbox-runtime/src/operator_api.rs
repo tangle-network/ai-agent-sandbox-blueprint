@@ -5178,20 +5178,39 @@ pub fn operator_api_router_with_tee_and_routes(
 
     // TEE sealed secrets endpoints (only when backend is configured)
     if let Some(backend) = tee {
-        let tee_routes = Router::new()
-            .route(
-                "/api/sandboxes/{sandbox_id}/tee/public-key",
-                get(crate::tee::sealed_secrets_api::get_tee_public_key),
-            )
-            .route(
-                "/api/sandboxes/{sandbox_id}/tee/sealed-secrets",
-                post(crate::tee::sealed_secrets_api::inject_sealed_secrets),
-            )
-            .route(
-                "/api/sandboxes/{sandbox_id}/tee/attestation",
-                get(crate::tee::sealed_secrets_api::get_tee_attestation)
-                    .post(crate::tee::sealed_secrets_api::post_tee_attestation),
-            )
+        // The read-only attestation route is always available — it returns the
+        // honest server-evaluated verdict and grants no trust by itself.
+        let mut tee_routes = Router::new().route(
+            "/api/sandboxes/{sandbox_id}/tee/attestation",
+            get(crate::tee::sealed_secrets_api::get_tee_attestation)
+                .post(crate::tee::sealed_secrets_api::post_tee_attestation),
+        );
+
+        // The trust-granting routes (public-key release, sealed-secret injection)
+        // are mounted only when the server can fail closed: an allowlist is pinned
+        // OR the operator explicitly opted into client-side-only verification.
+        // With the default config and no allowlist they are not served at all, so
+        // a misconfigured operator cannot hand back unverified material.
+        if crate::tee::sealed_secrets_api::release_routes_enabled() {
+            tee_routes = tee_routes
+                .route(
+                    "/api/sandboxes/{sandbox_id}/tee/public-key",
+                    get(crate::tee::sealed_secrets_api::get_tee_public_key),
+                )
+                .route(
+                    "/api/sandboxes/{sandbox_id}/tee/sealed-secrets",
+                    post(crate::tee::sealed_secrets_api::inject_sealed_secrets),
+                );
+        } else {
+            tracing::warn!(
+                "TEE sealed-secret/public-key release routes disabled: no \
+                 SANDBOX_TEE_EXPECTED_MEASUREMENTS allowlist is pinned. Set the allowlist, or set \
+                 SANDBOX_TEE_REQUIRE_PINNED_MEASUREMENT=false to serve them under client-side-only \
+                 verification."
+            );
+        }
+
+        let tee_routes = tee_routes
             .layer(axum::Extension(
                 Some(backend) as Option<std::sync::Arc<dyn crate::tee::TeeBackend>>
             ))
@@ -6424,6 +6443,20 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
     // ── TEE sealed secrets API tests ──────────────────────────────────────
 
     fn tee_app() -> Router {
+        // The mock backend can never produce a hardware-verified quote, so the
+        // server-side gate would refuse trust-granting routes under the
+        // fail-closed default. These tests exercise the client-side-only trust
+        // model, so opt out explicitly (the routes then mount and report
+        // `server_enforced: false`). Guarded so it doesn't race other tests.
+        {
+            let _g = crate::TEST_ENV_GUARD
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            unsafe {
+                std::env::remove_var("SANDBOX_TEE_EXPECTED_MEASUREMENTS");
+                std::env::set_var("SANDBOX_TEE_REQUIRE_PINNED_MEASUREMENT", "false");
+            }
+        }
         let mock = std::sync::Arc::new(crate::tee::mock::MockTeeBackend::new(
             crate::tee::TeeType::Tdx,
         ));
@@ -6644,6 +6677,9 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         assert_eq!(json["sandbox_id"], "tee-pk-1");
         assert_eq!(json["public_key"]["algorithm"], "x25519-hkdf-sha256");
         assert!(json["public_key"]["attestation"]["tee_type"].is_string());
+        // Client-side-only trust model: the key was released without server-side
+        // attestation verification, and that fact is surfaced honestly.
+        assert_eq!(json["server_enforced"], false);
     }
 
     #[tokio::test]
@@ -6734,6 +6770,7 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
         assert_eq!(json["sandbox_id"], "tee-ss-1");
         assert_eq!(json["success"], true);
         assert_eq!(json["secrets_count"], 3);
+        assert_eq!(json["server_enforced"], false);
     }
 
     #[tokio::test]
@@ -6784,6 +6821,43 @@ data: {{\"finalText\":\"mock-agent-response\",\"metadata\":{{\"sessionId\":\"{se
             .unwrap();
 
         // Route should not exist → 404
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_tee_release_routes_absent_when_unpinned_by_default() {
+        insert_tee_sandbox("tee-pk-fc", "deploy-pk-fc", TEE_TEST_OWNER);
+        // Fail-closed default: no allowlist, requirement left on. The
+        // trust-granting routes must NOT be mounted even though a TEE backend is
+        // configured and the read-only attestation route still works.
+        {
+            let _g = crate::TEST_ENV_GUARD
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            unsafe {
+                std::env::remove_var("SANDBOX_TEE_EXPECTED_MEASUREMENTS");
+                std::env::remove_var("SANDBOX_TEE_REQUIRE_PINNED_MEASUREMENT");
+            }
+        }
+        let mock = std::sync::Arc::new(crate::tee::mock::MockTeeBackend::new(
+            crate::tee::TeeType::Tdx,
+        ));
+        let app = operator_api_router_with_tee(Some(mock));
+        let auth = format!("Bearer {}", session_auth::create_test_token(TEE_TEST_OWNER));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sandboxes/tee-pk-fc/tee/public-key")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Routes are not mounted under the fail-closed default → 404.
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 

@@ -53,12 +53,13 @@ import {
   getImageIdentity,
   getResourceIdentity,
   getRuntimeIdentity,
-  getSecurityIdentity,
+  getTeeSecurityIdentity,
   getStatusIdentity,
 } from '~/components/shared/VisualIdentity';
 
 import { useAccount } from 'wagmi';
 import { normalizeAgentIdentifier } from '~/lib/agents';
+import { isAttestationVerified } from '~/lib/tee';
 
 type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation' | 'automation' | 'storage';
 
@@ -598,6 +599,7 @@ export default function SandboxDetail() {
 
   const {
     attestation,
+    verification: attestationVerification,
     busy: attestationBusy,
     error: attestationError,
     fetchAttestation: handleFetchAttestation,
@@ -689,11 +691,26 @@ export default function SandboxDetail() {
     { label: 'Operator', value: sb.operator ? truncateAddress(sb.operator) : 'unknown', detail: sb.operator ?? 'operator not resolved', tone: sb.operator ? 'ready' : 'muted', leading: sb.operator ? <OperatorIdenticon address={sb.operator} size="sm" /> : undefined },
     { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted', identity: getStatusIdentity('processing') },
   ];
+  // Drive the Secrets row's trust signal from the REAL server attestation
+  // verdict, not the `teeEnabled` config flag. A TEE-requested sandbox is only
+  // shown as "Attested / hardware trust" once the server verdict is `verified`;
+  // otherwise it reads "TEE requested — unverified" with no shield-check.
+  const secretsTeeVerified = Boolean(sb.teeEnabled) && isAttestationVerified(attestationVerification);
+  const secretsRowIdentity = getTeeSecurityIdentity({
+    credentialsMissing: sb.credentialsAvailable === false,
+    teeRequested: Boolean(sb.teeEnabled),
+    verified: secretsTeeVerified,
+  });
+  const secretsRowDetail = sb.teeEnabled
+    ? secretsTeeVerified
+      ? 'TEE attested'
+      : 'TEE requested — unverified'
+    : 'operator encrypted';
   const storageRows: WorkspaceRailRow[] = [
     { label: 'Image', value: sb.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand', identity: getImageIdentity(sb.image) },
     { label: 'Disk', value: `${sb.diskGb} GB`, detail: 'allocated volume', tone: 'ready', identity: getResourceIdentity('disk') },
     { label: 'Lifecycle', value: isStopped ? 'warm' : isGone ? 'gone' : sb.status, detail: sb.lastActivityAt ? new Date(sb.lastActivityAt).toLocaleString() : 'no activity timestamp', tone: statusTone, identity: getStatusIdentity(isStopped ? 'stopped' : isGone ? 'error' : sb.status) },
-    { label: 'Secrets', value: sb.credentialsAvailable === false ? 'missing' : 'available', detail: sb.teeEnabled ? 'TEE protected' : 'operator encrypted', tone: sb.credentialsAvailable === false ? 'warn' : 'ready', identity: getSecurityIdentity(sb.credentialsAvailable === false ? 'session' : sb.teeEnabled ? 'attested' : 'secrets') },
+    { label: 'Secrets', value: sb.credentialsAvailable === false ? 'missing' : 'available', detail: secretsRowDetail, tone: sb.credentialsAvailable === false ? 'warn' : 'ready', identity: secretsRowIdentity },
   ];
   const workflowCreateHref = isRunning && sb.sandboxId
     ? `/workflows/create?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`
@@ -1235,6 +1252,7 @@ export default function SandboxDetail() {
           <TeeAttestationCard
             subjectLabel="sandbox"
             attestation={attestation}
+            verification={attestationVerification}
             busy={attestationBusy}
             error={attestationError}
             onFetch={handleFetchAttestation}

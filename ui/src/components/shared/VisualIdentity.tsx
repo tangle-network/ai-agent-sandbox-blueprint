@@ -188,7 +188,10 @@ export function getTextToneClass(identity: IdentityMeta) {
 export function getBlueprintIdentity(blueprintIdOrName?: string): IdentityMeta {
   const value = (blueprintIdOrName ?? '').toLowerCase();
   if (value.includes('tee')) {
-    return { label: 'TEE Instance', mark: 'TEE', detail: 'attested runtime', icon: 'i-ph:shield-check', tone: 'amber' };
+    // The blueprint TYPE badge labels the runtime kind, not a verified
+    // attestation. Use a plain shield + "confidential runtime", never a
+    // shield-CHECK or "attested" (which would imply a completed verdict).
+    return { label: 'TEE Instance', mark: 'TEE', detail: 'confidential runtime', icon: 'i-ph:shield', tone: 'amber' };
   }
   if (value.includes('instance')) {
     return { label: 'Instance', mark: 'INS', detail: 'single-tenant service', icon: 'i-ph:cube', tone: 'brand' };
@@ -284,13 +287,57 @@ export function getStatusIdentity(status: string): IdentityMeta {
 
 export function getSecurityIdentity(value: string): IdentityMeta {
   const normalized = value.toLowerCase();
-  if (normalized.includes('attested') || normalized.includes('tee')) {
+  // "attested" is reserved for a resource whose server-evaluated attestation
+  // verdict is `verified` (shield-CHECK + "hardware trust"). It must never be
+  // derived from the `teeEnabled` config flag alone.
+  if (normalized.includes('attested')) {
     return { label: 'Attested', mark: 'TEE', detail: 'hardware trust', icon: 'i-ph:shield-check', tone: 'amber' };
+  }
+  // "tee-enabled" claims a capability (TEE runtime requested), NOT a completed
+  // attestation: a plain shield, no check, and a detail that says "runtime" not
+  // "trust". This is what list views derive from `teeEnabled` until a per-row
+  // verdict is fetched.
+  if (normalized.includes('tee')) {
+    return { label: 'TEE runtime', mark: 'TEE', detail: 'attestation not verified', icon: 'i-ph:shield', tone: 'amber' };
   }
   if (normalized.includes('secret')) {
     return { label: 'Secrets', mark: 'KEY', detail: 'encrypted material', icon: 'i-ph:lock-key', tone: 'brand' };
   }
   return { label: 'Session', mark: 'SES', detail: 'wallet-scoped auth', icon: 'i-ph:shield', tone: 'slate' };
+}
+
+/**
+ * Security identity for a sandbox/instance's secret material, driven by the REAL
+ * server-evaluated attestation verdict — never by the `teeEnabled` config flag
+ * alone.
+ *
+ * - `verified === true` (server returned verdict `verified`): the workload is
+ *   genuinely hardware-attested → the "Attested / hardware trust" identity with
+ *   the shield-check.
+ * - `teeRequested` but not verified (no attestation fetched yet, or verdict is
+ *   `unverified`/`measurement_mismatch`): an honest amber "TEE requested —
+ *   unverified" identity with NO shield-check and NO "hardware trust" claim.
+ * - non-TEE: ordinary operator-encrypted secret identity.
+ *
+ * `credentialsMissing` always wins (nothing to protect), matching the prior row.
+ */
+export function getTeeSecurityIdentity(opts: {
+  credentialsMissing: boolean;
+  teeRequested: boolean;
+  verified: boolean;
+}): IdentityMeta {
+  if (opts.credentialsMissing) return getSecurityIdentity('session');
+  if (opts.teeRequested) {
+    if (opts.verified) return getSecurityIdentity('attested');
+    return {
+      label: 'TEE requested',
+      mark: 'TEE',
+      detail: 'unverified — verify attestation',
+      icon: 'i-ph:shield-warning',
+      tone: 'amber',
+    };
+  }
+  return getSecurityIdentity('secrets');
 }
 
 export function getStorageIdentity(value: string): IdentityMeta {

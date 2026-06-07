@@ -21,7 +21,8 @@ import {
 import { getInstanceStatusLabel } from '~/lib/instances/display';
 
 function getSecurityState(instance: LocalInstance) {
-  if (instance.teeEnabled) return 'attested';
+  // Config flag only — claims the TEE capability, not a verified attestation.
+  if (instance.teeEnabled) return 'tee-enabled';
   if (instance.credentialsAvailable) return 'secrets';
   return 'session';
 }

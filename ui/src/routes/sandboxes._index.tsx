@@ -21,7 +21,8 @@ import {
 } from '~/lib/stores/sandboxes';
 
 function getSecurityState(sandbox: LocalSandbox) {
-  if (sandbox.teeEnabled) return 'attested';
+  // Config flag only — claims the TEE capability, not a verified attestation.
+  if (sandbox.teeEnabled) return 'tee-enabled';
   if (sandbox.credentialsAvailable) return 'secrets';
   return 'session';
 }

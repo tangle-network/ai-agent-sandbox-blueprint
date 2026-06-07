@@ -43,7 +43,7 @@ import {
   getImageIdentity,
   getResourceIdentity,
   getRuntimeIdentity,
-  getSecurityIdentity,
+  getTeeSecurityIdentity,
   getStatusIdentity,
 } from '~/components/shared/VisualIdentity';
 
@@ -54,6 +54,7 @@ import {
   getInstanceStatusLabel,
 } from '~/lib/instances/display';
 import { normalizeAgentIdentifier } from '~/lib/agents';
+import { isAttestationVerified } from '~/lib/tee';
 
 interface AgentDescriptor {
   identifier: string;
@@ -363,6 +364,7 @@ export default function InstanceDetail() {
 
   const {
     attestation,
+    verification: attestationVerification,
     busy: attestationBusy,
     error: attestationError,
     fetchAttestation: handleFetchAttestation,
@@ -576,11 +578,25 @@ export default function InstanceDetail() {
     { label: 'Operator', value: inst.operator ? truncateAddress(inst.operator) : 'unknown', detail: inst.operator ?? 'operator not resolved', tone: inst.operator ? 'ready' : 'muted', leading: inst.operator ? <OperatorIdenticon address={inst.operator} size="sm" /> : undefined },
     { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted', identity: getStatusIdentity('processing') },
   ];
+  // Secrets trust signal comes from the real server attestation verdict, not the
+  // `teeEnabled` config flag: "Attested / hardware trust" only once the verdict
+  // is `verified`, otherwise "TEE requested — unverified" with no shield-check.
+  const secretsTeeVerified = Boolean(inst.teeEnabled) && isAttestationVerified(attestationVerification);
+  const secretsRowIdentity = getTeeSecurityIdentity({
+    credentialsMissing: inst.credentialsAvailable === false,
+    teeRequested: Boolean(inst.teeEnabled),
+    verified: secretsTeeVerified,
+  });
+  const secretsRowDetail = inst.teeEnabled
+    ? secretsTeeVerified
+      ? 'TEE attested'
+      : 'TEE requested — unverified'
+    : 'operator encrypted';
   const storageRows: WorkspaceRailRow[] = [
     { label: 'Image', value: inst.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand', identity: getImageIdentity(inst.image) },
     { label: 'Disk', value: `${inst.diskGb} GB`, detail: 'allocated volume', tone: 'ready', identity: getResourceIdentity('disk') },
     { label: 'Lifecycle', value: inst.status, detail: new Date(inst.createdAt).toLocaleString(), tone: statusTone, identity: getStatusIdentity(inst.status) },
-    { label: 'Secrets', value: inst.credentialsAvailable === false ? 'missing' : 'available', detail: inst.teeEnabled ? 'TEE protected' : 'operator encrypted', tone: inst.credentialsAvailable === false ? 'warn' : 'ready', identity: getSecurityIdentity(inst.credentialsAvailable === false ? 'session' : inst.teeEnabled ? 'attested' : 'secrets') },
+    { label: 'Secrets', value: inst.credentialsAvailable === false ? 'missing' : 'available', detail: secretsRowDetail, tone: inst.credentialsAvailable === false ? 'warn' : 'ready', identity: secretsRowIdentity },
   ];
   const workflowCreateHref = inst.status === 'running' && inst.serviceId
     ? `/workflows/create?target=${encodeURIComponent(`instance:${inst.id}`)}`
@@ -1056,6 +1072,7 @@ export default function InstanceDetail() {
           <TeeAttestationCard
             subjectLabel="instance"
             attestation={attestation}
+            verification={attestationVerification}
             busy={attestationBusy}
             error={attestationError}
             onFetch={handleFetchAttestation}

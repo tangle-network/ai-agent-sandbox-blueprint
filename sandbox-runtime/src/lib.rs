@@ -64,8 +64,9 @@ pub use ingress_access_control::{
 };
 pub use runtime::{CreateSandboxParams, SandboxRecord, SandboxState};
 pub use tee::{
-    AttestationReport, TeeBackend, TeeConfig, TeeDeployParams, TeeDeployment, TeeType,
-    init_tee_backend, tee_backend,
+    AttestationReport, AttestationVerdict, AttestationVerification, TeeBackend, TeeConfig,
+    TeeDeployParams, TeeDeployment, TeeType, expected_measurements_from_env, init_tee_backend,
+    tee_backend, verify_attestation,
 };
 
 pub const DEFAULT_SIDECAR_IMAGE: &str = "ghcr.io/tangle-network/blueprint-sidecar:all-harness";

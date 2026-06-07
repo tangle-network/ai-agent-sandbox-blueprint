@@ -25,6 +25,10 @@ The live app is visually improved but still reads as 5/10 because the launch pat
 
 Use the Arena-inspired shell already started in `.evolve/arena-inspired-sandbox-console-redesign-2026-06-05.md`, but remove remaining demo scaffolding. Favor dense panels, segmented controls, inline resource inputs, solid popovers, small operational copy, and clear state changes. Do not use Hyperliquid colors, trading semantics, fake market widgets, or explanatory route narration.
 
+## Tangle Brand Direction
+
+The product should read as Tangle Compute Fabric: a dark-first, technical cloud console where sandboxes, instances, operators, workflows, ports, secrets, and TEE attestations are visible as a programmable resource fabric. Tangle violet identifies the product family, but runtime state needs its own semantic color system: execution cyan, network blue, TEE amber, storage indigo, and risk coral. Avoid a one-note purple UI, generic SaaS card grids, and blank centered empty states.
+
 ## Quality Gate
 
 The `/create` page must work end to end: selecting a mode updates infra, SSH reveals a key field, Continue either focuses the missing name field with a visible error or moves to deploy review, deploy/back controls share the same design language, and the chain selector is readable and stays on screen.

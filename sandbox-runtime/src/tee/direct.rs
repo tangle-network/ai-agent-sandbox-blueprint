@@ -285,10 +285,18 @@ impl TeeBackend for DirectTeeBackend {
             rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
             nonce
         });
-        let attestation = match super::attestation::generate_native_attestation(
-            &self.tee_type,
-            &nonce,
-        ) {
+        // The native-attestation ioctl round-trips to firmware/PSP and can block
+        // for milliseconds; run it off the async worker thread (matching the
+        // firecracker.rs convention) so it never stalls the tokio runtime.
+        let att_tee_type = self.tee_type.clone();
+        let native_result = tokio::task::spawn_blocking(move || {
+            super::attestation::generate_native_attestation(&att_tee_type, &nonce)
+        })
+        .await
+        .map_err(|e| {
+            SandboxError::CloudProvider(format!("native attestation task panicked: {e}"))
+        })?;
+        let attestation = match native_result {
             Ok(att) => {
                 tracing::info!("Native TEE attestation generated successfully");
                 att
@@ -333,7 +341,16 @@ impl TeeBackend for DirectTeeBackend {
             rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
             nonce
         });
-        match super::attestation::generate_native_attestation(&self.tee_type, &nonce) {
+        // Run the blocking device ioctl off the async worker thread.
+        let att_tee_type = self.tee_type.clone();
+        let native_result = tokio::task::spawn_blocking(move || {
+            super::attestation::generate_native_attestation(&att_tee_type, &nonce)
+        })
+        .await
+        .map_err(|e| {
+            SandboxError::CloudProvider(format!("native attestation task panicked: {e}"))
+        })?;
+        match native_result {
             Ok(att) => Ok(att),
             Err(err) => {
                 if report_data.is_some() {

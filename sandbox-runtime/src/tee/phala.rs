@@ -33,7 +33,118 @@ impl PhalaBackend {
         Ok(Self { deployer })
     }
 
+    /// Build a verifiable [`AttestationReport`] from a dstack attestation
+    /// response.
+    ///
+    /// dstack's TDX attestation carries the signed DCAP quote inside the
+    /// response (commonly `tcb_info.quote` / `tcb_info.intel_quote` /
+    /// `tcb_info.tdx_quote`, or a top-level `quote`). We extract that quote and
+    /// emit the `{"quote":<hex>,"collateral":{...}}` envelope that
+    /// [`super::verify`]'s TDX path expects, so the report can actually reach a
+    /// `Verified` verdict. If no DCAP quote is present we fail closed with a
+    /// precise reason rather than emitting non-verifiable `tcb_info` JSON as
+    /// "evidence" (which `verify_tdx` would reject anyway, but opaquely).
+    fn attestation_from_resp(
+        att_resp: &phala_tee_deploy_rs::AttestationResponse,
+    ) -> Result<AttestationReport> {
+        let quote_hex = Self::extract_quote_hex(att_resp).ok_or_else(|| {
+            SandboxError::CloudProvider(
+                "Phala dstack attestation did not include a DCAP TDX quote (looked for \
+                 tcb_info.quote / intel_quote / tdx_quote and a top-level quote); without the \
+                 signed quote the report cannot be verified against the Intel SGX Root CA"
+                    .to_string(),
+            )
+        })?;
+
+        // dstack supplies the event log / collateral alongside the quote when
+        // available. The verifier accepts Intel PCS collateral in the envelope;
+        // when dstack does not bundle it the verifier fetches/needs collateral
+        // separately, so we forward whatever collateral the response carries.
+        let mut envelope = serde_json::Map::new();
+        envelope.insert("quote".into(), serde_json::Value::String(quote_hex));
+        if let Some(collateral) = Self::extract_collateral(att_resp) {
+            envelope.insert("collateral".into(), collateral);
+        }
+        let evidence = serde_json::to_vec(&serde_json::Value::Object(envelope)).map_err(|e| {
+            SandboxError::CloudProvider(format!(
+                "failed to encode Phala TDX evidence envelope: {e}"
+            ))
+        })?;
+
+        // Advisory MRTD for display/structural validation only. The trust
+        // decision rebinds the measurement from inside the verified quote
+        // ([`super::verify::verify_tdx`]); this operator-supplied field is never
+        // trusted. dstack exposes it as `tcb_info.mrtd`. If absent we fall back
+        // to the quote bytes so the report is structurally non-empty without
+        // inventing a plausible-but-fake measurement.
+        let measurement = Self::extract_advisory_mrtd(att_resp).unwrap_or_else(|| evidence.clone());
+
+        Ok(AttestationReport {
+            tee_type: TeeType::Tdx,
+            measurement,
+            evidence,
+            timestamp: crate::util::now_ts(),
+        })
+    }
+
+    /// Advisory (untrusted) MRTD from the dstack response, used only for display
+    /// and structural validation. Never used for the trust decision.
+    fn extract_advisory_mrtd(
+        att_resp: &phala_tee_deploy_rs::AttestationResponse,
+    ) -> Option<Vec<u8>> {
+        let hex_str = att_resp
+            .tcb_info
+            .get("mrtd")
+            .or_else(|| att_resp.tcb_info.get("mr_td"))
+            .and_then(|v| v.as_str())?;
+        hex::decode(hex_str.trim().trim_start_matches("0x")).ok()
+    }
+
+    /// Pull a hex-encoded DCAP quote out of a dstack attestation response,
+    /// checking the field names dstack uses.
+    fn extract_quote_hex(att_resp: &phala_tee_deploy_rs::AttestationResponse) -> Option<String> {
+        let as_hex = |v: &serde_json::Value| -> Option<String> {
+            v.as_str()
+                .map(|s| s.trim().trim_start_matches("0x").to_string())
+        };
+        for key in ["quote", "intel_quote", "tdx_quote"] {
+            if let Some(s) = att_resp.tcb_info.get(key).and_then(as_hex) {
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+        if let Some(s) = att_resp.extra.get("quote").and_then(as_hex) {
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    /// Pull Intel PCS collateral out of a dstack attestation response, if it
+    /// bundles it.
+    fn extract_collateral(
+        att_resp: &phala_tee_deploy_rs::AttestationResponse,
+    ) -> Option<serde_json::Value> {
+        att_resp
+            .tcb_info
+            .get("collateral")
+            .cloned()
+            .or_else(|| att_resp.extra.get("collateral").cloned())
+    }
+
     /// Build a docker-compose YAML wrapping the sidecar image.
+    ///
+    /// Env vars are deliberately NOT emitted into the compose `environment:`
+    /// block. The compose manifest is part of the deployment request and is
+    /// visible to the Phala control plane / operator in plaintext; embedding
+    /// secrets there would leak them outside the enclave. Instead they are passed
+    /// as the separate `env_vars` map to [`deploy_compose`], which encrypts them
+    /// to the CVM's KMS public key (`deploy_with_config_do_encrypt`) so only the
+    /// enclave can decrypt them. The interpolation references below let the
+    /// in-CVM compose see the decrypted values without ever writing them into the
+    /// manifest.
     fn compose_yaml(params: &TeeDeployParams) -> String {
         let mut yaml = String::from("services:\n  sidecar:\n");
         yaml.push_str(&format!("    image: {}\n", params.image));
@@ -48,11 +159,13 @@ impl PhalaBackend {
             yaml.push_str(&format!("      - \"{ssh}:22\"\n"));
         }
 
-        // Environment
+        // Reference (not embed) the encrypted env vars: the CVM-side compose
+        // resolves `${KEY}` from the decrypted env injected by the KMS, so the
+        // names appear in the manifest but the secret values never do.
         if !params.env_vars.is_empty() {
             yaml.push_str("    environment:\n");
-            for (k, v) in &params.env_vars {
-                yaml.push_str(&format!("      - {k}={v}\n"));
+            for (k, _v) in &params.env_vars {
+                yaml.push_str(&format!("      - {k}=${{{k}}}\n"));
             }
         }
 
@@ -69,6 +182,10 @@ impl TeeBackend for PhalaBackend {
     async fn deploy(&self, params: &TeeDeployParams) -> Result<TeeDeployment> {
         let compose = Self::compose_yaml(params);
 
+        // The env VALUES travel only in this map, which `deploy_compose` encrypts
+        // to the CVM KMS key; the compose YAML carries only `${KEY}` references
+        // (see `compose_yaml`). This is the single plaintext copy of the secrets,
+        // held just long enough to hand to the encrypting SDK call.
         let env_vars: HashMap<String, String> = params.env_vars.iter().cloned().collect();
 
         let app_name = format!("sandbox-{}", &params.sandbox_id);
@@ -100,12 +217,7 @@ impl TeeBackend for PhalaBackend {
                 SandboxError::Docker(format!("Phala attestation fetch failed: {e}"))
             })?;
 
-        let attestation = AttestationReport {
-            tee_type: TeeType::Tdx,
-            evidence: serde_json::to_vec(&att_resp.tcb_info).unwrap_or_default(),
-            measurement: serde_json::to_vec(&att_resp.app_certificates).unwrap_or_default(),
-            timestamp: crate::util::now_ts(),
-        };
+        let attestation = Self::attestation_from_resp(&att_resp)?;
 
         // Get network info for the sidecar URL.
         let network = self
@@ -151,12 +263,7 @@ impl TeeBackend for PhalaBackend {
             .await
             .map_err(|e| SandboxError::Docker(format!("Phala attestation fetch failed: {e}")))?;
 
-        Ok(AttestationReport {
-            tee_type: TeeType::Tdx,
-            evidence: serde_json::to_vec(&att_resp.tcb_info).unwrap_or_default(),
-            measurement: serde_json::to_vec(&att_resp.app_certificates).unwrap_or_default(),
-            timestamp: crate::util::now_ts(),
-        })
+        Self::attestation_from_resp(&att_resp)
     }
 
     async fn stop(&self, deployment_id: &str) -> Result<()> {

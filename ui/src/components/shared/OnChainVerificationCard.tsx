@@ -12,7 +12,7 @@ import { truncateAddress } from '~/lib/utils/truncate-address';
 
 const BYTES32_ZERO = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
-type VerificationStatus = 'match' | 'mismatch' | 'warning' | 'loading' | 'error' | 'na';
+type VerificationStatus = 'match' | 'mismatch' | 'warning' | 'info' | 'loading' | 'error' | 'na';
 
 export interface VerificationRow {
   label: string;
@@ -136,11 +136,18 @@ export function computeVerificationRows({
       rows.push({ label: 'Attestation Hash', status: 'error', value: 'Query failed' });
     } else if (attestationHash.data) {
       const isZero = attestationHash.data === BYTES32_ZERO;
+      // A non-zero hash means only that an operator WROTE bytes on-chain — it was
+      // never verified against a hardware root of trust. Render it with a neutral
+      // `info` tone (not the green `match` check, which is reserved for state we
+      // actually verified, e.g. on-chain operator/endpoint reads). The honest
+      // cryptographic verdict lives in TeeAttestationCard's verification banner.
       rows.push({
         label: 'Attestation Hash',
-        status: isZero ? 'warning' : 'match',
+        status: isZero ? 'warning' : 'info',
         value: isZero ? 'None' : truncateAddress(attestationHash.data),
-        detail: isZero ? 'No attestation recorded for this operator' : undefined,
+        detail: isZero
+          ? 'No attestation recorded for this operator'
+          : 'Recorded on-chain (operator-reported, not cryptographically verified)',
         copyValue: isZero ? undefined : attestationHash.data,
       });
     }
@@ -153,6 +160,8 @@ const statusConfig: Record<VerificationStatus, { icon: string; color: string }> 
   match: { icon: 'i-ph:check-circle-fill', color: 'text-teal-400' },
   mismatch: { icon: 'i-ph:warning-circle-fill', color: 'text-amber-400' },
   warning: { icon: 'i-ph:warning-fill', color: 'text-amber-400' },
+  // Neutral: a fact recorded on-chain that is NOT a cryptographic verdict.
+  info: { icon: 'i-ph:info', color: 'text-sky-400' },
   loading: { icon: 'i-ph:spinner-gap', color: 'text-cloud-elements-textTertiary animate-spin' },
   error: { icon: 'i-ph:x-circle-fill', color: 'text-red-400' },
   na: { icon: 'i-ph:minus-circle', color: 'text-cloud-elements-textTertiary' },

@@ -108,8 +108,13 @@ impl AzureSkrBackend {
     }
 
     /// Get an Azure Resource Manager bearer token, refreshing if expired.
+    ///
+    /// Single-flighted: the refresh holds the write lock across the network
+    /// round-trip and double-checks the cache after acquiring it, so N concurrent
+    /// callers (deploy fans out many ARM calls) trigger at most one OAuth POST —
+    /// the losers of the lock race observe the token the winner just cached.
     async fn arm_token(&self) -> Result<String> {
-        // Check cache first.
+        // Fast path: a valid cached token under a shared read lock.
         {
             let cache = self.token_cache.read().await;
             if let Some(ref cached) = *cache
@@ -117,6 +122,15 @@ impl AzureSkrBackend {
             {
                 return Ok(cached.token.clone());
             }
+        }
+
+        // Slow path: serialize refreshes on the write lock and re-check, so only
+        // the first arrival performs the network fetch.
+        let mut cache = self.token_cache.write().await;
+        if let Some(ref cached) = *cache
+            && cached.expires_at > std::time::Instant::now() + Duration::from_secs(60)
+        {
+            return Ok(cached.token.clone());
         }
 
         // Fetch new token via OAuth2 client credentials.
@@ -162,8 +176,7 @@ impl AzureSkrBackend {
             .or_else(|| body["expires_in"].as_str().and_then(|s| s.parse().ok()))
             .unwrap_or(3600);
 
-        // Cache the token.
-        let mut cache = self.token_cache.write().await;
+        // Cache the token under the write lock we already hold (single-flight).
         *cache = Some(CachedToken {
             token: access_token.clone(),
             expires_at: std::time::Instant::now() + Duration::from_secs(expires_in),
@@ -404,18 +417,18 @@ impl AzureSkrBackend {
                     .unwrap_or("");
 
                 if prov_state == "Succeeded" {
-                    // Get the public IP address.
+                    // Get the public IP address, reusing the token fetched for
+                    // the VM GET this iteration (avoids a redundant OAuth call).
                     let pip_url = format!(
                         "{}/publicIPAddresses/{}?api-version={}",
                         self.network_base_url(),
                         pip_name,
                         NETWORK_API_VERSION
                     );
-                    let pip_token = self.arm_token().await?;
                     let pip_resp = self
                         .http
                         .get(&pip_url)
-                        .bearer_auth(&pip_token)
+                        .bearer_auth(&token)
                         .send()
                         .await
                         .map_err(|e| SandboxError::CloudProvider(format!("Get public IP: {e}")))?;
