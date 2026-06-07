@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import WorkflowCreate from '../routes/workflows.create';
+import WorkflowCreate from './workflows.create';
 
 const {
   accountRef,

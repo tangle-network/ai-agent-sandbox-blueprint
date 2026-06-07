@@ -50,6 +50,8 @@ scripts/data/
 ui/build/
 ui/.react-router/
 ui/node_modules/
+# Temp file from `npm run gen:abi:check` (normally auto-removed)
+ui/.abi.check.ts
 
 # Playwright E2E
 ui/test-results/

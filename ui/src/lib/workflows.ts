@@ -1,12 +1,8 @@
-import type { WorkflowView } from '~/lib/hooks/useSandboxReads';
 import type { LocalInstance } from '~/lib/stores/instances';
 import type { LocalSandbox } from '~/lib/stores/sandboxes';
 import {
-  INSTANCE_ONCHAIN_SERVICE_ID,
   INSTANCE_OPERATOR_API_URL,
   OPERATOR_API_URL,
-  SANDBOX_ONCHAIN_SERVICE_ID,
-  TEE_INSTANCE_ONCHAIN_SERVICE_ID,
 } from '~/lib/config';
 
 export type WorkflowBlueprintId =
@@ -45,30 +41,6 @@ export function getWorkflowBlueprintIdForScope(
   }
 }
 
-export function getWorkflowServiceIdForBlueprintId(
-  blueprintId: WorkflowBlueprintId,
-): bigint | null {
-  const rawValue = blueprintId === 'ai-agent-sandbox-blueprint'
-    ? SANDBOX_ONCHAIN_SERVICE_ID
-    : blueprintId === 'ai-agent-tee-instance-blueprint'
-      ? TEE_INSTANCE_ONCHAIN_SERVICE_ID
-      : INSTANCE_ONCHAIN_SERVICE_ID;
-
-  if (!rawValue) return null;
-
-  try {
-    return BigInt(rawValue);
-  } catch {
-    return null;
-  }
-}
-
-export function getWorkflowServiceIdForScope(
-  scope: WorkflowScope,
-): bigint | null {
-  return getWorkflowServiceIdForBlueprintId(getWorkflowBlueprintIdForScope(scope));
-}
-
 export function getWorkflowOperatorUrl(scope: WorkflowScope): string {
   return scope === 'sandbox'
     ? OPERATOR_API_URL
@@ -80,26 +52,6 @@ export function buildWorkflowDetailPath(
   workflowId: bigint | number | string,
 ): string {
   return `/workflows/${scope}/${String(workflowId)}`;
-}
-
-export function resolveWorkflowTargetLabel(
-  workflow: WorkflowView | null,
-  blueprintId: WorkflowBlueprintId,
-  sandboxes: LocalSandbox[],
-  instances: LocalInstance[],
-) {
-  if (!workflow) {
-    return { label: 'Resolving target...', kindLabel: 'Workflow' };
-  }
-
-  return resolveWorkflowTargetLabelFromValues(
-    workflow.target_kind,
-    workflow.target_sandbox_id,
-    workflow.target_service_id,
-    blueprintId,
-    sandboxes,
-    instances,
-  );
 }
 
 export function resolveWorkflowTargetLabelFromValues(

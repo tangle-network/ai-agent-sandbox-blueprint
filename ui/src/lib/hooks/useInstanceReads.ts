@@ -7,7 +7,7 @@ import {
 } from '@tangle-network/blueprint-ui';
 import { agentInstanceBlueprintAbi } from '~/lib/contracts/abi';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
-import type { Address, ContractFunctionName } from 'viem';
+import type { Abi, Address, ContractFunctionName } from 'viem';
 
 type BlueprintType = 'instance' | 'tee-instance';
 
@@ -48,21 +48,23 @@ function useInstanceContractRead<TData>({
     queryKey: ['instance-contract-read', chainId, address, functionName, serializedArgs],
     queryFn: async () =>
       publicClient.readContract({
+        // `functionName: InstanceReadFn` already enforces (at this hook's
+        // public boundary) that callers pass a real view/pure function on the
+        // ABI. Inside `readContract`, viem would otherwise re-derive the
+        // overload across the full ~100-entry ABI and hit TS2589, so we widen
+        // the ABI to `Abi`. `args` is runtime-typed; the caller's `TData`
+        // generic carries the actual return shape.
         address,
-        abi: agentInstanceBlueprintAbi,
+        abi: agentInstanceBlueprintAbi as Abi,
         functionName,
-        // viem's `args` is a tuple typed against `functionName`; we can't
-        // express that link without the caller specifying a literal-typed
-        // args tuple. Cast through `never` to make the unsafety explicit
-        // while still preserving function-name and ABI typing above.
-        args: args as never,
+        args,
       }) as Promise<TData>,
     enabled: enabled && !!address && isContractDeployed(address),
     refetchInterval,
   });
 }
 
-export function useIsProvisioned(
+function useIsProvisioned(
   serviceId: bigint,
   blueprintType: BlueprintType,
   enabled = true,
@@ -76,7 +78,7 @@ export function useIsProvisioned(
   });
 }
 
-export function useOperatorCount(
+function useOperatorCount(
   serviceId: bigint,
   blueprintType: BlueprintType,
   enabled = true,
@@ -90,7 +92,7 @@ export function useOperatorCount(
   });
 }
 
-export function useOperatorEndpoints(
+function useOperatorEndpoints(
   serviceId: bigint,
   blueprintType: BlueprintType,
   enabled = true,
@@ -104,7 +106,7 @@ export function useOperatorEndpoints(
   });
 }
 
-export function useIsOperatorProvisioned(
+function useIsOperatorProvisioned(
   serviceId: bigint,
   operator: Address | undefined,
   blueprintType: BlueprintType,
@@ -119,7 +121,7 @@ export function useIsOperatorProvisioned(
   });
 }
 
-export function useAttestationHash(
+function useAttestationHash(
   serviceId: bigint,
   operator: Address | undefined,
   blueprintType: BlueprintType,
@@ -130,20 +132,6 @@ export function useAttestationHash(
     functionName: 'getAttestationHash',
     args: operator ? [serviceId, operator] : undefined,
     enabled: enabled && !!operator,
-    refetchInterval: 15_000,
-  });
-}
-
-export function useServiceConfig(
-  serviceId: bigint,
-  blueprintType: BlueprintType,
-  enabled = true,
-) {
-  return useInstanceContractRead<`0x${string}`>({
-    blueprintType,
-    functionName: 'getServiceConfig',
-    args: [serviceId],
-    enabled,
     refetchInterval: 15_000,
   });
 }
