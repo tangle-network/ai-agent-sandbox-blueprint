@@ -442,6 +442,130 @@ pub(crate) fn validate_attestation_report(
     Ok(())
 }
 
+/// Outcome of cryptographically verifying an [`AttestationReport`].
+///
+/// IMPORTANT: this encodes the *real* verification state. Today the quote
+/// signature chain is NOT yet verified (see [`verify_quote_signature`]), so
+/// [`verify_attestation`] never returns [`AttestationVerdict::Verified`].
+/// Callers and UIs MUST treat anything other than `Verified` as untrusted and
+/// must not present the workload as hardware-attested.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "verdict", rename_all = "snake_case")]
+pub enum AttestationVerdict {
+    /// Quote signature chained to a hardware root AND measurement matched a
+    /// pinned expected value. Unreachable until quote-signature verification is
+    /// implemented.
+    Verified,
+    /// Structurally well-formed but NOT cryptographically verified.
+    Unverified { reason: String },
+    /// Report processed but its measurement matched none of the pinned expected
+    /// measurements.
+    MeasurementMismatch,
+}
+
+/// Detailed result of [`verify_attestation`], suitable for serialising to the
+/// UI / on-chain so the *honest* trust state travels with the attestation.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AttestationVerification {
+    pub verdict: AttestationVerdict,
+    /// Whether the quote signature was verified against a hardware root of trust
+    /// (Intel PCS/PCCS for TDX, AMD KDS for SEV-SNP, NSM for Nitro).
+    pub signature_verified: bool,
+    /// Whether the measurement matched a pinned expected value.
+    pub measurement_matched: bool,
+    /// Whether the report passed structural/type checks.
+    pub structural_ok: bool,
+}
+
+impl AttestationVerification {
+    /// True only when the attestation is cryptographically trustworthy.
+    pub fn is_trusted(&self) -> bool {
+        matches!(self.verdict, AttestationVerdict::Verified)
+    }
+}
+
+/// Verify a TEE quote's signature against the appropriate hardware root of
+/// trust.
+///
+/// NOT YET IMPLEMENTED — this is the fail-closed seam. Verifying a TDX/SEV-SNP
+/// quote requires fetching and validating the platform certificate chain (Intel
+/// PCS/PCCS DCAP collateral; AMD KDS VCEK), and `attestation.rs` documents that
+/// `/dev/tdx_guest` yields a local TDREPORT, not a DCAP quote, so a quote must
+/// first be obtained from a quoting enclave. Until that lands this returns an
+/// error with a reason, and [`verify_attestation`] therefore never reports
+/// `Verified`. Implement real chain validation HERE — do not make it return
+/// `Ok(())` without it.
+fn verify_quote_signature(report: &AttestationReport) -> Result<(), String> {
+    Err(format!(
+        "quote-signature verification not implemented for {:?}; attestation cannot be trusted as hardware-verified",
+        report.tee_type
+    ))
+}
+
+/// Operator-independent allowlist of expected enclave measurements, read from
+/// `SANDBOX_TEE_EXPECTED_MEASUREMENTS` (comma/whitespace-separated hex).
+///
+/// Measurement pinning only adds security when the expected value comes from a
+/// source the operator does NOT control (a verifying client, or on-chain
+/// config) — otherwise a malicious operator forges both the measurement and the
+/// expected value. An empty allowlist means "no expected measurement
+/// configured", which can never match.
+pub fn expected_measurements_from_env() -> Vec<Vec<u8>> {
+    std::env::var("SANDBOX_TEE_EXPECTED_MEASUREMENTS")
+        .ok()
+        .map(|raw| {
+            raw.split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| hex::decode(s.trim().trim_start_matches("0x")).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Cryptographically verify an attestation report, returning the *honest*
+/// verification state.
+///
+/// The verdict is [`AttestationVerdict::Verified`] only when BOTH the quote
+/// signature is verified against a hardware root AND the measurement matches a
+/// pinned expected value. Because [`verify_quote_signature`] is not yet
+/// implemented, this currently always yields `Unverified` — by design, so the
+/// product never claims a guarantee it cannot back. This is the single entry
+/// point any trust decision (UI badge, on-chain gate, sealed-secret release)
+/// must consult; structural checks alone ([`validate_attestation_report`]) are
+/// NOT a trust decision.
+pub fn verify_attestation(
+    report: &AttestationReport,
+    expected_type: &TeeType,
+    expected_measurements: &[Vec<u8>],
+) -> AttestationVerification {
+    let structural_ok = validate_attestation_report(report, expected_type).is_ok();
+    let signature_result = verify_quote_signature(report);
+    let signature_verified = signature_result.is_ok();
+    let measurement_matched = !expected_measurements.is_empty()
+        && expected_measurements
+            .iter()
+            .any(|expected| expected == &report.measurement);
+
+    let verdict = if !structural_ok {
+        AttestationVerdict::Unverified {
+            reason: "attestation report failed structural validation".to_string(),
+        }
+    } else if let Err(reason) = signature_result {
+        AttestationVerdict::Unverified { reason }
+    } else if !measurement_matched {
+        AttestationVerdict::MeasurementMismatch
+    } else {
+        AttestationVerdict::Verified
+    };
+
+    AttestationVerification {
+        verdict,
+        signature_verified,
+        measurement_matched,
+        structural_ok,
+    }
+}
+
 /// Poll a sidecar's `/health` endpoint until it responds successfully.
 #[allow(dead_code)] // Used by TEE backends
 pub(crate) async fn wait_for_sidecar_health(
@@ -978,5 +1102,66 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("measurement is empty"), "{err}");
+    }
+
+    fn sample_report() -> AttestationReport {
+        AttestationReport {
+            tee_type: TeeType::Tdx,
+            evidence: vec![0x01],
+            measurement: vec![0xAA, 0xBB],
+            timestamp: 1_000,
+        }
+    }
+
+    #[test]
+    fn verify_attestation_is_never_trusted_without_signature_verification() {
+        // The P0 guard: a malicious operator can forge a non-empty, well-formed
+        // report, so structural + measurement checks alone must NOT yield trust.
+        // Until quote-signature verification lands, the verdict stays Unverified
+        // even when the measurement is pinned and matches.
+        let report = sample_report();
+        let pinned = vec![report.measurement.clone()];
+        let v = verify_attestation(&report, &TeeType::Tdx, &pinned);
+        assert!(!v.signature_verified);
+        assert!(v.structural_ok);
+        assert!(v.measurement_matched);
+        assert!(!v.is_trusted());
+        assert!(matches!(v.verdict, AttestationVerdict::Unverified { .. }));
+    }
+
+    #[test]
+    fn verify_attestation_reports_measurement_match_state() {
+        let report = sample_report();
+        assert!(
+            verify_attestation(&report, &TeeType::Tdx, &[vec![0xAA, 0xBB]]).measurement_matched
+        );
+        assert!(!verify_attestation(&report, &TeeType::Tdx, &[vec![0x00]]).measurement_matched);
+        assert!(!verify_attestation(&report, &TeeType::Tdx, &[]).measurement_matched);
+    }
+
+    #[test]
+    fn verify_attestation_structural_failure_is_unverified() {
+        let bad = AttestationReport {
+            tee_type: TeeType::Tdx,
+            evidence: vec![],
+            measurement: vec![0xAA],
+            timestamp: 1,
+        };
+        let v = verify_attestation(&bad, &TeeType::Tdx, &[vec![0xAA]]);
+        assert!(!v.structural_ok);
+        assert!(!v.is_trusted());
+        assert!(matches!(v.verdict, AttestationVerdict::Unverified { .. }));
+    }
+
+    #[test]
+    fn expected_measurements_parses_hex_list() {
+        unsafe {
+            std::env::set_var("SANDBOX_TEE_EXPECTED_MEASUREMENTS", "0xaabb, ccdd");
+        }
+        let m = expected_measurements_from_env();
+        unsafe {
+            std::env::remove_var("SANDBOX_TEE_EXPECTED_MEASUREMENTS");
+        }
+        assert_eq!(m, vec![vec![0xAA, 0xBB], vec![0xCC, 0xDD]]);
     }
 }

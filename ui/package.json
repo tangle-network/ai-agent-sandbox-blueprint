@@ -8,6 +8,8 @@
     "build": "react-router build",
     "preview": "vite preview --port 4173",
     "typecheck": "react-router typegen && tsc --noEmit",
+    "gen:abi": "node ../scripts/gen-contract-abi.mjs",
+    "gen:abi:check": "node ../scripts/gen-contract-abi.mjs --out .abi.check.ts && diff -u src/lib/contracts/abi.ts .abi.check.ts; status=$?; rm -f .abi.check.ts; if [ $status -ne 0 ]; then echo 'ERROR: src/lib/contracts/abi.ts is stale — run npm run gen:abi' >&2; fi; exit $status",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",

@@ -21,11 +21,24 @@ export function TeeAttestationCard({
     <Card>
       <CardHeader>
         <CardTitle className="text-sm">TEE Attestation</CardTitle>
-        <CardDescription>Verify the Trusted Execution Environment attestation for this {subjectLabel}</CardDescription>
+        <CardDescription>Attestation evidence reported by the operator for this {subjectLabel}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+          <div className="i-ph:seal-warning text-base text-amber-400 mt-0.5 shrink-0" />
+          <div className="space-y-0.5">
+            <p className="text-xs font-medium text-amber-300">Not cryptographically verified</p>
+            <p className="text-xs text-cloud-elements-textSecondary">
+              This is the raw attestation the operator returned. The quote signature is not yet checked
+              against a hardware root of trust and the measurement is not pinned to a known-good image, so it
+              cannot prove the workload ran in a genuine enclave. Treat it as informational until verification
+              ships.
+            </p>
+          </div>
+        </div>
+
         <Button size="sm" onClick={onFetch} disabled={busy}>
-          <div className="i-ph:shield-check text-sm" />
+          <div className="i-ph:shield text-sm" />
           {busy ? 'Fetching...' : attestation ? 'Refresh Attestation' : 'Get Attestation'}
         </Button>
 

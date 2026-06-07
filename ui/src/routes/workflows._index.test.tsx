@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import Workflows from '../routes/workflows._index';
+import Workflows from './workflows._index';
 
 const {
   accountRef,

@@ -6,11 +6,19 @@ This guide covers deploying, configuring, and verifying TEE (Trusted Execution E
 
 TEE mode provides hardware-enforced isolation for sandbox workloads:
 
-- **Attestation** — Cryptographic proof that the sandbox runs inside a genuine enclave with the expected code measurement
+- **Attestation** — The enclave produces an attestation report (TDX/SEV-SNP quote, Nitro document) carrying its code measurement
 - **Sealed secrets** — Secrets encrypted to the enclave's public key, decryptable only inside the TEE
-- **Measurement verification** — Clients can verify the sidecar image hash against the on-chain attestation before trusting the sandbox
+- **Measurement** — The report includes the sidecar image measurement (MRTD / launch digest / PCRs)
 
-TEE is enforced at the contract level: when `teeRequired=true`, the Solidity `_handleProvisionResult` reverts with `MissingTeeAttestation` if the operator's provision result contains an empty attestation.
+> **⚠️ Attestation is collected but NOT yet cryptographically verified.**
+>
+> The runtime currently performs only *structural* checks on attestation reports (non-empty evidence/measurement, matching TEE type) and surfaces them to clients and on-chain. It does **not** yet verify the quote signature against a hardware root of trust (Intel PCS/PCCS DCAP collateral for TDX, AMD KDS VCEK for SEV-SNP, NSM for Nitro), and it does not pin the measurement to a known-good image by default. A malicious operator that controls the host can therefore return a fabricated but well-formed attestation. **Do not present TEE sandboxes as hardware-verified to end users until the steps below ship.**
+>
+> The honest verification state is exposed via `sandbox_runtime::tee::verify_attestation`, which returns an `AttestationVerification { verdict, signature_verified, measurement_matched, structural_ok }`. By design it returns `Unverified` until `verify_quote_signature` is implemented. Measurement pinning is available via `SANDBOX_TEE_EXPECTED_MEASUREMENTS` (operator-independent hex allowlist) but is only meaningful once signature verification lands.
+>
+> **Remaining work to make this a real trust guarantee:** (1) implement DCAP/KDS quote-signature verification in `verify_quote_signature`; (2) publish the expected sidecar-image measurement on-chain (blueprint-owner-configured) and compare against it; (3) bind a fresh client nonce via `attestation_nonce` to prevent replay; (4) run verification client-side (WASM) so the verifying user never trusts operator-supplied JSON.
+
+TEE presence (not authenticity) is enforced at the contract level: when `teeRequired=true`, the Solidity `_handleProvisionResult` reverts with `MissingTeeAttestation` if the operator's provision result contains an empty attestation. This guarantees an attestation was *submitted*, not that it is *valid*.
 
 ## Prerequisites
 

@@ -116,21 +116,3 @@ export function isContractDeployed(address: string | undefined): boolean {
   if (!address) return false;
   return address.toLowerCase() !== ZERO_ADDRESS;
 }
-
-/** Check if the core contracts (jobs, services, blueprint BSM) are deployed for a given network.
- *  If chainId is provided, checks that specific network.
- *  Otherwise falls back to checking if ANY network has deployed contracts. */
-export function areContractsDeployed(chainId?: number): boolean {
-  const nets = getNetworks<SandboxAddresses>();
-  if (chainId) {
-    const net = Object.values(nets).find(n => n?.chain?.id === chainId);
-    if (!net?.addresses) return false;
-    return isContractDeployed(net.addresses.jobs) && isContractDeployed(net.addresses.services);
-  }
-  // Fallback: check all networks, return true if ANY has deployed contracts
-  return Object.values(nets).some(net =>
-    net?.addresses &&
-    isContractDeployed(net.addresses.jobs) &&
-    isContractDeployed(net.addresses.services),
-  );
-}

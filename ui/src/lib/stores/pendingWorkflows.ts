@@ -114,10 +114,3 @@ export function updatePendingWorkflow(
 export function removePendingWorkflow(key: string) {
   setPendingWorkflows(pendingWorkflowStore.get().filter((entry) => entry.key !== key));
 }
-
-export function removePendingWorkflowsByOwner(ownerAddress: string | undefined | null) {
-  const normalizedOwner = normalizeWorkflowOwnerAddress(ownerAddress);
-  setPendingWorkflows(
-    pendingWorkflowStore.get().filter((entry) => entry.ownerAddress !== normalizedOwner),
-  );
-}
