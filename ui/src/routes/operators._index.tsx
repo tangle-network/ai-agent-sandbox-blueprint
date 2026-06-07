@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '@nanostores/react';
 import { Link } from 'react-router';
 import { cn } from '@tangle-network/blueprint-ui';
+import { Button } from '@tangle-network/blueprint-ui/components';
 import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import {
   ConsoleMetricStrip,
@@ -238,7 +239,18 @@ export default function OperatorCapacity() {
   }
 
   return (
-    <ConsolePage title="Operators" eyebrow="Directory">
+    <ConsolePage
+      title="Operators"
+      eyebrow="Directory"
+      actions={(
+        <Link to="/operators/register">
+          <Button>
+            <span className="i-ph:hard-drives text-base" />
+            Become an operator
+          </Button>
+        </Link>
+      )}
+    >
       <div className="space-y-4">
         <ConsoleMetricStrip metrics={metrics} />
         <ConsoleSection title="Operator Directory">
@@ -321,8 +333,10 @@ export default function OperatorCapacity() {
           ) : (
             <EmptyConsoleState
               icon="i-ph:users-three"
-              title={loading ? 'Discovering operators' : 'No registered operators found'}
-              detail={loading ? 'Reading blueprint registrations from the service manager.' : 'Operator registration happens from the operator runtime; this console will show them once they are registered on-chain.'}
+              title={loading ? 'Discovering operators' : 'No registered operators yet'}
+              detail={loading ? 'Reading blueprint registrations from the service manager.' : 'Operators appear here once they register on-chain and advertise capacity. Run a node to be the first.'}
+              actionTo={loading ? undefined : '/operators/register'}
+              actionLabel={loading ? undefined : 'Become an operator'}
             />
           )}
         </ConsoleSection>
