@@ -1132,7 +1132,9 @@ mod tests {
     #[test]
     fn verify_attestation_reports_measurement_match_state() {
         let report = sample_report();
-        assert!(verify_attestation(&report, &TeeType::Tdx, &[vec![0xAA, 0xBB]]).measurement_matched);
+        assert!(
+            verify_attestation(&report, &TeeType::Tdx, &[vec![0xAA, 0xBB]]).measurement_matched
+        );
         assert!(!verify_attestation(&report, &TeeType::Tdx, &[vec![0x00]]).measurement_matched);
         assert!(!verify_attestation(&report, &TeeType::Tdx, &[]).measurement_matched);
     }
