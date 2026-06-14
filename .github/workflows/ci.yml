@@ -181,6 +181,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-audit
       - name: Run cargo audit
+        # RUSTSEC-2023-0071: rsa Marvin timing sidechannel — verify-only usage
+        #   (RSA-PSS attestation signature verification in sandbox-runtime tee/verify.rs).
+        #   The attack targets RSA private-key decryption oracles; this code holds no
+        #   private key and never decrypts, so it does not apply. No upstream fix exists.
         # RUSTSEC-2025-0009: ring 0.16.20 — transitive dep via blueprint-sdk, no fix available
         # RUSTSEC-2025-0055: tracing-subscriber — transitive dep via blueprint-sdk
         # RUSTSEC-2025-0111: tokio-tar — transitive dep, no fix available
@@ -193,6 +197,7 @@ jobs:
         #   libp2p bump. Re-evaluate when blueprint-networking ships libp2p ≥ 0.55.
         run: >
           cargo audit
+          --ignore RUSTSEC-2023-0071
           --ignore RUSTSEC-2025-0009
           --ignore RUSTSEC-2025-0055
           --ignore RUSTSEC-2025-0111

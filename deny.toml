@@ -38,6 +38,14 @@ ignore = [
     # tokio-tar PAX header smuggling — build-time only, not runtime.
     { id = "RUSTSEC-2025-0111", reason = "build-time only; not in runtime call graph" },
 
+    # rsa "Marvin Attack" timing sidechannel. Pulled directly for SEV-SNP / TDX
+    # attestation verification — used ONLY as rsa::pss::VerifyingKey to verify
+    # the AMD CRL's RSA-PSS signature against the pinned ASK (tee/verify.rs). The
+    # attack targets RSA *private-key decryption* timing oracles; this code holds
+    # no RSA private key and performs no decryption, so the threat model does not
+    # apply. No fixed `rsa` release exists upstream.
+    { id = "RUSTSEC-2023-0071", reason = "rsa verify-only (RSA-PSS attestation sig verification); Marvin targets private-key decryption oracles — not applicable; no upstream fix" },
+
     # rustls-webpki name-constraints / CRL parser — pulled transitively
     # via reqwest's TLS stack. Client-only TLS posture limits exposure.
     { id = "RUSTSEC-2026-0098", reason = "client-only TLS; transitive via blueprint-sdk rustls" },
