@@ -696,7 +696,9 @@ mod tests {
         // pins the fail-closed expiry behavior so a regression that ignores
         // `now_secs` is caught.
         let evidence = tdx_envelope_evidence(TDX_QUOTE);
-        let expired_now = tdx_now() + 40 * 24 * 3600;
+        // Past every bundled TCB/QE/CRL nextUpdate (each a ~30-day window).
+        const PAST_ALL_NEXTUPDATE_SECS: u64 = 40 * 24 * 3600;
+        let expired_now = tdx_now() + PAST_ALL_NEXTUPDATE_SECS;
         assert!(
             verify_tdx(&evidence, expired_now).is_err(),
             "an out-of-window TDX quote must NOT verify"

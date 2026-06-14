@@ -108,16 +108,22 @@ impl PhalaBackend {
                 .map(|s| s.trim().trim_start_matches("0x").to_string())
         };
         for key in ["quote", "intel_quote", "tdx_quote"] {
-            if let Some(s) = att_resp.tcb_info.get(key).and_then(as_hex) {
-                if !s.is_empty() {
-                    return Some(s);
-                }
-            }
-        }
-        if let Some(s) = att_resp.extra.get("quote").and_then(as_hex) {
-            if !s.is_empty() {
+            if let Some(s) = att_resp
+                .tcb_info
+                .get(key)
+                .and_then(as_hex)
+                .filter(|s| !s.is_empty())
+            {
                 return Some(s);
             }
+        }
+        if let Some(s) = att_resp
+            .extra
+            .get("quote")
+            .and_then(as_hex)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(s);
         }
         None
     }

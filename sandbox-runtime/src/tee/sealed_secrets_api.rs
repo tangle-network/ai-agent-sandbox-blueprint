@@ -451,6 +451,12 @@ async fn tee_attestation_response(
 
 #[cfg(test)]
 mod tests {
+    // These serial tests hold TEST_ENV_GUARD (a std Mutex) across the
+    // `enforce_release_gate(...).await` on purpose: the guard must span the await
+    // so no other test mutates the process env (EXPECTED_ENV / REQUIRE_PINNED_ENV)
+    // while the gate under test reads it. Dropping the guard before the await
+    // would reintroduce the cross-test env race these tests exist to rule out.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
     use crate::tee::TeeType;
     use crate::tee::mock::MockTeeBackend;
