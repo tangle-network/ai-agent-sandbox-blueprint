@@ -12,26 +12,39 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # This repo ships multiple blueprints — build + host every operator binary.
+  # This repo ships the sandbox blueprint trio — build + host every operator binary.
   BINARIES: "ai-agent-sandbox-blueprint ai-agent-instance-blueprint ai-agent-tee-instance-blueprint"
-  TARGET: x86_64-unknown-linux-gnu
+  # Base Sepolia operators currently run x86_64 Linux. Keep the production
+  # publish path on that target so a secondary architecture cannot block the
+  # active binary rollout.
+  RELEASE_TARGETS: "x86_64-unknown-linux-gnu"
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs-on }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
       - name: System dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Build all blueprint binaries
         run: |
           ARGS=""; for b in $BINARIES; do ARGS="$ARGS --bin $b"; done
           cargo build --release $ARGS
       - name: Package each binary + checksum
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           FILES=""
           for b in $BINARIES; do
@@ -39,16 +52,208 @@ jobs:
             test -f "$BIN" || { echo "::error::missing $BIN"; exit 1; }
             strip "$BIN" 2>/dev/null || true
             A="${b}-${TARGET}.tar.xz"
-            tar -cJf "$A" -C target/release "$b"
+            tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+              -cJf "$A" -C target/release "$b"
             sha256sum "$A" > "${A}.sha256"; cat "${A}.sha256"
-            FILES="$FILES $A ${A}.sha256"
+            # Hash of the EXTRACTED (stripped) binary. The blueprint-manager's
+            # Remote/Github fetcher unpacks the archive and verifies the binary
+            # file against the on-chain BlueprintBinary.sha256 — that's the
+            # extracted binary, NOT the tarball. setBlueprintSources uses this.
+            sha256sum "$BIN" | awk '{print $1}' > "${b}-${TARGET}.bin.sha256"; cat "${b}-${TARGET}.bin.sha256"
+            FILES="$FILES $A ${A}.sha256 ${b}-${TARGET}.bin.sha256"
           done
           echo "FILES=$FILES" >> "$GITHUB_ENV"
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
         run: |
+          set -euo pipefail
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "Operator binaries (${TARGET}): $BINARIES"
-          gh release upload "$TAG" $FILES --repo "$GITHUB_REPOSITORY" --clobber
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "Operator binaries: $BINARIES"
+
+          upload_asset() {
+            local file="$1"
+            local name
+            name="$(basename "$file")"
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq ".assets[] | select(.name == \"$name\") | .name" \
+              | grep -qx "$name"; then
+              mkdir -p /tmp/existing-release-assets
+              rm -f "/tmp/existing-release-assets/$name"
+              gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+                --pattern "$name" --dir /tmp/existing-release-assets
+              if cmp -s "$file" "/tmp/existing-release-assets/$name"; then
+                echo "asset already exists unchanged: $name"
+              else
+                echo "::error::release asset already exists with different bytes: $name"
+                exit 1
+              fi
+            else
+              gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY"
+            fi
+          }
+
+          for file in $FILES; do
+            upload_asset "$file"
+          done
+
+  # Once the arch leg(s) have uploaded their tarballs + .sha256 sidecars, emit a
+  # per-binary multi-arch manifest (`tangle-binary-manifest/v1`) so the on-chain
+  # BinaryVersion can point at ONE uri that the manager resolves per operator
+  # arch (see tangle-network/blueprint manager `sources/manifest.rs`). Runs once.
+  manifest:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build + upload per-binary multi-arch manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          mkdir -p /tmp/m
+
+          upload_asset() {
+            local file="$1"
+            local name
+            name="$(basename "$file")"
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq ".assets[] | select(.name == \"$name\") | .name" \
+              | grep -qx "$name"; then
+              mkdir -p /tmp/existing-release-assets
+              rm -f "/tmp/existing-release-assets/$name"
+              gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+                --pattern "$name" --dir /tmp/existing-release-assets
+              if cmp -s "$file" "/tmp/existing-release-assets/$name"; then
+                echo "asset already exists unchanged: $name"
+              else
+                echo "::error::release asset already exists with different bytes: $name"
+                exit 1
+              fi
+            else
+              gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY"
+            fi
+          }
+
+          for b in $BINARIES; do
+            entries=""
+            for triple in $RELEASE_TARGETS; do
+              case "$triple" in *x86_64*) arch=x86_64;; *aarch64*) arch=aarch64;; esac
+              asset="${b}-${triple}.tar.xz"
+              gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${asset}.sha256" --dir /tmp/m --clobber
+              sha="$(awk '{print $1}' "/tmp/m/${asset}.sha256")"
+              entries="${entries}{\"os\":\"linux\",\"arch\":\"${arch}\",\"url\":\"${BASE}/${asset}\",\"sha256\":\"${sha}\"},"
+            done
+            entries="${entries%,}"
+            printf '{"schema":"tangle-binary-manifest/v1","blueprint":"%s","version":"%s","binaries":[%s]}\n' \
+              "$b" "$TAG" "$entries" > "/tmp/m/${b}-manifest.json"
+            cat "/tmp/m/${b}-manifest.json"
+            upload_asset "/tmp/m/${b}-manifest.json"
+          done
+
+          # cargo-dist dist-manifest.json: the blueprint-manager's Remote/Github
+          # fetcher (sources/{remote,github}.rs) parses a cargo_dist_schema::DistManifest
+          # and refuses to download unless it declares the target binary as an
+          # executable-zip artifact with an executable asset of that name. This is
+          # the INITIAL-fetch path (distinct from the tangle-binary-manifest above,
+          # which drives in-place upgrades). One shared manifest validates every
+          # binary name; setBlueprintSources' dist_url points operators here.
+          arts=""
+          for b in $BINARIES; do
+            arts="${arts}\"${b}\":{\"kind\":\"executable-zip\",\"assets\":[{\"name\":\"${b}\",\"kind\":\"executable\"}]},"
+          done
+          arts="${arts%,}"
+          printf '{"artifacts":{%s}}\n' "$arts" > /tmp/m/dist-manifest.json
+          cat /tmp/m/dist-manifest.json
+          upload_asset /tmp/m/dist-manifest.json
+
+  # After the release assets are published, trigger the on-chain publish in
+  # tnt-core. The current blueprint-manager path falls back to blueprint sources
+  # when the active binary version points at a multi-arch manifest, so publish
+  # the concrete x86_64 archive as the active operator binary and update
+  # cold-start sources to the same tag.
+  #
+  # update_sources_version drives setBlueprintSources for EVERY blueprint this
+  # repo ships — without it a stock blueprint-manager has no usable fetcher and
+  # falls back to a 70-minute cargo source build on operator boxes.
+  # Local/manual equivalent: deploy/publish-blueprint-sources.sh <tag>.
+  #
+  # Dispatches are SEQUENTIAL on purpose: every tnt-core publish run signs with
+  # the same blueprint-owner key, and concurrent runs nonce-race ("replacement
+  # transaction underpriced"). Each dispatch waits for the remote run to finish
+  # before the next one starts.
+  #
+  # The TEE instance blueprint is not confirmed deployed on Base Sepolia. Its
+  # publish is gated on the TEE_INSTANCE_BLUEPRINT_ID repo/org variable; absent
+  # that, only sandbox (10) + instance (11) publish.
+  publish-onchain:
+    needs: [release, manifest]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger tnt-core binary publish (all blueprints, serialized)
+        env:
+          GH_TOKEN: ${{ secrets.TNT_CORE_PUBLISH_TOKEN }}
+          TEE_INSTANCE_BLUEPRINT_ID: ${{ vars.TEE_INSTANCE_BLUEPRINT_ID }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          REPO=tangle-network/tnt-core
+          WORKFLOW=publish-blueprint-binary.yml
+
+          # Blueprint ids: tnt-core deployments/base-sepolia/blueprints.tsv.
+          # sandbox=10, instance=11 (Tangle 0x8299d6 / chain 84532). The TEE
+          # instance id is only published when TEE_INSTANCE_BLUEPRINT_ID is set
+          # (it is not confirmed registered on this chain).
+          PUBLISHES="
+          ai-agent-sandbox-blueprint:10
+          ai-agent-instance-blueprint:11
+          "
+          if [ -n "${TEE_INSTANCE_BLUEPRINT_ID:-}" ]; then
+            PUBLISHES="${PUBLISHES}
+          ai-agent-tee-instance-blueprint:${TEE_INSTANCE_BLUEPRINT_ID}
+          "
+          fi
+
+          FAILED=0
+          for entry in $PUBLISHES; do
+            BIN="${entry%%:*}"
+            ID="${entry##*:}"
+            SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "::group::publish $BIN -> blueprint $ID"
+            gh workflow run "$WORKFLOW" \
+              --repo "$REPO" \
+              --ref main \
+              -f blueprint_repo=tangle-network/ai-agent-sandbox-blueprint \
+              -f tag="$TAG" \
+              -f blueprint_id="$ID" \
+              -f binary_name="$BIN" \
+              -f network=base-sepolia \
+              -f target=x86_64-unknown-linux-gnu \
+              -f manifest=false \
+              -f set_active=true \
+              -f update_sources_version="$TAG"
+
+            # Resolve the run we just dispatched, then block until it finishes
+            # so the next dispatch never races the owner key's nonce.
+            RUN_ID=""
+            for _ in $(seq 1 12); do
+              sleep 5
+              RUN_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" \
+                --created ">$SINCE" --limit 1 --json databaseId \
+                --jq '.[0].databaseId // empty')"
+              [ -n "$RUN_ID" ] && break
+            done
+            test -n "$RUN_ID" || { echo "::error::dispatched run for $BIN not found"; exit 1; }
+
+            if timeout 1800 gh run watch "$RUN_ID" --repo "$REPO" --exit-status; then
+              echo "published $BIN@$TAG -> blueprint $ID (run $RUN_ID)"
+            else
+              echo "::error::on-chain publish failed for $BIN (run $RUN_ID)"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$FAILED"

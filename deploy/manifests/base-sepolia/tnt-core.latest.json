@@ -1,0 +1,106 @@
+{
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "deployer": "0x2420fff17c4213a4075cf5f7b6dc33429aaf22bb",
+  "admin": "0x2420fff17c4213a4075cf5f7b6dc33429aaf22bb",
+  "treasury": "0x2420fff17c4213a4075cf5f7b6dc33429aaf22bb",
+  "timelock": "0x2420fff17c4213a4075cf5f7b6dc33429aaf22bb",
+  "multisig": "0x2420fff17c4213a4075cf5f7b6dc33429aaf22bb",
+  "tangle": "0x8299d60f373f3a4a8c4878e335cb9d840e6e3730",
+  "staking": "0x91b1186f4f31d6e02e481c0af29c7244a3fe417d",
+  "restaking": "0x91b1186f4f31d6e02e481c0af29c7244a3fe417d",
+  "statusRegistry": "0x2a7ceb96a9b18721b5bbb0022b4d358b3c50bcb2",
+  "tntToken": "0x62b3407a22e50183b1055e54d70ee21f59bf865b",
+  "metrics": "0x48725b945a76540d7e5262855566cdb74366bb75",
+  "rewardVaults": "0xbaad23dac876467ea1b1f70f4d6e02e5891d2e04",
+  "inflationPool": "0xedf2a17c4a02f543178a76d0e22d2ef096e66970",
+  "serviceFeeDistributor": "0x36b0431187a05f23bc95a7047a66644bc934f621",
+  "streamingPaymentManager": "0x0000000000000000000000000000000000000000",
+  "credits": "0xb587a927ee90ba5587ca9d90fd1a813eb81fc24b",
+  "epochLength": 604800,
+  "stakeAssets": [
+    {
+      "symbol": "TNT",
+      "token": "0x62b3407a22e50183b1055e54d70ee21f59bf865b",
+      "adapter": "0x0000000000000000000000000000000000000000",
+      "minOperatorStake": "1000000000000000000",
+      "minDelegation": "100000000000000000",
+      "depositCap": "250000000000000000000000",
+      "rewardMultiplierBps": 10000
+    },
+    {
+      "symbol": "WETH",
+      "token": "0x4200000000000000000000000000000000000006",
+      "adapter": "0x0000000000000000000000000000000000000000",
+      "minOperatorStake": "500000000000000000",
+      "minDelegation": "50000000000000000",
+      "depositCap": "10000000000000000000000",
+      "rewardMultiplierBps": 11000
+    },
+    {
+      "symbol": "USDC",
+      "token": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      "adapter": "0x0000000000000000000000000000000000000000",
+      "minOperatorStake": "0",
+      "minDelegation": "0",
+      "depositCap": "5000000000000",
+      "rewardMultiplierBps": 9500
+    }
+  ],
+  "rewardVaultsConfig": [
+    {
+      "asset": "0x62b3407a22e50183b1055e54d70ee21f59bf865b",
+      "depositCap": "250000000000000000000000",
+      "active": true
+    },
+    {
+      "asset": "0x4200000000000000000000000000000000000006",
+      "depositCap": "10000000000000000000000",
+      "active": true
+    }
+  ],
+  "inflationWeights": {
+    "stakingBps": 5500,
+    "operatorsBps": 2500,
+    "customersBps": 1000,
+    "developersBps": 1000,
+    "stakersBps": 0
+  },
+  "guards": {
+    "pauseStaking": false,
+    "pauseTangle": false,
+    "requireAdapters": false,
+    "delegatorDelay": 0,
+    "operatorDelay": 0,
+    "bondLessDelay": 0,
+    "maxBlueprintsPerOperator": 0
+  },
+  "migration": {
+    "deploy": true,
+    "emitArtifacts": true,
+    "useMockVerifier": false,
+    "artifactsPath": "deployments/base-sepolia/releases/20260522-234553/migration.json",
+    "merklePath": "packages/migration-claim/merkle-tree.json",
+    "evmClaimsPath": "packages/migration-claim/evm-claims.json",
+    "treasuryCarveoutPath": "packages/migration-claim/treasury-carveout.json",
+    "foundationCarveoutPath": "packages/migration-claim/foundation-carveout.json",
+    "notes": "base-sepolia validation deployment",
+    "migrationOwner": "0x03a763af11dc58b459a469a9895389f5880b45f4",
+    "sp1VerifierGateway": "0x397a5f7f3dbd538f23de225b51f532c34448da9b",
+    "programVKey": "0x000d74444f16d75f72527687a36c1bd4c49e6799816dac4989be3bc175e86fd7",
+    "merkleRoot": "0x54ec5497e0a2f43ec721c1ec5392cb224cf710b1210b579dcaefea002bb51adb",
+    "substrateAllocation": "51244581812207794935986305",
+    "evmAllocation": "1125776519168932451653760",
+    "treasuryRecipient": "0x03a763af11dc58b459a469a9895389f5880b45f4",
+    "treasuryAmount": "41844468761091374585756819",
+    "foundationRecipient": "0x03a763af11dc58b459a469a9895389f5880b45f4",
+    "foundationAmount": "15040809826744825912214026",
+    "claimDeadline": "1811029564",
+    "unlockedBps": 0,
+    "cliffDuration": 0,
+    "vestingDuration": 0,
+    "tangleMigration": "0x25e02490ff74668543f167aab838c835ed202db7",
+    "zkVerifier": "0x46cee2cb16fc4c6699e9473d2ae545d5470e74a2"
+  },
+  "blueprintAuditors": "0xf4428bbbfa9207b4b91ca5fe8c1d401fd8b1e8e8"
+}
