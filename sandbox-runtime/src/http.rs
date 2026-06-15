@@ -1,9 +1,56 @@
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use reqwest::{Client, Method, StatusCode, Url};
+use reqwest::{Client, Method, Response, StatusCode, Url};
 use serde_json::Value;
 
 use crate::error::{Result, SandboxError};
 use crate::util::{http_client, http_client_no_timeout};
+
+/// Hard cap on the response body we will buffer from a sidecar or cloud
+/// attestation endpoint. Every byte ingested here is attacker-controlled in
+/// the TEE trust model (the sidecar/operator is untrusted), so a malicious
+/// producer must not be able to OOM the operator process by returning a
+/// multi-gigabyte body. Attestation reports are well under 128 KiB across all
+/// backends; 256 KiB leaves generous headroom while bounding allocation.
+const MAX_RESPONSE_BODY_BYTES: usize = 256 * 1024;
+
+/// Stream a response body into memory with a hard byte cap, failing closed once
+/// the cap is exceeded. Buffering with `response.text()`/`response.bytes()`
+/// allocates the entire (untrusted) body before we can inspect it; this reads
+/// chunk-by-chunk and aborts as soon as the accumulated length passes `max`, so
+/// a hostile producer cannot force unbounded allocation.
+async fn read_body_capped(mut response: Response, max: usize) -> Result<Vec<u8>> {
+    // Reject early if the producer advertises an over-cap body. This is an
+    // optimization only — the streaming loop below is the real enforcement,
+    // since Content-Length is itself attacker-controlled and may be absent.
+    if let Some(len) = response.content_length()
+        && len > max as u64
+    {
+        return Err(SandboxError::Http(format!(
+            "Response body too large: {len} bytes (max {max})"
+        )));
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if buf.len() + chunk.len() > max {
+                    return Err(SandboxError::Http(format!(
+                        "Response body exceeded {max} byte cap"
+                    )));
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(err) => {
+                return Err(SandboxError::Http(format!(
+                    "Failed to read response body: {err}"
+                )));
+            }
+        }
+    }
+    Ok(buf)
+}
 
 pub fn build_url(base: &str, path: &str) -> Result<Url> {
     let base_url =
@@ -41,10 +88,9 @@ async fn send_json_with_client(
         SandboxError::Http(format!("HTTP request failed: {err}"))
     })?;
     let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|err| SandboxError::Http(format!("Failed to read response body: {err}")))?;
+    let bytes = read_body_capped(response, MAX_RESPONSE_BODY_BYTES).await?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| SandboxError::Http("Response body was not valid UTF-8".into()))?;
 
     if !status.is_success() {
         return Err(SandboxError::Http(format!("HTTP {status}: {text}")));
@@ -194,10 +240,7 @@ pub async fn proxy_http(
 
     let status = response.status();
     let raw_headers = response.headers().clone();
-    let resp_body = response
-        .bytes()
-        .await
-        .map_err(|err| SandboxError::Http(format!("Failed to read proxy response: {err}")))?;
+    let resp_body = read_body_capped(response, MAX_RESPONSE_BODY_BYTES).await?;
 
     // Filter response headers
     let mut resp_headers = HeaderMap::new();
@@ -210,7 +253,7 @@ pub async fn proxy_http(
         }
     }
 
-    Ok((status, resp_headers, resp_body.to_vec()))
+    Ok((status, resp_headers, resp_body))
 }
 
 #[cfg(test)]
@@ -294,5 +337,72 @@ mod tests {
         // Header values cannot contain certain control characters
         let result = auth_headers("token\x00with\x01nulls");
         assert!(result.is_err());
+    }
+
+    // ── read_body_capped ────────────────────────────────────────────────
+    //
+    // The body cap is the only thing standing between an untrusted sidecar
+    // returning a multi-gigabyte attestation response and an operator-process
+    // OOM, so it is covered directly. We serve the body in many small chunks
+    // WITHOUT a Content-Length header (chunked transfer) to prove the cap is
+    // enforced during streaming, not merely via the advertised length.
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::routing::get;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+
+    async fn spawn_body_server(total: usize) -> String {
+        let app = Router::new().route(
+            "/big",
+            get(move || async move {
+                // Stream `total` bytes in 8 KiB chunks with no Content-Length,
+                // forcing the reader to enforce the cap mid-stream.
+                let chunks = (0..total).step_by(8 * 1024).map(move |off| {
+                    let len = (total - off).min(8 * 1024);
+                    Ok::<_, std::convert::Infallible>(vec![b'a'; len])
+                });
+                let stream = tokio_stream::iter(chunks);
+                Body::from_stream(stream)
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+        let base = format!("http://{addr}");
+        for _ in 0..50 {
+            if reqwest::get(format!("{base}/big")).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        base
+    }
+
+    #[tokio::test]
+    async fn read_body_capped_rejects_oversized_stream() {
+        let base = spawn_body_server(MAX_RESPONSE_BODY_BYTES + 64 * 1024).await;
+        let resp = reqwest::get(format!("{base}/big")).await.expect("request");
+        let err = read_body_capped(resp, MAX_RESPONSE_BODY_BYTES)
+            .await
+            .expect_err("over-cap body must fail closed");
+        match err {
+            SandboxError::Http(msg) => assert!(msg.contains("cap") || msg.contains("too large")),
+            other => panic!("expected Http cap error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_body_capped_accepts_within_cap() {
+        let body_len = 16 * 1024;
+        let base = spawn_body_server(body_len).await;
+        let resp = reqwest::get(format!("{base}/big")).await.expect("request");
+        let bytes = read_body_capped(resp, MAX_RESPONSE_BODY_BYTES)
+            .await
+            .expect("under-cap body must succeed");
+        assert_eq!(bytes.len(), body_len);
     }
 }

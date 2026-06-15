@@ -26,7 +26,9 @@ export interface SandboxAddresses extends CoreAddresses {
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const BASE_SEPOLIA_RPC_URL = import.meta.env.VITE_BASE_SEPOLIA_RPC_URL ?? 'https://sepolia.base.org';
 const BASE_SEPOLIA_TANGLE = '0x8299d60f373f3a4a8c4878e335cb9d840e6e3730';
-const BASE_SEPOLIA_SANDBOX_BSM = '0xC9b0716a187072be0f38A5D972392C6479b9Cfe3';
+const BASE_SEPOLIA_SANDBOX_BSM = '0x281d2d1160d80070ebe8989a529b6732c8403625';
+const BASE_SEPOLIA_INSTANCE_BSM = '0xde25dad1757e5dab5230d44779d7de6ad8181c5c';
+const BASE_SEPOLIA_TEE_INSTANCE_BSM = '0x6d6debfa88260558597ad912439ea1949962b3eb';
 
 export const baseSepolia = {
   ...viemBaseSepolia,
@@ -65,8 +67,8 @@ configureNetworks<SandboxAddresses>({
     shortLabel: 'Base',
     addresses: {
       sandboxBlueprint: (import.meta.env.VITE_BASE_SEPOLIA_SANDBOX_BSM ?? BASE_SEPOLIA_SANDBOX_BSM) as Address,
-      instanceBlueprint: (import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_BSM ?? ZERO_ADDRESS) as Address,
-      teeInstanceBlueprint: (import.meta.env.VITE_BASE_SEPOLIA_TEE_INSTANCE_BSM ?? ZERO_ADDRESS) as Address,
+      instanceBlueprint: (import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_BSM ?? BASE_SEPOLIA_INSTANCE_BSM) as Address,
+      teeInstanceBlueprint: (import.meta.env.VITE_BASE_SEPOLIA_TEE_INSTANCE_BSM ?? BASE_SEPOLIA_TEE_INSTANCE_BSM) as Address,
       jobs: (import.meta.env.VITE_BASE_SEPOLIA_TANGLE_CONTRACT ?? BASE_SEPOLIA_TANGLE) as Address,
       services: (import.meta.env.VITE_BASE_SEPOLIA_TANGLE_CONTRACT ?? BASE_SEPOLIA_TANGLE) as Address,
     },
@@ -113,22 +115,4 @@ export const networks = getNetworks<SandboxAddresses>();
 export function isContractDeployed(address: string | undefined): boolean {
   if (!address) return false;
   return address.toLowerCase() !== ZERO_ADDRESS;
-}
-
-/** Check if the core contracts (jobs, services, blueprint BSM) are deployed for a given network.
- *  If chainId is provided, checks that specific network.
- *  Otherwise falls back to checking if ANY network has deployed contracts. */
-export function areContractsDeployed(chainId?: number): boolean {
-  const nets = getNetworks<SandboxAddresses>();
-  if (chainId) {
-    const net = Object.values(nets).find(n => n?.chain?.id === chainId);
-    if (!net?.addresses) return false;
-    return isContractDeployed(net.addresses.jobs) && isContractDeployed(net.addresses.services);
-  }
-  // Fallback: check all networks, return true if ANY has deployed contracts
-  return Object.values(nets).some(net =>
-    net?.addresses &&
-    isContractDeployed(net.addresses.jobs) &&
-    isContractDeployed(net.addresses.services),
-  );
 }

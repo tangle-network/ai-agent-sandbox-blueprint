@@ -6,13 +6,7 @@ import {
   selectedChainIdStore,
 } from '@tangle-network/blueprint-ui';
 import { agentSandboxBlueprintAbi } from '~/lib/contracts/abi';
-import type { Address } from 'viem';
-import { parseAbiItem } from 'viem';
-import { JOB_IDS } from '~/lib/types/sandbox';
-
-const workflowJobCalledEvent = parseAbiItem(
-  'event JobSubmitted(uint64 indexed serviceId, uint64 indexed callId, uint8 jobIndex, address caller, bytes inputs)',
-);
+import type { Abi, Address } from 'viem';
 
 function useSandboxReadDeps() {
   const chainId = useStore(selectedChainIdStore);
@@ -59,11 +53,6 @@ type WorkflowOwnershipEvent = {
   caller: Address;
 };
 
-type WorkflowBatchResult = {
-  status: 'success';
-  result: WorkflowView;
-};
-
 export function normalizeWorkflowConfig(workflow: WorkflowConfig): WorkflowView {
   return {
     ...workflow,
@@ -92,22 +81,17 @@ function useSandboxContractRead<TData>({
     queryFn: async () =>
       publicClient.readContract({
         address,
-        abi: agentSandboxBlueprintAbi,
-        functionName: functionName as any,
-        args: args as any,
+        // This generic helper takes a runtime `functionName`/`args`, so viem
+        // cannot infer the return type. Widening the ABI to `Abi` here avoids
+        // viem's per-function overload inference (which hits TS2589 on the
+        // full ~100-entry contract ABI) while the caller-facing `TData`
+        // generic carries the actual return shape.
+        abi: agentSandboxBlueprintAbi as Abi,
+        functionName,
+        args,
       }) as Promise<TData>,
     enabled: enabled && !!address,
     refetchInterval,
-  });
-}
-
-/**
- * Read service-level stats from the blueprint contract.
- */
-export function useServiceStats() {
-  return useSandboxContractRead<readonly [number, number]>({
-    functionName: 'getServiceStats',
-    refetchInterval: 15_000,
   });
 }
 
@@ -118,16 +102,6 @@ export function useAvailableCapacity() {
   return useSandboxContractRead<number>({
     functionName: 'getAvailableCapacity',
     refetchInterval: 15_000,
-  });
-}
-
-/**
- * Read total active sandboxes count.
- */
-export function useTotalActiveSandboxes() {
-  return useSandboxContractRead<number>({
-    functionName: 'totalActiveSandboxes',
-    refetchInterval: 10_000,
   });
 }
 
@@ -155,49 +129,12 @@ export function useSandboxOperator(sandboxId: string | undefined) {
 }
 
 /**
- * Read an operator's load (active / max capacity).
- */
-export function useOperatorLoad(operator: `0x${string}` | undefined) {
-  return useSandboxContractRead<readonly [number, number]>({
-    functionName: 'getOperatorLoad',
-    args: operator ? [operator] : undefined,
-    enabled: !!operator,
-  });
-}
-
-/**
- * Get the default max capacity.
- */
-export function useDefaultMaxCapacity() {
-  return useSandboxContractRead<number>({
-    functionName: 'defaultMaxCapacity',
-  });
-}
-
-/**
  * Get all workflow IDs.
  */
 export function useWorkflowIds(activeOnly: boolean = false) {
   return useSandboxContractRead<readonly bigint[]>({
     functionName: 'getWorkflowIds',
     args: [activeOnly],
-    refetchInterval: 15_000,
-  });
-}
-
-export function useWorkflowIdsForAddress(address: Address | undefined, activeOnly: boolean = false) {
-  const chainId = useStore(selectedChainIdStore);
-
-  return useQuery<readonly bigint[], Error>({
-    queryKey: ['workflow-contract-read', chainId, address, 'getWorkflowIds', activeOnly],
-    queryFn: async () =>
-      publicClient.readContract({
-        address: address as Address,
-        abi: agentSandboxBlueprintAbi,
-        functionName: 'getWorkflowIds',
-        args: [activeOnly],
-      }) as Promise<readonly bigint[]>,
-    enabled: !!address,
     refetchInterval: 15_000,
   });
 }
@@ -215,79 +152,6 @@ export function filterOwnedWorkflowIds(
   );
 
   return workflowIds.filter((workflowId) => ownedWorkflowIds.has(workflowId.toString()));
-}
-
-export function useOwnedWorkflowIdsForAddress(
-  address: Address | undefined,
-  workflowServiceId: bigint | null,
-  owner: Address | undefined,
-  activeOnly: boolean = false,
-) {
-  const chainId = useStore(selectedChainIdStore);
-  const addrs = getAddresses();
-
-  return useQuery<readonly bigint[], Error>({
-    queryKey: [
-      'workflow-owner-read',
-      chainId,
-      address,
-      workflowServiceId?.toString() ?? null,
-      owner ?? null,
-      activeOnly,
-    ],
-    queryFn: async () => {
-      if (!address || workflowServiceId == null || !owner) {
-        return [];
-      }
-
-      const [workflowIds, ownershipLogs] = await Promise.all([
-        publicClient.readContract({
-          address,
-          abi: agentSandboxBlueprintAbi,
-          functionName: 'getWorkflowIds',
-          args: [activeOnly],
-        }) as Promise<readonly bigint[]>,
-        publicClient.getLogs({
-          address: addrs.jobs,
-          event: workflowJobCalledEvent,
-          args: {
-            serviceId: workflowServiceId,
-          },
-          fromBlock: 0n,
-          toBlock: 'latest',
-        }).then((logs) => logs.filter((log) => {
-          const args = log.args as { jobIndex?: number };
-          return args.jobIndex === JOB_IDS.WORKFLOW_CREATE;
-        })),
-      ]);
-
-      const ownershipEvents = ownershipLogs
-        .map((log) => {
-          const args = log.args as { callId?: bigint; caller?: Address };
-          if (args.callId === undefined || !args.caller) return null;
-          return {
-            callId: args.callId,
-            caller: args.caller,
-          };
-        })
-        .filter((event): event is WorkflowOwnershipEvent => event !== null);
-
-      return filterOwnedWorkflowIds(workflowIds, ownershipEvents, owner);
-    },
-    enabled: !!address && workflowServiceId != null && !!owner,
-    refetchInterval: 15_000,
-  });
-}
-
-/**
- * Get a specific workflow config.
- */
-export function useWorkflow(workflowId: bigint | undefined) {
-  return useSandboxContractRead<WorkflowConfig>({
-    functionName: 'getWorkflow',
-    args: workflowId !== undefined ? [workflowId] : undefined,
-    enabled: workflowId !== undefined,
-  });
 }
 
 export function useWorkflowForAddress(
@@ -310,8 +174,8 @@ export function useWorkflowForAddress(
       const result = await publicClient.readContract({
         address: address as Address,
         abi: agentSandboxBlueprintAbi,
-        functionName: 'getWorkflow' as any,
-        args: [workflowId as bigint] as any,
+        functionName: 'getWorkflow',
+        args: [workflowId as bigint],
       });
 
       return normalizeWorkflowConfig(result as unknown as WorkflowConfig);
@@ -321,62 +185,3 @@ export function useWorkflowForAddress(
   });
 }
 
-/**
- * Get pricing info: multiplier for a specific job.
- */
-export function useJobPriceMultiplier(jobId: number) {
-  return useSandboxContractRead<bigint>({
-    functionName: 'getJobPriceMultiplier',
-    args: [jobId],
-  });
-}
-
-/**
- * Get all default job rates for a given base rate.
- */
-export function useDefaultJobRates(baseRate: bigint) {
-  return useSandboxContractRead<readonly [readonly number[], readonly bigint[]]>({
-    functionName: 'getDefaultJobRates',
-    args: [baseRate],
-  });
-}
-
-/**
- * Batch-read multiple workflows by ID.
- */
-export function useWorkflowBatch(workflowIds: bigint[]) {
-  const { address, chainId } = useSandboxReadDeps();
-  return useWorkflowBatchForAddress(address, workflowIds, chainId);
-}
-
-export function useWorkflowBatchForAddress(
-  address: Address | undefined,
-  workflowIds: bigint[],
-  chainIdOverride?: number,
-) {
-  const chainId = useStore(selectedChainIdStore);
-  const workflowIdKeys = workflowIds.map((id) => id.toString());
-  const effectiveChainId = chainIdOverride ?? chainId;
-
-  return useQuery<WorkflowBatchResult[], Error>({
-    queryKey: ['workflow-batch', effectiveChainId, address, workflowIdKeys],
-    queryFn: async () =>
-      Promise.all(
-        workflowIds.map(async (id) => {
-          const result = await publicClient.readContract({
-            address: address as Address,
-            abi: agentSandboxBlueprintAbi,
-            functionName: 'getWorkflow' as any,
-            args: [id] as any,
-          });
-
-          return {
-            status: 'success' as const,
-            result: normalizeWorkflowConfig(result as unknown as WorkflowConfig),
-          };
-        }),
-      ),
-    enabled: workflowIds.length > 0 && !!address,
-    refetchInterval: 15_000,
-  });
-}

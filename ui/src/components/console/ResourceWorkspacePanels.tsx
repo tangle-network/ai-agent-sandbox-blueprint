@@ -1,6 +1,8 @@
 import { Link } from 'react-router';
+import type { ReactNode } from 'react';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import { ConsoleChip, ConsoleSection } from './ConsolePrimitives';
+import { IdentityMark, type IdentityMeta } from '~/components/shared/VisualIdentity';
 
 type Tone = 'brand' | 'ready' | 'warn' | 'danger' | 'muted';
 
@@ -9,14 +11,19 @@ export type WorkspaceRailRow = {
   value: string;
   detail?: string;
   tone?: Tone;
+  identity?: IdentityMeta;
+  leading?: ReactNode;
 };
 
 function WorkspaceRow({ row }: { row: WorkspaceRailRow }) {
   return (
-    <div className="grid gap-1 border-b border-[var(--sandbox-console-border)] px-3 py-3 last:border-b-0">
+    <div className="grid gap-1 border-b border-[var(--sandbox-console-border)] px-3 py-3 transition-colors last:border-b-0 hover:bg-[var(--sandbox-console-hover)]">
       <div className="flex items-center justify-between gap-3">
-        <span className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
-          {row.label}
+        <span className="flex min-w-0 items-center gap-2">
+          {row.leading ?? (row.identity ? <IdentityMark identity={row.identity} size="sm" /> : null)}
+          <span className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
+            {row.label}
+          </span>
         </span>
         <ConsoleChip tone={row.tone ?? 'muted'}>{row.value}</ConsoleChip>
       </div>

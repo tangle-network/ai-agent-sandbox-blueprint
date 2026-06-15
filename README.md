@@ -117,7 +117,7 @@ Sandbox and instance provisioning accept `capabilities_json`, a JSON-encoded str
 - `computer_use`: enables the sidecar computer-use subsystem.
 - `all_harness`: requests the open-source all-harness runtime image path with Claude, Codex, opencode, Kimi, and Gemini available inside the sandbox.
 
-The runtime injects accepted values into the sandbox as `SIDECAR_CAPABILITIES`, preserving the same contract surface for Docker, Firecracker, and TEE-backed creation. The UI exposes `all_harness` as an explicit create/provision option while keeping the ABI field itself internal.
+The runtime injects accepted values into the sandbox as `SIDECAR_CAPABILITIES`, preserving the same contract surface for Docker, Firecracker, and TEE-backed creation. The UI exposes `all_harness` and `computer_use` as explicit create/provision options while keeping the ABI field itself internal.
 
 The default sidecar image is now `ghcr.io/tangle-network/blueprint-sidecar:all-harness`, built from `sidecar/Dockerfile.all-harness`. That image owns the harness installation layer in this repo instead of relying on an opaque external image to contain every CLI.
 
@@ -167,9 +167,10 @@ All data endpoints require PASETO v4 session auth (EIP-191 challenge-response).
 - `POST /api/sandbox/snapshot` — Upload a snapshot
 - `POST /api/sandbox/ssh` — Provision SSH key
 - `DELETE /api/sandbox/ssh` — Revoke SSH key
+- `GET /api/sandbox/secrets` — List singleton sandbox secrets metadata
+- `POST /api/sandbox/secrets` — Inject secrets into the singleton sandbox
+- `DELETE /api/sandbox/secrets` — Wipe singleton sandbox secrets
 - `ANY /api/sandbox/port/{port}` — Proxy to singleton container port
-
-Note: `/api/sandbox/secrets` is not currently exposed; secret provisioning is currently sandbox-scoped (`/api/sandboxes/{id}/secrets`).
 
 ### Infrastructure
 - `GET /health` — Runtime backend + store health check (503 when degraded)

@@ -7,6 +7,13 @@ import {
 import { cn } from '@tangle-network/blueprint-ui';
 
 type Placement = 'up' | 'down';
+type Align = 'start' | 'end';
+
+interface ConsoleChainSwitcherProps {
+  placement?: Placement;
+  align?: Align;
+  compact?: boolean;
+}
 
 function chainIcon(label: string | undefined, chainName: string | undefined): string {
   if (label === 'Base Sepolia' || chainName === 'Base Sepolia') return 'i-ph:hexagon';
@@ -35,7 +42,11 @@ function orderedChainIds(): number[] {
     .map(([chainId]) => Number(chainId));
 }
 
-export function ConsoleChainSwitcher({ placement = 'down' }: { placement?: Placement }) {
+export function ConsoleChainSwitcher({
+  placement = 'down',
+  align = 'end',
+  compact = false,
+}: ConsoleChainSwitcherProps = {}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const selectedChainId = useStore(selectedChainIdStore);
@@ -71,52 +82,63 @@ export function ConsoleChainSwitcher({ placement = 'down' }: { placement?: Place
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="group flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] px-2 font-data text-xs font-medium text-[var(--sandbox-console-secondary)] transition-colors hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-panel-strong)]"
-        title={current?.label ?? 'Select network'}
+        className={cn(
+          'group inline-flex h-10 max-w-full items-center justify-center gap-2 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-2 font-display text-sm font-bold text-[var(--sandbox-console-secondary)] shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color,transform] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sandbox-console-brand)]/60',
+          compact ? 'w-10 min-w-0 px-0' : 'w-full min-w-0',
+        )}
+        title={compact ? (current?.label ?? 'Select network') : undefined}
+        aria-label="Network"
         aria-expanded={open}
         aria-haspopup="menu"
       >
-        <span className={cn('shrink-0 text-sm text-[var(--sandbox-console-success)]', chainIcon(current?.label, current?.chain?.name))} />
-        <span className="min-w-0 truncate">{current?.shortLabel ?? 'Network'}</span>
-        <span className={cn('shrink-0 text-[10px] text-[var(--sandbox-console-muted)] transition-transform', open && 'rotate-180', placement === 'up' && 'rotate-180', open && placement === 'up' && 'rotate-0', 'i-ph:caret-down')} />
+        <span className={cn('shrink-0 text-base text-[var(--sandbox-console-success)]', chainIcon(current?.label, current?.chain?.name))} />
+        {!compact ? <span className="min-w-0 truncate">{current?.label ?? 'Network'}</span> : null}
+        {!compact ? (
+          <span className={cn('i-ph:caret-up-down shrink-0 text-xs text-[var(--sandbox-console-muted)] transition-colors group-hover:text-[var(--sandbox-console-text)]', open && 'text-[var(--sandbox-console-brand)]')} />
+        ) : null}
       </button>
 
       {open ? (
         <div
           className={cn(
-            'absolute z-50 w-56 overflow-hidden rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] py-1 shadow-[var(--sandbox-console-shadow-lg)]',
-            placement === 'up' ? 'bottom-full left-0 mb-2' : 'right-0 top-full mt-2',
+            'absolute z-50 max-h-[min(24rem,calc(100vh-1rem))] w-[min(18rem,calc(100vw-1rem))] overflow-hidden rounded-[5px] border border-[var(--sandbox-console-menu-border)] bg-[var(--sandbox-console-menu)] p-1.5 shadow-[var(--sandbox-console-menu-shadow)]',
+            align === 'start' ? 'left-0' : 'right-0',
+            placement === 'up' ? 'bottom-full mb-2' : 'top-full mt-2',
           )}
           role="menu"
         >
-          <div className="px-3 py-2 font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
+          <div className="px-2 py-1.5 font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
             Network
           </div>
-          {orderedChainIds().map((chainId) => {
-            const network = getNetworks()[chainId];
-            if (!network) return null;
-            const selected = chainId === selectedChainId;
+          <div className="max-h-[17rem] overflow-y-auto [scrollbar-gutter:stable]">
+            {orderedChainIds().map((chainId) => {
+              const network = getNetworks()[chainId];
+              if (!network) return null;
+              const selected = chainId === selectedChainId;
 
-            return (
-              <button
-                key={chainId}
-                type="button"
-                onClick={() => selectChain(chainId)}
-                className={cn(
-                  'flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm transition-colors',
-                  selected
-                    ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)]'
-                    : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-hover)] hover:text-[var(--sandbox-console-text)]',
-                )}
-                role="menuitemradio"
-                aria-checked={selected}
-              >
-                <span className={cn('text-base', selected ? 'text-[var(--sandbox-console-brand)]' : 'text-[var(--sandbox-console-muted)]', chainIcon(network.label, network.chain.name))} />
-                <span className="min-w-0 flex-1 truncate font-display font-medium">{network.label}</span>
-                {selected ? <span className="i-ph:check-bold text-xs text-[var(--sandbox-console-brand)]" /> : null}
-              </button>
-            );
-          })}
+              return (
+                <button
+                  key={chainId}
+                  type="button"
+                  onClick={() => selectChain(chainId)}
+                  className={cn(
+                    'grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-2 rounded-[5px] px-2 py-2 text-left transition-[background-color,color,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sandbox-console-brand)]/60',
+                    selected
+                      ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
+                      : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-menu-strong)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-border-hover)]',
+                  )}
+                  role="menuitemradio"
+                  aria-checked={selected}
+                >
+                  <span className={cn('text-base', selected ? 'text-[var(--sandbox-console-brand)]' : 'text-[var(--sandbox-console-muted)]', chainIcon(network.label, network.chain.name))} />
+                  <span className="min-w-0 truncate font-display text-sm font-bold">{network.label}</span>
+                  <span className="font-data text-[10px] font-semibold tabular-nums text-[var(--sandbox-console-muted)]">
+                    {network.chain.id}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       ) : null}
     </div>

@@ -3,7 +3,6 @@ import { useMemo } from 'react';
 import { useStore } from '@nanostores/react';
 import { Button } from '@tangle-network/blueprint-ui/components';
 import {
-  ConsoleChip,
   ConsoleMetricStrip,
   ConsolePage,
   ConsoleSection,
@@ -22,7 +21,8 @@ import {
 } from '~/lib/stores/sandboxes';
 
 function getSecurityState(sandbox: LocalSandbox) {
-  if (sandbox.teeEnabled) return 'attested';
+  // Config flag only — claims the TEE capability, not a verified attestation.
+  if (sandbox.teeEnabled) return 'tee-enabled';
   if (sandbox.credentialsAvailable) return 'secrets';
   return 'session';
 }
@@ -70,10 +70,10 @@ export default function SandboxExplorer() {
   );
 
   const metrics: ConsoleMetric[] = [
-    { label: 'Running', value: String(running.length), detail: 'operator-backed', tone: 'ready' },
-    { label: 'Stopped', value: String(stopped.length), detail: 'resume path', tone: 'warn' },
-    { label: 'TEE enabled', value: String(allSandboxes.filter((sandbox) => sandbox.teeEnabled).length), detail: 'attested', tone: 'brand' },
-    { label: 'Errors', value: String(allSandboxes.filter((sandbox) => sandbox.status === 'error').length), detail: 'attention', tone: 'danger' },
+    { label: 'Running', value: String(running.length), tone: 'ready' },
+    { label: 'Paused', value: String(stopped.length), tone: 'warn' },
+    { label: 'TEE', value: String(allSandboxes.filter((sandbox) => sandbox.teeEnabled).length), tone: 'brand' },
+    { label: 'Issues', value: String(allSandboxes.filter((sandbox) => sandbox.status === 'error').length), tone: 'danger' },
   ];
 
   return (
@@ -100,24 +100,6 @@ export default function SandboxExplorer() {
             emptyActionLabel="Launch Sandbox"
           />
         </ConsoleSection>
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="sandbox-console-panel rounded-md p-3">
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Runtime backends</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ConsoleChip>docker</ConsoleChip>
-              <ConsoleChip tone="warn">firecracker</ConsoleChip>
-              <ConsoleChip tone="brand">tee</ConsoleChip>
-            </div>
-          </div>
-          <div className="sandbox-console-panel rounded-md p-3">
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Operations</p>
-            <p className="mt-3 font-data text-xs text-[var(--sandbox-console-secondary)]">exec · prompt · task · stop · resume · snapshot</p>
-          </div>
-          <div className="sandbox-console-panel rounded-md p-3">
-            <p className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">Trust envelope</p>
-            <p className="mt-3 font-data text-xs text-[var(--sandbox-console-secondary)]">session auth · secrets · attestation</p>
-          </div>
-        </div>
       </div>
     </ConsolePage>
   );

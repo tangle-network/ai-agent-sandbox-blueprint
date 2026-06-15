@@ -58,8 +58,17 @@ pub const SNP_REPORT_REQ_SIZE: usize = 96;
 /// Size of `struct snp_report_resp` (raw attestation report).
 pub const SNP_REPORT_RESP_SIZE: usize = 4000;
 
-/// Offset of the measurement (LAUNCH_DIGEST) within the SNP attestation report.
-pub const SNP_MEASUREMENT_OFFSET: usize = 0x90; // 144
+/// Size of the `struct snp_report_resp` header that precedes the attestation
+/// report in the ioctl response buffer: `u32 report_size` + `u8 reserved[0x1c]`
+/// = 32 bytes. The signed `struct snp_attestation_report` begins right after.
+pub const SNP_REPORT_RESP_HEADER_SIZE: usize = 0x20; // 32
+/// Offset of the measurement (LAUNCH_DIGEST) within the SNP attestation report
+/// itself (i.e. measured from the start of the report, not the resp buffer).
+pub const SNP_MEASUREMENT_OFFSET_IN_REPORT: usize = 0x90; // 144
+/// Offset of the measurement within the raw ioctl response buffer (after the
+/// 32-byte `snp_report_resp` header).
+pub const SNP_MEASUREMENT_OFFSET: usize =
+    SNP_REPORT_RESP_HEADER_SIZE + SNP_MEASUREMENT_OFFSET_IN_REPORT; // 0xB0 = 176
 /// Size of the SNP measurement (SHA-384 = 48 bytes).
 pub const SNP_MEASUREMENT_SIZE: usize = 48;
 
@@ -245,13 +254,19 @@ fn generate_sev_attestation(report_data: &[u8; 64]) -> Result<AttestationReport>
         )));
     }
 
-    // Extract measurement (LAUNCH_DIGEST) from the attestation report.
+    // The ioctl response buffer is `struct snp_report_resp`: a 32-byte header
+    // (`u32 report_size` + 28 reserved) followed by the signed
+    // `struct snp_attestation_report`. Evidence must be the report itself (not
+    // the buffer with its header), and the measurement sits at 0x90 *within the
+    // report*, i.e. 0xB0 within the buffer.
+    let report_bytes = resp.data[SNP_REPORT_RESP_HEADER_SIZE..].to_vec();
+
     let meas_end = SNP_MEASUREMENT_OFFSET + SNP_MEASUREMENT_SIZE;
     let measurement = resp.data[SNP_MEASUREMENT_OFFSET..meas_end].to_vec();
 
     let report = AttestationReport {
         tee_type: TeeType::Sev,
-        evidence: resp.data.to_vec(),
+        evidence: report_bytes,
         measurement,
         timestamp: crate::util::now_ts(),
     };
@@ -431,21 +446,47 @@ mod tests {
     }
 
     #[test]
-    fn snp_measurement_extraction_from_known_pattern() {
-        let mut fake_resp = [0u8; SNP_REPORT_RESP_SIZE];
-        for (i, byte) in fake_resp
-            [SNP_MEASUREMENT_OFFSET..SNP_MEASUREMENT_OFFSET + SNP_MEASUREMENT_SIZE]
-            .iter_mut()
-            .enumerate()
-        {
-            *byte = (i + 0x10) as u8;
-        }
+    fn snp_offsets_account_for_resp_header() {
+        // The buffer-relative measurement offset must equal the 32-byte
+        // `snp_report_resp` header plus the in-report 0x90 measurement offset.
+        assert_eq!(SNP_REPORT_RESP_HEADER_SIZE, 0x20);
+        assert_eq!(SNP_MEASUREMENT_OFFSET_IN_REPORT, 0x90);
+        assert_eq!(SNP_MEASUREMENT_OFFSET, 0xB0);
+    }
 
-        let measurement = fake_resp
-            [SNP_MEASUREMENT_OFFSET..SNP_MEASUREMENT_OFFSET + SNP_MEASUREMENT_SIZE]
-            .to_vec();
+    #[test]
+    fn snp_measurement_extraction_against_known_report() {
+        // Build a realistic ioctl response buffer: a 32-byte `snp_report_resp`
+        // header (non-zero, to prove we skip it) followed by a known-good Milan
+        // SEV-SNP attestation report. The extracted measurement MUST equal the
+        // measurement at offset 0x90 *within the report* (LAUNCH_DIGEST). The
+        // previous offset (0x90 into the buffer) would land 32 bytes early in
+        // the report header/reserved region and fail this assertion.
+        const SEV_REPORT_HEX: &[u8] =
+            include_bytes!("../../tests/tee_vectors/sev_report_milan.hex");
+        let report_bytes =
+            hex::decode(String::from_utf8(SEV_REPORT_HEX.to_vec()).unwrap().trim()).unwrap();
+
+        let mut buf = [0u8; SNP_REPORT_RESP_SIZE];
+        // report_size header field + non-zero reserved padding.
+        buf[..4].copy_from_slice(&(report_bytes.len() as u32).to_le_bytes());
+        for b in buf[4..SNP_REPORT_RESP_HEADER_SIZE].iter_mut() {
+            *b = 0xEE;
+        }
+        buf[SNP_REPORT_RESP_HEADER_SIZE..SNP_REPORT_RESP_HEADER_SIZE + report_bytes.len()]
+            .copy_from_slice(&report_bytes);
+
+        let measurement =
+            buf[SNP_MEASUREMENT_OFFSET..SNP_MEASUREMENT_OFFSET + SNP_MEASUREMENT_SIZE].to_vec();
+        // Ground truth: measurement at 0x90 within the report bytes themselves.
+        let expected = &report_bytes[SNP_MEASUREMENT_OFFSET_IN_REPORT
+            ..SNP_MEASUREMENT_OFFSET_IN_REPORT + SNP_MEASUREMENT_SIZE];
+        assert_eq!(
+            measurement, expected,
+            "measurement must come from the report body, not the resp header"
+        );
         assert_eq!(measurement.len(), 48);
-        assert_eq!(measurement[0], 0x10);
-        assert_eq!(measurement[47], 0x3F);
+        // The known-good measurement is non-trivial (not the 0xEE padding, not zero).
+        assert!(measurement.iter().any(|&b| b != 0 && b != 0xEE));
     }
 }

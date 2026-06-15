@@ -25,6 +25,45 @@ rand = "0.8"
 aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
 aws-sdk-ec2 = { version = "1", optional = true }
 gcp_auth = { version = "0.12", optional = true }
+
+# TEE quote/attestation verification against hardware roots of trust.
+# All optional and behind `tee-verify` so the default + non-TEE builds never
+# pull these heavier crypto/X.509 deps.
+#  - dcap-qvl: pure-Rust Intel SGX/TDX DCAP quote verification (PCK chain to the
+#    Intel SGX Root CA bundled in the crate + TCB status + collateral expiry).
+#    `rustcrypto` provider avoids the C `ring` dependency.
+#  - sev: AMD SEV-SNP attestation report + VCEK/VLEK chain to the built-in AMD
+#    ARK/ASK roots. `crypto_nossl` selects the pure-Rust (p384/x509-cert) path.
+#  - coset: COSE_Sign1 parsing for AWS Nitro attestation documents.
+dcap-qvl = { version = "=0.5.2", default-features = false, features = [
+    "std",
+    "rustcrypto",
+    "default-x509",
+], optional = true }
+sev = { version = "=8.0.0", default-features = false, features = [
+    "snp",
+    "crypto_nossl",
+], optional = true }
+# X.509 validity-window parsing for the SEV-SNP chain. The `sev` crate's
+# `crypto_nossl` path verifies cert signatures but not notBefore/notAfter and
+# consults no CRL, so we check expiry ourselves. Pinned to the version `sev`
+# already pulls transitively.
+x509-cert = { version = "=0.2.5", default-features = false, optional = true }
+# AMD KDS CRL revocation check for the SEV-SNP chain. The `sev` crate verifies
+# the VCEK→ASK→ARK signatures but consults no CRL, so a revoked-but-in-window
+# VEK would otherwise pass. We verify the operator-supplied KDS CRL's RSA-PSS
+# signature against the pinned ASK using the SAME crypto stack `sev` uses
+# (RSA-PSS-SHA384), pinned to the versions `sev` already pulls transitively, so
+# the check is genuine rather than a re-implementation.
+rsa = { version = "=0.9.10", default-features = false, features = [
+    "sha2",
+], optional = true }
+spki = { version = "=0.7.3", default-features = false, optional = true }
+der = { version = "=0.7.10", default-features = false, features = [
+    "alloc",
+], optional = true }
+signature = { version = "=2.2.0", default-features = false, optional = true }
+coset = { version = "=0.4.2", optional = true }
 base64 = "0.22"
 anyhow = { version = "1", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -109,6 +148,18 @@ tee-direct = ["dep:libc"]
 tee-aws-nitro = ["dep:aws-config", "dep:aws-sdk-ec2"]
 tee-gcp = ["dep:gcp_auth"]
 tee-azure = []
-tee-all = ["tee-phala", "tee-direct", "tee-aws-nitro", "tee-gcp", "tee-azure"]
+# Cryptographic quote verification against hardware roots of trust (Intel
+# SGX/TDX DCAP, AMD SEV-SNP, AWS Nitro). Heavy crypto deps live ONLY here.
+tee-verify = [
+    "dep:dcap-qvl",
+    "dep:sev",
+    "dep:coset",
+    "dep:x509-cert",
+    "dep:rsa",
+    "dep:spki",
+    "dep:der",
+    "dep:signature",
+]
+tee-all = ["tee-phala", "tee-direct", "tee-aws-nitro", "tee-gcp", "tee-azure", "tee-verify"]
 # Testing feature: enables DirectTeeBackend without TEE device passthrough
 test-direct-no-device = ["tee-direct", "test-utils"]

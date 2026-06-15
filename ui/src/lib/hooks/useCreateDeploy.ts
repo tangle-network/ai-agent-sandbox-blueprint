@@ -19,7 +19,7 @@ import { encodeJobArgs } from '@tangle-network/blueprint-ui';
 import { tangleServicesAbi } from '@tangle-network/blueprint-ui';
 import { getAddresses, publicClient } from '@tangle-network/blueprint-ui';
 import { tangleJobsAbi, addTx, updateTx } from '@tangle-network/blueprint-ui';
-import { useOperators, type DiscoveredOperator } from '@tangle-network/blueprint-ui';
+import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { selectedChainIdStore } from '@tangle-network/blueprint-ui';
 import {
   deriveMode,
@@ -43,6 +43,7 @@ import type { InfraConfig } from '@tangle-network/blueprint-ui';
 import type { Address } from 'viem';
 import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
 import { extractServiceRequestId } from '~/lib/contracts/serviceEvents';
+import { useReliableOperators } from './useReliableOperators';
 
 // Re-export types from logic module for external consumers
 export type { DeployMode, DeployStatus, JobSubmitStatus } from './createDeployLogic';
@@ -225,16 +226,18 @@ export function useCreateDeploy({ blueprint, job, values, infra, validate, capac
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [resolvedServiceId, setResolvedServiceId] = useState<string | null>(null);
 
-  // Operator discovery (instance mode)
-  const { operators, isLoading: operatorsLoading, error: operatorsError, operatorCount } = useOperators(
-    isInstanceMode ? BigInt(infra.blueprintId || '0') : 0n,
-  );
-
   // Check if the prefilled service is valid (used for display / workflow routes).
   const hasValidService = !!(
     infra.serviceInfo?.active &&
     infra.serviceInfo?.permitted &&
     infra.serviceId
+  );
+
+  // Operator discovery feeds both instance service requests and the sandbox
+  // service-repair UI shown when the configured cloud service is not usable.
+  const shouldDiscoverOperators = isInstanceMode || !hasValidService;
+  const { operators, isLoading: operatorsLoading, error: operatorsError, operatorCount } = useReliableOperators(
+    shouldDiscoverOperators ? infra.blueprintId : '0',
   );
 
   // Instance provisioning is service creation, not an on-chain submitJob.

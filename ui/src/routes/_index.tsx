@@ -1,7 +1,10 @@
 import { Link } from 'react-router';
 import { useMemo } from 'react';
 import { useStore } from '@nanostores/react';
+import { useAccount } from 'wagmi';
+import { cn } from '@tangle-network/blueprint-ui';
 import { Button } from '@tangle-network/blueprint-ui/components';
+import { ConnectKitButton } from 'connectkit';
 import {
   ConsoleChip,
   ConsoleMetricStrip,
@@ -55,7 +58,11 @@ function formatAge(timestamp: number | undefined) {
 }
 
 function getSecurityState(resource: Pick<LocalSandbox | LocalInstance, 'teeEnabled' | 'credentialsAvailable'>) {
-  if (resource.teeEnabled) return 'attested';
+  // `teeEnabled` is a deploy-config flag, not an attestation verdict. The list
+  // view does not fetch a per-row attestation, so it can only claim the TEE
+  // capability ("tee-enabled"), never "attested" — which is reserved for a
+  // resource whose server verdict is `verified` (see getSecurityIdentity).
+  if (resource.teeEnabled) return 'tee-enabled';
   if (resource.credentialsAvailable) return 'secrets';
   return 'session';
 }
@@ -122,7 +129,93 @@ function statusTone(status: string): ConsoleEvent['tone'] {
   return 'muted';
 }
 
+function FirstRunLanding({ connected }: { connected: boolean }) {
+  const { data: capacity } = useAvailableCapacity();
+  const slots = typeof capacity === 'number' && Number.isFinite(capacity) ? capacity : null;
+
+  return (
+    <ConsolePage title="Tangle Sandbox Cloud" eyebrow="Tangle agent compute">
+      <div className="mx-auto w-full max-w-4xl space-y-5">
+        <div className="sandbox-console-panel rounded-[5px] p-6 lg:p-8">
+          <h2 className="max-w-2xl font-display text-3xl font-bold leading-tight tracking-tight text-[var(--sandbox-console-text)]">
+            Hardware-isolated sandboxes for AI agents
+          </h2>
+          <p className="mt-3 max-w-2xl text-[15px] leading-7 text-[var(--sandbox-console-muted)]">
+            Rent compute from operators to run coding agents — Claude, Codex, opencode, Gemini, Kimi — in
+            isolated sandboxes, or run your own node and provide capacity to the marketplace.
+          </p>
+          <div className="mt-5 flex flex-wrap items-center gap-2.5">
+            {connected ? (
+              <Link to="/create">
+                <Button size="lg">
+                  <span className="i-ph:rocket-launch text-base" />
+                  Deploy a sandbox
+                </Button>
+              </Link>
+            ) : (
+              <ConnectKitButton.Custom>
+                {({ show, isConnecting }) => (
+                  <Button size="lg" onClick={show} disabled={isConnecting}>
+                    <span className={cn('text-base', isConnecting ? 'i-ph:circle-notch animate-spin' : 'i-ph:plugs-connected')} />
+                    {isConnecting ? 'Connecting' : 'Connect wallet to deploy'}
+                  </Button>
+                )}
+              </ConnectKitButton.Custom>
+            )}
+            <Link to="/operators/register">
+              <Button variant="secondary" size="lg">
+                <span className="i-ph:hard-drives text-base" />
+                Become an operator
+              </Button>
+            </Link>
+          </div>
+          {slots != null ? (
+            <p className="mt-4 font-data text-[11px] uppercase tracking-[0.12em] text-[var(--sandbox-console-subtle)]">
+              {slots} sandbox {slots === 1 ? 'slot' : 'slots'} available now across operators
+            </p>
+          ) : null}
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          {[
+            {
+              icon: 'i-ph:cube',
+              title: 'Isolated by default',
+              body: 'Each sandbox is a separate container or microVM with its own filesystem, network, and lifecycle.',
+            },
+            {
+              icon: 'i-ph:terminal-window',
+              title: 'Agent-native runtime',
+              body: 'SSH, exec, prompt, and snapshot endpoints. Bring your harness; the node hosts the sidecar.',
+            },
+            {
+              icon: 'i-ph:shield-check',
+              title: 'Confidential option',
+              body: 'TEE Instance operators run sandboxes inside Phala, Nitro, GCP, Azure, or direct TDX/SEV.',
+            },
+          ].map((cell) => (
+            <div key={cell.title} className="sandbox-console-panel flex flex-col gap-2 rounded-[5px] p-4">
+              <span className={cn('text-2xl text-[var(--sandbox-console-brand)]', cell.icon)} />
+              <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">{cell.title}</p>
+              <p className="text-[13px] leading-5 text-[var(--sandbox-console-muted)]">{cell.body}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-start gap-3 rounded-[5px] border border-amber-400/20 bg-amber-400/10 p-3.5">
+          <span className="i-ph:info mt-0.5 text-base text-[var(--sandbox-console-warning)]" />
+          <p className="text-[13px] leading-5 text-[var(--sandbox-console-muted)]">
+            TEE attestation is collected and surfaced per resource, but is not yet cryptographically
+            verified on-chain. Treat the TEE badge as operator-reported until verification ships.
+          </p>
+        </div>
+      </div>
+    </ConsolePage>
+  );
+}
+
 export default function FleetConsole() {
+  const { isConnected } = useAccount();
   const sandboxes = useStore(sandboxListStore);
   const running = useStore(runningSandboxes);
   const stopped = useStore(stoppedSandboxes);
@@ -130,6 +223,11 @@ export default function FleetConsole() {
   const runningInst = useStore(runningInstances);
   const { data: capacity } = useAvailableCapacity();
   const { data: workflowIds } = useWorkflowIds(false);
+
+  const hasResources = sandboxes.length > 0 || instances.length > 0;
+  if (!isConnected || !hasResources) {
+    return <FirstRunLanding connected={isConnected} />;
+  }
 
   const resources = useMemo(
     () => [

@@ -110,10 +110,6 @@ const sandboxStoreKey = getSandboxStoreKey(sandboxDeploymentFingerprint);
   if (ls) pruneSandboxCacheKeys(ls, sandboxStoreKey);
 }
 
-export function isCanonicalSandboxId(id: string | undefined): id is string {
-  return !!id && !id.startsWith(DRAFT_PREFIX) && !id.startsWith(LEGACY_PREFIX);
-}
-
 function shouldPromoteLegacyId(record: LegacySandboxRecord): boolean {
   if (!record.id) return false;
   if (record.status === 'creating' || record.status === 'error') return false;

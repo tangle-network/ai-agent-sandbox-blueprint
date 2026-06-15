@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import WorkflowCreate from '../routes/workflows.create';
+import WorkflowCreate from './workflows.create';
 
 const {
   accountRef,
@@ -149,6 +149,9 @@ vi.mock('~/lib/contracts/chains', () => ({
 vi.mock('~/lib/config', () => ({
   OPERATOR_API_URL: 'https://sandbox.example',
   INSTANCE_OPERATOR_API_URL: 'https://instance.example',
+  SANDBOX_ONCHAIN_SERVICE_ID: '1',
+  INSTANCE_ONCHAIN_SERVICE_ID: '2',
+  TEE_INSTANCE_ONCHAIN_SERVICE_ID: '',
 }));
 
 vi.mock('~/lib/stores/sandboxes', () => ({

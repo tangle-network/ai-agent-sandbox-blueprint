@@ -1,12 +1,12 @@
-import { useState, useCallback, useMemo, useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type RefObject, type ReactNode, type TextareaHTMLAttributes } from 'react';
+import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type RefObject, type ReactNode, type TextareaHTMLAttributes } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
-import { useAccount } from 'wagmi';
+import { useAccount, useWaitForTransactionReceipt, useWriteContract } from 'wagmi';
+import { ConnectKitButton } from 'connectkit';
+import { decodeEventLog, type Address } from 'viem';
 import { useStore } from '@nanostores/react';
-import { Badge } from '@tangle-network/blueprint-ui/components';
 import { InfrastructureModal } from '~/components/shared/InfrastructureModal';
 import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
 import { infraStore, updateInfra } from '@tangle-network/blueprint-ui';
-import { Identicon } from '@tangle-network/blueprint-ui/components';
 import {
   ConsoleChip,
   ConsolePage,
@@ -16,8 +16,10 @@ import {
 
 import { useJobForm } from '@tangle-network/blueprint-ui';
 import { useJobPrice } from '@tangle-network/blueprint-ui';
+import { useQuotes } from '@tangle-network/blueprint-ui';
 import { useServiceValidation } from '@tangle-network/blueprint-ui';
 import { formatCost } from '@tangle-network/blueprint-ui';
+import { getAddresses, publicClient, tangleServicesAbi } from '@tangle-network/blueprint-ui';
 import { useAvailableCapacity } from '~/lib/hooks/useSandboxReads';
 import { useCreateDeploy, type DeployStatus } from '~/lib/hooks/useCreateDeploy';
 import { getAllBlueprints, getBlueprint, type BlueprintDefinition, type JobDefinition, type JobFieldDef } from '@tangle-network/blueprint-ui';
@@ -28,6 +30,21 @@ import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
 import { EnvEditor } from '~/components/shared/EnvEditor';
 import { ConnectWalletPanel } from '~/components/shared/ConnectWalletPanel';
+import { truncateAddress } from '~/lib/utils/truncate-address';
+import { extractServiceRequestId } from '~/lib/contracts/serviceEvents';
+import {
+  IdentityMark,
+  OperatorIdentity,
+  getAgentIdentity,
+  getBlueprintIdentity,
+  getCapabilityIdentity,
+  getImageIdentity,
+  getOperatorIdentity,
+  getResourceIdentity,
+  getRuntimeIdentity,
+  getStackIdentity,
+  type IdentityMeta,
+} from '~/components/shared/VisualIdentity';
 import {
   BUNDLED_AGENT_OPTIONS,
   BUNDLED_NO_AGENT_VALUE,
@@ -35,43 +52,105 @@ import {
   normalizeAgentIdentifier,
   sanitizeBundledAgentIdentifier,
 } from '~/lib/agents';
+import {
+  INSTANCE_ONCHAIN_BLUEPRINT_ID,
+  INSTANCE_ONCHAIN_SERVICE_ID,
+  SANDBOX_ONCHAIN_BLUEPRINT_ID,
+  SANDBOX_ONCHAIN_SERVICE_ID,
+  TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID,
+  TEE_INSTANCE_ONCHAIN_SERVICE_ID,
+} from '~/lib/config';
 
 type ConsoleTone = NonNullable<ConsoleMetric['tone']>;
 
 // ── Blueprint → on-chain ID mapping from env vars ──
 
-const LOCAL_NETWORK_ENABLED = import.meta.env.VITE_ENABLE_LOCAL_NETWORK === 'true';
-
 const BLUEPRINT_INFRA: Record<string, { blueprintId: string; serviceId: string }> = {
   'ai-agent-sandbox-blueprint': {
-    blueprintId: import.meta.env.VITE_BASE_SEPOLIA_SANDBOX_BLUEPRINT_ID
-      ?? (LOCAL_NETWORK_ENABLED ? import.meta.env.VITE_SANDBOX_BLUEPRINT_ID : undefined)
-      ?? '10',
-    serviceId: import.meta.env.VITE_BASE_SEPOLIA_SANDBOX_SERVICE_ID ?? import.meta.env.VITE_SANDBOX_SERVICE_ID ?? '1',
+    blueprintId: SANDBOX_ONCHAIN_BLUEPRINT_ID,
+    serviceId: SANDBOX_ONCHAIN_SERVICE_ID,
   },
   'ai-agent-instance-blueprint': {
-    blueprintId: import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_BLUEPRINT_ID
-      ?? (LOCAL_NETWORK_ENABLED ? import.meta.env.VITE_INSTANCE_BLUEPRINT_ID : undefined)
-      ?? '11',
-    serviceId: import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_SERVICE_ID ?? import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '2',
+    blueprintId: INSTANCE_ONCHAIN_BLUEPRINT_ID,
+    serviceId: INSTANCE_ONCHAIN_SERVICE_ID,
   },
   'ai-agent-tee-instance-blueprint': {
-    blueprintId: import.meta.env.VITE_BASE_SEPOLIA_TEE_INSTANCE_BLUEPRINT_ID
-      ?? (LOCAL_NETWORK_ENABLED ? import.meta.env.VITE_TEE_INSTANCE_BLUEPRINT_ID : undefined)
-      ?? '12',
-    serviceId: import.meta.env.VITE_BASE_SEPOLIA_INSTANCE_SERVICE_ID ?? import.meta.env.VITE_INSTANCE_SERVICE_ID ?? '2',
+    blueprintId: TEE_INSTANCE_ONCHAIN_BLUEPRINT_ID,
+    serviceId: TEE_INSTANCE_ONCHAIN_SERVICE_ID,
   },
 };
+
+const SERVICE_TTL_BLOCKS = 864000n;
+const ZERO_REQUESTER = '0x0000000000000000000000000000000000000000' as const;
+
+type ServiceReceiptLog = {
+  data: `0x${string}`;
+  topics: readonly `0x${string}`[];
+};
+
+function getRequestIdFromServiceReceiptLogs(logs: ServiceReceiptLog[]): number | null {
+  for (const log of logs) {
+    const requestId = extractServiceRequestId(log);
+    if (requestId != null) return requestId;
+  }
+
+  return null;
+}
+
+async function resolveActivatedServiceId(requestId: number): Promise<string | null> {
+  const addrs = getAddresses();
+  const logs = await publicClient.getLogs({
+    address: addrs.services,
+    fromBlock: 0n,
+    toBlock: 'latest',
+  });
+
+  for (const log of logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: tangleServicesAbi,
+        data: log.data,
+        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
+      });
+      if (decoded.eventName !== 'ServiceActivated') continue;
+      if (!('requestId' in decoded.args) || !('serviceId' in decoded.args)) continue;
+      if (Number(decoded.args.requestId) !== requestId) continue;
+      return String(decoded.args.serviceId);
+    } catch {
+      // Ignore unrelated service-manager logs.
+    }
+  }
+
+  return null;
+}
 
 // ── Wizard Steps ──
 
 type WizardStep = 'blueprint' | 'configure' | 'deploy';
+type ServiceSetupMode = 'existing' | 'new';
+type LaunchSelectOption = { label: string; value: string; detail?: string; identity?: IdentityMeta };
+const CUSTOM_IMAGE_VALUE = '__custom_image__';
 
 function parsePortsInput(value: string): number[] {
   return value
     .split(',')
     .map((s) => parseInt(s.trim(), 10))
     .filter((n) => n > 0 && n <= 65535);
+}
+
+function parsePositiveServiceId(value: string): bigint | null {
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) return null;
+
+  try {
+    return BigInt(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function isValidAddress(value: string): value is Address {
+  return /^0x[a-fA-F0-9]{40}$/.test(value.trim());
 }
 
 function parseCapabilitiesJson(value: unknown): Set<string> {
@@ -86,6 +165,16 @@ function parseCapabilitiesJson(value: unknown): Set<string> {
   } catch {
     return new Set();
   }
+}
+
+function setCapabilityJson(value: unknown, capability: string, enabled: boolean): string {
+  const capabilities = parseCapabilitiesJson(value);
+  if (enabled) {
+    capabilities.add(capability);
+  } else {
+    capabilities.delete(capability);
+  }
+  return JSON.stringify(Array.from(capabilities).sort());
 }
 
 function formatCapacityValue(value: number | bigint | undefined) {
@@ -122,6 +211,21 @@ function clampNumber(value: number, min?: number, max?: number): number {
   if (typeof min === 'number' && value < min) return min;
   if (typeof max === 'number' && value > max) return max;
   return value;
+}
+
+function formatImageOptionLabel(value: string, fallback: string) {
+  const image = value.toLowerCase();
+  if (image.includes('blueprint-sidecar')) {
+    const tag = value.includes(':') ? value.split(':').pop() : '';
+    return tag ? `Tangle sidecar: ${tag}` : 'Tangle sidecar';
+  }
+  if (image.startsWith('ghcr.io/tangle-network/')) {
+    return value.replace(/^ghcr\.io\/tangle-network\//, 'Tangle image: ');
+  }
+  if (image.startsWith('ghcr.io/')) {
+    return value.replace(/^ghcr\.io\//, 'GHCR: ');
+  }
+  return fallback;
 }
 
 function hoursFromSeconds(value: unknown, fallbackSeconds: number): number {
@@ -167,9 +271,11 @@ export default function CreatePage() {
   const [selectedBlueprint, setSelectedBlueprint] = useState<BlueprintDefinition | undefined>(preselected);
   const [step, setStep] = useState<WizardStep>(preselected ? 'configure' : 'blueprint');
   const [showInfra, setShowInfra] = useState(false);
+  const [infraMode, setInfraMode] = useState<ServiceSetupMode>('existing');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [attemptedContinue, setAttemptedContinue] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const requestedServiceMode = searchParams.get('serviceMode');
 
   // Refs for values that should not re-trigger the init effect
   const addressRef = useRef(address);
@@ -190,6 +296,12 @@ export default function CreatePage() {
       }
     }
   }, [preselected]);
+
+  useEffect(() => {
+    if (requestedServiceMode !== 'new') return;
+    setInfraMode('new');
+    setShowInfra(true);
+  }, [requestedServiceMode]);
 
   // Sync service validation result back to infraStore so useCreateDeploy can read it.
   // useServiceValidation stores results in local state; useCreateDeploy reads infra.serviceInfo.
@@ -233,11 +345,12 @@ export default function CreatePage() {
     };
   }, [createJob, isTeeBlueprint]);
 
-  // Extra ports input (not an ABI field — merged into metadataJson before deploy)
+  // Extra ports input (not an ABI field; merged into metadataJson before deploy)
   const [portsInput, setPortsInput] = useState('');
-  const allHarnessEnabled = parseCapabilitiesJson(values.capabilitiesJson).has('all_harness');
+  const capabilities = parseCapabilitiesJson(values.capabilitiesJson);
+  const allHarnessEnabled = capabilities.has('all_harness');
+  const computerUseEnabled = capabilities.has('computer_use');
   const runtimeBackend = String(values.runtimeBackend || 'docker').toLowerCase();
-  const supportsMetadataPorts = runtimeBackend !== 'firecracker';
   const selectedImage = String(values.image || '');
   const supportsAgentConfiguration = !!createJob?.fields.some((field) => field.name === 'agentIdentifier');
   const usesBundledAgentSelector = supportsAgentConfiguration && isBundledSandboxImage(selectedImage);
@@ -258,13 +371,6 @@ export default function CreatePage() {
       }
     }
   }, [runtimeBackend, values.teeRequired, values.teeType, onChange]);
-
-  // Firecracker backend does not support metadata_json.ports in this runtime.
-  useEffect(() => {
-    if (!supportsMetadataPorts && portsInput.trim().length > 0) {
-      setPortsInput('');
-    }
-  }, [supportsMetadataPorts, portsInput]);
 
   useEffect(() => {
     if (!usesBundledAgentSelector) return;
@@ -288,16 +394,18 @@ export default function CreatePage() {
     }
 
     metadata.runtime_backend = runtimeBackend;
-    if (supportsMetadataPorts && ports.length > 0) {
+    if (ports.length > 0) {
       metadata.ports = ports;
     } else {
       delete metadata.ports;
     }
 
+    const nextCapabilities = Array.from(parseCapabilitiesJson(values.capabilitiesJson)).sort();
+
     const nextValues: Record<string, unknown> = {
       ...values,
       metadataJson: JSON.stringify(metadata),
-      capabilitiesJson: allHarnessEnabled ? JSON.stringify(['all_harness']) : JSON.stringify([]),
+      capabilitiesJson: JSON.stringify(nextCapabilities),
       // Keep the deprecated ABI field pinned for backward-compatible encoding.
       webTerminalEnabled: true,
     };
@@ -309,7 +417,7 @@ export default function CreatePage() {
     }
 
     return nextValues;
-  }, [runtimeBackend, supportsMetadataPorts, values, portsInput, allHarnessEnabled]);
+  }, [runtimeBackend, values, portsInput]);
 
   // Unified deploy hook — manages both submitJob and requestService paths
   const deploy = useCreateDeploy({ blueprint: selectedBlueprint, job: createJob, values: mergedValues, infra, validate, capacity });
@@ -366,33 +474,40 @@ export default function CreatePage() {
     if (validate()) setStep('deploy');
   }, [validate, values.name]);
 
+  const openInfra = useCallback((mode: ServiceSetupMode = 'existing') => {
+    setInfraMode(mode);
+    setShowInfra(true);
+  }, []);
+
   const showConnectPanel = !isConnected && !address && !isReconnectingWallet;
-  const parsedPorts = supportsMetadataPorts ? parsePortsInput(portsInput) : [];
+  const parsedPorts = parsePortsInput(portsInput);
 
   return (
     <ConsolePage
       title="Launch Workspace"
       eyebrow="Tangle agent compute"
-      actions={step !== 'blueprint' ? (
-        <LaunchActionButton variant="secondary" onClick={() => setShowInfra(true)}>
+      actions={step === 'configure' ? (
+        <LaunchActionButton variant="secondary" onClick={() => openInfra('existing')}>
           <span className="i-ph:sliders-horizontal text-base" />
           Infrastructure
         </LaunchActionButton>
       ) : null}
     >
-      <div className="grid min-h-full gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <main className="min-w-0 space-y-4">
-          {showConnectPanel && (
+      <div className={cn('grid min-h-full gap-5', step !== 'deploy' && 'xl:grid-cols-[minmax(0,1fr)_360px]')}>
+        <main className="min-w-0 space-y-5">
+          {showConnectPanel && step !== 'deploy' && (
             <ConnectWalletPanel
               description="Provisioning a sandbox or instance requires a connected wallet on Tangle Network. You can browse blueprints below, but deploying will be blocked until you connect."
             />
           )}
 
-          <LaunchModeStrip
-            blueprints={blueprints}
-            selectedBlueprint={selectedBlueprint}
-            onSelect={handleSelectBlueprint}
-          />
+          {step !== 'deploy' ? (
+            <LaunchModeStrip
+              blueprints={blueprints}
+              selectedBlueprint={selectedBlueprint}
+              onSelect={handleSelectBlueprint}
+            />
+          ) : null}
 
           {step === 'blueprint' && (
             <ConsoleSection title="Next">
@@ -414,7 +529,7 @@ export default function CreatePage() {
           )}
 
           {step === 'configure' && createJob && displayJob && (
-            <div className="space-y-4">
+            <div className="space-y-5">
               <LaunchSpecComposer
                 blueprint={selectedBlueprint}
                 job={displayJob}
@@ -429,14 +544,14 @@ export default function CreatePage() {
                 usesBundledAgentSelector={usesBundledAgentSelector}
                 configuredAgentIdentifier={configuredAgentIdentifier}
                 allHarnessEnabled={allHarnessEnabled}
+                computerUseEnabled={computerUseEnabled}
                 portsInput={portsInput}
-                supportsMetadataPorts={supportsMetadataPorts}
                 isTeeBlueprint={isTeeBlueprint}
                 onChange={onChange}
                 onPortsChange={setPortsInput}
                 onAdvancedOpen={() => setShowAdvanced(true)}
               />
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-3">
                 <LaunchActionButton variant="secondary" onClick={() => setStep('blueprint')}>Back</LaunchActionButton>
                 <LaunchActionButton onClick={handleContinue} disabled={!createJob}>Continue</LaunchActionButton>
               </div>
@@ -460,6 +575,7 @@ export default function CreatePage() {
               serviceInfo={serviceInfo}
               serviceValidating={serviceValidating}
               serviceError={serviceError}
+              validateService={validateService}
               onBack={() => { setStep('configure'); deployReset(); }}
               onDeploy={deploy.deploy}
               onViewDetail={() => {
@@ -469,7 +585,6 @@ export default function CreatePage() {
                 if (key) navigate(`/${isSandbox ? 'sandboxes' : 'instances'}/${encodeURIComponent(key)}`);
                 else navigate(isSandbox ? '/sandboxes' : '/instances');
               }}
-              onOpenInfra={() => setShowInfra(true)}
               onProvisionReady={(sandboxId, sidecarUrl) => {
                 if (isSandbox) {
                   if (deploy.sandboxDraftKey) {
@@ -484,27 +599,28 @@ export default function CreatePage() {
           )}
         </main>
 
-        <LaunchSummaryPanel
-          step={step}
-          selectedBlueprint={selectedBlueprint}
-          entityLabel={entityLabel}
-          runtimeBackend={runtimeBackend}
-          infra={infra}
-          capacity={capacity}
-          isConnected={isConnected}
-          isReconnectingWallet={isReconnectingWallet}
-          hasValidService={deploy.hasValidService}
-          isNewService={deploy.isNewService}
-          serviceValidating={serviceValidating}
-          serviceError={serviceError}
-          operatorsCount={deploy.operators.length}
-          operatorCount={deploy.operatorCount}
-          operatorsLoading={deploy.operatorsLoading}
-          operatorsError={deploy.operatorsError}
-          agentIdentifier={configuredAgentIdentifier}
-          ports={parsedPorts}
-          onOpenInfra={() => setShowInfra(true)}
-        />
+        {step !== 'deploy' ? (
+          <LaunchSummaryPanel
+            step={step}
+            selectedBlueprint={selectedBlueprint}
+            entityLabel={entityLabel}
+            runtimeBackend={runtimeBackend}
+            infra={infra}
+            capacity={capacity}
+            isConnected={isConnected}
+            isReconnectingWallet={isReconnectingWallet}
+            hasValidService={deploy.hasValidService}
+            isNewService={deploy.isNewService}
+            serviceValidating={serviceValidating}
+            serviceError={serviceError}
+            operatorsCount={deploy.operators.length}
+            operatorCount={deploy.operatorCount}
+            operatorsLoading={deploy.operatorsLoading}
+            operatorsError={deploy.operatorsError}
+            agentIdentifier={configuredAgentIdentifier}
+            ports={parsedPorts}
+          />
+        ) : null}
       </div>
 
       {createJob && displayJob ? (
@@ -519,7 +635,7 @@ export default function CreatePage() {
         />
       ) : null}
 
-      <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} />
+      <InfrastructureModal open={showInfra} onOpenChange={setShowInfra} initialMode={infraMode} />
     </ConsolePage>
   );
 }
@@ -538,13 +654,13 @@ function LaunchActionButton({
     <button
       type="button"
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-md border font-display font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-        size === 'sm' && 'h-8 px-3 text-xs',
-        size === 'md' && 'h-10 px-4 text-sm',
-        size === 'lg' && 'h-11 px-5 text-sm',
-        variant === 'primary' && 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] hover:border-[var(--sandbox-console-brand)] hover:bg-[rgba(142,89,255,0.22)]',
-        variant === 'secondary' && 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] text-[var(--sandbox-console-secondary)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-panel-strong)] hover:text-[var(--sandbox-console-text)]',
-        variant === 'success' && 'border-[var(--sandbox-console-success-border)] bg-[var(--sandbox-console-success-soft)] text-[var(--sandbox-console-success)] hover:bg-[rgba(56,178,172,0.18)]',
+        'inline-flex items-center justify-center gap-2 rounded-[5px] border font-display font-bold transition-[background-color,border-color,box-shadow,color,transform] duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50',
+        size === 'sm' && 'h-9 px-3 text-sm',
+        size === 'md' && 'h-11 px-4 text-[15px]',
+        size === 'lg' && 'h-12 px-5 text-[15px]',
+        variant === 'primary' && 'border-[var(--sandbox-console-brand-border)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--sandbox-console-brand)_22%,var(--sandbox-console-panel-strong)),var(--sandbox-console-brand-soft))] text-[var(--sandbox-console-text)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] hover:border-[var(--sandbox-console-brand)] hover:bg-[rgba(142,89,255,0.26)] hover:shadow-[0_0_0_3px_rgba(168,123,255,0.13),inset_0_1px_0_rgba(255,255,255,0.08)]',
+        variant === 'secondary' && 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-secondary)] shadow-[var(--sandbox-console-control-shadow)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] hover:text-[var(--sandbox-console-text)]',
+        variant === 'success' && 'border-[var(--sandbox-console-success-border)] bg-[var(--sandbox-console-success-soft)] text-[var(--sandbox-console-success)] hover:bg-[rgba(56,178,172,0.20)]',
         variant === 'danger' && 'border-red-400/20 bg-red-400/10 text-[var(--sandbox-console-danger)] hover:bg-red-400/15',
         className,
       )}
@@ -570,6 +686,7 @@ function LaunchModeStrip({
         {blueprints.map((bp) => {
           const active = selectedBlueprint?.id === bp.id;
           const recommended = bp.id === 'ai-agent-sandbox-blueprint';
+          const identity = getBlueprintIdentity(bp.id);
 
           return (
             <button
@@ -577,17 +694,17 @@ function LaunchModeStrip({
               type="button"
               onClick={() => onSelect(bp)}
               className={cn(
-                'min-h-28 bg-[var(--sandbox-console-panel)] p-4 text-left transition-colors hover:bg-[var(--sandbox-console-hover)]',
-                active && 'bg-[var(--sandbox-console-brand-soft)]',
+                'group min-h-32 bg-[var(--sandbox-console-panel)] p-5 text-left transition-[background-color,box-shadow,transform] duration-150 hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[inset_0_3px_0_var(--sandbox-console-border-hover)] active:scale-[0.995]',
+                active && 'bg-[var(--sandbox-console-brand-soft)] shadow-[inset_0_3px_0_var(--sandbox-console-brand)]',
               )}
             >
               <div className="flex items-start justify-between gap-3">
-                <span className={cn('text-2xl text-[var(--sandbox-console-brand)]', bp.icon)} />
+                <IdentityMark identity={identity} size="lg" className="transition-transform duration-150 group-hover:-translate-y-0.5" />
                 {recommended ? <ConsoleChip tone="ready">recommended</ConsoleChip> : null}
               </div>
               <div className="mt-3">
-                <p className="font-display text-sm font-semibold text-[var(--sandbox-console-text)]">{bp.name}</p>
-                <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--sandbox-console-muted)]">{bp.description}</p>
+                <p className="font-display text-lg font-bold tracking-tight text-[var(--sandbox-console-text)]">{bp.name}</p>
+                <p className="mt-1 line-clamp-2 text-sm leading-6 text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{bp.description}</p>
               </div>
             </button>
           );
@@ -609,18 +726,18 @@ function LaunchField({
   children: ReactNode;
 }) {
   return (
-    <label className="block min-w-0 space-y-1.5">
+    <label className="block min-w-0 space-y-2">
       <span className="flex items-center justify-between gap-3">
-        <span className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">{label}</span>
-        {detail ? <span className="font-data text-[11px] text-[var(--sandbox-console-subtle)]">{detail}</span> : null}
+        <span className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">{label}</span>
+        {detail ? <span className="font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">{detail}</span> : null}
       </span>
       {children}
-      {error ? <span className="block text-xs text-[var(--sandbox-console-danger)]">{error}</span> : null}
+      {error ? <span className="block text-sm text-[var(--sandbox-console-danger)]">{error}</span> : null}
     </label>
   );
 }
 
-const launchControlClass = 'w-full rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] px-3 py-2.5 font-data text-sm text-[var(--sandbox-console-text)] placeholder:text-[var(--sandbox-console-subtle)] transition-colors hover:border-[var(--sandbox-console-border-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+const launchControlClass = 'min-h-11 w-full rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-3.5 py-2.5 font-data text-[15px] font-medium text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow)] placeholder:text-[var(--sandbox-console-subtle)] transition-[background-color,border-color,box-shadow,color] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] focus:border-[var(--sandbox-console-brand-border)] focus:bg-[var(--sandbox-console-control-hover)] focus:shadow-[var(--sandbox-console-control-shadow-focus)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 
 function LaunchInput({
   label,
@@ -671,26 +788,185 @@ function LaunchNativeSelect({
   label: string;
   detail?: string;
   value: string;
-  options: { label: string; value: string }[];
+  options: LaunchSelectOption[];
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState<'down' | 'up'>('down');
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((option) => option.value === value);
+  const isDisabled = disabled || options.length === 0;
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false);
+    }
+
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const estimatedMenuHeight = Math.min(288, (options.length * 56) + 12);
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    setPlacement(spaceBelow < estimatedMenuHeight + 12 && spaceAbove > spaceBelow ? 'up' : 'down');
+  }, [open, options.length]);
+
   return (
-    <LaunchField label={label} detail={detail}>
-      <select
+    <div ref={rootRef} className="relative space-y-2">
+      <span className="flex items-center justify-between gap-2">
+        <span className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">{label}</span>
+        {detail ? <span className="font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">{detail}</span> : null}
+      </span>
+      <button
+        type="button"
         aria-label={label}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        disabled={disabled}
-        className={cn(launchControlClass, 'appearance-none bg-[var(--sandbox-console-surface)]')}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={isDisabled}
+        onClick={() => setOpen((current) => !current)}
+        className={cn(
+          'group flex min-h-11 w-full items-center justify-between gap-3 rounded-[5px] border px-3.5 py-2.5 text-left font-data text-[15px] font-medium shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color] duration-150 disabled:cursor-not-allowed disabled:opacity-60',
+          open
+            ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-control-hover)] text-[var(--sandbox-console-text)] shadow-[var(--sandbox-console-control-shadow-focus)]'
+            : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-text)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]',
+        )}
       >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </LaunchField>
+        {selected ? (
+          <SelectOptionVisual option={selected} />
+        ) : (
+          <span className="min-w-0 truncate">{value || 'Select option'}</span>
+        )}
+        <span className={cn('i-ph:caret-down shrink-0 text-sm text-[var(--sandbox-console-muted)] transition-transform group-hover:text-[var(--sandbox-console-text)]', open && 'rotate-180 text-[var(--sandbox-console-brand)]')} />
+      </button>
+      {open ? (
+        <div
+          role="listbox"
+          aria-label={label}
+          className={cn(
+            'absolute left-0 right-0 z-[70] max-h-72 overflow-y-auto rounded-[5px] border border-[var(--sandbox-console-menu-border)] bg-[var(--sandbox-console-menu)] p-1.5 shadow-[var(--sandbox-console-menu-shadow)]',
+            placement === 'up' ? 'bottom-full mb-2' : 'top-full mt-2',
+          )}
+        >
+          {options.map((option) => {
+            const active = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={active}
+                aria-label={option.label}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+                className={cn(
+                  'flex w-full items-center justify-between gap-3 rounded-[4px] px-3 py-2.5 text-left font-display text-[15px] font-semibold transition-[background-color,color,box-shadow] duration-150',
+                  active
+                    ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
+                    : 'text-[var(--sandbox-console-secondary)] hover:bg-[var(--sandbox-console-menu-strong)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_3px_0_0_var(--sandbox-console-border-hover)]',
+                )}
+              >
+                <SelectOptionVisual option={option} />
+                {active ? <span className="i-ph:check-bold shrink-0 text-xs text-[var(--sandbox-console-brand)]" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SelectOptionVisual({ option }: { option: LaunchSelectOption }) {
+  if (!option.identity) {
+    return <span className="min-w-0 truncate">{option.label}</span>;
+  }
+
+  return (
+    <span className="flex min-w-0 items-center gap-3">
+      <IdentityMark identity={option.identity} size="sm" />
+      <span className="min-w-0">
+        <span className="block truncate">{option.label}</span>
+        {(option.detail ?? option.identity.detail) ? (
+          <span className="mt-0.5 block truncate font-data text-[11px] font-medium text-[var(--sandbox-console-subtle)]">
+            {option.detail ?? option.identity.detail}
+          </span>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
+function LaunchImageSelect({
+  value,
+  options,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  options: { label: string; value: string }[];
+  onChange: (value: string) => void;
+  placeholder: string;
+}) {
+  const selectedOption = options.find((option) => option.value === value);
+  const selectOptions = [
+    ...options.map((option) => ({
+      ...option,
+      label: formatImageOptionLabel(option.value, option.label),
+      detail: getImageIdentity(option.value).detail,
+      identity: getImageIdentity(option.value),
+    })),
+    {
+      label: 'Custom image...',
+      value: CUSTOM_IMAGE_VALUE,
+      detail: getImageIdentity(CUSTOM_IMAGE_VALUE).detail,
+      identity: getImageIdentity(CUSTOM_IMAGE_VALUE),
+    },
+  ];
+  const selectValue = selectedOption ? selectedOption.value : CUSTOM_IMAGE_VALUE;
+
+  return (
+    <div className="space-y-2">
+      <LaunchNativeSelect
+        label="Docker Image"
+        value={selectValue}
+        options={selectOptions}
+        onChange={(next) => {
+          if (next === CUSTOM_IMAGE_VALUE) {
+            if (selectedOption) onChange('');
+            return;
+          }
+          onChange(next);
+        }}
+      />
+      {selectValue === CUSTOM_IMAGE_VALUE ? (
+        <LaunchInput
+          label="Custom Image"
+          value={selectedOption ? '' : value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          className="font-data"
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -706,24 +982,31 @@ function SegmentedControl({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="space-y-1.5">
-      <p className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">{label}</p>
-      <div className="grid gap-1 rounded-md bg-[var(--sandbox-console-surface)] p-1 sm:grid-cols-3">
+    <div className="space-y-2">
+      <p className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">{label}</p>
+      <div
+        className={cn(
+          'grid gap-1 rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] p-1 shadow-[var(--sandbox-console-control-shadow)]',
+          options.length === 2 ? 'sm:grid-cols-2' : 'sm:grid-cols-3',
+        )}
+      >
         {options.map((option) => {
           const active = option.value === value;
+          const identity = getRuntimeIdentity(option.value);
           return (
             <button
               key={option.value}
               type="button"
               onClick={() => onChange(option.value)}
               className={cn(
-                'min-h-9 rounded px-3 text-center font-display text-xs font-semibold transition-colors',
+                'flex min-h-12 items-center justify-center gap-2 rounded-[4px] px-3 text-center font-display text-sm font-bold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.98]',
                 active
-                  ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_0_0_0_1px_var(--sandbox-console-brand-border)]'
-                  : 'text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-hover)] hover:text-[var(--sandbox-console-text)]',
+                  ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_0_0_0_1px_var(--sandbox-console-brand-border),inset_0_3px_0_var(--sandbox-console-brand)]'
+                  : 'text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] hover:shadow-[inset_0_3px_0_var(--sandbox-console-border-hover)]',
               )}
             >
-              {option.label.replace(' (default)', '')}
+              <IdentityMark identity={identity} size="sm" />
+              <span className="whitespace-nowrap text-[13px] sm:text-sm">{option.label.replace(' (default)', '')}</span>
             </button>
           );
         })}
@@ -735,12 +1018,14 @@ function SegmentedControl({
 function LaunchToggle({
   label,
   detail,
+  identity,
   checked,
   onChange,
   disabled,
 }: {
   label: string;
   detail?: string;
+  identity?: IdentityMeta;
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
@@ -753,25 +1038,27 @@ function LaunchToggle({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        'flex w-full items-center gap-3 rounded-md border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+        'group flex w-full items-center gap-3 rounded-[5px] border p-3.5 text-left shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,color,transform] duration-150 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60',
         checked
-          ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)]'
-          : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-hover)]',
+          ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
+          : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)]',
       )}
     >
-      <span
-        className={cn(
-          'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors',
-          checked
-            ? 'border-[var(--sandbox-console-brand)] bg-[var(--sandbox-console-brand)] text-white'
-            : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] text-transparent',
-        )}
-      >
-        <span className="i-ph:check-bold text-xs" />
-      </span>
+      {identity ? <IdentityMark identity={identity} size="md" /> : (
+        <span
+          className={cn(
+            'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors',
+            checked
+              ? 'border-[var(--sandbox-console-brand)] bg-[var(--sandbox-console-brand)] text-white'
+              : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] text-transparent',
+          )}
+        >
+          <span className="i-ph:check-bold text-xs" />
+        </span>
+      )}
       <span className="min-w-0">
-        <span className="block font-display text-sm font-semibold text-[var(--sandbox-console-text)]">{label}</span>
-        {detail ? <span className="mt-0.5 block text-xs leading-5 text-[var(--sandbox-console-muted)]">{detail}</span> : null}
+        <span className="block font-display text-base font-bold tracking-tight text-[var(--sandbox-console-text)]">{label}</span>
+        {detail ? <span className="mt-0.5 block text-sm leading-6 text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{detail}</span> : null}
       </span>
     </button>
   );
@@ -788,11 +1075,13 @@ function ResourceSizingControls({
 }) {
   return (
     <div className="space-y-2">
-      <p className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">Resources</p>
+      <p className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">Resources</p>
       <div className="grid grid-cols-3 gap-2">
         <ResourceNumberInput
           label="CPU Cores"
           shortLabel="CPU"
+          unit="cores"
+          identity={getResourceIdentity('cpu')}
           field={field(job, 'cpuCores')}
           value={valueNumber(values, 'cpuCores', 2)}
           onChange={(value) => onChange('cpuCores', value)}
@@ -800,6 +1089,8 @@ function ResourceSizingControls({
         <ResourceNumberInput
           label="Memory (MB)"
           shortLabel="RAM"
+          unit="MB"
+          identity={getResourceIdentity('memory')}
           field={field(job, 'memoryMb')}
           value={valueNumber(values, 'memoryMb', 2048)}
           onChange={(value) => onChange('memoryMb', value)}
@@ -807,6 +1098,8 @@ function ResourceSizingControls({
         <ResourceNumberInput
           label="Disk (GB)"
           shortLabel="Disk"
+          unit="GB"
+          identity={getResourceIdentity('disk')}
           field={field(job, 'diskGb')}
           value={valueNumber(values, 'diskGb', 10)}
           onChange={(value) => onChange('diskGb', value)}
@@ -819,29 +1112,42 @@ function ResourceSizingControls({
 function ResourceNumberInput({
   label,
   shortLabel,
+  unit,
+  identity,
   field: fieldDef,
   value,
   onChange,
 }: {
   label: string;
   shortLabel: string;
+  unit: string;
+  identity: IdentityMeta;
   field?: JobFieldDef;
   value: number;
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="block min-w-0 rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-surface)] p-2 transition-colors hover:border-[var(--sandbox-console-border-hover)]">
-      <span className="block truncate font-display text-[11px] font-semibold text-[var(--sandbox-console-muted)]">{shortLabel}</span>
-      <input
-        aria-label={label}
-        type="number"
-        min={fieldDef?.min}
-        max={fieldDef?.max}
-        step={fieldDef?.step ?? 1}
-        value={value}
-        onChange={(event) => onChange(clampNumber(Number(event.target.value), fieldDef?.min, fieldDef?.max))}
-        className="mt-1 w-full bg-transparent font-data text-base font-semibold text-[var(--sandbox-console-text)] outline-none"
-      />
+    <label className="group block min-w-0 cursor-text rounded-[5px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] p-3 shadow-[var(--sandbox-console-control-shadow)] transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)] hover:shadow-[var(--sandbox-console-control-shadow-hover)] focus-within:border-[var(--sandbox-console-brand-border)] focus-within:bg-[var(--sandbox-console-control-hover)] focus-within:shadow-[var(--sandbox-console-control-shadow-focus)]">
+      <span className="flex items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <IdentityMark identity={identity} size="sm" className="h-5 w-5 rounded-[4px] text-[9px]" />
+          <span className="whitespace-nowrap font-display text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--sandbox-console-muted)] group-hover:text-[var(--sandbox-console-secondary)]">{shortLabel}</span>
+        </span>
+        <span className="i-ph:pencil-simple-line hidden shrink-0 text-sm text-[var(--sandbox-console-brand)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 sm:inline-block" />
+      </span>
+      <span className="mt-1.5 flex min-w-0 items-baseline gap-1.5">
+        <input
+          aria-label={label}
+          type="number"
+          min={fieldDef?.min}
+          max={fieldDef?.max}
+          step={fieldDef?.step ?? 1}
+          value={value}
+          onChange={(event) => onChange(clampNumber(Number(event.target.value), fieldDef?.min, fieldDef?.max))}
+          className="min-w-0 flex-1 bg-transparent font-data text-xl font-bold leading-none text-[var(--sandbox-console-text)] outline-none"
+        />
+        <span className="shrink-0 font-data text-[11px] font-bold uppercase text-[var(--sandbox-console-subtle)]">{unit}</span>
+      </span>
     </label>
   );
 }
@@ -860,8 +1166,8 @@ function LaunchSpecComposer({
   usesBundledAgentSelector,
   configuredAgentIdentifier,
   allHarnessEnabled,
+  computerUseEnabled,
   portsInput,
-  supportsMetadataPorts,
   isTeeBlueprint,
   onChange,
   onPortsChange,
@@ -880,32 +1186,29 @@ function LaunchSpecComposer({
   usesBundledAgentSelector: boolean;
   configuredAgentIdentifier: string;
   allHarnessEnabled: boolean;
+  computerUseEnabled: boolean;
   portsInput: string;
-  supportsMetadataPorts: boolean;
   isTeeBlueprint: boolean;
   onChange: (name: string, value: unknown) => void;
   onPortsChange: (value: string) => void;
   onAdvancedOpen: () => void;
 }) {
   const imageOptions = fieldOptions(job, 'image');
-  const imageListId = `${job.name}-image-options`;
   const nameError = attemptedContinue && !String(values.name || '').trim()
     ? `${entityLabel} name is required`
     : errors.name;
 
   return (
     <ConsoleSection title={`${entityLabel} Spec`}>
-      <div className="space-y-5 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--sandbox-console-border)] pb-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)]">
-              <div className={cn('text-xl text-[var(--sandbox-console-brand)]', blueprint?.icon)} />
-            </div>
+      <div className="space-y-5 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--sandbox-console-border)] pb-5">
+          <div className="flex min-w-0 items-start gap-4">
+            <IdentityMark identity={getBlueprintIdentity(blueprint?.id)} size="lg" />
             <div className="min-w-0">
-              <h2 className="truncate font-display text-lg font-semibold text-[var(--sandbox-console-text)]">
+              <h2 className="truncate font-display text-2xl font-bold tracking-tight text-[var(--sandbox-console-text)]">
                 {blueprint?.name ?? entityLabel}
               </h2>
-              <p className="mt-1 max-w-2xl text-sm leading-5 text-[var(--sandbox-console-muted)]">
+              <p className="mt-1 max-w-2xl text-[15px] leading-6 text-[var(--sandbox-console-muted)]">
                 {blueprint?.description}
               </p>
             </div>
@@ -916,7 +1219,7 @@ function LaunchSpecComposer({
           </div>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(280px,0.95fr)]">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(280px,0.95fr)]">
           <div className="space-y-4">
             <LaunchInput
               label={`${entityLabel} Name`}
@@ -927,20 +1230,12 @@ function LaunchSpecComposer({
               error={nameError}
             />
 
-            <LaunchInput
-              label="Docker Image"
+            <LaunchImageSelect
               value={selectedImage}
-              onChange={(event) => onChange('image', event.target.value)}
+              options={imageOptions}
+              onChange={(value) => onChange('image', value)}
               placeholder={field(job, 'image')?.placeholder ?? 'ghcr.io/tangle-network/blueprint-sidecar:all-harness'}
-              list={imageListId}
             />
-            <datalist id={imageListId}>
-              {imageOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </datalist>
           </div>
 
           <div className="space-y-4">
@@ -953,7 +1248,11 @@ function LaunchSpecComposer({
             <LaunchNativeSelect
               label="Stack"
               value={valueString(values, 'stack', 'default')}
-              options={fieldOptions(job, 'stack')}
+              options={fieldOptions(job, 'stack').map((option) => ({
+                ...option,
+                detail: getStackIdentity(option.value).detail,
+                identity: getStackIdentity(option.value),
+              }))}
               onChange={(value) => onChange('stack', value)}
             />
             <ResourceSizingControls job={job} values={values} onChange={onChange} />
@@ -972,12 +1271,20 @@ function LaunchSpecComposer({
         <div className="grid gap-3 lg:grid-cols-2">
           <AllHarnessCapabilityField
             enabled={allHarnessEnabled}
-            onChange={(enabled) => onChange('capabilitiesJson', enabled ? JSON.stringify(['all_harness']) : JSON.stringify([]))}
+            onChange={(enabled) => onChange('capabilitiesJson', setCapabilityJson(values.capabilitiesJson, 'all_harness', enabled))}
           />
+          <ComputerUseCapabilityField
+            enabled={computerUseEnabled}
+            onChange={(enabled) => onChange('capabilitiesJson', setCapabilityJson(values.capabilitiesJson, 'computer_use', enabled))}
+          />
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
           <LaunchToggle
             label="Enable SSH"
             checked={Boolean(values.sshEnabled)}
             onChange={(enabled) => onChange('sshEnabled', enabled)}
+            identity={getCapabilityIdentity('ssh')}
             detail="Expose an operator-managed SSH entrypoint after provisioning."
           />
         </div>
@@ -992,18 +1299,18 @@ function LaunchSpecComposer({
         ) : null}
 
         {configuredAgentIdentifier ? (
-          <div className="rounded-md border border-amber-400/20 bg-amber-400/10 px-3 py-2">
-            <p className="text-xs leading-5 text-amber-200">
+          <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/10 px-3.5 py-2.5">
+            <p className="text-sm leading-6 text-amber-200">
               This agent needs AI credentials to chat. Add them as environment variables now or inject them later through Secrets.
             </p>
           </div>
         ) : null}
 
-        <div className="grid gap-4 border-t border-[var(--sandbox-console-border)] pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
+        <div className="grid gap-5 border-t border-[var(--sandbox-console-border)] pt-5 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <p className="font-display text-xs font-semibold text-[var(--sandbox-console-secondary)]">Environment Variables</p>
-              <span className="font-data text-[11px] text-[var(--sandbox-console-subtle)]">injected at boot</span>
+              <p className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">Environment Variables</p>
+              <span className="font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">injected at boot</span>
             </div>
             <EnvEditor
               value={String(values.envJson || '{}')}
@@ -1016,9 +1323,8 @@ function LaunchSpecComposer({
               label="Exposed Ports"
               value={portsInput}
               onChange={(event) => onPortsChange(event.target.value)}
-              disabled={!supportsMetadataPorts}
-              placeholder={supportsMetadataPorts ? '3000, 8080, 5432' : 'Disabled for Firecracker'}
-              detail={supportsMetadataPorts ? 'comma separated' : 'not supported'}
+              placeholder="3000, 8080, 5432"
+              detail={runtimeBackend === 'firecracker' ? 'Firecracker DNAT' : 'operator proxy'}
             />
             <LaunchActionButton variant="secondary" className="w-full" onClick={onAdvancedOpen}>
               <span className="i-ph:sliders-horizontal text-base" />
@@ -1050,7 +1356,6 @@ function LaunchSummaryPanel({
   operatorsError,
   agentIdentifier,
   ports,
-  onOpenInfra,
 }: {
   step: WizardStep;
   selectedBlueprint?: BlueprintDefinition;
@@ -1070,7 +1375,6 @@ function LaunchSummaryPanel({
   operatorsError?: Error | null;
   agentIdentifier: string;
   ports: number[];
-  onOpenInfra: () => void;
 }) {
   const operatorSummary = operatorsLoading
     ? 'Discovering'
@@ -1091,68 +1395,75 @@ function LaunchSummaryPanel({
 
   return (
     <aside className="space-y-4">
-      <ConsoleSection title="Deploy Summary">
+      <ConsoleSection title="Deploy Summary" className="xl:sticky xl:top-0">
         <div className="divide-y divide-[var(--sandbox-console-border)]">
           <SummaryRow
             label="Mode"
             value={selectedBlueprint ? entityLabel : 'Unselected'}
             detail={selectedBlueprint?.name ?? 'Choose a blueprint'}
+            identity={getBlueprintIdentity(selectedBlueprint?.id)}
             tone={selectedBlueprint ? 'brand' : 'warn'}
           />
           <SummaryRow
             label="Spec"
             value={step === 'deploy' ? 'Locked' : step === 'configure' ? 'Editing' : 'Open'}
             detail={step === 'deploy' ? 'ready for transaction' : 'mutable'}
+            identity={step === 'deploy'
+              ? { label: 'Locked', mark: 'OK', detail: 'ready for transaction', icon: 'i-ph:lock-key', tone: 'teal' }
+              : { label: 'Editing', mark: 'ED', detail: 'mutable config', icon: 'i-ph:pencil-simple-line', tone: 'slate' }}
             tone={step === 'deploy' ? 'ready' : 'muted'}
           />
           <SummaryRow
             label="Runtime"
             value={runtimeLabel(runtimeBackend)}
             detail={runtimeBackend === 'tee' ? 'attestation path' : 'standard path'}
+            identity={getRuntimeIdentity(runtimeBackend)}
             tone={runtimeBackend === 'tee' ? 'warn' : 'ready'}
           />
           <SummaryRow
             label="Capacity"
             value={formatCapacityValue(capacity)}
             detail="available slots"
+            identity={{ label: 'Capacity', mark: 'CAP', detail: 'available slots', icon: 'i-ph:database', tone: 'blue' }}
             tone={capacity !== undefined && Number(capacity) === 0 ? 'warn' : 'ready'}
           />
           <SummaryRow
             label="Wallet"
             value={isConnected ? 'Connected' : isReconnectingWallet ? 'Syncing' : 'Offline'}
             detail={isConnected ? 'can sign' : 'deploy blocked'}
+            identity={isConnected
+              ? { label: 'Wallet', mark: 'WAL', detail: 'connected signer', icon: 'i-ph:wallet', tone: 'teal' }
+              : { label: 'Wallet', mark: 'WAL', detail: 'deploy blocked', icon: 'i-ph:wallet', tone: 'danger' }}
             tone={isConnected ? 'ready' : isReconnectingWallet ? 'warn' : 'danger'}
           />
           <SummaryRow
             label="Service"
             value={serviceState}
-            detail={`blueprint ${infra.blueprintId || '--'} / service ${infra.serviceId || '--'}`}
+            detail={`bp ${infra.blueprintId || '--'} / svc ${infra.serviceId || '--'}`}
+            identity={{ label: 'Service', mark: 'SVC', detail: 'on-chain service', icon: 'i-ph:tree-structure', tone: serviceState === 'Blocked' ? 'danger' : 'brand' }}
             tone={serviceTone({ serviceValidating, serviceError, hasValidService, isNewService })}
           />
           <SummaryRow
             label="Operators"
             value={operatorSummary}
             detail={isNewService ? 'service quorum' : 'operator service'}
+            identity={getOperatorIdentity()}
             tone={operatorsError ? 'warn' : 'brand'}
           />
           <SummaryRow
             label="Agent mode"
             value={agentIdentifier || 'Compute only'}
             detail={agentIdentifier ? 'chat enabled' : 'no bundled agent'}
+            identity={getAgentIdentity(agentIdentifier)}
             tone={agentIdentifier ? 'brand' : 'muted'}
           />
           <SummaryRow
             label="Network"
             value={ports.length > 0 ? `${ports.length} port${ports.length === 1 ? '' : 's'}` : 'Default'}
             detail={ports.length > 0 ? ports.join(', ') : 'operator proxy'}
+            identity={getResourceIdentity('network')}
             tone={ports.length > 0 ? 'brand' : 'muted'}
           />
-        </div>
-        <div className="border-t border-[var(--sandbox-console-border)] p-3">
-          <LaunchActionButton variant="secondary" size="sm" className="w-full" onClick={onOpenInfra}>
-            <span className="i-ph:sliders-horizontal text-sm" />
-            Infrastructure
-          </LaunchActionButton>
         </div>
       </ConsoleSection>
     </aside>
@@ -1163,24 +1474,31 @@ function SummaryRow({
   label,
   value,
   detail,
+  identity,
   tone,
 }: {
   label: string;
   value: string;
   detail: string;
+  identity?: IdentityMeta;
   tone: ConsoleTone;
 }) {
   return (
-    <div className="grid gap-1 px-3 py-3">
-      <div className="flex items-center justify-between gap-3">
-        <span className="font-data text-[10px] uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
-          {label}
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 transition-colors hover:bg-[var(--sandbox-console-hover)]">
+      <span className="flex min-w-0 items-center gap-2.5">
+        {identity ? <IdentityMark identity={identity} size="sm" /> : null}
+        <span className="min-w-0">
+          <span className="block font-data text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--sandbox-console-muted)]">
+            {label}
+          </span>
+          <span className="mt-1 block truncate font-data text-xs font-medium text-[var(--sandbox-console-subtle)]">
+            {detail}
+          </span>
         </span>
-        <ConsoleChip tone={tone}>{value}</ConsoleChip>
-      </div>
-      <p className="truncate font-data text-[11px] text-[var(--sandbox-console-subtle)]">
-        {detail}
-      </p>
+      </span>
+      <span className={cn('max-w-52 text-right font-data text-xl font-bold leading-tight tracking-tight', executionMetricToneClass[tone])}>
+        {value}
+      </span>
     </div>
   );
 }
@@ -1208,7 +1526,11 @@ function AgentConfigurationField({
           label="Agent"
           value={selectValue}
           onChange={(next) => onChange(sanitizeBundledAgentIdentifier(next))}
-          options={BUNDLED_AGENT_OPTIONS}
+          options={BUNDLED_AGENT_OPTIONS.map((option) => ({
+            ...option,
+            detail: getAgentIdentity(option.value).detail,
+            identity: getAgentIdentity(option.value),
+          }))}
         />
       ) : (
         <LaunchInput
@@ -1218,12 +1540,12 @@ function AgentConfigurationField({
           placeholder={image ? 'default' : 'Choose an image first'}
         />
       )}
-      <p className="mt-1.5 text-xs leading-5 text-[var(--sandbox-console-muted)]">
+      <p className="mt-2 text-sm leading-6 text-[var(--sandbox-console-muted)]">
         {helpText}
       </p>
       {!usesBundledSelector && value.trim() !== '' && (
-        <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-400/10 px-3 py-2">
-          <p className="text-xs leading-5 text-amber-200">
+        <div className="mt-3 rounded-[5px] border border-amber-400/25 bg-amber-400/10 px-3.5 py-2.5">
+          <p className="text-sm leading-6 text-amber-200">
             Custom agent identifiers depend on the selected image registering the agent
             internally. If the image does not recognize this name, chat will fail after provision.
           </p>
@@ -1245,7 +1567,26 @@ function AllHarnessCapabilityField({
       label="All-Harness Runtime"
       checked={enabled}
       onChange={onChange}
+      identity={getCapabilityIdentity('harness')}
       detail="Request Claude, Codex, opencode, Kimi, and Gemini harnesses in the sidecar image."
+    />
+  );
+}
+
+function ComputerUseCapabilityField({
+  enabled,
+  onChange,
+}: {
+  enabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  return (
+    <LaunchToggle
+      label="Computer Use"
+      checked={enabled}
+      onChange={onChange}
+      identity={getCapabilityIdentity('computer-use')}
+      detail="Enable browser/computer-use tools for visual agent tasks when the sidecar image supports them."
     />
   );
 }
@@ -1286,7 +1627,7 @@ function AdvancedOptionsModal({
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation" onMouseDown={() => onOpenChange(false)}>
       <div
-        className="w-full max-w-2xl overflow-hidden rounded-md border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] shadow-[var(--sandbox-console-shadow-lg)]"
+        className="w-full max-w-2xl overflow-hidden rounded-none border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] shadow-[var(--sandbox-console-shadow-lg)]"
         role="dialog"
         aria-modal="true"
         aria-label="Advanced Settings"
@@ -1300,7 +1641,7 @@ function AdvancedOptionsModal({
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--sandbox-console-muted)] transition-colors hover:bg-[var(--sandbox-console-hover)] hover:text-[var(--sandbox-console-text)]"
+            className="flex h-8 w-8 items-center justify-center rounded-[4px] text-[var(--sandbox-console-muted)] transition-colors hover:bg-[var(--sandbox-console-hover)] hover:text-[var(--sandbox-console-text)]"
             aria-label="Close advanced settings"
           >
             <span className="i-ph:x text-base" />
@@ -1336,12 +1677,18 @@ function AdvancedOptionsModal({
                 checked={Boolean(values.teeRequired) || teeRequiredLocked}
                 disabled={teeRequiredLocked}
                 onChange={(enabled) => onChange('teeRequired', enabled)}
+                identity={getRuntimeIdentity('tee')}
                 detail={teeRequiredLocked ? 'Pinned by TEE runtime' : 'Require attested hardware isolation.'}
               />
               <LaunchNativeSelect
                 label="TEE Type"
                 value={valueString(values, 'teeType', '0')}
-                options={fieldOptions(job, 'teeType')}
+                options={fieldOptions(job, 'teeType').map((option) => ({
+                  ...option,
+                  identity: option.value === '0'
+                    ? { label: option.label, mark: 'OFF', detail: 'not required', icon: 'i-ph:minus-circle', tone: 'slate' }
+                    : { label: option.label, mark: option.label.slice(0, 3).toUpperCase(), detail: 'attestation target', icon: 'i-ph:shield-check', tone: 'amber' },
+                }))}
                 onChange={(value) => onChange('teeType', value)}
               />
             </div>
@@ -1382,11 +1729,652 @@ interface DeployStepProps {
   serviceInfo: { active: boolean; permitted: boolean } | null;
   serviceValidating: boolean;
   serviceError: string | null;
+  validateService: (serviceId: bigint, caller?: `0x${string}`) => Promise<{
+    active: boolean;
+    operatorCount: number;
+    owner: string;
+    blueprintId: bigint | number | string;
+    permitted: boolean;
+    operators: `0x${string}`[];
+  } | null>;
   onBack: () => void;
   onDeploy: () => void;
   onViewDetail: () => void;
-  onOpenInfra: () => void;
   onProvisionReady: (sandboxId: string, sidecarUrl: string) => void;
+}
+
+type DeployBlocker = {
+  title: string;
+  detail: string;
+  icon: string;
+  tone: ConsoleTone;
+};
+
+const preflightToneClass: Record<ConsoleTone, string> = {
+  brand: 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-brand)]',
+  ready: 'bg-[var(--sandbox-console-success-soft)] text-[var(--sandbox-console-success)]',
+  warn: 'bg-amber-400/10 text-amber-300',
+  danger: 'bg-red-400/10 text-[var(--sandbox-console-danger)]',
+  muted: 'bg-[var(--sandbox-console-control)] text-[var(--sandbox-console-secondary)]',
+};
+
+const preflightPanelClass: Record<ConsoleTone, string> = {
+  brand: 'bg-[var(--sandbox-console-brand-soft)] ring-[var(--sandbox-console-brand-border)]',
+  ready: 'bg-[var(--sandbox-console-success-soft)] ring-[var(--sandbox-console-success-border)]',
+  warn: 'bg-amber-400/[0.08] ring-amber-400/25',
+  danger: 'bg-red-400/[0.08] ring-red-400/25',
+  muted: 'bg-[var(--sandbox-console-control)] ring-[var(--sandbox-console-border)]',
+};
+
+function getServiceProblem({
+  serviceInfo,
+  serviceError,
+  serviceId,
+  blueprintId,
+  address,
+}: {
+  serviceInfo: { active: boolean; permitted: boolean } | null;
+  serviceError: string | null;
+  serviceId: string;
+  blueprintId: string;
+  address?: string;
+}): DeployBlocker | null {
+  const formattedService = serviceId || '--';
+  const formattedBlueprint = blueprintId || '--';
+
+  if (serviceError) {
+    return {
+      title: `Service #${formattedService} not found`,
+      detail: `Create a service for blueprint #${formattedBlueprint}, or choose an active service before deploying this sandbox.`,
+      icon: 'i-ph:x-circle',
+      tone: 'danger',
+    };
+  }
+
+  if (serviceInfo && !serviceInfo.active) {
+    return {
+      title: `Service #${formattedService} is inactive`,
+      detail: 'Choose an active service or create a replacement service before deploying this sandbox.',
+      icon: 'i-ph:power',
+      tone: 'warn',
+    };
+  }
+
+  if (serviceInfo && !serviceInfo.permitted) {
+    return {
+      title: `Wallet not permitted on service #${formattedService}`,
+      detail: `${address ? truncateAddress(address) : 'This wallet'} cannot submit jobs to this service. Choose or create a service where this wallet is allowed.`,
+      icon: 'i-ph:lock-key',
+      tone: 'danger',
+    };
+  }
+
+  return null;
+}
+
+function getDeployBlocker({
+  status,
+  serviceValidating,
+  serviceProblem,
+  contractsDeployed,
+  isConnected,
+  isReconnecting,
+  isSandbox,
+  capacity,
+  isNewService,
+  operatorsLoading,
+  operatorCount,
+  priceLoading,
+}: {
+  status: DeployStatus;
+  serviceValidating: boolean;
+  serviceProblem: DeployBlocker | null;
+  contractsDeployed: boolean;
+  isConnected: boolean;
+  isReconnecting: boolean;
+  isSandbox: boolean;
+  capacity?: number | bigint;
+  isNewService: boolean;
+  operatorsLoading: boolean;
+  operatorCount: number;
+  priceLoading: boolean;
+}): DeployBlocker | null {
+  if (status !== 'idle') return null;
+  if (serviceValidating) {
+    return {
+      title: 'Checking service',
+      detail: 'Reading the selected service before the transaction can be built.',
+      icon: 'i-ph:spinner',
+      tone: 'warn',
+    };
+  }
+  if (!contractsDeployed) {
+    return {
+      title: 'Contracts unavailable',
+      detail: 'Switch to a supported network before deploying.',
+      icon: 'i-ph:warning-circle',
+      tone: 'danger',
+    };
+  }
+  if (isReconnecting) {
+    return {
+      title: 'Wallet reconnecting',
+      detail: 'Wait for the wallet session to finish reconnecting.',
+      icon: 'i-ph:wallet',
+      tone: 'warn',
+    };
+  }
+  if (!isConnected) {
+    return {
+      title: 'Connect wallet',
+      detail: 'A connected wallet is required to create services and submit jobs.',
+      icon: 'i-ph:wallet',
+      tone: 'danger',
+    };
+  }
+  if (isSandbox && capacity !== undefined && Number(capacity) === 0) {
+    return {
+      title: 'No sandbox capacity',
+      detail: 'All operator slots are in use. Delete unused sandboxes or try again later.',
+      icon: 'i-ph:database',
+      tone: 'warn',
+    };
+  }
+  if (serviceProblem) return serviceProblem;
+  if (isNewService && operatorsLoading) {
+    return {
+      title: 'Finding operators',
+      detail: 'Operator discovery must finish before a new service request can be created.',
+      icon: 'i-ph:users-three',
+      tone: 'warn',
+    };
+  }
+  if (isNewService && operatorCount === 0) {
+    return {
+      title: 'No operators available',
+      detail: 'This blueprint needs at least one registered operator before a service can be created.',
+      icon: 'i-ph:users-three',
+      tone: 'danger',
+    };
+  }
+  if (priceLoading) {
+    return {
+      title: 'Loading price',
+      detail: 'Waiting for the operator quote before showing the deploy transaction.',
+      icon: 'i-ph:receipt',
+      tone: 'warn',
+    };
+  }
+
+  return null;
+}
+
+function DeploySpecPill({
+  icon,
+  label,
+  value,
+}: {
+  icon: string;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-[4px] bg-[var(--sandbox-console-control)] px-3 py-2 shadow-[var(--sandbox-console-control-shadow)]">
+      <div className="flex items-center gap-2">
+        <span className={cn(icon, 'shrink-0 text-sm text-[var(--sandbox-console-brand)]')} />
+        <span className="truncate font-display text-sm font-bold text-[var(--sandbox-console-text)]">{label}</span>
+      </div>
+      <p className="mt-1 truncate font-data text-xs font-semibold text-[var(--sandbox-console-muted)]">{value}</p>
+    </div>
+  );
+}
+
+function ServiceSetupPanel({
+  blueprintId,
+  currentServiceId,
+  operators,
+  operatorsLoading,
+  operatorsError,
+  operatorCount,
+  validateService,
+}: {
+  blueprintId: string;
+  currentServiceId: string;
+  operators: DiscoveredOperator[];
+  operatorsLoading: boolean;
+  operatorsError?: Error | null;
+  operatorCount: bigint;
+  validateService: DeployStepProps['validateService'];
+}) {
+  const { address } = useAccount();
+  const [mode, setMode] = useState<'new' | 'existing'>('new');
+  const [selectedOperators, setSelectedOperators] = useState<Address[]>([]);
+  const [manualOperator, setManualOperator] = useState('');
+  const [serviceIdInput, setServiceIdInput] = useState(currentServiceId || '');
+  const [serviceCheckMessage, setServiceCheckMessage] = useState<string | null>(null);
+  const [serviceCheckError, setServiceCheckError] = useState<string | null>(null);
+  const [serviceCreateError, setServiceCreateError] = useState<string | null>(null);
+  const [resolvedServiceId, setResolvedServiceId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setServiceIdInput(currentServiceId || '');
+  }, [currentServiceId]);
+
+  useEffect(() => {
+    if (selectedOperators.length > 0 || operators.length === 0) return;
+    setSelectedOperators([operators[0].address as Address]);
+  }, [operators, selectedOperators.length]);
+
+  const selectedOperatorRecords = useMemo(
+    (): DiscoveredOperator[] => selectedOperators.map((operator) => {
+      const discovered = operators.find((item) => item.address.toLowerCase() === operator.toLowerCase());
+      return discovered ?? { address: operator, ecdsaPublicKey: '0x', rpcAddress: '' };
+    }),
+    [operators, selectedOperators],
+  );
+  const manualOperatorRecords = selectedOperatorRecords.filter((operator) =>
+    !operators.some((item) => item.address.toLowerCase() === operator.address.toLowerCase()),
+  );
+  const serviceIdToCheck = parsePositiveServiceId(serviceIdInput);
+
+  const { quotes, isLoading: quotesLoading, isSolvingPow, errors: quoteErrors, totalCost, refetch: refetchQuotes } = useQuotes(
+    selectedOperatorRecords,
+    BigInt(blueprintId || '0'),
+    SERVICE_TTL_BLOCKS,
+    mode === 'new' && selectedOperators.length > 0 && !!address,
+    (address ?? ZERO_REQUESTER) as `0x${string}`,
+  );
+
+  const { writeContractAsync, data: serviceTxHash, isPending: serviceSigning } = useWriteContract();
+  const {
+    data: serviceReceipt,
+    isSuccess: serviceConfirmed,
+    isLoading: servicePending,
+  } = useWaitForTransactionReceipt({ hash: serviceTxHash });
+
+  const serviceRequestId = useMemo(() => {
+    if (!serviceReceipt?.logs) return null;
+    return getRequestIdFromServiceReceiptLogs(serviceReceipt.logs as ServiceReceiptLog[]);
+  }, [serviceReceipt]);
+
+  const updateServiceFromValidation = useCallback((nextServiceId: string, info: Awaited<ReturnType<DeployStepProps['validateService']>>) => {
+    if (!info) {
+      updateInfra({ blueprintId, serviceId: nextServiceId, serviceValidated: false, serviceInfo: undefined });
+      return;
+    }
+
+    updateInfra({
+      blueprintId,
+      serviceId: nextServiceId,
+      serviceValidated: info.active && info.permitted,
+      serviceInfo: {
+        active: info.active,
+        operatorCount: info.operatorCount,
+        owner: info.owner,
+        blueprintId: String(info.blueprintId),
+        permitted: info.permitted,
+        operators: (info.operators ?? []).map((operator) => {
+          const discovered = operators.find((item) => item.address.toLowerCase() === operator.toLowerCase());
+          return { address: operator, rpcAddress: discovered?.rpcAddress ?? '' };
+        }),
+      },
+    });
+  }, [blueprintId, operators]);
+
+  const validateAndSelectService = useCallback(async (nextServiceId: string) => {
+    const parsedServiceId = parsePositiveServiceId(nextServiceId);
+    setServiceCheckMessage(null);
+    setServiceCheckError(null);
+
+    if (!parsedServiceId) {
+      setServiceCheckError('Enter a positive whole-number service ID.');
+      return;
+    }
+
+    const normalizedServiceId = parsedServiceId.toString();
+    updateInfra({ blueprintId, serviceId: normalizedServiceId, serviceValidated: false });
+
+    try {
+      const info = await validateService(parsedServiceId, address as `0x${string}` | undefined);
+      updateServiceFromValidation(normalizedServiceId, info);
+      if (!info) {
+        setServiceCheckError(`Service #${normalizedServiceId} was not found.`);
+      } else if (!info.active) {
+        setServiceCheckError(`Service #${normalizedServiceId} exists but is inactive.`);
+      } else if (!info.permitted) {
+        setServiceCheckError(`This wallet is not permitted on service #${normalizedServiceId}.`);
+      } else {
+        setServiceCheckMessage(`Service #${normalizedServiceId} is active and selected.`);
+      }
+    } catch (error) {
+      setServiceCheckError(error instanceof Error ? error.message : `Service #${normalizedServiceId} could not be checked.`);
+    }
+  }, [address, blueprintId, updateServiceFromValidation, validateService]);
+
+  const commitResolvedService = useCallback(async (nextServiceId: string) => {
+    setResolvedServiceId(nextServiceId);
+    setServiceIdInput(nextServiceId);
+    await validateAndSelectService(nextServiceId);
+  }, [validateAndSelectService]);
+
+  useEffect(() => {
+    if (!serviceConfirmed || serviceRequestId == null || resolvedServiceId) return;
+
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const nextServiceId = await resolveActivatedServiceId(serviceRequestId);
+        if (!cancelled && nextServiceId) {
+          await commitResolvedService(nextServiceId);
+        }
+      } catch {
+        // Operator approval may not have activated the service yet.
+      }
+    };
+
+    void tick();
+    const intervalId = window.setInterval(() => {
+      void tick();
+    }, 5_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [commitResolvedService, resolvedServiceId, serviceConfirmed, serviceRequestId]);
+
+  const toggleOperator = (operator: Address) => {
+    setSelectedOperators((current) =>
+      current.some((item) => item.toLowerCase() === operator.toLowerCase())
+        ? current.filter((item) => item.toLowerCase() !== operator.toLowerCase())
+        : [...current, operator],
+    );
+  };
+
+  const removeOperator = (operator: Address) => {
+    setSelectedOperators((current) => current.filter((item) => item.toLowerCase() !== operator.toLowerCase()));
+  };
+
+  const addManualOperator = () => {
+    const next = manualOperator.trim() as Address;
+    if (!isValidAddress(next)) return;
+    setSelectedOperators((current) =>
+      current.some((item) => item.toLowerCase() === next.toLowerCase()) ? current : [...current, next],
+    );
+    setManualOperator('');
+  };
+
+  const createService = async () => {
+    if (!address || selectedOperators.length === 0) return;
+    setServiceCreateError(null);
+    setResolvedServiceId(null);
+    const addrs = getAddresses();
+
+    try {
+      if (quotes.length > 0) {
+        const quoteTuples = quotes.map((quote) => ({
+          details: {
+            requester: quote.details.requester,
+            blueprintId: quote.details.blueprintId,
+            ttlBlocks: quote.details.ttlBlocks,
+            totalCost: quote.details.totalCost,
+            timestamp: quote.details.timestamp,
+            expiry: quote.details.expiry,
+            confidentiality: quote.details.confidentiality,
+            securityCommitments: quote.details.securityCommitments.map((commitment) => ({
+              asset: commitment.asset,
+              exposureBps: commitment.exposureBps,
+            })),
+            resourceCommitments: quote.details.resourceCommitments,
+          },
+          signature: quote.signature,
+          operator: quote.operator,
+        }));
+
+        await writeContractAsync({
+          address: addrs.services,
+          abi: tangleServicesAbi,
+          functionName: 'createServiceFromQuotes',
+          args: [
+            BigInt(blueprintId),
+            quoteTuples,
+            '0x' as `0x${string}`,
+            [address],
+            SERVICE_TTL_BLOCKS,
+          ],
+          value: totalCost,
+        });
+        return;
+      }
+
+      await writeContractAsync({
+        address: addrs.services,
+        abi: tangleServicesAbi,
+        functionName: 'requestService',
+        args: [
+          BigInt(blueprintId),
+          selectedOperators,
+          '0x' as `0x${string}`,
+          [address],
+          SERVICE_TTL_BLOCKS,
+          '0x0000000000000000000000000000000000000000' as Address,
+          0n,
+        ],
+      });
+    } catch (error) {
+      setServiceCreateError(error instanceof Error ? error.message : 'Service request failed.');
+    }
+  };
+
+  const busy = serviceSigning || servicePending;
+  const canCreate = !!address && selectedOperators.length > 0 && !busy;
+  const quoteSummary = quotesLoading
+    ? 'Loading operator quote'
+    : quotes.length > 0
+      ? `Quote ready: ${formatCost(totalCost)}`
+      : selectedOperators.length > 0
+        ? 'No quote yet; service request can still be submitted'
+        : 'Select at least one operator';
+
+  return (
+    <div className="space-y-3 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] p-3.5">
+      <div className="grid grid-cols-2 gap-1 rounded-[4px] bg-[var(--sandbox-console-control)] p-1">
+        {([
+          ['new', 'New service'],
+          ['existing', 'Existing service'],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => {
+              setMode(value);
+              setServiceCheckMessage(null);
+              setServiceCheckError(null);
+              setServiceCreateError(null);
+            }}
+            className={cn(
+              'h-9 rounded-[3px] font-display text-xs font-bold transition-[background-color,box-shadow,color]',
+              mode === value
+                ? 'bg-[var(--sandbox-console-brand-soft)] text-[var(--sandbox-console-text)] shadow-[inset_0_0_0_1px_var(--sandbox-console-brand-border)]'
+                : 'text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)]',
+            )}
+            aria-pressed={mode === value}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'new' ? (
+        <div className="space-y-3">
+          <div>
+            <div className="flex items-center justify-between gap-3">
+              <p className="font-data text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--sandbox-console-muted)]">Operator</p>
+              {operatorCount > 0n ? (
+                <span className="font-data text-xs font-semibold text-[var(--sandbox-console-subtle)]">{operatorCount.toString()} registered</span>
+              ) : null}
+            </div>
+            <div className="mt-2 max-h-36 space-y-1.5 overflow-y-auto">
+              {operatorsLoading ? (
+                <div className="flex items-center gap-2 text-sm text-[var(--sandbox-console-muted)]">
+                  <span className="h-3 w-3 animate-spin rounded-full border border-[var(--sandbox-console-muted)] border-t-transparent" />
+                  Loading operators
+                </div>
+              ) : operators.length > 0 ? (
+                operators.map((operator) => {
+                  const selected = selectedOperators.some((item) => item.toLowerCase() === operator.address.toLowerCase());
+                  return (
+                    <button
+                      key={operator.address}
+                      type="button"
+                      onClick={() => toggleOperator(operator.address as Address)}
+                      className={cn(
+                        'flex w-full items-center justify-between gap-2 rounded-[4px] border px-2.5 py-2 text-left transition-[background-color,border-color,box-shadow]',
+                        selected
+                          ? 'border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] shadow-[inset_3px_0_0_var(--sandbox-console-brand)]'
+                          : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] hover:border-[var(--sandbox-console-border-hover)] hover:bg-[var(--sandbox-console-control-hover)]',
+                      )}
+                    >
+                      <OperatorIdentity address={operator.address} detail={operator.rpcAddress || 'registered operator'} compact />
+                      {selected ? <span className="i-ph:check-bold shrink-0 text-xs text-[var(--sandbox-console-brand)]" /> : null}
+                    </button>
+                  );
+                })
+              ) : (
+                <p className="text-sm leading-6 text-[var(--sandbox-console-muted)]">
+                  {operatorsError
+                    ? 'Operator lookup failed. Add an operator address manually.'
+                    : 'No operators were discovered for this blueprint.'}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              aria-label="Manual operator address"
+              value={manualOperator}
+              onChange={(event) => setManualOperator(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && isValidAddress(manualOperator)) {
+                  event.preventDefault();
+                  addManualOperator();
+                }
+              }}
+              placeholder="0x... operator"
+              className={cn(launchControlClass, 'min-h-9 py-2 text-xs')}
+            />
+            <LaunchActionButton
+              variant="secondary"
+              size="sm"
+              onClick={addManualOperator}
+              disabled={!isValidAddress(manualOperator)}
+            >
+              Add
+            </LaunchActionButton>
+          </div>
+
+          {manualOperatorRecords.length > 0 ? (
+            <div className="space-y-1.5">
+              <p className="font-data text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--sandbox-console-muted)]">
+                Added manually
+              </p>
+              {manualOperatorRecords.map((operator) => (
+                <div
+                  key={operator.address}
+                  className="flex items-center justify-between gap-2 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-control)] px-2.5 py-2"
+                >
+                  <OperatorIdentity address={operator.address} detail="manual operator" compact />
+                  <button
+                    type="button"
+                    onClick={() => removeOperator(operator.address)}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[3px] text-[var(--sandbox-console-muted)] transition-colors hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-danger)]"
+                    aria-label={`Remove operator ${truncateAddress(operator.address)}`}
+                  >
+                    <span className="i-ph:x text-sm" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="rounded-[4px] bg-[var(--sandbox-console-control)] px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-xs font-semibold text-[var(--sandbox-console-secondary)]">
+                {isSolvingPow ? 'Solving quote challenge' : quoteSummary}
+              </span>
+              <button
+                type="button"
+                onClick={() => refetchQuotes()}
+                disabled={quotesLoading || selectedOperators.length === 0 || !address}
+                className="inline-flex h-7 items-center gap-1 rounded-[3px] px-2 font-display text-xs font-bold text-[var(--sandbox-console-muted)] hover:bg-[var(--sandbox-console-control-hover)] hover:text-[var(--sandbox-console-text)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="i-ph:arrow-clockwise text-xs" />
+                Refresh
+              </button>
+            </div>
+            {quoteErrors.size > 0 ? (
+              <p className="mt-1 text-xs text-amber-400">{quoteErrors.size} quote request{quoteErrors.size === 1 ? '' : 's'} failed.</p>
+            ) : null}
+          </div>
+
+          <LaunchActionButton size="lg" className="w-full" onClick={createService} disabled={!canCreate}>
+            {busy ? (
+              <>
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                Creating service
+              </>
+            ) : (
+              <>
+                <span className="i-ph:plus-circle text-base" />
+                Create service
+              </>
+            )}
+          </LaunchActionButton>
+
+          {!address ? <p className="text-xs text-[var(--sandbox-console-danger)]">Connect a wallet before creating a service.</p> : null}
+          {serviceCreateError ? <p className="text-xs text-[var(--sandbox-console-danger)]">{serviceCreateError}</p> : null}
+          {serviceConfirmed ? (
+            <div className="rounded-[4px] border border-[var(--sandbox-console-success-border)] bg-[var(--sandbox-console-success-soft)] px-3 py-2 text-sm text-[var(--sandbox-console-success)]">
+              {resolvedServiceId
+                ? `Service #${resolvedServiceId} is active and selected.`
+                : serviceRequestId != null
+                  ? `Service request #${serviceRequestId} submitted. Waiting for activation.`
+                  : 'Service request submitted. Waiting for activation.'}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <LaunchInput
+            label="Service ID"
+            type="number"
+            min={1}
+            value={serviceIdInput}
+            onChange={(event) => setServiceIdInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && serviceIdToCheck) {
+                event.preventDefault();
+                void validateAndSelectService(serviceIdInput);
+              }
+            }}
+            placeholder="1"
+          />
+          <LaunchActionButton
+            size="lg"
+            className="w-full"
+            onClick={() => validateAndSelectService(serviceIdInput)}
+            disabled={!serviceIdToCheck}
+          >
+            <span className="i-ph:magnifying-glass text-base" />
+            Check service
+          </LaunchActionButton>
+          {serviceCheckMessage ? <p className="text-sm text-[var(--sandbox-console-success)]">{serviceCheckMessage}</p> : null}
+          {serviceCheckError ? <p className="text-sm text-[var(--sandbox-console-danger)]">{serviceCheckError}</p> : null}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function DeployStep({
@@ -1394,7 +2382,8 @@ function DeployStep({
   capacity, provisionEstimate, provisionPriceFormatted,
   hasProvisionRfq, priceLoading,
   serviceInfo, serviceValidating, serviceError,
-  onBack, onDeploy, onViewDetail, onOpenInfra, onProvisionReady,
+  validateService,
+  onBack, onDeploy, onViewDetail, onProvisionReady,
 }: DeployStepProps) {
   const { address, isConnected, status: walletStatus } = useAccount();
   const isReconnecting = walletStatus === 'reconnecting';
@@ -1420,7 +2409,6 @@ function DeployStep({
     error,
     isNewService,
     isInstanceMode,
-    hasValidService,
     operators,
     operatorsLoading,
     operatorsError,
@@ -1449,95 +2437,219 @@ function DeployStep({
     return v != null && v !== '' && v !== '{}' && v !== f.defaultValue;
   });
   const configuredAgentIdentifier = normalizeAgentIdentifier(values.agentIdentifier);
+  const activeConfigCount = activeExtras.length + (configuredAgentIdentifier ? 1 : 0);
+  const deploymentIntent = isNewService ? `Create service + ${entityLabel}` : `Deploy ${entityLabel}`;
+  const serviceNeedsSetup = isSandbox && status === 'idle' && (
+    !!serviceError ||
+    !!(serviceInfo && (!serviceInfo.active || !serviceInfo.permitted))
+  );
+  const serviceProblem = getServiceProblem({
+    serviceInfo,
+    serviceError,
+    serviceId: infra.serviceId,
+    blueprintId: infra.blueprintId,
+    address,
+  });
+  const deployBlocker = getDeployBlocker({
+    status,
+    serviceValidating,
+    serviceProblem,
+    contractsDeployed,
+    isConnected: isConnected && !!address,
+    isReconnecting,
+    isSandbox,
+    capacity,
+    isNewService,
+    operatorsLoading,
+    operatorCount: operators.length,
+    priceLoading,
+  });
+  const preflightTone: ConsoleTone = isComplete
+    ? 'ready'
+    : deployBlocker
+      ? deployBlocker.tone
+      : isNewService
+        ? 'brand'
+        : 'ready';
+  const preflightIcon = isComplete
+    ? 'i-ph:check-circle-fill'
+    : deployBlocker
+      ? deployBlocker.icon
+      : isNewService
+        ? 'i-ph:plus-circle'
+        : 'i-ph:rocket-launch';
+  const preflightTitle = isComplete
+    ? `${entityLabel} ready`
+    : deployBlocker
+      ? deployBlocker.title
+      : isNewService
+        ? 'Ready to create service'
+        : `Ready to deploy to service #${infra.serviceId}`;
+  const preflightDetail = deployBlocker
+    ? deployBlocker.detail
+    : isNewService
+      ? `${operators.length} operator${operators.length === 1 ? '' : 's'} selected for a dedicated service request.`
+      : 'Service is active, your wallet is permitted, and capacity is available.';
+  const capacityText = capacity === undefined
+    ? 'Capacity unknown'
+    : `${formatCapacityValue(capacity)} slot${Number(capacity) === 1 ? '' : 's'} open`;
+  const dueNowLabel = hasProvisionRfq ? 'Operator quote' : 'Estimate';
 
   const otherJobs = blueprint.jobs.filter((j) => j.id !== job.id);
 
   return (
     <div className="space-y-4">
-      {/* ── Header: What you're deploying ── */}
-      <div className="glass-card rounded-xl p-5">
-        <div className="flex items-start gap-4">
-          <div className="w-12 h-12 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0">
-            <div className={cn('text-2xl text-violet-400', blueprint.icon)} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-0.5">
-              <h3 className="text-lg font-display font-bold text-cloud-elements-textPrimary">{name || entityLabel}</h3>
-              <Badge variant="accent">{blueprint.name}</Badge>
+      <section className={cn(
+        'min-w-0 overflow-hidden rounded-[4px] bg-[var(--sandbox-console-surface)] shadow-[0_18px_44px_rgba(0,0,0,0.14)] ring-1',
+        preflightTone === 'danger'
+          ? 'ring-red-400/30'
+          : preflightTone === 'warn'
+            ? 'ring-amber-400/30'
+            : 'ring-[var(--sandbox-console-border)]',
+      )}>
+        <div className="grid min-w-0 gap-px bg-[var(--sandbox-console-border)] xl:grid-cols-[minmax(0,1fr)_minmax(300px,380px)]">
+          <div className="min-w-0 bg-[var(--sandbox-console-panel)] p-4 sm:p-5">
+            <div className="flex items-start gap-4">
+              <IdentityMark identity={getBlueprintIdentity(blueprint.id)} size="lg" />
+              <div className="min-w-0 flex-1">
+                <p className="font-data text-[11px] font-bold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
+                  {deploymentIntent}
+                </p>
+                <h2 className="mt-1 truncate font-display text-3xl font-black leading-tight tracking-tight text-[var(--sandbox-console-text)] sm:text-4xl">
+                  {name || entityLabel}
+                </h2>
+                <p className="mt-2 truncate font-data text-sm font-semibold text-[var(--sandbox-console-secondary)]">
+                  {image}
+                </p>
+              </div>
             </div>
-            <p className="text-xs font-data text-cloud-elements-textTertiary">{image}</p>
+
+            <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <DeploySpecPill icon="i-ph:cube" label={entityLabel} value={`Blueprint #${infra.blueprintId || '--'}`} />
+              <DeploySpecPill icon={getRuntimeIdentity(runtimeBackend).icon ?? 'i-ph:cube'} label={runtimeLabel} value={runtimeBackend === 'tee' ? 'Attested runtime' : 'Standard runtime'} />
+              <DeploySpecPill icon="i-ph:cpu" label={`${cpuCores} CPU`} value={`${memoryMb} MB / ${diskGb} GB`} />
+              <DeploySpecPill icon="i-ph:plugs-connected" label={ports.length > 0 ? `${ports.length} port${ports.length === 1 ? '' : 's'}` : 'Proxy'} value={ports.length > 0 ? ports.join(', ') : 'Operator managed'} />
+            </div>
           </div>
-          <div className="text-right shrink-0">
-            <p className="text-lg font-data font-bold text-cloud-elements-textPrimary">{costDisplay}</p>
-            <p className="text-[10px] text-cloud-elements-textTertiary uppercase tracking-wider">deploy cost</p>
+
+          <div className="flex min-w-0 flex-col justify-between bg-[var(--sandbox-console-panel-strong)] p-4 sm:p-5">
+            <div>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="font-data text-[11px] font-bold uppercase tracking-[0.16em] text-[var(--sandbox-console-muted)]">
+                    {dueNowLabel}
+                  </p>
+                  <p className="mt-1 font-data text-4xl font-black leading-none tracking-tight text-[var(--sandbox-console-text)]">
+                    {costDisplay}
+                  </p>
+                </div>
+                <div className={cn('rounded-[4px] px-2.5 py-1.5 font-data text-xs font-bold uppercase tracking-[0.08em]', preflightToneClass[preflightTone])}>
+                  {isComplete ? 'Ready' : deployBlocker ? 'Blocked' : 'Ready'}
+                </div>
+              </div>
+
+              <div className={cn('mt-5 rounded-[4px] p-3.5 ring-1', preflightPanelClass[preflightTone])}>
+                <div className="flex items-start gap-3">
+                  <span className={cn('mt-0.5 text-lg', preflightIcon, executionMetricToneClass[preflightTone])} />
+                  <div className="min-w-0">
+                    <p className="font-display text-lg font-bold leading-tight text-[var(--sandbox-console-text)]">
+                      {preflightTitle}
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-[var(--sandbox-console-secondary)]">
+                      {preflightDetail}
+                    </p>
+                    {serviceNeedsSetup && capacity !== undefined && Number(capacity) > 0 ? (
+                      <p className="mt-2 font-data text-xs font-semibold text-[var(--sandbox-console-muted)]">
+                        {capacityText}; capacity is not the blocker.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2">
+              {isComplete ? (
+                <LaunchActionButton variant="success" size="lg" className="w-full" onClick={onViewDetail}>
+                  <span className="i-ph:check-bold text-sm" />
+                  View {entityLabel}
+                </LaunchActionButton>
+              ) : serviceNeedsSetup ? (
+                <ServiceSetupPanel
+                  blueprintId={infra.blueprintId}
+                  currentServiceId={infra.serviceId}
+                  operators={operators}
+                  operatorsLoading={operatorsLoading}
+                  operatorsError={operatorsError}
+                  operatorCount={operatorCount}
+                  validateService={validateService}
+                />
+              ) : (
+                <DeployButton
+                  status={status}
+                  canDeploy={deploy.canDeploy}
+                  isNewService={isNewService}
+                  priceLoading={priceLoading}
+                  serviceValidating={serviceValidating}
+                  costDisplay={costDisplay}
+                  blockedTitle={deployBlocker?.title}
+                  connectWalletBlocked={deployBlocker?.title === 'Connect wallet'}
+                  onDeploy={onDeploy}
+                />
+              )}
+              <LaunchActionButton variant="secondary" size="sm" className="w-full" onClick={onBack}>Back to edit</LaunchActionButton>
+            </div>
           </div>
         </div>
 
-        {/* Resource pills */}
-        <div className="flex items-center gap-2 mt-4">
-          <ResourcePill icon="i-ph:stack" label={runtimeLabel} />
-          <ResourcePill icon="i-ph:cpu" label={`${cpuCores} CPU`} />
-          <ResourcePill icon="i-ph:memory" label={`${memoryMb} MB`} />
-          <ResourcePill icon="i-ph:hard-drive" label={`${diskGb} GB`} />
-          {ports.length > 0 && <ResourcePill icon="i-ph:globe" label={`${ports.length} port${ports.length > 1 ? 's' : ''}`} />}
-          <div className="ml-auto flex items-center gap-1.5 text-xs">
-            <ServiceStatusBadge
-              infra={infra}
-              serviceInfo={serviceInfo}
-              serviceValidating={serviceValidating}
-              serviceError={serviceError}
-              isInstanceMode={isInstanceMode}
-            />
-          </div>
-        </div>
-
-        {/* Active config options (non-default) */}
-        {(activeExtras.length > 0 || configuredAgentIdentifier) && (
-          <div className="mt-3 pt-3 border-t border-white/[0.04] flex flex-wrap gap-1.5">
-            {activeExtras.map((f) => {
-              const v = values[f.name];
-              const display = f.type === 'boolean' ? f.label : `${f.label}: ${
-                f.type === 'select' && f.options
-                  ? (f.options.find((o) => o.value === String(v))?.label ?? String(v))
-                  : String(v)
-              }`;
-              return (
-                <span key={f.name} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] text-[11px] font-data text-cloud-elements-textSecondary">
-                  <div className="i-ph:check text-[10px] text-teal-400" />
-                  {display}
+        {(activeConfigCount > 0 || configuredAgentIdentifier) && (
+          <div className="border-t border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)] px-4 py-3">
+            <div className="flex flex-wrap gap-1.5">
+              {activeExtras.map((f) => {
+                const v = values[f.name];
+                const display = f.type === 'boolean' ? f.label : `${f.label}: ${
+                  f.type === 'select' && f.options
+                    ? (f.options.find((o) => o.value === String(v))?.label ?? String(v))
+                    : String(v)
+                }`;
+                return (
+                  <span key={f.name} className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel-strong)] px-2.5 py-1.5 font-data text-xs font-medium text-[var(--sandbox-console-secondary)]">
+                    <span className="i-ph:check text-[10px] text-[var(--sandbox-console-success)]" />
+                    {display}
+                  </span>
+                );
+              })}
+              {configuredAgentIdentifier && (
+                <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--sandbox-console-brand-border)] bg-[var(--sandbox-console-brand-soft)] px-2.5 py-1.5 font-data text-xs font-semibold text-[var(--sandbox-console-text)]">
+                  <span className="i-ph:robot text-[10px] text-[var(--sandbox-console-brand)]" />
+                  Agent: {configuredAgentIdentifier}
                 </span>
-              );
-            })}
-            {configuredAgentIdentifier && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] text-[11px] font-data text-cloud-elements-textSecondary">
-                <div className="i-ph:robot text-[10px] text-teal-400" />
-                Agent: {configuredAgentIdentifier}
-              </span>
-            )}
+              )}
+            </div>
           </div>
         )}
-      </div>
+      </section>
 
       {/* ── Per-job pricing (collapsible) ── */}
       {otherJobs.length > 0 && (
-        <div className="glass-card rounded-xl overflow-hidden">
+        <div className="sandbox-console-panel overflow-hidden rounded-[5px]">
           <button
             onClick={() => setShowAllJobs(!showAllJobs)}
-            className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-white/[0.02] transition-colors"
+            className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[var(--sandbox-console-hover)]"
           >
             <div className="flex items-center gap-2">
-              <div className="i-ph:receipt text-sm text-cloud-elements-textTertiary" />
-              <span className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+              <div className="i-ph:receipt text-base text-[var(--sandbox-console-muted)]" />
+              <span className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">
                 Per-job pricing ({otherJobs.length} operations)
               </span>
             </div>
-            <div className={cn('i-ph:caret-down text-xs text-cloud-elements-textTertiary transition-transform', showAllJobs && 'rotate-180')} />
+            <div className={cn('i-ph:caret-down text-xs text-[var(--sandbox-console-muted)] transition-transform', showAllJobs && 'rotate-180')} />
           </button>
           {showAllJobs && (
-            <div className="px-5 pb-3 space-y-1">
+            <div className="border-t border-[var(--sandbox-console-border)] px-4 py-3">
               {otherJobs.map((j) => (
-                <div key={j.id} className="flex items-center justify-between py-1">
-                  <span className="text-xs text-cloud-elements-textSecondary truncate mr-2">{j.label}</span>
+                <div key={j.id} className="flex items-center justify-between gap-3 py-1.5">
+                  <span className="truncate font-data text-xs text-[var(--sandbox-console-secondary)]">{j.label}</span>
                   <JobPriceBadge jobIndex={j.id} pricingMultiplier={j.pricingMultiplier} compact />
                 </div>
               ))}
@@ -1546,40 +2658,15 @@ function DeployStep({
         </div>
       )}
 
-      {/* ── Capacity ── */}
-      {capacity !== undefined && Number(capacity) > 0 && (
-        <div className="flex items-center gap-2 px-1">
-          <div className="i-ph:shield-check text-sm text-teal-400" />
-          <span className="text-xs text-cloud-elements-textTertiary">
-            <span className="font-data font-semibold text-cloud-elements-textSecondary">{String(capacity)}</span> capacity slots available
-          </span>
-        </div>
-      )}
-      {capacity !== undefined && Number(capacity) === 0 && isSandbox && status === 'idle' && (
-        <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
-          <div className="flex items-center gap-3">
-            <div className="i-ph:warning-circle text-lg text-amber-400" />
-            <div className="flex-1">
-              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
-                No capacity available
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
-                All operator slots are in use. Delete unused sandboxes or try again later.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
       {status === 'idle' && runtimeBackend === 'firecracker' && (
-        <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
+        <div className="rounded-[5px] border border-amber-400/25 bg-amber-400/[0.08] p-4">
           <div className="flex items-center gap-3">
             <div className="i-ph:warning-circle text-lg text-amber-400" />
             <div className="flex-1">
-              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+              <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">
                 Firecracker requires an operator runtime with Firecracker provisioning enabled
               </p>
-              <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
+              <p className="mt-1 text-sm text-[var(--sandbox-console-muted)]">
                 This mode is mutually exclusive with TEE in the current release.
               </p>
             </div>
@@ -1613,7 +2700,7 @@ function DeployStep({
         <InstanceProvisionCard provision={provision} />
       )}
 
-      {/* ── Operators (instance mode, new service, idle) ── */}
+      {/* ── Operators for instance service requests ── */}
       {isNewService && status === 'idle' && (
         <OperatorList
           operators={operators}
@@ -1621,151 +2708,23 @@ function DeployStep({
           operatorsError={operatorsError}
           operatorCount={operatorCount}
           blueprintId={infra.blueprintId}
+          purpose="instance"
         />
       )}
 
-      {/* ── Service warning (sandbox mode only) ── */}
-      {status === 'idle' && !isInstanceMode && (serviceError || (serviceInfo && (!serviceInfo.active || !serviceInfo.permitted))) && (
-        <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
-          <div className="flex items-center gap-3">
-            <div className="i-ph:warning-circle text-lg text-amber-400" />
-            <div className="flex-1">
-              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
-                {serviceError
-                  ? `Service #${infra.serviceId} not found`
-                  : !serviceInfo?.active
-                    ? `Service #${infra.serviceId} is inactive`
-                    : `You're not a permitted caller on service #${infra.serviceId}`}
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
-                Open Infrastructure Settings to create a new service or verify a different one.
-              </p>
-            </div>
-            <LaunchActionButton variant="secondary" size="sm" onClick={onOpenInfra}>Settings</LaunchActionButton>
-          </div>
-        </div>
-      )}
-
-      {/* ── Contracts not deployed warning ── */}
-      {!contractsDeployed && status === 'idle' && (
-        <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-4">
-          <div className="flex items-center gap-3">
-            <div className="i-ph:warning-circle text-lg text-amber-400" />
-            <div className="flex-1">
-              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
-                Contracts not yet deployed on this network
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mt-0.5">
-                Please switch to a supported network where the blueprint contracts have been deployed.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Wallet warning ── */}
-      {status === 'idle' && (!isConnected || !address) && (
-        <div className="flex items-center gap-2 px-1">
-          <div className="i-ph:wallet text-sm text-amber-400" />
-          <span className="text-xs text-amber-400/80">
-            {isReconnecting ? 'Reconnecting wallet...' : 'Connect wallet to deploy'}
-          </span>
-          {isReconnecting && (
-            <div className="w-3 h-3 rounded-full border border-amber-400/40 border-t-amber-400 animate-spin" />
-          )}
-        </div>
-      )}
-
-      {/* ── Actions ── */}
-      <div className="flex justify-between pt-1">
-        <LaunchActionButton variant="secondary" onClick={onBack}>Back</LaunchActionButton>
-        {isComplete ? (
-          <LaunchActionButton variant="success" onClick={onViewDetail}>
-            <div className="i-ph:check-bold text-sm" />
-            View {entityLabel}
-          </LaunchActionButton>
-        ) : (
-          <DeployButton
-            status={status}
-            canDeploy={deploy.canDeploy}
-            isNewService={isNewService}
-            priceLoading={priceLoading}
-            serviceValidating={serviceValidating}
-            costDisplay={costDisplay}
-            onDeploy={onDeploy}
-          />
-        )}
-      </div>
     </div>
   );
 }
 
 // ── Sub-components (extracted for readability) ──
 
-function ServiceStatusBadge({
-  infra, serviceInfo, serviceValidating, serviceError, isInstanceMode,
-}: {
-  infra: { serviceId: string };
-  serviceInfo: { active: boolean; permitted: boolean } | null;
-  serviceValidating: boolean;
-  serviceError: string | null;
-  isInstanceMode: boolean;
-}) {
-  if (serviceValidating) {
-    return (
-      <>
-        <div className="w-3 h-3 rounded-full border border-cloud-elements-textTertiary border-t-transparent animate-spin" />
-        <span className="text-cloud-elements-textTertiary">Checking service...</span>
-      </>
-    );
-  }
-  if (isInstanceMode) {
-    return (
-      <>
-        <div className="i-ph:plus-circle text-sm text-violet-400" />
-        <span className="text-violet-400">New service</span>
-      </>
-    );
-  }
-  if (serviceInfo?.active && serviceInfo?.permitted) {
-    return (
-      <>
-        <div className="i-ph:check-circle-fill text-sm text-teal-400" />
-        <span className="text-teal-400">Service #{infra.serviceId}</span>
-      </>
-    );
-  }
-  if (serviceInfo && !serviceInfo.active) {
-    return (
-      <>
-        <div className="i-ph:x-circle text-sm text-crimson-400" />
-        <span className="text-crimson-400">Service #{infra.serviceId} inactive</span>
-      </>
-    );
-  }
-  if (serviceInfo && !serviceInfo.permitted) {
-    return (
-      <>
-        <div className="i-ph:warning text-sm text-amber-400" />
-        <span className="text-amber-400">Not permitted</span>
-      </>
-    );
-  }
-  if (serviceError) {
-    return (
-      <>
-        <div className="i-ph:x-circle text-sm text-crimson-400" />
-        <span className="text-crimson-400">Service not found</span>
-      </>
-    );
-  }
-  return (
-    <>
-      <div className="i-ph:globe-simple text-sm text-cloud-elements-textTertiary" />
-      <span className="text-cloud-elements-textTertiary">Service #{infra.serviceId}</span>
-    </>
-  );
-}
+const executionMetricToneClass: Record<ConsoleTone, string> = {
+  brand: 'text-[var(--sandbox-console-brand)]',
+  ready: 'text-[var(--sandbox-console-success)]',
+  warn: 'text-[var(--sandbox-console-warning)]',
+  danger: 'text-[var(--sandbox-console-danger)]',
+  muted: 'text-[var(--sandbox-console-text)]',
+};
 
 function TxStatusCard({
   status, txHash, error, entityLabel, isNewService,
@@ -1778,7 +2737,7 @@ function TxStatusCard({
 }) {
   const borderClass = status === 'confirmed' ? 'border-teal-500/20 bg-teal-500/[0.03]'
     : status === 'failed' ? 'border-crimson-500/20 bg-crimson-500/[0.03]'
-    : 'border-white/[0.06] bg-white/[0.02]';
+    : 'border-[var(--sandbox-console-border)] bg-[var(--sandbox-console-panel)]';
 
   const messages: Record<DeployStatus, string> = {
     idle: '',
@@ -1801,31 +2760,31 @@ function TxStatusCard({
   };
 
   return (
-    <div className={cn('rounded-xl border p-4', borderClass)}>
+    <div className={cn('rounded-[5px] border p-4', borderClass)}>
       <div className="flex items-center gap-3">
         {icons[status]}
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">
+          <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">
             {messages[status]}
           </p>
           {txHash && (
-            <p className="text-[11px] font-data text-cloud-elements-textTertiary mt-0.5 truncate">{txHash}</p>
+            <p className="mt-1 truncate font-data text-xs text-[var(--sandbox-console-muted)]">{txHash}</p>
           )}
           {error && (
             <div className="mt-1">
               <p className="text-xs text-crimson-400">{error}</p>
               {/resource not available|request already pending/i.test(error) && (
-                <p className="text-[11px] text-cloud-elements-textTertiary mt-1">
+                <p className="mt-1 text-[11px] text-[var(--sandbox-console-muted)]">
                   MetaMask may have a pending request. Open MetaMask, dismiss any popups, then try again.
                 </p>
               )}
               {/user rejected|denied/i.test(error) && (
-                <p className="text-[11px] text-cloud-elements-textTertiary mt-1">
+                <p className="mt-1 text-[11px] text-[var(--sandbox-console-muted)]">
                   Transaction was rejected in the wallet.
                 </p>
               )}
               {/chain.*mismatch|wrong.*network/i.test(error) && (
-                <p className="text-[11px] text-cloud-elements-textTertiary mt-1">
+                <p className="mt-1 text-[11px] text-[var(--sandbox-console-muted)]">
                   Your wallet is on a different network. Switch to the correct chain and try again.
                 </p>
               )}
@@ -1840,7 +2799,7 @@ function TxStatusCard({
 function InstanceProvisionCard({ provision }: { provision?: { sandboxId: string; sidecarUrl: string } }) {
   return (
     <div className={cn(
-      'rounded-xl border p-4',
+      'rounded-[5px] border p-4',
       provision ? 'border-teal-500/20 bg-teal-500/[0.03]' : 'border-violet-500/20 bg-violet-500/[0.03]',
     )}>
       <div className="flex items-center gap-3">
@@ -1848,8 +2807,8 @@ function InstanceProvisionCard({ provision }: { provision?: { sandboxId: string;
           <>
             <div className="i-ph:check-circle-fill text-lg text-teal-400" />
             <div>
-              <p className="text-sm font-display font-medium text-teal-400">Instance ready</p>
-              <p className="text-[11px] text-cloud-elements-textTertiary mt-0.5 font-data truncate max-w-sm">
+              <p className="font-display text-base font-bold text-teal-400">Instance ready</p>
+              <p className="mt-1 max-w-sm truncate font-data text-xs text-[var(--sandbox-console-muted)]">
                 {provision.sidecarUrl}
               </p>
             </div>
@@ -1858,8 +2817,8 @@ function InstanceProvisionCard({ provision }: { provision?: { sandboxId: string;
           <>
             <div className="w-5 h-5 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
             <div>
-              <p className="text-sm font-display font-medium text-cloud-elements-textPrimary">Waiting for operator...</p>
-              <p className="text-[11px] text-cloud-elements-textTertiary mt-0.5">Watching for on-chain provisioning event</p>
+              <p className="font-display text-base font-bold text-[var(--sandbox-console-text)]">Waiting for operator...</p>
+              <p className="mt-1 text-xs text-[var(--sandbox-console-muted)]">Watching for on-chain provisioning event</p>
             </div>
           </>
         )}
@@ -1874,12 +2833,14 @@ function OperatorList({
   operatorsError,
   operatorCount,
   blueprintId,
+  purpose = 'instance',
 }: {
   operators: DiscoveredOperator[];
   operatorsLoading: boolean;
   operatorsError?: Error | null;
   operatorCount: bigint;
   blueprintId: string;
+  purpose?: 'instance' | 'service';
 }) {
   const titleCount = operatorsLoading
     ? '...'
@@ -1888,17 +2849,17 @@ function OperatorList({
       : String(operators.length);
 
   return (
-    <div className="glass-card rounded-xl p-4">
+    <div className="sandbox-console-panel rounded-[5px] p-4">
       <div className="flex items-center gap-2 mb-3">
-        <div className="i-ph:users-three text-sm text-cloud-elements-textTertiary" />
-        <span className="text-xs font-display font-medium text-cloud-elements-textSecondary">
+        <div className="i-ph:users-three text-base text-[var(--sandbox-console-muted)]" />
+        <span className="font-display text-sm font-bold text-[var(--sandbox-console-secondary)]">
           Operators ({titleCount})
         </span>
       </div>
       {operatorsLoading ? (
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full border border-cloud-elements-textTertiary border-t-transparent animate-spin" />
-          <span className="text-xs text-cloud-elements-textTertiary">Discovering operators for blueprint #{blueprintId}...</span>
+          <div className="h-3 w-3 animate-spin rounded-full border border-[var(--sandbox-console-muted)] border-t-transparent" />
+          <span className="text-xs text-[var(--sandbox-console-muted)]">Discovering operators for blueprint #{blueprintId}...</span>
         </div>
       ) : operatorsError ? (
         <div className="space-y-2">
@@ -1910,7 +2871,7 @@ function OperatorList({
                 : 'Operator lookup failed for this blueprint'}
             </span>
           </div>
-          <p className="text-[11px] text-cloud-elements-textTertiary">
+          <p className="text-sm leading-6 text-[var(--sandbox-console-muted)]">
             This is usually a local RPC or multicall issue. The app could not build a verified operator list for service creation.
           </p>
         </div>
@@ -1923,12 +2884,13 @@ function OperatorList({
         <div className="space-y-1.5">
           {operators.map((op) => (
             <div key={op.address} className="flex items-center gap-2 py-1">
-              <Identicon address={op.address} size={18} />
-              <span className="text-xs font-data text-cloud-elements-textSecondary truncate">{op.address}</span>
+              <OperatorIdentity address={op.address} detail="registered operator" />
             </div>
           ))}
-          <p className="text-[11px] text-cloud-elements-textTertiary mt-2">
-            A new service will be created with these operators. Your sandbox config will be passed as service request inputs.
+          <p className="mt-2 text-sm leading-6 text-[var(--sandbox-console-muted)]">
+            {purpose === 'service'
+              ? 'Use Create Service to request an active cloud service with these registered operators, then deploy the sandbox into that service.'
+              : 'A new service will be created with these operators. Your sandbox config will be passed as service request inputs.'}
           </p>
         </div>
       )}
@@ -1937,7 +2899,7 @@ function OperatorList({
 }
 
 function DeployButton({
-  status, canDeploy, isNewService, priceLoading, serviceValidating, costDisplay, onDeploy,
+  status, canDeploy, isNewService, priceLoading, serviceValidating, costDisplay, blockedTitle, connectWalletBlocked, onDeploy,
 }: {
   status: DeployStatus;
   canDeploy: boolean;
@@ -1945,13 +2907,37 @@ function DeployButton({
   priceLoading: boolean;
   serviceValidating: boolean;
   costDisplay: string;
+  blockedTitle?: string;
+  connectWalletBlocked?: boolean;
   onDeploy: () => void;
 }) {
   const isBusy = status === 'signing' || status === 'pending';
   const isDisabled = !canDeploy || isBusy || priceLoading || serviceValidating;
 
+  if (connectWalletBlocked) {
+    return (
+      <ConnectKitButton.Custom>
+        {({ show, isConnecting }) => (
+          <LaunchActionButton size="lg" className="w-full" onClick={show} disabled={isConnecting}>
+            {isConnecting ? (
+              <>
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                Connecting wallet
+              </>
+            ) : (
+              <>
+                <div className="i-ph:plugs-connected text-base" />
+                Connect wallet
+              </>
+            )}
+          </LaunchActionButton>
+        )}
+      </ConnectKitButton.Custom>
+    );
+  }
+
   return (
-    <LaunchActionButton size="lg" onClick={onDeploy} disabled={isDisabled}>
+    <LaunchActionButton size="lg" className="w-full" onClick={onDeploy} disabled={isDisabled}>
       {isBusy ? (
         <>
           <div className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
@@ -1959,6 +2945,11 @@ function DeployButton({
         </>
       ) : priceLoading ? (
         'Loading price...'
+      ) : blockedTitle ? (
+        <>
+          <div className="i-ph:lock-key text-base" />
+          {blockedTitle}
+        </>
       ) : isNewService ? (
         <>
           <div className="i-ph:lightning text-base" />
@@ -1971,14 +2962,5 @@ function DeployButton({
         </>
       )}
     </LaunchActionButton>
-  );
-}
-
-function ResourcePill({ icon, label }: { icon: string; label: string }) {
-  return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.06]">
-      <div className={cn('text-xs text-cloud-elements-textTertiary', icon)} />
-      <span className="text-xs font-data font-medium text-cloud-elements-textSecondary">{label}</span>
-    </div>
   );
 }

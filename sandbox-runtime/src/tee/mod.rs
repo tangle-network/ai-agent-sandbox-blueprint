@@ -26,6 +26,12 @@ pub mod backend_factory;
 pub mod sealed_secrets;
 pub mod sealed_secrets_api;
 
+/// Real cryptographic quote verification (Intel TDX DCAP, AMD SEV-SNP, AWS
+/// Nitro). Gated so the default and non-TEE builds never pull the heavier
+/// X.509/ECDSA crates.
+#[cfg(feature = "tee-verify")]
+mod verify;
+
 /// Supported TEE backend types.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TeeType {
@@ -442,6 +448,250 @@ pub(crate) fn validate_attestation_report(
     Ok(())
 }
 
+/// Outcome of cryptographically verifying an [`AttestationReport`].
+///
+/// IMPORTANT: this encodes the *real* verification state. Under the `tee-verify`
+/// feature the quote signature chain IS verified against a hardware root (see
+/// [`verify_quote_signature`] / [`verify`]), so [`AttestationVerdict::Verified`]
+/// is reachable for genuine TDX/SEV-SNP quotes. Without that feature the chain
+/// is never verified and `Verified` is unreachable. Either way, callers and UIs
+/// MUST treat anything other than `Verified` as untrusted and must not present
+/// the workload as hardware-attested.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "verdict", rename_all = "snake_case")]
+pub enum AttestationVerdict {
+    /// Quote signature chained to a hardware root AND the measurement signed
+    /// inside the quote matched a pinned expected value AND (if a freshness
+    /// nonce was supplied) the signed report data carried it.
+    Verified,
+    /// Structurally well-formed but NOT cryptographically verified (bad/absent
+    /// signature chain, expired/insufficient TCB, or replayed report data).
+    Unverified { reason: String },
+    /// Signature verified, but the measurement signed inside the quote matched
+    /// none of the pinned expected measurements.
+    MeasurementMismatch,
+}
+
+/// Detailed result of [`verify_attestation`], suitable for serialising to the
+/// UI / on-chain so the *honest* trust state travels with the attestation.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AttestationVerification {
+    pub verdict: AttestationVerdict,
+    /// Whether the quote signature was verified against a hardware root of trust
+    /// (Intel PCS/PCCS for TDX, AMD KDS for SEV-SNP, NSM for Nitro).
+    pub signature_verified: bool,
+    /// Whether the measurement matched a pinned expected value.
+    pub measurement_matched: bool,
+    /// Whether the caller-supplied freshness nonce matched the report data the
+    /// hardware signed. `true` when no nonce was requested (nothing to bind);
+    /// `false` when a nonce was requested but the signed report data didn't
+    /// carry it (replay / mismatch), which forces a non-`Verified` verdict.
+    pub report_data_matched: bool,
+    /// Whether the report passed structural/type checks.
+    pub structural_ok: bool,
+}
+
+impl AttestationVerification {
+    /// True only when the attestation is cryptographically trustworthy.
+    pub fn is_trusted(&self) -> bool {
+        matches!(self.verdict, AttestationVerdict::Verified)
+    }
+}
+
+/// The measurement a verified quote actually carried (signed by hardware).
+///
+/// Returned by [`verify_quote_signature`] so the trust decision binds the
+/// measurement the *hardware* signed, not the operator-supplied
+/// `AttestationReport.measurement`.
+#[cfg_attr(not(feature = "tee-verify"), allow(dead_code))]
+struct SignedQuoteFacts {
+    /// Measurement extracted from inside the cryptographically verified quote.
+    measurement: Vec<u8>,
+    /// 64-byte report data the hardware signed (caller nonce binding).
+    report_data: [u8; 64],
+}
+
+/// Verify a TEE quote's signature against the appropriate hardware root of
+/// trust.
+///
+/// Returns the measurement + report_data the hardware signed on success, so the
+/// caller can bind them. Fails closed: any backend that cannot chain the quote
+/// to a hardware root the operator does not control returns `Err(reason)`.
+///
+/// The genuine per-backend implementations live in [`verify`] (Intel TDX via
+/// `dcap-qvl` to the Intel SGX Root CA; AMD SEV-SNP via the `sev` crate to the
+/// AMD ARK). They are compiled only under the `tee-verify` feature. Without that
+/// feature this is the honest fail-closed stub: nothing can be hardware-verified
+/// and [`verify_attestation`] therefore never reports `Verified`.
+///
+/// `now_secs` is the trusted current time used for collateral/TCB/CRL freshness
+/// checks; production callers pass the system clock.
+#[cfg(feature = "tee-verify")]
+fn verify_quote_signature(
+    report: &AttestationReport,
+    now_secs: u64,
+) -> Result<SignedQuoteFacts, String> {
+    let verified = verify::verify_quote_signature(report, now_secs)?;
+    Ok(SignedQuoteFacts {
+        measurement: verified.measurement,
+        report_data: verified.report_data,
+    })
+}
+
+/// Fail-closed stub used when `tee-verify` is disabled. Verifying a TDX/SEV-SNP
+/// quote requires validating the platform certificate chain (Intel PCS/PCCS
+/// DCAP collateral; AMD KDS VCEK) against a hardware root; that machinery lives
+/// behind the `tee-verify` feature. Without it, no attestation can be trusted.
+#[cfg(not(feature = "tee-verify"))]
+fn verify_quote_signature(
+    report: &AttestationReport,
+    _now_secs: u64,
+) -> Result<SignedQuoteFacts, String> {
+    Err(format!(
+        "quote-signature verification unavailable for {:?}: build with the `tee-verify` feature to chain the quote to a hardware root of trust",
+        report.tee_type
+    ))
+}
+
+/// Operator-independent allowlist of expected enclave measurements, read from
+/// `SANDBOX_TEE_EXPECTED_MEASUREMENTS` (comma/whitespace-separated hex).
+///
+/// Measurement pinning only adds security when the expected value comes from a
+/// source the operator does NOT control (a verifying client, or on-chain
+/// config) — otherwise a malicious operator forges both the measurement and the
+/// expected value. An empty allowlist means "no expected measurement
+/// configured", which can never match.
+pub fn expected_measurements_from_env() -> Vec<Vec<u8>> {
+    std::env::var("SANDBOX_TEE_EXPECTED_MEASUREMENTS")
+        .ok()
+        .map(|raw| {
+            raw.split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| hex::decode(s.trim().trim_start_matches("0x")).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Maximum age (seconds) accepted for an attestation that was NOT bound to a
+/// freshness nonce. The nonce binding ([`verify_attestation`] with
+/// `expected_report_data`) is the durable replay defense; this bound is
+/// defense-in-depth for paths that legitimately cannot challenge (e.g. a
+/// deploy-time report surfaced for display). 10 minutes is generous enough for
+/// clock skew and slow attestation fetches while still rejecting a quote
+/// captured hours/days earlier and replayed.
+const MAX_ATTESTATION_AGE_SECS: u64 = 600;
+
+/// Cryptographically verify an attestation report, returning the *honest*
+/// verification state.
+///
+/// The verdict is [`AttestationVerdict::Verified`] only when BOTH the quote
+/// signature is verified against a hardware root AND the measurement signed
+/// inside the quote matches a pinned expected value. Under the `tee-verify`
+/// feature this can genuinely reach `Verified`; without it, [`verify_quote_signature`]
+/// always errs and the verdict can never be `Verified` — by design, so the
+/// product never claims a guarantee it cannot back. This is the single entry
+/// point any trust decision (UI badge, on-chain gate, sealed-secret release)
+/// must consult; structural checks alone ([`validate_attestation_report`]) are
+/// NOT a trust decision.
+pub fn verify_attestation(
+    report: &AttestationReport,
+    expected_type: &TeeType,
+    expected_measurements: &[Vec<u8>],
+    expected_report_data: Option<&[u8; 64]>,
+) -> AttestationVerification {
+    verify_attestation_at(
+        report,
+        expected_type,
+        expected_measurements,
+        expected_report_data,
+        crate::util::now_ts(),
+    )
+}
+
+/// [`verify_attestation`] with an explicit trusted `now_secs`, so collateral/TCB
+/// freshness is evaluated against a caller-controlled clock. Used by tests to
+/// pin the time to a vendored quote's validity window; production uses the
+/// system clock via [`verify_attestation`].
+pub(crate) fn verify_attestation_at(
+    report: &AttestationReport,
+    expected_type: &TeeType,
+    expected_measurements: &[Vec<u8>],
+    expected_report_data: Option<&[u8; 64]>,
+    now_secs: u64,
+) -> AttestationVerification {
+    let structural_ok = validate_attestation_report(report, expected_type).is_ok();
+    let signature_result = verify_quote_signature(report, now_secs);
+    let signature_verified = signature_result.is_ok();
+
+    // Bind the measurement to the value the HARDWARE signed inside the quote,
+    // not the operator-supplied `report.measurement`. A malicious operator can
+    // forge `report.measurement` freely, but cannot forge the signed quote.
+    // When the signature didn't verify we have no trustworthy measurement, so
+    // the match is meaningless and we report `false`.
+    let signed_measurement = signature_result.as_ref().ok().map(|f| &f.measurement);
+    let measurement_matched = !expected_measurements.is_empty()
+        && signed_measurement.is_some_and(|signed| {
+            expected_measurements
+                .iter()
+                .any(|expected| expected == signed)
+        });
+
+    // Replay binding: when the caller challenged with a nonce, the nonce MUST
+    // equal the report data the hardware signed. Compared in constant time. With
+    // no challenge there is nothing to bind, so this is vacuously satisfied —
+    // but only counts toward trust once the signature itself verified.
+    let report_data_matched = match (expected_report_data, signature_result.as_ref().ok()) {
+        (Some(expected), Some(facts)) => bool::from(subtle::ConstantTimeEq::ct_eq(
+            &facts.report_data[..],
+            &expected[..],
+        )),
+        (Some(_), None) => false,
+        (None, _) => true,
+    };
+
+    // Staleness bound (defense-in-depth, only on the un-challenged path). With a
+    // nonce, `report_data_matched` already proves freshness. Without one, reject
+    // a report whose timestamp is too far in the past so a genuine-but-old quote
+    // cannot be replayed. `report.timestamp` is operator-supplied and only
+    // tightens (never relaxes) the decision: a future/forged timestamp does not
+    // grant trust because the signature/measurement gates still apply.
+    let fresh_enough = expected_report_data.is_some()
+        || now_secs.saturating_sub(report.timestamp) <= MAX_ATTESTATION_AGE_SECS;
+
+    let verdict = if !structural_ok {
+        AttestationVerdict::Unverified {
+            reason: "attestation report failed structural validation".to_string(),
+        }
+    } else if let Err(reason) = signature_result {
+        AttestationVerdict::Unverified { reason }
+    } else if !report_data_matched {
+        AttestationVerdict::Unverified {
+            reason: "freshness nonce did not match the report data signed by the hardware (possible replay)".to_string(),
+        }
+    } else if !fresh_enough {
+        AttestationVerdict::Unverified {
+            reason: format!(
+                "attestation is stale: timestamp {} is more than {}s before now {} and no \
+                 freshness nonce was supplied (possible replay)",
+                report.timestamp, MAX_ATTESTATION_AGE_SECS, now_secs
+            ),
+        }
+    } else if !measurement_matched {
+        AttestationVerdict::MeasurementMismatch
+    } else {
+        AttestationVerdict::Verified
+    };
+
+    AttestationVerification {
+        verdict,
+        signature_verified,
+        measurement_matched,
+        report_data_matched,
+        structural_ok,
+    }
+}
+
 /// Poll a sidecar's `/health` endpoint until it responds successfully.
 #[allow(dead_code)] // Used by TEE backends
 pub(crate) async fn wait_for_sidecar_health(
@@ -525,6 +775,7 @@ pub mod mock {
         pub inject_secrets_count: AtomicUsize,
         pub should_fail: AtomicBool,
         pub support_sealed_secrets: AtomicBool,
+        pub support_report_data: AtomicBool,
     }
 
     impl MockTeeBackend {
@@ -539,6 +790,7 @@ pub mod mock {
                 inject_secrets_count: AtomicUsize::new(0),
                 should_fail: AtomicBool::new(false),
                 support_sealed_secrets: AtomicBool::new(true),
+                support_report_data: AtomicBool::new(true),
             }
         }
 
@@ -616,7 +868,7 @@ pub mod mock {
         }
 
         fn supports_attestation_report_data(&self) -> bool {
-            true
+            self.support_report_data.load(Ordering::Relaxed)
         }
 
         async fn derive_public_key(
@@ -978,5 +1230,254 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("measurement is empty"), "{err}");
+    }
+
+    fn sample_report() -> AttestationReport {
+        AttestationReport {
+            tee_type: TeeType::Tdx,
+            evidence: vec![0x01],
+            measurement: vec![0xAA, 0xBB],
+            timestamp: 1_000,
+        }
+    }
+
+    #[test]
+    fn verify_attestation_is_never_trusted_without_signature_verification() {
+        // The P0 guard: a malicious operator can forge a non-empty, well-formed
+        // report and pin its forged measurement, but with no verifiable quote
+        // signature the verdict MUST stay Unverified. The measurement match is
+        // now meaningless without a verified signature (it binds to the
+        // hardware-signed measurement, which we don't have), so it reports
+        // `false` rather than blessing the operator's forged bytes.
+        let report = sample_report();
+        let pinned = vec![report.measurement.clone()];
+        let v = verify_attestation(&report, &TeeType::Tdx, &pinned, None);
+        assert!(!v.signature_verified);
+        assert!(v.structural_ok);
+        assert!(
+            !v.measurement_matched,
+            "measurement match must not be claimed without a verified signature"
+        );
+        assert!(!v.is_trusted());
+        assert!(matches!(v.verdict, AttestationVerdict::Unverified { .. }));
+    }
+
+    #[test]
+    fn verify_attestation_measurement_match_requires_verified_signature() {
+        // Without a verified quote signature there is no trustworthy measurement
+        // to compare against, so `measurement_matched` is always false — even
+        // when the operator-supplied measurement equals the pinned value.
+        let report = sample_report();
+        assert!(
+            !verify_attestation(&report, &TeeType::Tdx, &[vec![0xAA, 0xBB]], None)
+                .measurement_matched
+        );
+        assert!(
+            !verify_attestation(&report, &TeeType::Tdx, &[vec![0x00]], None).measurement_matched
+        );
+        assert!(!verify_attestation(&report, &TeeType::Tdx, &[], None).measurement_matched);
+    }
+
+    #[test]
+    fn verify_attestation_structural_failure_is_unverified() {
+        let bad = AttestationReport {
+            tee_type: TeeType::Tdx,
+            evidence: vec![],
+            measurement: vec![0xAA],
+            timestamp: 1,
+        };
+        let v = verify_attestation(&bad, &TeeType::Tdx, &[vec![0xAA]], None);
+        assert!(!v.structural_ok);
+        assert!(!v.is_trusted());
+        assert!(matches!(v.verdict, AttestationVerdict::Unverified { .. }));
+    }
+
+    #[test]
+    fn expected_measurements_parses_hex_list() {
+        unsafe {
+            std::env::set_var("SANDBOX_TEE_EXPECTED_MEASUREMENTS", "0xaabb, ccdd");
+        }
+        let m = expected_measurements_from_env();
+        unsafe {
+            std::env::remove_var("SANDBOX_TEE_EXPECTED_MEASUREMENTS");
+        }
+        assert_eq!(m, vec![vec![0xAA, 0xBB], vec![0xCC, 0xDD]]);
+    }
+
+    // ── End-to-end positive/negative against real hardware quotes ─────────────
+    //
+    // These exercise the full public `verify_attestation` path with genuine,
+    // vendored, known-good quotes (provenance: tests/tee_vectors/README.md).
+    // Gated by `tee-verify` because they pull the real verification crates.
+    #[cfg(feature = "tee-verify")]
+    mod e2e {
+        use super::super::*;
+
+        const TDX_QUOTE: &[u8] = include_bytes!("../../tests/tee_vectors/tdx_quote.bin");
+        const TDX_COLLATERAL_JSON: &[u8] =
+            include_bytes!("../../tests/tee_vectors/tdx_quote_collateral.json");
+
+        /// `now` inside the collateral validity window. Shared with the unit
+        /// tests in `super::super::verify`.
+        fn tdx_now() -> u64 {
+            super::super::verify::tests_now_from_collateral(TDX_COLLATERAL_JSON)
+        }
+
+        fn tdx_evidence(quote: &[u8]) -> Vec<u8> {
+            let collateral: serde_json::Value =
+                serde_json::from_slice(TDX_COLLATERAL_JSON).expect("collateral");
+            serde_json::to_vec(&serde_json::json!({
+                "quote": hex::encode(quote),
+                "collateral": collateral,
+            }))
+            .expect("envelope")
+        }
+
+        /// The MRTD the genuine quote signs, obtained by running the real
+        /// verifier (the honest source of truth for the signed measurement).
+        fn tdx_mr_td() -> Vec<u8> {
+            let report = tdx_report();
+            verify_quote_signature(&report, tdx_now())
+                .expect("known-good quote verifies")
+                .measurement
+        }
+
+        fn tdx_report() -> AttestationReport {
+            AttestationReport {
+                tee_type: TeeType::Tdx,
+                evidence: tdx_evidence(TDX_QUOTE),
+                // Operator-supplied measurement is irrelevant to trust here; the
+                // decision binds to the measurement signed inside the quote.
+                measurement: vec![0u8; 48],
+                timestamp: tdx_now(),
+            }
+        }
+
+        #[test]
+        fn genuine_tdx_quote_with_pinned_measurement_is_verified() {
+            // Full public path to a real `Verified` verdict: genuine quote +
+            // collateral, signature chained to the Intel SGX Root CA, TCB
+            // UpToDate, and the pinned MRTD equals the one signed in the quote.
+            // Time is pinned inside the collateral validity window.
+            let report = tdx_report();
+            let pinned = vec![tdx_mr_td()];
+            let v = verify_attestation_at(&report, &TeeType::Tdx, &pinned, None, tdx_now());
+            assert_eq!(
+                v.verdict,
+                AttestationVerdict::Verified,
+                "a genuine, up-to-date TDX quote with pinned MRTD must be Verified"
+            );
+            assert!(v.signature_verified);
+            assert!(v.measurement_matched);
+            assert!(v.is_trusted());
+        }
+
+        #[test]
+        fn genuine_tdx_quote_with_wrong_pinned_measurement_is_measurement_mismatch() {
+            // Signature verifies, but the pinned measurement is wrong -> the
+            // verdict is MeasurementMismatch, never trusted.
+            let report = tdx_report();
+            let wrong = vec![vec![0u8; 48]];
+            let v = verify_attestation_at(&report, &TeeType::Tdx, &wrong, None, tdx_now());
+            assert!(v.signature_verified, "signature still verifies");
+            assert!(
+                !v.is_trusted(),
+                "wrong pinned measurement must not be trusted"
+            );
+            assert_eq!(v.verdict, AttestationVerdict::MeasurementMismatch);
+        }
+
+        #[test]
+        fn tampered_tdx_quote_is_unverified_end_to_end() {
+            // Flip a byte in the signed body -> signature fails -> Unverified
+            // through the full public entry point, even with the MRTD pinned.
+            let pinned = tdx_mr_td();
+            let mut quote = TDX_QUOTE.to_vec();
+            let idx = quote.len() / 2;
+            quote[idx] ^= 0xFF;
+            let report = AttestationReport {
+                tee_type: TeeType::Tdx,
+                evidence: tdx_evidence(&quote),
+                measurement: pinned.clone(),
+                timestamp: tdx_now(),
+            };
+            let v = verify_attestation_at(&report, &TeeType::Tdx, &[pinned], None, tdx_now());
+            assert!(!v.signature_verified);
+            assert!(!v.is_trusted());
+            assert!(matches!(v.verdict, AttestationVerdict::Unverified { .. }));
+        }
+
+        /// The 64-byte report data the genuine quote actually signed.
+        fn tdx_signed_report_data() -> [u8; 64] {
+            verify_quote_signature(&tdx_report(), tdx_now())
+                .expect("known-good quote verifies")
+                .report_data
+        }
+
+        #[test]
+        fn genuine_tdx_quote_binds_matching_nonce() {
+            // Replay binding: supplying the exact report data the hardware signed
+            // keeps the verdict Verified.
+            let report = tdx_report();
+            let pinned = vec![tdx_mr_td()];
+            let nonce = tdx_signed_report_data();
+            let v = verify_attestation_at(&report, &TeeType::Tdx, &pinned, Some(&nonce), tdx_now());
+            assert!(v.report_data_matched);
+            assert_eq!(v.verdict, AttestationVerdict::Verified);
+        }
+
+        #[test]
+        fn genuine_tdx_quote_without_nonce_is_rejected_when_stale() {
+            // Defense-in-depth: an un-challenged genuine quote whose timestamp is
+            // older than the max-age bound is rejected as a possible replay, even
+            // though the signature and measurement are otherwise valid. (With a
+            // nonce the report_data binding would carry freshness instead.)
+            let mut report = tdx_report();
+            // Backdate the report well beyond the staleness window relative to
+            // `tdx_now()`, keeping the verification clock at `tdx_now()`.
+            report.timestamp = tdx_now() - (MAX_ATTESTATION_AGE_SECS + 60);
+            let pinned = vec![tdx_mr_td()];
+            let v = verify_attestation_at(&report, &TeeType::Tdx, &pinned, None, tdx_now());
+            assert!(v.signature_verified, "signature still verifies");
+            assert!(
+                !v.is_trusted(),
+                "a stale un-challenged quote must not be trusted"
+            );
+            match v.verdict {
+                AttestationVerdict::Unverified { reason } => {
+                    assert!(reason.contains("stale"), "{reason}");
+                }
+                other => panic!("expected Unverified (stale), got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn genuine_tdx_quote_rejects_wrong_nonce_as_replay() {
+            // A challenge nonce that the quote did NOT sign must fail closed,
+            // even though the signature and measurement are otherwise valid.
+            let report = tdx_report();
+            let pinned = vec![tdx_mr_td()];
+            let mut wrong_nonce = tdx_signed_report_data();
+            wrong_nonce[0] ^= 0xFF;
+            let v = verify_attestation_at(
+                &report,
+                &TeeType::Tdx,
+                &pinned,
+                Some(&wrong_nonce),
+                tdx_now(),
+            );
+            assert!(v.signature_verified, "signature still verifies");
+            assert!(!v.report_data_matched, "wrong nonce must not bind");
+            assert!(!v.is_trusted());
+            match v.verdict {
+                AttestationVerdict::Unverified { reason } => {
+                    assert!(
+                        reason.contains("nonce") || reason.contains("replay"),
+                        "{reason}"
+                    );
+                }
+                other => panic!("expected Unverified (replay), got {other:?}"),
+            }
+        }
     }
 }
