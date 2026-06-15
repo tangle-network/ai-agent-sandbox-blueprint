@@ -15,9 +15,9 @@ qos = ["dep:blueprint-qos"]
 
 [dependencies]
 ai-agent-sandbox-blueprint-lib = { path = "../ai-agent-sandbox-blueprint-lib" }
-blueprint-producers-extra = { version = "=0.2.0-alpha.4", features = ["cron"] }
-blueprint-qos = { version = "=0.2.0-alpha.6", optional = true }
-blueprint-sdk = { version = "=0.2.0-alpha.6", default-features = false, features = ["std", "tangle"] }
+blueprint-producers-extra = { version = "=0.2.0-alpha.5", features = ["cron"] }
+blueprint-qos = { version = "=0.2.0-alpha.10", optional = true }
+blueprint-sdk = { version = "=0.2.0-alpha.9", default-features = false, features = ["std", "tangle"] }
 axum = "0.8"
 futures-util = "0.3"
 sandbox-runtime = { path = "../sandbox-runtime" }
