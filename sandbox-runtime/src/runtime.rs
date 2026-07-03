@@ -165,6 +165,16 @@ pub struct SidecarRuntimeConfig {
     pub snapshot_auto_commit: bool,
     pub snapshot_destination_prefix: Option<String>,
     pub sandbox_max_count: usize,
+    /// Per-sandbox CPU maximum (cores). 0 = no cap.
+    pub sandbox_max_cpu_cores: u64,
+    /// Per-sandbox memory maximum (MB). 0 = no cap. Also the value an
+    /// unlimited (0) request clamps to, and the footprint an unlimited
+    /// sandbox is accounted at in the host memory budget.
+    pub sandbox_max_memory_mb: u64,
+    /// Per-sandbox disk maximum (GB). 0 = no cap.
+    pub sandbox_max_disk_gb: u64,
+    /// Total memory (MB) admissible across all running sandboxes. 0 = disabled.
+    pub sandbox_host_memory_budget_mb: u64,
 }
 
 static RUNTIME_CONFIG: OnceCell<SidecarRuntimeConfig> = OnceCell::new();
@@ -271,6 +281,22 @@ impl SidecarRuntimeConfig {
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(100);
+            let sandbox_max_cpu_cores = env::var("SANDBOX_MAX_CPU_CORES")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let sandbox_max_memory_mb = env::var("SANDBOX_MAX_MEMORY_MB")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let sandbox_max_disk_gb = env::var("SANDBOX_MAX_DISK_GB")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let sandbox_host_memory_budget_mb = env::var("SANDBOX_HOST_MEMORY_BUDGET_MB")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
 
             // Validate critical configuration values. Panics are intentional here —
             // these represent unrecoverable startup misconfigurations. Unlike process::exit,
@@ -288,6 +314,10 @@ impl SidecarRuntimeConfig {
                 reaper_interval = sandbox_reaper_interval,
                 gc_interval = sandbox_gc_interval,
                 max_sandboxes = sandbox_max_count,
+                max_cpu_cores = sandbox_max_cpu_cores,
+                max_memory_mb = sandbox_max_memory_mb,
+                max_disk_gb = sandbox_max_disk_gb,
+                host_memory_budget_mb = sandbox_host_memory_budget_mb,
                 "Runtime configuration loaded"
             );
 
@@ -311,6 +341,10 @@ impl SidecarRuntimeConfig {
                 snapshot_auto_commit,
                 snapshot_destination_prefix,
                 sandbox_max_count,
+                sandbox_max_cpu_cores,
+                sandbox_max_memory_mb,
+                sandbox_max_disk_gb,
+                sandbox_host_memory_budget_mb,
             }
         })
     }
@@ -675,24 +709,173 @@ pub async fn acquire_creation_permit() -> tokio::sync::MutexGuard<'static, ()> {
     CREATION_PERMIT.lock().await
 }
 
-fn enforce_sandbox_count_limit(
-    config: &SidecarRuntimeConfig,
-    reusing_existing_slot: bool,
-) -> Result<()> {
-    if config.sandbox_max_count == 0 {
+/// Decision core of the sandbox count cap, separated from store access so the
+/// rejection class is unit-testable. `max == 0` = no cap.
+fn check_sandbox_count_limit(current: usize, reusing_existing_slot: bool, max: usize) -> Result<()> {
+    if max == 0 {
         return Ok(());
     }
 
-    let current = sandboxes()?.values()?.len();
     let effective_current = adjusted_sandbox_count_for_limit(current, reusing_existing_slot);
-    if effective_current >= config.sandbox_max_count {
-        return Err(SandboxError::Validation(format!(
+    if effective_current >= max {
+        // Unavailable (→ 503), not Validation (→ 400): the request is
+        // well-formed — this host is at capacity. The class tells callers to
+        // retry on another operator instead of fixing the request.
+        return Err(SandboxError::Unavailable(format!(
             "Sandbox limit reached ({current}/{max}). Delete unused sandboxes before creating new ones.",
-            max = config.sandbox_max_count,
         )));
     }
 
     Ok(())
+}
+
+fn enforce_sandbox_count_limit(
+    config: &SidecarRuntimeConfig,
+    reusing_existing_slot: bool,
+) -> Result<()> {
+    let current = sandboxes()?.values()?.len();
+    check_sandbox_count_limit(current, reusing_existing_slot, config.sandbox_max_count)
+}
+
+/// Apply a per-sandbox operator maximum to one requested resource value.
+///
+/// `max == 0` means no cap: the request passes through, including 0 =
+/// unlimited. With a cap set: a request above the cap is a typed
+/// `Unavailable` rejection (retry on a bigger operator), and a request of 0
+/// clamps to the cap — an operator who sets a maximum must never run an
+/// unlimited container.
+fn enforce_resource_max(requested: u64, max: u64, resource: &str) -> Result<u64> {
+    if max == 0 {
+        return Ok(requested);
+    }
+    if requested == 0 {
+        return Ok(max);
+    }
+    if requested > max {
+        return Err(SandboxError::Unavailable(format!(
+            "Requested {resource} {requested} exceeds this operator's maximum {max}. \
+             Retry on an operator with a higher {resource} limit."
+        )));
+    }
+    Ok(requested)
+}
+
+/// Memory a sandbox is accounted at for the host memory budget.
+///
+/// `None` means the footprint is unknowable: the sandbox requests unlimited
+/// memory (0) and no `SANDBOX_MAX_MEMORY_MB` clamp is configured — callers
+/// skip it (with a one-time warning) rather than guessing.
+fn accounted_memory_mb(memory_mb: u64, sandbox_max_memory_mb: u64) -> Option<u64> {
+    if memory_mb > 0 {
+        Some(memory_mb)
+    } else if sandbox_max_memory_mb > 0 {
+        Some(sandbox_max_memory_mb)
+    } else {
+        None
+    }
+}
+
+static UNACCOUNTABLE_MEMORY_WARN: std::sync::Once = std::sync::Once::new();
+
+/// Decision core of the host memory budget, separated from store access so it
+/// is unit-testable. `budget_mb == 0` disables the check. Records (and an
+/// incoming request) with unknowable footprint are skipped with a one-time
+/// warning — see [`accounted_memory_mb`].
+fn check_host_memory_budget(
+    running_memory_mb: impl IntoIterator<Item = u64>,
+    incoming_memory_mb: u64,
+    sandbox_max_memory_mb: u64,
+    budget_mb: u64,
+) -> Result<()> {
+    if budget_mb == 0 {
+        return Ok(());
+    }
+
+    let mut live_mb: u64 = 0;
+    let mut unaccounted = 0usize;
+    for memory_mb in running_memory_mb {
+        match accounted_memory_mb(memory_mb, sandbox_max_memory_mb) {
+            Some(mb) => live_mb = live_mb.saturating_add(mb),
+            None => unaccounted += 1,
+        }
+    }
+    let incoming_mb = match accounted_memory_mb(incoming_memory_mb, sandbox_max_memory_mb) {
+        Some(mb) => mb,
+        None => {
+            unaccounted += 1;
+            0
+        }
+    };
+    if unaccounted > 0 {
+        UNACCOUNTABLE_MEMORY_WARN.call_once(|| {
+            tracing::warn!(
+                unaccounted,
+                "Host memory budget cannot account for sandboxes with unlimited memory; \
+                 set SANDBOX_MAX_MEMORY_MB so every sandbox has a bounded footprint"
+            );
+        });
+    }
+
+    let committed = live_mb.saturating_add(incoming_mb);
+    if committed > budget_mb {
+        return Err(SandboxError::Unavailable(format!(
+            "Host memory budget exceeded: {committed} MB committed ({live_mb} MB running + \
+             {incoming_mb} MB requested) > SANDBOX_HOST_MEMORY_BUDGET_MB={budget_mb}. \
+             Retry on another operator."
+        )));
+    }
+
+    Ok(())
+}
+
+/// Enforce `SANDBOX_HOST_MEMORY_BUDGET_MB` at admission. Must be called with
+/// [`CREATION_PERMIT`] held so the running-memory sum cannot race a
+/// concurrent create.
+fn enforce_host_memory_budget(
+    config: &SidecarRuntimeConfig,
+    incoming_memory_mb: u64,
+    reused_sandbox_id: Option<&str>,
+) -> Result<()> {
+    if config.sandbox_host_memory_budget_mb == 0 {
+        return Ok(());
+    }
+
+    let running_memory_mb: Vec<u64> = sandboxes()?
+        .values()?
+        .into_iter()
+        .filter(|record| record.state == SandboxState::Running)
+        // A create that replaces an existing record (recreate / image upgrade)
+        // frees the old container's memory, so it doesn't count against the budget.
+        .filter(|record| reused_sandbox_id != Some(record.id.as_str()))
+        .map(|record| record.memory_mb)
+        .collect();
+
+    check_host_memory_budget(
+        running_memory_mb,
+        incoming_memory_mb,
+        config.sandbox_max_memory_mb,
+        config.sandbox_host_memory_budget_mb,
+    )
+}
+
+/// Per-sandbox resource maxima + host memory budget, applied under
+/// [`CREATION_PERMIT`] before backend dispatch. Returns the request with
+/// effective (possibly clamped) resource values so the container, the stored
+/// record, and the budget accounting all agree.
+fn admit_sandbox_resources(
+    config: &SidecarRuntimeConfig,
+    request: &CreateSandboxParams,
+    sandbox_id_override: Option<&str>,
+) -> Result<CreateSandboxParams> {
+    let mut admitted = request.clone();
+    admitted.cpu_cores =
+        enforce_resource_max(request.cpu_cores, config.sandbox_max_cpu_cores, "cpu_cores")?;
+    admitted.memory_mb =
+        enforce_resource_max(request.memory_mb, config.sandbox_max_memory_mb, "memory_mb")?;
+    admitted.disk_gb =
+        enforce_resource_max(request.disk_gb, config.sandbox_max_disk_gb, "disk_gb")?;
+    enforce_host_memory_budget(config, admitted.memory_mb, sandbox_id_override)?;
+    Ok(admitted)
 }
 
 fn restore_previous_store_entry(
@@ -1092,6 +1275,11 @@ async fn create_sidecar_with_token(
     sandbox_id_override: Option<&str>,
 ) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
     let _creation_permit = acquire_creation_permit().await;
+    // Resource admission runs under the permit and before backend dispatch:
+    // per-sandbox maxima (reject over-max, clamp unlimited-to-max) and the
+    // host memory budget apply identically to Docker, Firecracker, and TEE.
+    let admitted = admit_sandbox_resources(SidecarRuntimeConfig::load(), request, sandbox_id_override)?;
+    let request = &admitted;
     match resolve_runtime_backend(request)? {
         RuntimeBackend::Tee => {
             let backend = tee.ok_or_else(|| {
@@ -1157,6 +1345,13 @@ async fn create_sidecar_tee(
     let sandbox_id = sandbox_id_override
         .map(ToString::to_string)
         .unwrap_or_else(next_sandbox_id);
+    let previous_store_entry = existing_store_entry_for_override(&sandbox_id)?;
+
+    // Same admission gate as the Docker/Firecracker paths — TEE creates must
+    // not bypass the host sandbox count cap. Runs with [`CREATION_PERMIT`]
+    // held (acquired in `create_sidecar_with_token`) so the check can't race.
+    enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
+
     let token = match token_override {
         Some(t) if !t.trim().is_empty() => t.to_string(),
         _ => crate::auth::generate_token(),
@@ -4784,6 +4979,10 @@ mod core_logic_tests {
             snapshot_auto_commit: true,
             snapshot_destination_prefix: None,
             sandbox_max_count: 100,
+            sandbox_max_cpu_cores: 0,
+            sandbox_max_memory_mb: 0,
+            sandbox_max_disk_gb: 0,
+            sandbox_host_memory_budget_mb: 0,
         }
     }
 
@@ -4793,6 +4992,97 @@ mod core_logic_tests {
         assert_eq!(adjusted_sandbox_count_for_limit(1, false), 1);
         assert_eq!(adjusted_sandbox_count_for_limit(1, true), 0);
         assert_eq!(adjusted_sandbox_count_for_limit(5, true), 4);
+    }
+
+    // ── admission control: count-limit class, resource maxima, memory budget ──
+
+    #[test]
+    fn count_limit_rejection_is_unavailable() {
+        // Capacity exhaustion must map to Unavailable (→ 503) so callers
+        // retry on another operator; Validation (→ 400) would tell them the
+        // request itself is malformed.
+        let err = check_sandbox_count_limit(3, false, 3).unwrap_err();
+        assert!(matches!(err, SandboxError::Unavailable(_)), "got {err:?}");
+        assert!(err.to_string().contains("Sandbox limit reached (3/3)"));
+    }
+
+    #[test]
+    fn count_limit_uncapped_reuse_and_in_range_pass() {
+        assert!(check_sandbox_count_limit(10_000, false, 0).is_ok(), "0 = no cap");
+        assert!(
+            check_sandbox_count_limit(3, true, 3).is_ok(),
+            "replacing an existing slot stays within the cap"
+        );
+        assert!(check_sandbox_count_limit(2, false, 3).is_ok());
+    }
+
+    #[test]
+    fn resource_max_uncapped_passthrough() {
+        assert_eq!(enforce_resource_max(0, 0, "memory_mb").unwrap(), 0);
+        assert_eq!(enforce_resource_max(4096, 0, "memory_mb").unwrap(), 4096);
+    }
+
+    #[test]
+    fn resource_max_clamps_unlimited_request_to_max() {
+        // 0 = unlimited must clamp to the cap: an operator who sets a maximum
+        // must never run an unlimited container.
+        assert_eq!(enforce_resource_max(0, 2048, "memory_mb").unwrap(), 2048);
+    }
+
+    #[test]
+    fn resource_max_rejects_over_max_as_unavailable() {
+        let err = enforce_resource_max(4096, 2048, "memory_mb").unwrap_err();
+        assert!(matches!(err, SandboxError::Unavailable(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("memory_mb"), "message names the resource: {msg}");
+        assert!(msg.contains("4096") && msg.contains("2048"), "message names both values: {msg}");
+    }
+
+    #[test]
+    fn resource_max_in_range_passthrough() {
+        assert_eq!(enforce_resource_max(1024, 2048, "memory_mb").unwrap(), 1024);
+    }
+
+    #[test]
+    fn accounted_memory_prefers_request_then_max_then_unknown() {
+        assert_eq!(accounted_memory_mb(1024, 2048), Some(1024));
+        assert_eq!(accounted_memory_mb(0, 2048), Some(2048));
+        assert_eq!(accounted_memory_mb(0, 0), None);
+    }
+
+    #[test]
+    fn memory_budget_disabled_when_zero() {
+        assert!(check_host_memory_budget([u64::MAX, u64::MAX], 999_999, 0, 0).is_ok());
+    }
+
+    #[test]
+    fn memory_budget_rejects_over_budget_as_unavailable() {
+        // 1024 + 2048 running + 2048 requested = 5120 > 4096.
+        let err = check_host_memory_budget([1024, 2048], 2048, 2048, 4096).unwrap_err();
+        assert!(matches!(err, SandboxError::Unavailable(_)), "got {err:?}");
+        assert!(err.to_string().contains("memory budget"), "got {err}");
+    }
+
+    #[test]
+    fn memory_budget_admits_exactly_at_budget() {
+        assert!(check_host_memory_budget([1024, 2048], 1024, 2048, 4096).is_ok());
+    }
+
+    #[test]
+    fn memory_budget_counts_unlimited_records_at_max() {
+        // A running record with memory_mb=0 is accounted at SANDBOX_MAX_MEMORY_MB:
+        // 2048 (0→max) + 2048 requested = 4096 ≤ 4096 passes…
+        assert!(check_host_memory_budget([0], 2048, 2048, 4096).is_ok());
+        // …and one extra MB of running memory rejects.
+        assert!(check_host_memory_budget([0, 1], 2048, 2048, 4096).is_err());
+    }
+
+    #[test]
+    fn memory_budget_skips_unaccountable_records() {
+        // Without SANDBOX_MAX_MEMORY_MB, unlimited records can't be accounted
+        // and are skipped (warned once) rather than guessed.
+        assert!(check_host_memory_budget([0, 0], 1024, 0, 2048).is_ok());
+        assert!(check_host_memory_budget([1500, 0], 1024, 0, 2048).is_err());
     }
 
     #[test]

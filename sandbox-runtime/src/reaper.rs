@@ -681,6 +681,10 @@ mod tests {
             snapshot_auto_commit: true,
             snapshot_destination_prefix: Some("s3://my-bucket/snapshots/".to_string()),
             sandbox_max_count: 100,
+            sandbox_max_cpu_cores: 0,
+            sandbox_max_memory_mb: 0,
+            sandbox_max_disk_gb: 0,
+            sandbox_host_memory_budget_mb: 0,
         }
     }
 

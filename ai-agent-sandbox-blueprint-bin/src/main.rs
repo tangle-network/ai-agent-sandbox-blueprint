@@ -525,6 +525,16 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     let tangle_producer = TangleProducer::new(tangle_client.clone(), service_id);
     let tangle_consumer = ReconciledTangleConsumer::new(tangle_client);
 
+    // A chain capacity above the host admission cap means the chain would
+    // route work this host must reject — fail startup so the operator fixes
+    // the configuration instead of serving capacity rejections.
+    if let Err(msg) = validate_chain_vs_host_capacity(
+        std::env::var("OPERATOR_MAX_CAPACITY").ok().as_deref(),
+        std::env::var("SANDBOX_MAX_COUNT").ok().as_deref(),
+    ) {
+        return Err(blueprint_sdk::Error::Other(msg));
+    }
+
     // Encode operator max capacity as registration inputs for the blueprint contract.
     // The contract's onRegister decodes abi.encode(uint32 capacity) from these inputs.
     let tangle_config = {
@@ -954,9 +964,43 @@ fn workflow_replay_matches_store(
     }
 }
 
+/// Cross-check on-chain capacity vs the host admission cap.
+///
+/// `OPERATOR_MAX_CAPACITY` is what this operator registers on-chain (the
+/// chain may assign that many sandboxes); `SANDBOX_MAX_COUNT` is what the
+/// host runtime will actually admit. Registering more than the host admits
+/// guarantees rejected work, so startup fails when both are set and
+/// chain > host. `SANDBOX_MAX_COUNT=0` (uncapped host) always passes.
+/// Unparseable values are ignored here for parity with their consumers:
+/// registration skips an unparseable `OPERATOR_MAX_CAPACITY` and the runtime
+/// substitutes its default for an unparseable `SANDBOX_MAX_COUNT`.
+fn validate_chain_vs_host_capacity(
+    operator_max_capacity: Option<&str>,
+    sandbox_max_count: Option<&str>,
+) -> Result<(), String> {
+    let (Some(capacity_raw), Some(max_count_raw)) = (operator_max_capacity, sandbox_max_count)
+    else {
+        return Ok(());
+    };
+    let (Ok(capacity), Ok(max_count)) = (
+        capacity_raw.trim().parse::<u32>(),
+        max_count_raw.trim().parse::<usize>(),
+    ) else {
+        return Ok(());
+    };
+    if max_count == 0 || capacity as usize <= max_count {
+        return Ok(());
+    }
+    Err(format!(
+        "OPERATOR_MAX_CAPACITY={capacity} exceeds SANDBOX_MAX_COUNT={max_count}: the chain \
+         would assign up to {capacity} sandboxes but this host rejects creations beyond \
+         {max_count}. Lower OPERATOR_MAX_CAPACITY or raise SANDBOX_MAX_COUNT."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{WorkflowEntry, workflow_replay_matches_store};
+    use super::{WorkflowEntry, validate_chain_vs_host_capacity, workflow_replay_matches_store};
     use serde_json::json;
 
     fn active_workflow(id: u64) -> WorkflowEntry {
@@ -1021,5 +1065,41 @@ mod tests {
             &payload,
             Some(&active_workflow(11))
         ));
+    }
+
+    // ── chain-vs-host capacity cross-check ─────────────────────────────
+
+    #[test]
+    fn capacity_cross_check_fails_when_chain_exceeds_host() {
+        let err = validate_chain_vs_host_capacity(Some("50"), Some("10")).unwrap_err();
+        assert!(err.contains("OPERATOR_MAX_CAPACITY=50"), "names chain value: {err}");
+        assert!(err.contains("SANDBOX_MAX_COUNT=10"), "names host value: {err}");
+    }
+
+    #[test]
+    fn capacity_cross_check_passes_equal_or_less() {
+        assert!(validate_chain_vs_host_capacity(Some("10"), Some("10")).is_ok());
+        assert!(validate_chain_vs_host_capacity(Some("5"), Some("10")).is_ok());
+    }
+
+    #[test]
+    fn capacity_cross_check_passes_uncapped_host() {
+        // SANDBOX_MAX_COUNT=0 disables the host cap entirely.
+        assert!(validate_chain_vs_host_capacity(Some("500"), Some("0")).is_ok());
+    }
+
+    #[test]
+    fn capacity_cross_check_requires_both_values() {
+        assert!(validate_chain_vs_host_capacity(None, Some("10")).is_ok());
+        assert!(validate_chain_vs_host_capacity(Some("50"), None).is_ok());
+        assert!(validate_chain_vs_host_capacity(None, None).is_ok());
+    }
+
+    #[test]
+    fn capacity_cross_check_ignores_unparseable_values() {
+        // Parity with the consumers: registration skips a bad
+        // OPERATOR_MAX_CAPACITY; the runtime defaults a bad SANDBOX_MAX_COUNT.
+        assert!(validate_chain_vs_host_capacity(Some("abc"), Some("10")).is_ok());
+        assert!(validate_chain_vs_host_capacity(Some("50"), Some("abc")).is_ok());
     }
 }
