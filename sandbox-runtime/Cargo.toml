@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 async-trait = "0.1"
 alloy = { version = "=1.8.3", default-features = false, features = ["sol-types"] }
-blueprint-sdk = { version = "=0.2.0-alpha.9", default-features = false, features = ["std", "tracing", "local-store"] }
+blueprint-sdk = { version = "=0.2.0-alpha.10", default-features = false, features = ["std", "tracing", "local-store"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dashmap = "6"
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
