@@ -5,9 +5,20 @@
 //! separate "host-agent" service; this module talks directly to the VMM over
 //! its unix socket via the primitive.
 //!
-//! ## Wired today (`microvm-runtime 0.4.0-alpha.1`)
+//! ## Wired today (`microvm-runtime 0.4.0-alpha.2` + `microvm-warm-pool 0.1.0-alpha.2`)
 //!
 //! - VM create / start / stop / destroy lifecycle.
+//! - **Warm-pool snapshot serving** via [`crate::firecracker_warm`], gated
+//!   by `SANDBOX_FC_WARM_POOL_SIZE` (0 = off, the default). When enabled,
+//!   dedicated template VMs (never tenant VMs) are cold-booted, paused, and
+//!   snapshotted; pre-restored entries wait in a [`microvm_warm_pool`] pool
+//!   and are handed off to creates via `rename_vm` + resume. Misses fall
+//!   back to cold boot with a logged, typed reason — the one designed
+//!   fallback in this module.
+//! - **Snapshot-restore memory backend**: `MICROVM_MEM_BACKEND=file|uffd`
+//!   is read by the primitive itself (`FirecrackerConfig::from_env`);
+//!   `uffd` restores guest memory through a userfaultfd handler (lazy CoW
+//!   paging from the snapshot's mem file) instead of a full file load.
 //! - **Per-VM TAP / bridge / NAT** via [`NetworkManager`]. The host bridge,
 //!   per-VM TAP, and gateway are set up before `create_vm_with_spec`; the
 //!   resulting [`VmNetwork`] is recorded so the host-reachable sidecar URL
@@ -52,12 +63,14 @@
 //!   `SANDBOX_FIRECRACKER_DEFAULT_STACK`.
 
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use async_trait::async_trait;
 use microvm_runtime::{
     GuestMetadataClient, GuestMetadataConfig, NetworkManager, RootfsRegistry, VmNetwork,
     VsockManager,
-    adapters::firecracker::FirecrackerVmProvider,
+    adapters::firecracker::{FirecrackerConfig, FirecrackerVmProvider},
     error::VmRuntimeError,
     model::{NetworkInterface, VmSpec, VmStatus, VsockSpec},
     provider::{VmProvider, VmQuery},
@@ -66,6 +79,10 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 
 use crate::error::{Result, SandboxError};
+use crate::firecracker_warm::{
+    self, TemplateIdentity, WarmClaim, WarmClaimRequest, WarmHost, WarmLineage, WarmOutcome,
+    WarmServing, WarmSettings,
+};
 
 use crate::firecracker_dnat;
 
@@ -120,6 +137,24 @@ struct VmAttachments {
     /// `true` iff a per-VM rootfs clone was created and must be released
     /// on delete. `false` for VMs that reused the provider's default rootfs.
     rootfs_cloned: bool,
+    /// Warm-claim lineage: host resources this sandbox holds under ids other
+    /// than its own (rider TAP, template vsock CID, template rootfs clone).
+    /// `None` for cold-booted VMs. In-memory only — an operator restart
+    /// loses it and leaks the aliases until host-level cleanup (documented
+    /// in `firecracker_warm`).
+    warm: Option<WarmLineage>,
+}
+
+impl VmAttachments {
+    fn cold(dnat_rule_count: usize, rootfs_cloned: bool) -> Self {
+        Self {
+            network_attached: true,
+            vsock_attached: true,
+            dnat_rule_count,
+            rootfs_cloned,
+            warm: None,
+        }
+    }
 }
 
 fn attachments_map() -> &'static Mutex<HashMap<String, Arc<VmAttachments>>> {
@@ -423,6 +458,333 @@ fn release_attachments(vm_id: &str, attachments: &VmAttachments) {
     {
         tracing::warn!(vm_id, ?err, "failed to release firecracker rootfs clone");
     }
+    if let Some(warm) = &attachments.warm {
+        // Warm-claimed sandboxes hold host resources under lineage ids: the
+        // vsock CID (and, when cloned, the rootfs slot) live under the
+        // template id; the TAP the VM rides lives under the rider id. All
+        // are single-owner by construction (one claim per generation), so
+        // releasing them here cannot race another VM.
+        if warm.rootfs_cloned
+            && let Err(err) = rootfs_registry().release(&warm.template_id)
+        {
+            tracing::warn!(
+                vm_id,
+                template_id = %warm.template_id,
+                ?err,
+                "failed to release warm template rootfs clone"
+            );
+        }
+        if let Err(err) = vsock_manager().detach(&warm.template_id) {
+            tracing::warn!(
+                vm_id,
+                template_id = %warm.template_id,
+                ?err,
+                "failed to detach warm template vsock"
+            );
+        }
+        if let Some(rider_id) = &warm.rider_id
+            && let Err(err) = network().detach(rider_id)
+        {
+            tracing::warn!(vm_id, rider_id, ?err, "failed to detach warm rider network");
+        }
+    }
+}
+
+/// Production [`WarmHost`]: composes template identity with the same
+/// primitives the cold path uses (`NetworkManager` / `VsockManager` /
+/// `RootfsRegistry`) and gates template readiness on the guest metadata
+/// daemon answering over vsock — the identical readiness bar a cold-booted
+/// sandbox must clear before env injection.
+struct OperatorWarmHost;
+
+#[async_trait]
+impl WarmHost for OperatorWarmHost {
+    async fn compose_template(
+        &self,
+        template_id: &str,
+        disk_gb: u64,
+        stack: Option<&str>,
+        spec: &mut VmSpec,
+    ) -> Result<TemplateIdentity> {
+        let (vm_net, uds_path) = match attach_network_and_vsock(template_id, spec) {
+            Ok(v) => v,
+            Err(err) => {
+                let _ = network().detach(template_id);
+                let _ = vsock_manager().detach(template_id);
+                return Err(err);
+            }
+        };
+
+        let mut rootfs_cloned = false;
+        if disk_gb > 0 {
+            let stack_name = stack.ok_or_else(|| {
+                SandboxError::Validation(
+                    "SANDBOX_FC_WARM_DISK_GB > 0 requires SANDBOX_FIRECRACKER_DEFAULT_STACK \
+                     so the warm template has a rootfs template to clone"
+                        .to_string(),
+                )
+            })?;
+            let target_bytes = disk_gb.saturating_mul(1024 * 1024 * 1024);
+            match rootfs_registry().clone_for_vm_with_size(template_id, stack_name, target_bytes) {
+                Ok(rootfs) => {
+                    spec.rootfs = Some(rootfs.path);
+                    rootfs_cloned = true;
+                }
+                Err(err) => {
+                    let _ = network().detach(template_id);
+                    let _ = vsock_manager().detach(template_id);
+                    return Err(map_vm_error("warm rootfs_clone", template_id, err));
+                }
+            }
+        }
+
+        Ok(TemplateIdentity {
+            guest_ip: Some(vm_net.guest_ip),
+            metadata_uds: Some(uds_path),
+            rootfs_cloned,
+        })
+    }
+
+    async fn await_guest_ready(
+        &self,
+        template_id: &str,
+        identity: &TemplateIdentity,
+    ) -> Result<()> {
+        let uds_path = identity.metadata_uds.clone().ok_or_else(|| {
+            SandboxError::Unavailable(format!(
+                "warm template {template_id} composed without a vsock UDS"
+            ))
+        })?;
+        let vm_id = template_id.to_string();
+        tokio::task::spawn_blocking(move || -> std::result::Result<(), VmRuntimeError> {
+            let client = GuestMetadataClient::new(uds_path, GuestMetadataConfig::from_env());
+            let mut conn = client.connect()?;
+            conn.ping()
+        })
+        .await
+        .map_err(|e| {
+            SandboxError::Unavailable(format!("warm guest-ready join error for {vm_id}: {e}"))
+        })?
+        .map_err(|e| map_vm_error("warm guest_ready", template_id, e))
+    }
+
+    async fn prepare_snapshot_source(&self, template_id: &str, identity: &TemplateIdentity) {
+        // The vmstate records the template's vsock UDS path; the restored
+        // entry's Firecracker binds a fresh listener there. The paused
+        // template still holds the old listener fd — unlinking the file
+        // orphans it (the template never serves again; it exists only as
+        // the snapshot's durable home) and frees the path for the entry.
+        if let Some(uds) = &identity.metadata_uds
+            && let Err(err) = std::fs::remove_file(uds)
+        {
+            tracing::warn!(
+                template_id,
+                uds = %uds.display(),
+                %err,
+                "failed to unlink warm template vsock UDS; entry restore may fail to bind"
+            );
+        }
+    }
+
+    async fn attach_rider(&self, rider_id: &str) -> Result<Option<NetworkInterface>> {
+        // The rider TAP carries the claimed VM's traffic; the guest keeps
+        // the MAC + IP recorded in the snapshot (Firecracker's restore
+        // override swaps the host device only), so no guest_mac is set.
+        let vm_net = network()
+            .attach(rider_id)
+            .map_err(|e| map_vm_error("warm rider network_attach", rider_id, e))?;
+        Ok(Some(NetworkInterface {
+            iface_id: "eth0".into(),
+            host_dev_name: vm_net.tap_name,
+            guest_mac: None,
+            rx_rate_limiter: None,
+            tx_rate_limiter: None,
+        }))
+    }
+
+    async fn release_template(&self, template_id: &str, identity: &TemplateIdentity, all: bool) {
+        if let Err(err) = network().detach(template_id) {
+            tracing::warn!(template_id, ?err, "failed to detach warm template network");
+        }
+        if all {
+            if let Err(err) = vsock_manager().detach(template_id) {
+                tracing::warn!(template_id, ?err, "failed to detach warm template vsock");
+            }
+            if identity.rootfs_cloned
+                && let Err(err) = rootfs_registry().release(template_id)
+            {
+                tracing::warn!(
+                    template_id,
+                    ?err,
+                    "failed to release warm template rootfs clone"
+                );
+            }
+        }
+    }
+}
+
+/// Process-wide warm-serving engine. `None` until the first create with
+/// `SANDBOX_FC_WARM_POOL_SIZE > 0` — constructing it spins up the pool's
+/// refill thread, which a disabled deployment must never pay for.
+static WARM_SERVING: OnceLock<Arc<WarmServing<FirecrackerVmProvider>>> = OnceLock::new();
+
+/// Whether the warm engine was ever constructed. Test-visible so the
+/// admission-order invariant ("a rejected create never touches the pool")
+/// can be pinned from integration tests.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn warm_pool_initialized_for_tests() -> bool {
+    WARM_SERVING.get().is_some()
+}
+
+/// Try to serve the create from the warm pool. Returns the typed outcome;
+/// the caller logs misses and proceeds with the cold path.
+///
+/// MUST only be called from [`create_and_start`]: the runtime layer runs
+/// `admit_sandbox_resources` + `enforce_sandbox_count_limit` (under the
+/// creation permit) before dispatching here, which is what makes a warm
+/// claim count against `SANDBOX_MAX_COUNT` / the host memory budget exactly
+/// like a cold boot. Pool inventory itself is not a sandbox and is never
+/// admission-accounted — see the invariant note in [`firecracker_warm`].
+async fn warm_claim(req: &FirecrackerCreateRequest) -> Result<WarmOutcome> {
+    let pool_size = firecracker_warm::configured_pool_size()?;
+    if pool_size == 0 {
+        return Ok(WarmOutcome::Miss(firecracker_warm::WarmMiss::Disabled));
+    }
+
+    let serving = match WARM_SERVING.get() {
+        Some(s) => s,
+        None => {
+            let entry_max_age = firecracker_warm::configured_entry_max_age()?;
+            let disk_gb = firecracker_warm::configured_warm_disk_gb()?;
+            // Workspace defaults define the pooled machine shape; requests
+            // must match them (or leave cpu/mem unset) to claim.
+            let fc_config = FirecrackerConfig::from_env();
+            let settings = WarmSettings {
+                pool_size,
+                stack: default_stack_name(),
+                disk_gb,
+                vcpu_count: fc_config.vcpu_count,
+                mem_size_mib: fc_config.mem_size_mib,
+                entry_max_age,
+            };
+            WARM_SERVING.get_or_init(|| {
+                Arc::new(WarmServing::new(
+                    provider().clone(),
+                    Arc::new(OperatorWarmHost),
+                    settings,
+                ))
+            })
+        }
+    };
+
+    serving.ensure_seeding();
+    Ok(serving
+        .claim(&WarmClaimRequest {
+            sandbox_id: req.session_id.clone(),
+            image: req.image.clone(),
+            cpu_cores: req.cpu_cores,
+            memory_mb: req.memory_mb,
+            disk_gb: req.disk_gb,
+        })
+        .await)
+}
+
+/// Finish provisioning a warm-claimed VM: DNAT for requested ports, per-VM
+/// env + sidecar token over the inherited vsock, attachment bookkeeping,
+/// endpoint from the inherited guest IP. Any failure destroys the claimed
+/// VM and propagates — the claim already consumed the generation, and the
+/// same environmental cause would fail a cold boot's identical steps.
+async fn finish_warm_claim(
+    req: FirecrackerCreateRequest,
+    claim: WarmClaim,
+) -> Result<FirecrackerProvisionResult> {
+    let vm_id = req.session_id.clone();
+    let guest_ip: Ipv4Addr = claim.guest_ip.ok_or_else(|| {
+        SandboxError::Unavailable(format!(
+            "warm claim for {vm_id} carried no guest IP; the operator warm host always \
+             composes one — this indicates a non-production WarmHost in a production path"
+        ))
+    })?;
+    let metadata_uds = claim.metadata_uds.clone().ok_or_else(|| {
+        SandboxError::Unavailable(format!(
+            "warm claim for {vm_id} carried no metadata UDS; env injection is impossible"
+        ))
+    })?;
+
+    async fn teardown_warm_claim(vm_id: &str, dnat_rule_count: usize, lineage: WarmLineage) {
+        let cleanup_id = vm_id.to_string();
+        let _ = tokio::task::spawn_blocking(move || provider().destroy_vm(&cleanup_id)).await;
+        release_attachments(
+            vm_id,
+            &VmAttachments {
+                network_attached: false,
+                vsock_attached: false,
+                dnat_rule_count,
+                rootfs_cloned: false,
+                warm: Some(lineage),
+            },
+        );
+    }
+
+    let mut dnat_rule_count = 0usize;
+    for port in &req.ports {
+        if let Err(err) = firecracker_dnat::install_port_forward(&vm_id, guest_ip, *port) {
+            tracing::error!(
+                vm_id = %vm_id,
+                host_port = port.host_port,
+                container_port = port.container_port,
+                %err,
+                "failed to install DNAT for warm-claimed port forward; tearing down"
+            );
+            teardown_warm_claim(&vm_id, dnat_rule_count, claim.lineage.clone()).await;
+            return Err(SandboxError::Unavailable(format!(
+                "firecracker port forward install failed for warm-claimed {vm_id}: {err}"
+            )));
+        }
+        dnat_rule_count += 1;
+    }
+
+    let sidecar_auth_token =
+        match inject_runtime_metadata(&vm_id, metadata_uds, req.env.clone()).await {
+            Ok(t) => t,
+            Err(err) => {
+                teardown_warm_claim(&vm_id, dnat_rule_count, claim.lineage.clone()).await;
+                return Err(err);
+            }
+        };
+
+    record_attachments(
+        &vm_id,
+        VmAttachments {
+            network_attached: false,
+            vsock_attached: false,
+            dnat_rule_count,
+            rootfs_cloned: false,
+            warm: Some(claim.lineage),
+        },
+    );
+
+    let endpoint = format!("http://{guest_ip}:{}", sidecar_port());
+    Ok(FirecrackerProvisionResult {
+        container: FirecrackerContainer {
+            id: vm_id,
+            endpoint: Some(endpoint),
+        },
+        sidecar_auth_token: Some(sidecar_auth_token),
+    })
+}
+
+/// Guest IP a warm-claimed sandbox inherited from its template, if any.
+/// Consulted by [`start`] so resume rebuilds the endpoint from the IP the
+/// guest actually has instead of the sandbox-id-derived allocation.
+fn warm_guest_ip(vm_id: &str) -> Option<Ipv4Addr> {
+    attachments_map()
+        .lock()
+        .ok()?
+        .get(vm_id)?
+        .warm
+        .as_ref()?
+        .guest_ip
 }
 
 /// Sanity-check the configured Firecracker provider is reachable.
@@ -447,6 +809,23 @@ pub(crate) async fn health() -> Result<()> {
 pub(crate) async fn create_and_start(
     req: FirecrackerCreateRequest,
 ) -> Result<FirecrackerProvisionResult> {
+    // Warm-pool serving first (SANDBOX_FC_WARM_POOL_SIZE > 0): a claim
+    // hands off a pre-restored VM via rename + resume. Any miss is logged
+    // with its typed reason and falls through to the cold boot below — the
+    // one designed fallback in this module. Invalid warm configuration is a
+    // hard error, never a silent cold boot.
+    match warm_claim(&req).await? {
+        WarmOutcome::Claimed(claim) => return finish_warm_claim(req, claim).await,
+        WarmOutcome::Miss(firecracker_warm::WarmMiss::Disabled) => {}
+        WarmOutcome::Miss(miss) => {
+            tracing::info!(
+                sandbox_id = %req.session_id,
+                reason = %miss,
+                "firecracker warm-pool miss; falling back to cold boot"
+            );
+        }
+    }
+
     let vm_id = req.session_id.clone();
     let mut spec = spec_from_request(&req);
 
@@ -470,15 +849,7 @@ pub(crate) async fn create_and_start(
     let rootfs_cloned = match attach_rootfs(&vm_id, &req, &mut spec) {
         Ok(v) => v,
         Err(err) => {
-            release_attachments(
-                &vm_id,
-                &VmAttachments {
-                    network_attached: true,
-                    vsock_attached: true,
-                    dnat_rule_count: 0,
-                    rootfs_cloned: false,
-                },
-            );
+            release_attachments(&vm_id, &VmAttachments::cold(0, false));
             return Err(err);
         }
     };
@@ -497,15 +868,7 @@ pub(crate) async fn create_and_start(
     })?
     .map_err(|e| map_vm_error("create", &vm_id, e))
     {
-        release_attachments(
-            &vm_id,
-            &VmAttachments {
-                network_attached: true,
-                vsock_attached: true,
-                dnat_rule_count: 0,
-                rootfs_cloned,
-            },
-        );
+        release_attachments(&vm_id, &VmAttachments::cold(0, rootfs_cloned));
         return Err(err);
     }
 
@@ -520,15 +883,7 @@ pub(crate) async fn create_and_start(
         // Best-effort cleanup so a partial create doesn't leak a process.
         let cleanup_id = vm_id.clone();
         let _ = tokio::task::spawn_blocking(move || provider().destroy_vm(&cleanup_id)).await;
-        release_attachments(
-            &vm_id,
-            &VmAttachments {
-                network_attached: true,
-                vsock_attached: true,
-                dnat_rule_count: 0,
-                rootfs_cloned,
-            },
-        );
+        release_attachments(&vm_id, &VmAttachments::cold(0, rootfs_cloned));
         return Err(err);
     }
 
@@ -548,15 +903,7 @@ pub(crate) async fn create_and_start(
             // Tear everything down.
             let cleanup_id = vm_id.clone();
             let _ = tokio::task::spawn_blocking(move || provider().destroy_vm(&cleanup_id)).await;
-            release_attachments(
-                &vm_id,
-                &VmAttachments {
-                    network_attached: true,
-                    vsock_attached: true,
-                    dnat_rule_count,
-                    rootfs_cloned,
-                },
-            );
+            release_attachments(&vm_id, &VmAttachments::cold(dnat_rule_count, rootfs_cloned));
             return Err(SandboxError::Unavailable(format!(
                 "firecracker port forward install failed for {vm_id}: {err}"
             )));
@@ -573,28 +920,12 @@ pub(crate) async fn create_and_start(
         Err(err) => {
             let cleanup_id = vm_id.clone();
             let _ = tokio::task::spawn_blocking(move || provider().destroy_vm(&cleanup_id)).await;
-            release_attachments(
-                &vm_id,
-                &VmAttachments {
-                    network_attached: true,
-                    vsock_attached: true,
-                    dnat_rule_count,
-                    rootfs_cloned,
-                },
-            );
+            release_attachments(&vm_id, &VmAttachments::cold(dnat_rule_count, rootfs_cloned));
             return Err(err);
         }
     };
 
-    record_attachments(
-        &vm_id,
-        VmAttachments {
-            network_attached: true,
-            vsock_attached: true,
-            dnat_rule_count,
-            rootfs_cloned,
-        },
-    );
+    record_attachments(&vm_id, VmAttachments::cold(dnat_rule_count, rootfs_cloned));
 
     let endpoint = format!("http://{}:{}", vm_net.guest_ip, sidecar_port());
 
@@ -623,14 +954,23 @@ pub(crate) async fn start(container_id: &str) -> Result<FirecrackerContainer> {
         })?
         .map_err(|e| map_vm_error("start", &vm_id, e))?;
 
-    // `NetworkManager::attach` is idempotent: for a known vm_id it returns
-    // the same TAP / IP allocation. Resuming a VM whose TAP was torn down
-    // out-of-band recreates it; this matches what an operator would do by
-    // hand for debugging.
-    let vm_net = network()
-        .attach(container_id)
-        .map_err(|e| map_vm_error("network_attach_resume", container_id, e))?;
-    let endpoint = format!("http://{}:{}", vm_net.guest_ip, sidecar_port());
+    // Warm-claimed VMs keep the guest IP baked into their template's
+    // snapshot; deriving one from the sandbox id here would report an
+    // endpoint the guest never configured.
+    let guest_ip = match warm_guest_ip(container_id) {
+        Some(ip) => ip,
+        None => {
+            // `NetworkManager::attach` is idempotent: for a known vm_id it
+            // returns the same TAP / IP allocation. Resuming a VM whose TAP
+            // was torn down out-of-band recreates it; this matches what an
+            // operator would do by hand for debugging.
+            network()
+                .attach(container_id)
+                .map_err(|e| map_vm_error("network_attach_resume", container_id, e))?
+                .guest_ip
+        }
+    };
+    let endpoint = format!("http://{}:{}", guest_ip, sidecar_port());
 
     Ok(FirecrackerContainer {
         id: container_id.to_string(),
@@ -786,15 +1126,7 @@ mod tests {
         let vm_id = "vm-attach-roundtrip";
         // Ensure no leftover state from a previous test run.
         let _ = take_attachments(vm_id);
-        record_attachments(
-            vm_id,
-            VmAttachments {
-                network_attached: true,
-                vsock_attached: true,
-                dnat_rule_count: 2,
-                rootfs_cloned: true,
-            },
-        );
+        record_attachments(vm_id, VmAttachments::cold(2, true));
         let first = take_attachments(vm_id).expect("first take returns recorded value");
         assert_eq!(first.dnat_rule_count, 2);
         assert!(first.rootfs_cloned);

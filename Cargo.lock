@@ -4325,7 +4325,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -7262,21 +7262,9 @@ dependencies = [
 
 [[package]]
 name = "microvm-runtime"
-version = "0.2.0-alpha.1"
+version = "0.4.0-alpha.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "312192f848cd63715ac374ac0d72cb3cfc1fa5f77b6376b4ac1bb7e8c24e1c6c"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "microvm-runtime"
-version = "0.4.0-alpha.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f4563a12aed22bc8775cdf836068572b0de91af1822fa20b9342b89bf7a35dd"
+checksum = "c22c15fabcd508d4b626b7f8319626a565c73bffa5db509e1f537fb595693019"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -7290,11 +7278,11 @@ dependencies = [
 
 [[package]]
 name = "microvm-warm-pool"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "334921033131e3101715e67c3b4f031ec0790b1d6b0e281549c2a7cb0850bc7f"
+checksum = "a0fe3571a4d0afa9f8a5519f958a34c331f8c2df16eb1e584d17e5cc10ff8be7"
 dependencies = [
- "microvm-runtime 0.2.0-alpha.1",
+ "microvm-runtime",
 ]
 
 [[package]]
@@ -9511,7 +9499,7 @@ dependencies = [
  "hyper 1.10.1",
  "k256",
  "libc",
- "microvm-runtime 0.4.0-alpha.1",
+ "microvm-runtime",
  "microvm-warm-pool",
  "once_cell",
  "pasetors 0.6.8",
