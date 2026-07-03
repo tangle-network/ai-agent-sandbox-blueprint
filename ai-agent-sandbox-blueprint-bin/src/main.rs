@@ -1072,8 +1072,14 @@ mod tests {
     #[test]
     fn capacity_cross_check_fails_when_chain_exceeds_host() {
         let err = validate_chain_vs_host_capacity(Some("50"), Some("10")).unwrap_err();
-        assert!(err.contains("OPERATOR_MAX_CAPACITY=50"), "names chain value: {err}");
-        assert!(err.contains("SANDBOX_MAX_COUNT=10"), "names host value: {err}");
+        assert!(
+            err.contains("OPERATOR_MAX_CAPACITY=50"),
+            "names chain value: {err}"
+        );
+        assert!(
+            err.contains("SANDBOX_MAX_COUNT=10"),
+            "names host value: {err}"
+        );
     }
 
     #[test]

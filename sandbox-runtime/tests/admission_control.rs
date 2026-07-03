@@ -35,7 +35,10 @@ fn tee_params(name: &str, cpu_cores: u64, memory_mb: u64) -> CreateSandboxParams
 fn expect_unavailable(err: SandboxError, needle: &str) {
     match err {
         SandboxError::Unavailable(msg) => {
-            assert!(msg.contains(needle), "Unavailable message missing {needle:?}: {msg}");
+            assert!(
+                msg.contains(needle),
+                "Unavailable message missing {needle:?}: {msg}"
+            );
         }
         other => panic!("expected SandboxError::Unavailable({needle:?}), got {other:?}"),
     }
@@ -43,21 +46,25 @@ fn expect_unavailable(err: SandboxError, needle: &str) {
 
 #[tokio::test]
 async fn admission_control_end_to_end() {
-    let _guard = sandbox_runtime::TEST_ENV_GUARD
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     let state_dir = tempfile::tempdir().unwrap();
-    // SAFETY: single test in this binary; env set before the first
-    // SidecarRuntimeConfig::load() under the process-wide env guard.
-    unsafe {
-        std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path());
-        std::env::set_var("SIDECAR_IMAGE", "test:latest");
-        std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
-        std::env::set_var("SANDBOX_MAX_COUNT", "3");
-        std::env::set_var("SANDBOX_MAX_CPU_CORES", "4");
-        std::env::set_var("SANDBOX_MAX_MEMORY_MB", "2048");
-        std::env::set_var("SANDBOX_MAX_DISK_GB", "50");
-        std::env::set_var("SANDBOX_HOST_MEMORY_BUDGET_MB", "4096");
+    {
+        // Guard scoped to the env mutation only (not across awaits): this
+        // binary has a single test, so nothing else reads the env before the
+        // first SidecarRuntimeConfig::load() below.
+        let _guard = sandbox_runtime::TEST_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // SAFETY: env set under the process-wide guard, before first config load.
+        unsafe {
+            std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path());
+            std::env::set_var("SIDECAR_IMAGE", "test:latest");
+            std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
+            std::env::set_var("SANDBOX_MAX_COUNT", "3");
+            std::env::set_var("SANDBOX_MAX_CPU_CORES", "4");
+            std::env::set_var("SANDBOX_MAX_MEMORY_MB", "2048");
+            std::env::set_var("SANDBOX_MAX_DISK_GB", "50");
+            std::env::set_var("SANDBOX_HOST_MEMORY_BUDGET_MB", "4096");
+        }
     }
     let mock = MockTeeBackend::new(TeeType::Tdx);
 

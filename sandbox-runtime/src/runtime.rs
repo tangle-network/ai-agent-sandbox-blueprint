@@ -711,7 +711,11 @@ pub async fn acquire_creation_permit() -> tokio::sync::MutexGuard<'static, ()> {
 
 /// Decision core of the sandbox count cap, separated from store access so the
 /// rejection class is unit-testable. `max == 0` = no cap.
-fn check_sandbox_count_limit(current: usize, reusing_existing_slot: bool, max: usize) -> Result<()> {
+fn check_sandbox_count_limit(
+    current: usize,
+    reusing_existing_slot: bool,
+    max: usize,
+) -> Result<()> {
     if max == 0 {
         return Ok(());
     }
@@ -1278,7 +1282,8 @@ async fn create_sidecar_with_token(
     // Resource admission runs under the permit and before backend dispatch:
     // per-sandbox maxima (reject over-max, clamp unlimited-to-max) and the
     // host memory budget apply identically to Docker, Firecracker, and TEE.
-    let admitted = admit_sandbox_resources(SidecarRuntimeConfig::load(), request, sandbox_id_override)?;
+    let admitted =
+        admit_sandbox_resources(SidecarRuntimeConfig::load(), request, sandbox_id_override)?;
     let request = &admitted;
     match resolve_runtime_backend(request)? {
         RuntimeBackend::Tee => {
@@ -5008,7 +5013,10 @@ mod core_logic_tests {
 
     #[test]
     fn count_limit_uncapped_reuse_and_in_range_pass() {
-        assert!(check_sandbox_count_limit(10_000, false, 0).is_ok(), "0 = no cap");
+        assert!(
+            check_sandbox_count_limit(10_000, false, 0).is_ok(),
+            "0 = no cap"
+        );
         assert!(
             check_sandbox_count_limit(3, true, 3).is_ok(),
             "replacing an existing slot stays within the cap"
@@ -5034,8 +5042,14 @@ mod core_logic_tests {
         let err = enforce_resource_max(4096, 2048, "memory_mb").unwrap_err();
         assert!(matches!(err, SandboxError::Unavailable(_)), "got {err:?}");
         let msg = err.to_string();
-        assert!(msg.contains("memory_mb"), "message names the resource: {msg}");
-        assert!(msg.contains("4096") && msg.contains("2048"), "message names both values: {msg}");
+        assert!(
+            msg.contains("memory_mb"),
+            "message names the resource: {msg}"
+        );
+        assert!(
+            msg.contains("4096") && msg.contains("2048"),
+            "message names both values: {msg}"
+        );
     }
 
     #[test]
