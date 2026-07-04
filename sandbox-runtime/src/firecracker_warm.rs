@@ -30,16 +30,19 @@
 //! ## Admission-control invariant
 //!
 //! Pool inventory (templates + pre-restored entries) is NOT a live sandbox:
-//! it never enters the sandbox store, so `SANDBOX_MAX_COUNT` and
-//! `SANDBOX_HOST_MEMORY_BUDGET_MB` do not see it. Accounting applies at
-//! claim time: the claim runs inside `firecracker::create_and_start`, which
-//! the runtime layer only calls AFTER `admit_sandbox_resources` +
-//! `enforce_sandbox_count_limit` have passed under the creation permit — a
-//! warm claim is admitted exactly like a cold boot. Operators must size the
-//! memory budget knowing the pool's own footprint sits outside it:
-//! roughly `pool_size × 2 × mem_size_mib` with the `file` memory backend
-//! (paused template + restored entry per generation), less with
-//! `MICROVM_MEM_BACKEND=uffd` where entry pages fault in lazily.
+//! it never enters the sandbox store. A warm claim itself is admitted exactly
+//! like a cold boot — the claim runs inside `firecracker::create_and_start`,
+//! which the runtime layer only calls AFTER `admit_sandbox_resources` +
+//! `enforce_sandbox_count_limit` have passed under the creation permit.
+//!
+//! The pool's own standing footprint is reserved against the host memory
+//! budget by [`reserved_host_memory_mb`]: `admit_sandbox_resources` adds
+//! `pool_size × 2 × mem_size_mib` (paused template + pre-restored entry per
+//! generation, the `file`-backend worst case) to committed memory, so
+//! `SANDBOX_HOST_MEMORY_BUDGET_MB` accounts for pool inventory even though it
+//! never enters the store. The factor stays 2 under `MICROVM_MEM_BACKEND=uffd`
+//! (a resumed guest can fault its entry pages fully in) to keep the guard
+//! fail-closed.
 //!
 //! ## Fail-loud boundaries
 //!
@@ -97,6 +100,33 @@ pub(crate) fn configured_pool_size() -> Result<usize> {
             })
         }
     }
+}
+
+/// Paused template + pre-restored entry per generation — the `file`-backend
+/// worst case, kept for `uffd` too so the budget guard stays fail-closed.
+const WARM_GENERATION_MEM_FACTOR: u64 = 2;
+
+/// Standing host-memory footprint the warm pool reserves against
+/// `SANDBOX_HOST_MEMORY_BUDGET_MB`, so admission accounts for pool inventory
+/// that never enters the sandbox store. Zero when warm serving is disabled
+/// (`SANDBOX_FC_WARM_POOL_SIZE` unset/0), so Docker-only hosts are unaffected.
+///
+/// Deterministic from config — a fixed reservation, not a live pool query: the
+/// engine is lazily built only on the first Firecracker create (after
+/// admission), so a live query would report 0 reserved on the very create that
+/// is about to seed the pool and let it over-commit. `mem_size_mib` is read
+/// from the same `FirecrackerConfig::from_env()` the engine bakes into every
+/// generation's golden snapshot, so the reservation matches the real footprint.
+pub(crate) fn reserved_host_memory_mb() -> Result<u64> {
+    let pool_size = configured_pool_size()? as u64;
+    if pool_size == 0 {
+        return Ok(0);
+    }
+    let mem_size_mib =
+        microvm_runtime::adapters::firecracker::FirecrackerConfig::from_env().mem_size_mib as u64;
+    Ok(pool_size
+        .saturating_mul(WARM_GENERATION_MEM_FACTOR)
+        .saturating_mul(mem_size_mib))
 }
 
 /// Parse `SANDBOX_FC_WARM_MAX_AGE_SECS` (pool-entry age eviction). Default
