@@ -52,15 +52,19 @@
 //! ([`WarmServing::ensure_seeding`]); a misconfigured
 //! `SANDBOX_FC_WARM_POOL_SIZE` is a hard error, never a silent disable.
 //!
-//! ## Known limitations (documented, not silent)
+//! ## Restart reconciliation
 //!
-//! - Pool VMs are process-local: after an operator restart, templates and
-//!   entries from the previous process are orphaned Firecracker processes
-//!   the reaper cannot reconcile (they have no sandbox record). Host-level
-//!   cleanup (`pkill -f 'fcwarm-'` or a reboot) is the remediation.
-//! - A warm-claimed sandbox's alias resources (rider TAP, template vsock
-//!   CID, template rootfs clone) are tracked in process memory; a restart
-//!   leaks them until the host is reconciled the same way.
+//! Pool VMs are process-local: after an operator restart the fresh process's
+//! provider maps are empty, so prior `fcwarm-*` templates and `warm-*` pool
+//! entries would keep running (holding guest memory) with no sandbox record.
+//! `firecracker::reconcile_warm_orphans` reaps them from `/proc` before the
+//! first seed — enumerating warm-prefixed Firecracker processes under the
+//! provider's socket dir, SIGKILLing them, and releasing their by-id host
+//! resources (TAP / vsock / rootfs clone / DNAT, plus the template's sibling
+//! rider TAP). It runs both as the first step of the warm-engine init and from
+//! `reaper::reconcile_on_startup` (covering the warm-disabled-now case). A
+//! `pkill -f 'fcwarm-'` alone is insufficient — it misses the `warm-*` pool
+//! entries that actually hold the restored guest memory.
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
