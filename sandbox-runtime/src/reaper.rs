@@ -339,6 +339,13 @@ pub async fn gc_tick() {
 
 /// Reconcile stored sandbox state with Docker reality on startup.
 pub async fn reconcile_on_startup() {
+    // Reap warm-pool VMs orphaned by a previous process first — before the
+    // Docker connect below (which may legitimately fail on a Firecracker-only
+    // host) and before any create can seed a fresh generation. Covers the
+    // "warm disabled now, but a prior process left orphans" case the lazy
+    // engine init never reaches.
+    crate::firecracker::reconcile_warm_orphans();
+
     let builder = match docker_builder().await {
         Ok(b) => b,
         Err(err) => {

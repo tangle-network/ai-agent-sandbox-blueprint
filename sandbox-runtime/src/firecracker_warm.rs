@@ -30,16 +30,19 @@
 //! ## Admission-control invariant
 //!
 //! Pool inventory (templates + pre-restored entries) is NOT a live sandbox:
-//! it never enters the sandbox store, so `SANDBOX_MAX_COUNT` and
-//! `SANDBOX_HOST_MEMORY_BUDGET_MB` do not see it. Accounting applies at
-//! claim time: the claim runs inside `firecracker::create_and_start`, which
-//! the runtime layer only calls AFTER `admit_sandbox_resources` +
-//! `enforce_sandbox_count_limit` have passed under the creation permit — a
-//! warm claim is admitted exactly like a cold boot. Operators must size the
-//! memory budget knowing the pool's own footprint sits outside it:
-//! roughly `pool_size × 2 × mem_size_mib` with the `file` memory backend
-//! (paused template + restored entry per generation), less with
-//! `MICROVM_MEM_BACKEND=uffd` where entry pages fault in lazily.
+//! it never enters the sandbox store. A warm claim itself is admitted exactly
+//! like a cold boot — the claim runs inside `firecracker::create_and_start`,
+//! which the runtime layer only calls AFTER `admit_sandbox_resources` +
+//! `enforce_sandbox_count_limit` have passed under the creation permit.
+//!
+//! The pool's own standing footprint is reserved against the host memory
+//! budget by [`reserved_host_memory_mb`]: `admit_sandbox_resources` adds
+//! `pool_size × 2 × mem_size_mib` (paused template + pre-restored entry per
+//! generation, the `file`-backend worst case) to committed memory, so
+//! `SANDBOX_HOST_MEMORY_BUDGET_MB` accounts for pool inventory even though it
+//! never enters the store. The factor stays 2 under `MICROVM_MEM_BACKEND=uffd`
+//! (a resumed guest can fault its entry pages fully in) to keep the guard
+//! fail-closed.
 //!
 //! ## Fail-loud boundaries
 //!
@@ -49,15 +52,19 @@
 //! ([`WarmServing::ensure_seeding`]); a misconfigured
 //! `SANDBOX_FC_WARM_POOL_SIZE` is a hard error, never a silent disable.
 //!
-//! ## Known limitations (documented, not silent)
+//! ## Restart reconciliation
 //!
-//! - Pool VMs are process-local: after an operator restart, templates and
-//!   entries from the previous process are orphaned Firecracker processes
-//!   the reaper cannot reconcile (they have no sandbox record). Host-level
-//!   cleanup (`pkill -f 'fcwarm-'` or a reboot) is the remediation.
-//! - A warm-claimed sandbox's alias resources (rider TAP, template vsock
-//!   CID, template rootfs clone) are tracked in process memory; a restart
-//!   leaks them until the host is reconciled the same way.
+//! Pool VMs are process-local: after an operator restart the fresh process's
+//! provider maps are empty, so prior `fcwarm-*` templates and `warm-*` pool
+//! entries would keep running (holding guest memory) with no sandbox record.
+//! `firecracker::reconcile_warm_orphans` reaps them from `/proc` before the
+//! first seed — enumerating warm-prefixed Firecracker processes under the
+//! provider's socket dir, SIGKILLing them, and releasing their by-id host
+//! resources (TAP / vsock / rootfs clone / DNAT, plus the template's sibling
+//! rider TAP). It runs both as the first step of the warm-engine init and from
+//! `reaper::reconcile_on_startup` (covering the warm-disabled-now case). A
+//! `pkill -f 'fcwarm-'` alone is insufficient — it misses the `warm-*` pool
+//! entries that actually hold the restored guest memory.
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
@@ -97,6 +104,33 @@ pub(crate) fn configured_pool_size() -> Result<usize> {
             })
         }
     }
+}
+
+/// Paused template + pre-restored entry per generation — the `file`-backend
+/// worst case, kept for `uffd` too so the budget guard stays fail-closed.
+const WARM_GENERATION_MEM_FACTOR: u64 = 2;
+
+/// Standing host-memory footprint the warm pool reserves against
+/// `SANDBOX_HOST_MEMORY_BUDGET_MB`, so admission accounts for pool inventory
+/// that never enters the sandbox store. Zero when warm serving is disabled
+/// (`SANDBOX_FC_WARM_POOL_SIZE` unset/0), so Docker-only hosts are unaffected.
+///
+/// Deterministic from config — a fixed reservation, not a live pool query: the
+/// engine is lazily built only on the first Firecracker create (after
+/// admission), so a live query would report 0 reserved on the very create that
+/// is about to seed the pool and let it over-commit. `mem_size_mib` is read
+/// from the same `FirecrackerConfig::from_env()` the engine bakes into every
+/// generation's golden snapshot, so the reservation matches the real footprint.
+pub(crate) fn reserved_host_memory_mb() -> Result<u64> {
+    let pool_size = configured_pool_size()? as u64;
+    if pool_size == 0 {
+        return Ok(0);
+    }
+    let mem_size_mib =
+        microvm_runtime::adapters::firecracker::FirecrackerConfig::from_env().mem_size_mib as u64;
+    Ok(pool_size
+        .saturating_mul(WARM_GENERATION_MEM_FACTOR)
+        .saturating_mul(mem_size_mib))
 }
 
 /// Parse `SANDBOX_FC_WARM_MAX_AGE_SECS` (pool-entry age eviction). Default
@@ -232,8 +266,10 @@ pub(crate) struct WarmClaim {
 }
 
 /// Host resources a warm-claimed sandbox holds under ids other than its own.
-/// Released at sandbox delete in `firecracker::release_attachments`.
-#[derive(Debug, Clone)]
+/// Released at sandbox delete in `firecracker::release_attachments`. Persisted
+/// by [`crate::firecracker_lineage`] keyed by sandbox id so a delete or
+/// reconcile after an operator restart can still release/reclaim them.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct WarmLineage {
     /// Template id: owns the vsock CID allocation and (when
     /// `rootfs_cloned`) the rootfs clone slot backing the claimed VM.

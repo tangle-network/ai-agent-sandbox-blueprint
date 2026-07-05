@@ -790,6 +790,7 @@ fn check_host_memory_budget(
     incoming_memory_mb: u64,
     sandbox_max_memory_mb: u64,
     budget_mb: u64,
+    reserved_mb: u64,
 ) -> Result<()> {
     if budget_mb == 0 {
         return Ok(());
@@ -820,12 +821,14 @@ fn check_host_memory_budget(
         });
     }
 
-    let committed = live_mb.saturating_add(incoming_mb);
+    let committed = live_mb
+        .saturating_add(incoming_mb)
+        .saturating_add(reserved_mb);
     if committed > budget_mb {
         return Err(SandboxError::Unavailable(format!(
             "Host memory budget exceeded: {committed} MB committed ({live_mb} MB running + \
-             {incoming_mb} MB requested) > SANDBOX_HOST_MEMORY_BUDGET_MB={budget_mb}. \
-             Retry on another operator."
+             {incoming_mb} MB requested + {reserved_mb} MB warm-pool reserved) > \
+             SANDBOX_HOST_MEMORY_BUDGET_MB={budget_mb}. Retry on another operator."
         )));
     }
 
@@ -854,11 +857,17 @@ fn enforce_host_memory_budget(
         .map(|record| record.memory_mb)
         .collect();
 
+    // The warm pool's standing footprint (templates + pre-restored entries)
+    // never enters the store, so reserve it here or an enabled pool silently
+    // over-commits host RAM. Zero when warm serving is disabled.
+    let reserved_mb = crate::firecracker_warm::reserved_host_memory_mb()?;
+
     check_host_memory_budget(
         running_memory_mb,
         incoming_memory_mb,
         config.sandbox_max_memory_mb,
         config.sandbox_host_memory_budget_mb,
+        reserved_mb,
     )
 }
 
@@ -5066,37 +5075,50 @@ mod core_logic_tests {
 
     #[test]
     fn memory_budget_disabled_when_zero() {
-        assert!(check_host_memory_budget([u64::MAX, u64::MAX], 999_999, 0, 0).is_ok());
+        assert!(check_host_memory_budget([u64::MAX, u64::MAX], 999_999, 0, 0, 0).is_ok());
     }
 
     #[test]
     fn memory_budget_rejects_over_budget_as_unavailable() {
         // 1024 + 2048 running + 2048 requested = 5120 > 4096.
-        let err = check_host_memory_budget([1024, 2048], 2048, 2048, 4096).unwrap_err();
+        let err = check_host_memory_budget([1024, 2048], 2048, 2048, 4096, 0).unwrap_err();
         assert!(matches!(err, SandboxError::Unavailable(_)), "got {err:?}");
         assert!(err.to_string().contains("memory budget"), "got {err}");
     }
 
     #[test]
     fn memory_budget_admits_exactly_at_budget() {
-        assert!(check_host_memory_budget([1024, 2048], 1024, 2048, 4096).is_ok());
+        assert!(check_host_memory_budget([1024, 2048], 1024, 2048, 4096, 0).is_ok());
     }
 
     #[test]
     fn memory_budget_counts_unlimited_records_at_max() {
         // A running record with memory_mb=0 is accounted at SANDBOX_MAX_MEMORY_MB:
         // 2048 (0→max) + 2048 requested = 4096 ≤ 4096 passes…
-        assert!(check_host_memory_budget([0], 2048, 2048, 4096).is_ok());
+        assert!(check_host_memory_budget([0], 2048, 2048, 4096, 0).is_ok());
         // …and one extra MB of running memory rejects.
-        assert!(check_host_memory_budget([0, 1], 2048, 2048, 4096).is_err());
+        assert!(check_host_memory_budget([0, 1], 2048, 2048, 4096, 0).is_err());
     }
 
     #[test]
     fn memory_budget_skips_unaccountable_records() {
         // Without SANDBOX_MAX_MEMORY_MB, unlimited records can't be accounted
         // and are skipped (warned once) rather than guessed.
-        assert!(check_host_memory_budget([0, 0], 1024, 0, 2048).is_ok());
-        assert!(check_host_memory_budget([1500, 0], 1024, 0, 2048).is_err());
+        assert!(check_host_memory_budget([0, 0], 1024, 0, 2048, 0).is_ok());
+        assert!(check_host_memory_budget([1500, 0], 1024, 0, 2048, 0).is_err());
+    }
+
+    #[test]
+    fn memory_budget_reserves_warm_pool_footprint() {
+        // The warm-pool reservation counts toward committed memory: 2048 MB
+        // reserved + 1 MB running exceeds a 2048 MB budget.
+        assert!(check_host_memory_budget([1], 0, 2048, 2048, 2048).is_err());
+        // Reservation exactly at budget, nothing else running, admits.
+        assert!(check_host_memory_budget([0u64; 0], 0, 0, 2048, 2048).is_ok());
+        // One incoming MB over the reservation rejects.
+        assert!(check_host_memory_budget([0u64; 0], 1, 2048, 2048, 2048).is_err());
+        // A zero budget still disables the check even with a reservation set.
+        assert!(check_host_memory_budget([0u64; 0], 0, 0, 0, 4096).is_ok());
     }
 
     #[test]

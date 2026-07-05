@@ -12,6 +12,7 @@ pub mod contracts;
 pub mod error;
 pub mod firecracker;
 mod firecracker_dnat;
+mod firecracker_lineage;
 mod firecracker_warm;
 pub mod http;
 pub mod ingress_access_control;
