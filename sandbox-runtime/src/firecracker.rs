@@ -582,7 +582,14 @@ fn enumerate_warm_fc_processes(socket_dir: &std::path::Path) -> Vec<WarmOrphan> 
         else {
             continue;
         };
-        if is_warm_vm_id(vm_id) {
+        // A warm CLAIM (`rename_vm`) moves the socket dir on disk but cannot
+        // rewrite a running FC's `--api-sock` argv, so a LIVE claimed sandbox
+        // still shows the warm-entry path in `/proc/cmdline`. Its socket file
+        // has moved and no longer exists at that path; only an unclaimed orphan
+        // still has its socket there. Skipping the missing-socket case is what
+        // prevents reconcile from SIGKILLing a live warm-claimed sandbox after
+        // an operator restart — data loss, not a leak.
+        if is_warm_vm_id(vm_id) && sock_path.exists() {
             orphans.push(WarmOrphan {
                 pid,
                 vm_id: vm_id.to_string(),
