@@ -1,0 +1,29 @@
+# God-object baseline (LOC ceilings). Files here may only SHRINK.
+# Regenerate ONLY when a file legitimately drops: scripts/check-file-sizes.sh --update
+# The doctrine (CLAUDE.md 'Module Size Discipline'): split files by responsibility toward <600 LOC.
+10003 sandbox-runtime/src/operator_api.rs
+5385 sandbox-runtime/src/runtime.rs
+2966 ui/src/routes/create.tsx
+1631 sandbox-runtime/src/firecracker_warm.rs
+1483 sandbox-runtime/src/tee/mod.rs
+1281 ui/src/routes/sandboxes.$id.tsx
+1156 sandbox-runtime/src/firecracker.rs
+1111 ai-agent-sandbox-blueprint-bin/src/main.rs
+1106 ui/src/routes/instances.$id.tsx
+1095 ai-agent-sandbox-blueprint-lib/src/workflows.rs
+1065 sandbox-runtime/src/session_auth.rs
+948 ai-agent-instance-blueprint-lib/src/workflows.rs
+922 ui/src/routes/workflows._index.tsx
+884 sandbox-runtime/src/tee/verify.rs
+831 sandbox-runtime/src/reaper.rs
+786 sandbox-runtime/src/metrics.rs
+744 sandbox-runtime/src/scoped_session_auth.rs
+721 ui/src/components/shared/SessionSidebar.tsx
+701 ui/src/lib/stores/chatSessions.ts
+697 sandbox-runtime/src/tee/azure.rs
+682 ui/src/components/shared/InfrastructureModal.tsx
+653 ai-agent-instance-blueprint-lib/src/auto_provision.rs
+627 ui/src/lib/hooks/useCreateDeploy.ts
+624 ui/src/lib/api/sandboxClient.ts
+619 sandbox-runtime/src/tee/sealed_secrets_api.rs
+606 sandbox-runtime/src/util.rs

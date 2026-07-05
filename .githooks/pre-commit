@@ -15,4 +15,10 @@ if [ $? -ne 0 ]; then
     echo "❌ clippy failed. Fix warnings above."
     exit 1
 fi
-echo "pre-commit: ✓ fmt + clippy clean"
+echo "pre-commit: checking module-size ratchet (no god objects)..."
+bash "$(git rev-parse --show-toplevel)/scripts/check-file-sizes.sh"
+if [ $? -ne 0 ]; then
+    echo "❌ module-size ratchet failed. Split the file (see CLAUDE.md 'Module Size Discipline')."
+    exit 1
+fi
+echo "pre-commit: ✓ fmt + clippy + module-size clean"
