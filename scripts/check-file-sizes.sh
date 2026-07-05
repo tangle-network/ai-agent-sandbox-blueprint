@@ -19,7 +19,7 @@ BASELINE="scripts/.god-object-baseline.txt"
 # modules a human must read and reason about.
 is_exempt() {
   case "$1" in
-    *node_modules/*|*/dist/*|*.test.*|*/tests/*|*abi.ts|*.gen.*|*generated*) return 0 ;;
+    *node_modules/*|*/dist/*|*.test.*|*/tests/*|*tests.rs|*_tests.rs|*abi.ts|*.gen.*|*generated*) return 0 ;;
     *) return 1 ;;
   esac
 }
