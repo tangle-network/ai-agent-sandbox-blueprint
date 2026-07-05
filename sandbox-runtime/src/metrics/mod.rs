@@ -12,7 +12,6 @@ pub use onchain::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::sync::atomic::Ordering;
 
     // ── OnChainMetrics ──────────────────────────────────────────────────
