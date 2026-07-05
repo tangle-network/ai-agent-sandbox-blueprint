@@ -1,7 +1,6 @@
 # God-object baseline (LOC ceilings). Files here may only SHRINK.
 # Regenerate after a real split: scripts/check-file-sizes.sh --update
 # Doctrine: CLAUDE.md 'Module Size Discipline' — split by responsibility toward <600 LOC.
-5385 sandbox-runtime/src/runtime.rs
 2966 ui/src/routes/create.tsx
 1631 sandbox-runtime/src/firecracker_warm.rs
 1483 sandbox-runtime/src/tee/mod.rs
