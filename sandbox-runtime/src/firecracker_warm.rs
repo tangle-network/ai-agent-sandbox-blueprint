@@ -266,8 +266,10 @@ pub(crate) struct WarmClaim {
 }
 
 /// Host resources a warm-claimed sandbox holds under ids other than its own.
-/// Released at sandbox delete in `firecracker::release_attachments`.
-#[derive(Debug, Clone)]
+/// Released at sandbox delete in `firecracker::release_attachments`. Persisted
+/// by [`crate::firecracker_lineage`] keyed by sandbox id so a delete or
+/// reconcile after an operator restart can still release/reclaim them.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct WarmLineage {
     /// Template id: owns the vsock CID allocation and (when
     /// `rootfs_cloned`) the rootfs clone slot backing the claimed VM.

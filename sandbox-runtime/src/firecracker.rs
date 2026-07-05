@@ -139,9 +139,10 @@ struct VmAttachments {
     rootfs_cloned: bool,
     /// Warm-claim lineage: host resources this sandbox holds under ids other
     /// than its own (rider TAP, template vsock CID, template rootfs clone).
-    /// `None` for cold-booted VMs. In-memory only — an operator restart
-    /// loses it and leaks the aliases until host-level cleanup (documented
-    /// in `firecracker_warm`).
+    /// `None` for cold-booted VMs. This in-memory copy serves the normal
+    /// delete; a durable copy is persisted by [`crate::firecracker_lineage`] so
+    /// a delete or reconcile after an operator restart still releases the
+    /// aliases instead of leaking them.
     warm: Option<WarmLineage>,
 }
 
@@ -534,6 +535,53 @@ pub(crate) fn reconcile_warm_orphans() {
         reap_pid(orphan.pid);
         release_orphan_resources(&orphan.vm_id);
     }
+
+    reclaim_orphan_rootfs_clones();
+}
+
+/// Reclaim leaked warm-template rootfs clones after the process reap.
+///
+/// A cold sandbox's clone lives under its own id and is released by
+/// `delete`'s own-id path even after a restart, so it never leaks. Only the
+/// aliased warm *template* clone (`fcwarm-*` / `warm-*`) can be orphaned — its
+/// template process is destroyed at claim, so the `/proc` scan never sees it,
+/// and if the owning sandbox's delete didn't run (crash, or a failed lineage
+/// persist) its clone is stranded. Reclaim a warm-prefixed clone dir iff no
+/// live sandbox's persisted lineage still references it.
+///
+/// Scoping to warm-prefixed dirs is the data-loss guard: a live sandbox's
+/// own-id clone is never warm-prefixed, so this can never delete a live
+/// workspace out from under a running sandbox.
+fn reclaim_orphan_rootfs_clones() {
+    let referenced: std::collections::HashSet<String> =
+        crate::firecracker_lineage::referenced_template_ids()
+            .into_iter()
+            .collect();
+    let clones_dir = rootfs_registry().config().clones_dir.clone();
+    let Ok(entries) = std::fs::read_dir(&clones_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if should_reclaim_clone(&id, &referenced) {
+            tracing::warn!(
+                clone_id = %id,
+                "reclaiming orphaned warm-template rootfs clone (no live sandbox lineage references it)"
+            );
+            let _ = rootfs_registry().release(&id);
+        }
+    }
+}
+
+/// A `clones_dir` entry is reclaimable iff it is a warm-template clone
+/// (`fcwarm-*` / `warm-*`) that no live sandbox's lineage still references. A
+/// non-warm-prefixed id is NEVER reclaimed — that is a live sandbox's own-id
+/// clone, and removing it would destroy a running workspace. This predicate is
+/// the data-loss guard for the sweep.
+fn should_reclaim_clone(id: &str, referenced: &std::collections::HashSet<String>) -> bool {
+    is_warm_vm_id(id) && !referenced.contains(id)
 }
 
 /// Enumerate live Firecracker processes whose API socket sits under our
@@ -939,6 +987,11 @@ async fn finish_warm_claim(
             }
         };
 
+    // Persist the lineage durably so a delete or reconcile after an operator
+    // restart (which loses the in-memory attachment map) can still release the
+    // template's rootfs clone + vsock CID and the rider TAP.
+    crate::firecracker_lineage::record(&vm_id, &claim.lineage);
+
     record_attachments(
         &vm_id,
         VmAttachments {
@@ -1208,17 +1261,27 @@ pub(crate) async fn delete(container_id: &str) -> Result<()> {
     // Release host-side allocations whether or not destroy succeeded — the
     // VM is going away either way and orphan resources are worse than
     // double-released ones (every release path is idempotent).
+    // Clear the durable lineage entry regardless; it is released either through
+    // the in-memory attachments (normal delete) or reconstructed below.
+    let persisted_lineage = crate::firecracker_lineage::take(&vm_id);
     if let Some(attachments) = take_attachments(&vm_id) {
         release_attachments(&vm_id, &attachments);
     } else {
-        // Best-effort release for VMs not in our map (e.g. restart of the
-        // operator process lost the in-memory record).
-        if let Err(err) = firecracker_dnat::release_port_forwards(&vm_id) {
-            tracing::debug!(vm_id = %vm_id, %err, "release_port_forwards on unknown vm_id");
-        }
-        let _ = vsock_manager().detach(&vm_id);
-        let _ = network().detach(&vm_id);
-        let _ = rootfs_registry().release(&vm_id);
+        // The operator restarted and lost the in-memory attachment map. Release
+        // the sandbox's own-id resources (best-effort, all idempotent) plus the
+        // durably-persisted warm lineage — the template's rootfs clone + vsock
+        // CID and the rider TAP, which live under ids other than this sandbox's
+        // and would otherwise leak.
+        release_attachments(
+            &vm_id,
+            &VmAttachments {
+                network_attached: true,
+                vsock_attached: true,
+                dnat_rule_count: 1,
+                rootfs_cloned: true,
+                warm: persisted_lineage,
+            },
+        );
     }
 
     match destroy_outcome {
@@ -1256,6 +1319,24 @@ pub(crate) async fn status(container_id: &str) -> Result<FirecrackerContainerSta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reclaim_clone_predicate_is_data_loss_safe() {
+        use std::collections::HashSet;
+        let referenced: HashSet<String> = ["fcwarm-g0-tpl".to_string()].into_iter().collect();
+        // A live sandbox's own-id (non-warm) clone is NEVER reclaimed — the
+        // data-loss guard: removing it would destroy a running workspace.
+        assert!(!should_reclaim_clone("sandbox-live-1a2b3c", &referenced));
+        assert!(!should_reclaim_clone("a1b2c3d4-uuid", &referenced));
+        // A warm template a live sandbox's lineage still references is kept.
+        assert!(!should_reclaim_clone("fcwarm-g0-tpl", &referenced));
+        // A warm-template clone no live lineage references is reclaimed.
+        assert!(should_reclaim_clone("fcwarm-g1-tpl", &referenced));
+        assert!(should_reclaim_clone(
+            "warm-node20-1_0_0-seed",
+            &HashSet::new()
+        ));
+    }
 
     #[test]
     fn map_vm_error_translates_not_found_to_sandbox_not_found() {
