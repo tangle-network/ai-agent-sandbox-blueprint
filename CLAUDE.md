@@ -32,6 +32,13 @@
 - Use canonical ingress auth env keys from `sandbox-runtime`: `SANDBOX_UI_AUTH_MODE` and `SANDBOX_UI_BEARER_TOKEN`.
 - When compatibility aliases are required for external images, scope them in product crates and name them with `COMPAT` (for example `*_COMPAT_*`).
 
+## Module Size Discipline (No God Objects)
+- No hand-written source file should exceed ~600 LOC. A file that large is doing too many jobs; split it by responsibility into a directory of focused modules (`foo.rs` → `foo/mod.rs` + `foo/create.rs`, `foo/delete.rs`, `foo/reconcile.rs`, …), keeping the same crate-internal visibility.
+- A 1000+ LOC file is a god object and a defect, regardless of how it grew. Prefer to split it *before* adding to it — never grow a god object because "it's already big."
+- Enforced by `scripts/check-file-sizes.sh` (run in the pre-commit hook + CI): existing oversized files are baselined in `scripts/.god-object-baseline.txt` with a LOC ceiling and may only **shrink**; a new file over the threshold, or growth past a baselined ceiling, fails the commit. After a real split, re-record the baseline with `scripts/check-file-sizes.sh --update`.
+- The baseline is technical debt to pay down, not a size to appease. Generated code (contract ABIs), vendored code, and tests are exempt.
+- When you touch a baselined file, extract the piece you came for into its own module rather than editing in place — that is how the baseline trends to zero.
+
 ## Verified Invariants (Do Not Regress)
 - Sandbox identity is immutable across secrets inject/wipe recreation. Preserve the same `sandbox_id`.
 - `stop` and `resume` are idempotent API actions. "already stopped/running" must return success behavior, not 500.

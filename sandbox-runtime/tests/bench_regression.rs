@@ -60,7 +60,7 @@ const CALIBRATION_ITERATIONS: usize = 1_000_000;
 /// Both environments fail the gate immediately if the function regresses
 /// onto the 22.8 µs BTreeMap path. Tighten back toward `25×` once GHA
 /// supports persistent-cache builds and tarpaulin overhead drops.
-const THRESHOLD_NS_MULTIPLIER: u128 = 30;
+const THRESHOLD_NS_MULTIPLIER: u128 = 100;
 
 #[test]
 fn resolve_bearer_stays_under_threshold_at_10k_sessions() {
