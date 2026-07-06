@@ -4,11 +4,13 @@ use super::*;
 
 #[cfg(test)]
 mod cases {
-    // These serial tests hold TEST_ENV_GUARD (a std Mutex) across the
-    // `enforce_release_gate(...).await` on purpose: the guard must span the await
-    // so no other test mutates the process env (EXPECTED_ENV / REQUIRE_PINNED_ENV)
-    // while the gate under test reads it. Dropping the guard before the await
-    // would reintroduce the cross-test env race these tests exist to rule out.
+    // These serial tests coordinate on TEST_ENV_GUARD (a std Mutex) to keep the
+    // process env (EXPECTED_ENV / REQUIRE_PINNED_ENV) stable while the gate under
+    // test reads it. Some tests snapshot the env into locals and drop the guard
+    // before awaiting `enforce_release_gate`; others must hold the guard across
+    // the await so the env stays pinned for the whole gate call — hence the
+    // `await_holding_lock` allow. `serial` serializes the suite so these env
+    // mutations never race across tests.
     #![allow(clippy::await_holding_lock)]
     use super::*;
     use crate::tee::TeeType;

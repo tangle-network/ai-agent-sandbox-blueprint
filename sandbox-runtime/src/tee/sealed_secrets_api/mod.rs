@@ -177,7 +177,7 @@ pub use attestation::*;
 pub use keys::*;
 
 // tee-level attestation-nonce helpers the moved endpoint code reaches via `super::`.
-pub(crate) use super::{decode_attestation_nonce_hex, pad_attestation_nonce};
+use super::{decode_attestation_nonce_hex, pad_attestation_nonce};
 
 #[cfg(test)]
 mod tests;
