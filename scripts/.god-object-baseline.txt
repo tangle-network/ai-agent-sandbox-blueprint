@@ -2,5 +2,4 @@
 # Regenerate after a real split: scripts/check-file-sizes.sh --update
 # Doctrine: CLAUDE.md 'Module Size Discipline' — split by responsibility toward <600 LOC.
 738 ui/src/routes/sandboxes.$id.tsx
-653 ai-agent-instance-blueprint-lib/src/auto_provision.rs
 634 ui/src/routes/instances.$id.tsx
