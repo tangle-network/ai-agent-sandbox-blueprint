@@ -42,8 +42,8 @@ import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chain
 import type { InfraConfig } from '@tangle-network/blueprint-ui';
 import type { Address } from 'viem';
 import { expectedLocalRpcUrl, walletRpcMatchesAppRpc } from '~/lib/walletRpcSync';
-import { extractServiceRequestId } from '~/lib/contracts/serviceEvents';
 import { useReliableOperators } from './useReliableOperators';
+import { getRequestIdFromServiceReceiptLogs, resolveActivatedServiceId } from './createDeployChain';
 
 // Re-export types from logic module for external consumers
 export type { DeployMode, DeployStatus, JobSubmitStatus } from './createDeployLogic';
@@ -82,44 +82,6 @@ interface UseCreateDeployOpts {
 /** ~30 days at 3s blocks */
 const TTL_BLOCKS_30_DAYS = 864000n;
 const useSafeLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
-
-function getRequestIdFromServiceReceiptLogs(
-  logs: Array<{ data: `0x${string}`; topics: readonly `0x${string}`[] }>,
-): number | null {
-  for (const log of logs) {
-    const requestId = extractServiceRequestId(log);
-    if (requestId != null) return requestId;
-  }
-
-  return null;
-}
-
-async function resolveActivatedServiceId(requestId: number): Promise<string | null> {
-  const addrs = getAddresses<SandboxAddresses>();
-  const logs = await publicClient.getLogs({
-    address: addrs.services,
-    fromBlock: 0n,
-    toBlock: 'latest',
-  });
-
-  for (const log of logs) {
-    try {
-      const decoded = decodeEventLog({
-        abi: tangleServicesAbi,
-        data: log.data,
-        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
-      });
-      if (decoded.eventName !== 'ServiceActivated') continue;
-      if (!('requestId' in decoded.args) || !('serviceId' in decoded.args)) continue;
-      if (Number(decoded.args.requestId) !== requestId) continue;
-      return String(decoded.args.serviceId);
-    } catch {
-      // Ignore unrelated logs while scanning the chain.
-    }
-  }
-
-  return null;
-}
 
 // ── Hook ──
 
