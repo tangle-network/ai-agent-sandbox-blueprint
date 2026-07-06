@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useStore } from '@nanostores/react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { decodeEventLog } from 'viem';
 import {
   Dialog,
   DialogContent,
@@ -9,22 +8,25 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@tangle-network/blueprint-ui/components';
-import { Button } from '@tangle-network/blueprint-ui/components';
 import { Input } from '@tangle-network/blueprint-ui/components';
 import { Badge } from '@tangle-network/blueprint-ui/components';
-import { Card, CardContent } from '@tangle-network/blueprint-ui/components';
 import { infraStore, updateInfra } from '@tangle-network/blueprint-ui';
 import { useServiceValidation } from '@tangle-network/blueprint-ui';
-import type { DiscoveredOperator } from '@tangle-network/blueprint-ui';
-import { useQuotes, formatCost } from '@tangle-network/blueprint-ui';
+import { useQuotes } from '@tangle-network/blueprint-ui';
 import { tangleServicesAbi } from '@tangle-network/blueprint-ui';
-import { getAddresses, publicClient } from '@tangle-network/blueprint-ui';
+import { getAddresses } from '@tangle-network/blueprint-ui';
 import { cn } from '@tangle-network/blueprint-ui';
-import { BlueprintBadgeInline } from './InfraSummaryBits';
-import { extractServiceRequestId } from '~/lib/contracts/serviceEvents';
-import { OperatorIdentity } from '~/components/shared/VisualIdentity';
 import { useReliableOperators } from '~/lib/hooks/useReliableOperators';
 import type { Address } from 'viem';
+import { ExistingServiceView } from './ExistingServiceView';
+import { NewServiceView } from './NewServiceView';
+import {
+  getRequestIdFromServiceReceiptLogs,
+  resolveActivatedServiceId,
+  type ServiceReceiptLog,
+} from './serviceResolution';
+
+export { InfraBar } from './InfraBar';
 
 interface InfrastructureModalProps {
   open: boolean;
@@ -33,47 +35,6 @@ interface InfrastructureModalProps {
 }
 
 type ServiceMode = 'existing' | 'new';
-
-type ServiceReceiptLog = {
-  data: `0x${string}`;
-  topics: readonly `0x${string}`[];
-};
-
-function getRequestIdFromServiceReceiptLogs(logs: ServiceReceiptLog[]): number | null {
-  for (const log of logs) {
-    const requestId = extractServiceRequestId(log);
-    if (requestId != null) return requestId;
-  }
-
-  return null;
-}
-
-async function resolveActivatedServiceId(requestId: number): Promise<string | null> {
-  const addrs = getAddresses();
-  const logs = await publicClient.getLogs({
-    address: addrs.services,
-    fromBlock: 0n,
-    toBlock: 'latest',
-  });
-
-  for (const log of logs) {
-    try {
-      const decoded = decodeEventLog({
-        abi: tangleServicesAbi,
-        data: log.data,
-        topics: [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]],
-      });
-      if (decoded.eventName !== 'ServiceActivated') continue;
-      if (!('requestId' in decoded.args) || !('serviceId' in decoded.args)) continue;
-      if (Number(decoded.args.requestId) !== requestId) continue;
-      return String(decoded.args.serviceId);
-    } catch {
-      // Ignore unrelated logs while scanning the service manager.
-    }
-  }
-
-  return null;
-}
 
 export function InfrastructureModal({ open, onOpenChange, initialMode = 'existing' }: InfrastructureModalProps) {
   const { address } = useAccount();
@@ -414,269 +375,48 @@ export function InfrastructureModal({ open, onOpenChange, initialMode = 'existin
 
             {/* Existing Service */}
             {mode === 'existing' && (
-              <div className="space-y-4">
-                <div className="flex gap-2">
-                  <Input
-                    type="number"
-                    value={serviceId}
-                    onChange={(e) => {
-                      setServiceId(e.target.value);
-                      resetValidation();
-                    }}
-                    placeholder="Service ID"
-                    min={0}
-                  />
-                  <Button
-                    variant="secondary"
-                    onClick={handleVerify}
-                    disabled={isValidating || !serviceId}
-                  >
-                    {isValidating ? 'Checking...' : 'Verify'}
-                  </Button>
-                </div>
-
-                {validationError && (
-                  <div className="glass-card rounded-lg p-3 border-crimson-500/30">
-                    <p className="text-xs text-crimson-400">{validationError}</p>
-                  </div>
-                )}
-
-                {serviceInfo && (
-                  <div className="glass-card rounded-lg p-4 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className={cn(
-                        'w-2 h-2 rounded-full',
-                        serviceInfo.active ? 'bg-teal-400' : 'bg-crimson-400',
-                      )} />
-                      <span className="text-sm font-display font-medium">
-                        Service #{serviceId}
-                      </span>
-                      <Badge variant={serviceInfo.active ? 'running' : 'destructive'}>
-                        {serviceInfo.active ? 'Active' : 'Inactive'}
-                      </Badge>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div>
-                        <span className="text-cloud-elements-textTertiary">Owner</span>
-                        <p className="font-data text-cloud-elements-textPrimary truncate">{serviceInfo.owner}</p>
-                      </div>
-                      <div>
-                        <span className="text-cloud-elements-textTertiary">Operators</span>
-                        <p className="font-data text-cloud-elements-textPrimary">{serviceInfo.operatorCount}</p>
-                      </div>
-                    </div>
-
-                    {serviceInfo.operators.length > 0 && (
-                      <div className="space-y-1">
-                        <span className="text-xs text-cloud-elements-textTertiary">Operator Addresses</span>
-                        {serviceInfo.operators.slice(0, 5).map((op) => (
-                          <div key={op} className="flex items-center gap-2">
-                            <OperatorIdentity address={op} detail="service member" compact />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {!serviceInfo.permitted && (
-                      <div className="glass-card rounded p-2 border-amber-500/30">
-                        <p className="text-xs text-amber-400">
-                          Your address is not a permitted caller. You may need to be added.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+              <ExistingServiceView
+                serviceId={serviceId}
+                setServiceId={setServiceId}
+                resetValidation={resetValidation}
+                handleVerify={handleVerify}
+                isValidating={isValidating}
+                validationError={validationError}
+                serviceInfo={serviceInfo}
+              />
             )}
 
             {/* Create New Service */}
             {mode === 'new' && (
-              <div className="space-y-4">
-                {/* Operator Grid */}
-                <div>
-                  <label className="block text-xs text-cloud-elements-textTertiary mb-2">
-                    Select Operators ({selectedOperators.length} selected)
-                  </label>
-                  {operatorsLoading ? (
-                    <p className="text-xs text-cloud-elements-textTertiary animate-pulse">Discovering operators...</p>
-                  ) : operatorsError ? (
-                    <div className="space-y-1.5">
-                      <p className="text-xs text-amber-400">
-                        {operatorCount > 0n
-                          ? `Found ${operatorCount.toString()} registered operator${operatorCount === 1n ? '' : 's'} on-chain, but verification failed`
-                          : 'Operator lookup failed for this blueprint'}
-                      </p>
-                      <p className="text-[11px] text-cloud-elements-textTertiary">
-                        You can still add an operator address manually below.
-                      </p>
-                    </div>
-                  ) : operators.length > 0 ? (
-                    <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
-                      {operators.map((op) => (
-                        <button
-                          key={op.address}
-                          onClick={() => toggleOperator(op.address)}
-                          className={cn(
-                            'flex items-center gap-2 p-2 rounded-lg border text-left transition-all',
-                            selectedOperators.includes(op.address)
-                              ? 'border-violet-500/30 bg-violet-500/5'
-                              : 'border-cloud-elements-borderColor bg-cloud-elements-background-depth-2 hover:bg-cloud-elements-background-depth-3',
-                          )}
-                        >
-                          <span className="min-w-0 flex-1">
-                            <OperatorIdentity address={op.address} detail="registered" compact />
-                          </span>
-                          {selectedOperators.includes(op.address) && (
-                            <div className="i-ph:check-bold text-xs text-violet-400" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-cloud-elements-textTertiary">No operators found for this blueprint</p>
-                  )}
-
-                  {/* Manual address */}
-                  <div className="flex gap-2 mt-2">
-                    <Input
-                      value={manualAddr}
-                      onChange={(e) => setManualAddr(e.target.value)}
-                      placeholder="0x... operator address"
-                      className="text-xs"
-                    />
-                    <Button variant="secondary" size="sm" onClick={addManualOperator} disabled={!/^0x[a-fA-F0-9]{40}$/.test(manualAddr)}>
-                      Add
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Quotes */}
-                {selectedOperators.length > 0 && (
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs text-cloud-elements-textTertiary">Operator Quotes</label>
-                      <Button variant="ghost" size="sm" onClick={refetchQuotes} disabled={quotesLoading}>
-                        <div className="i-ph:arrow-clockwise text-xs" />
-                        Refresh
-                      </Button>
-                    </div>
-
-                    {isSolvingPow && (
-                      <p className="text-xs text-cloud-elements-textTertiary animate-pulse mb-2">
-                        Solving PoW challenge...
-                      </p>
-                    )}
-
-                    {quotes.length > 0 && (
-                      <div className="space-y-2 mb-3">
-                        {quotes.map((q) => (
-                          <div key={q.operator} className="flex items-center justify-between p-2 glass-card rounded-lg">
-                            <OperatorIdentity address={q.operator} detail="quote" compact />
-                            <span className="text-xs font-data font-semibold text-cloud-elements-textPrimary">
-                              {formatCost(q.totalCost)}
-                            </span>
-                          </div>
-                        ))}
-                        <div className="flex justify-between text-sm pt-1 border-t border-cloud-elements-dividerColor">
-                          <span className="text-cloud-elements-textSecondary">Total Cost</span>
-                          <span className="font-data font-semibold">{formatCost(totalCost)}</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {quoteErrors.size > 0 && (
-                      <div className="space-y-1 mb-3">
-                        {Array.from(quoteErrors.entries()).map(([addr, err]) => (
-                          <div key={addr} className="text-xs text-cloud-elements-textTertiary">
-                            <span className="font-data">{addr.slice(0, 8)}...{addr.slice(-4)}</span>: {err}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Deploy buttons */}
-                    <div className="flex gap-2">
-                      {quotes.length > 0 ? (
-                        <Button
-                          className="flex-1"
-                          onClick={handleCreateFromQuotes}
-                          disabled={isCreating || createPending}
-                        >
-                          {isCreating || createPending ? 'Creating...' : `Create Service (${formatCost(totalCost)})`}
-                        </Button>
-                      ) : (
-                        <Button
-                          className="flex-1"
-                          variant="secondary"
-                          onClick={handleRequestService}
-                          disabled={isCreating || createPending || selectedOperators.length === 0}
-                        >
-                          {isCreating || createPending ? 'Creating...' : 'Request Service (No Quotes)'}
-                        </Button>
-                      )}
-                    </div>
-
-                    {createConfirmed && (
-                      <div className="glass-card rounded-lg p-3 border-teal-500/30 mt-3">
-                        <div className="flex items-center gap-2">
-                          <div className="i-ph:check-circle-fill text-sm text-teal-400" />
-                          <div className="min-w-0">
-                            <p className="text-xs text-cloud-elements-textPrimary">
-                              {resolvedServiceId
-                                ? `Service #${resolvedServiceId} is active and selected.`
-                                : serviceRequestId != null
-                                  ? `Service request #${serviceRequestId} submitted. Waiting for activation.`
-                                  : 'Service creation submitted. Waiting for activation.'}
-                            </p>
-                            {createTxHash ? (
-                              <p className="mt-1 truncate font-data text-[11px] text-cloud-elements-textTertiary">{createTxHash}</p>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+              <NewServiceView
+                selectedOperators={selectedOperators}
+                operatorsLoading={operatorsLoading}
+                operatorsError={operatorsError}
+                operatorCount={operatorCount}
+                operators={operators}
+                toggleOperator={toggleOperator}
+                manualAddr={manualAddr}
+                setManualAddr={setManualAddr}
+                addManualOperator={addManualOperator}
+                refetchQuotes={refetchQuotes}
+                quotesLoading={quotesLoading}
+                isSolvingPow={isSolvingPow}
+                quotes={quotes}
+                totalCost={totalCost}
+                quoteErrors={quoteErrors}
+                handleCreateFromQuotes={handleCreateFromQuotes}
+                isCreating={isCreating}
+                createPending={createPending}
+                handleRequestService={handleRequestService}
+                createConfirmed={createConfirmed}
+                resolvedServiceId={resolvedServiceId}
+                serviceRequestId={serviceRequestId}
+                createTxHash={createTxHash}
+              />
             )}
           </div>
         </div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-/**
- * Compact infrastructure bar shown at the top of the wizard.
- * Shows current blueprint + service, with a "Change" button to open the modal.
- */
-export function InfraBar({ onOpenModal }: { onOpenModal: () => void }) {
-  const infra = useStore(infraStore);
-
-  return (
-    <div className="glass-card rounded-lg p-3 flex items-center justify-between mb-6">
-      <div className="flex items-center gap-4">
-        <BlueprintBadgeInline blueprintId={infra.blueprintId} />
-        <div className="flex items-center gap-2">
-          <div className="i-ph:cpu text-sm text-cloud-elements-textTertiary" />
-          <span className="text-xs text-cloud-elements-textTertiary">Service</span>
-          <Badge variant={infra.serviceValidated ? 'running' : 'secondary'}>
-            #{infra.serviceId}
-          </Badge>
-          {infra.serviceValidated && infra.serviceInfo && (
-            <span className="text-xs text-cloud-elements-textTertiary">
-              ({infra.serviceInfo.operatorCount} operators)
-            </span>
-          )}
-          {!infra.serviceValidated && (
-            <div className="i-ph:warning text-xs text-amber-400" title="Service not validated" />
-          )}
-        </div>
-      </div>
-      <Button variant="ghost" size="sm" onClick={onOpenModal}>
-        Change
-      </Button>
-    </div>
   );
 }

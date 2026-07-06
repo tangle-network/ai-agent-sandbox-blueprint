@@ -4,14 +4,11 @@
 1106 ui/src/routes/instances.$id.tsx
 1095 ai-agent-sandbox-blueprint-lib/src/workflows.rs
 1065 sandbox-runtime/src/session_auth.rs
-948 ai-agent-instance-blueprint-lib/src/workflows.rs
 922 ui/src/routes/workflows._index.tsx
 744 sandbox-runtime/src/scoped_session_auth.rs
+838 sandbox-runtime/src/reaper.rs
 738 ui/src/routes/sandboxes.$id.tsx
-721 ui/src/components/shared/SessionSidebar.tsx
 701 ui/src/lib/stores/chatSessions.ts
-682 ui/src/components/shared/InfrastructureModal.tsx
 653 ai-agent-instance-blueprint-lib/src/auto_provision.rs
 627 ui/src/lib/hooks/useCreateDeploy.ts
-624 ui/src/lib/api/sandboxClient.ts
 606 sandbox-runtime/src/util.rs
