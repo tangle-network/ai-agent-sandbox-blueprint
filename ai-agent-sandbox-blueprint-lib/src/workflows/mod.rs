@@ -9,7 +9,6 @@ use std::sync::Mutex;
 use crate::SandboxTaskRequest;
 use crate::auth::require_sidecar_token;
 use crate::jobs::exec::run_task_request_with_profile;
-use crate::runtime::require_sidecar_auth;
 use crate::store::PersistentStore;
 use crate::util::now_ts;
 

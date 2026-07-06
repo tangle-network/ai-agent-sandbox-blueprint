@@ -15,14 +15,17 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
         ));
     }
 
-    // Look up token from sandbox record. Falls back to spec.sidecar_token for
-    // backward compat with workflows created before 2-phase provisioning.
-    let token = record.token.clone();
-    if token.is_empty() {
-        // Legacy path: use token from workflow spec
-        let token_fallback = require_sidecar_token(spec.sidecar_token.as_deref().unwrap_or(""))?;
-        let _record = require_sidecar_auth(&record.sidecar_url, &token_fallback)?;
-    }
+    // Auth token for the sidecar request. Legacy workflows (created before
+    // 2-phase provisioning) stored no token on the sandbox record; fall back to
+    // the workflow spec's sidecar_token. There is no stored token to compare it
+    // against for those sandboxes, so it is passed through and the sidecar
+    // authenticates it on the request itself. `require_sidecar_token` still
+    // rejects an empty/blank fallback.
+    let token = if record.token.is_empty() {
+        require_sidecar_token(spec.sidecar_token.as_deref().unwrap_or(""))?
+    } else {
+        record.token.clone()
+    };
 
     // Session-per-tick: each execution gets a unique session so messages don't
     // accumulate in a single session forever. The stored session_id acts as a
