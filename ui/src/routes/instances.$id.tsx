@@ -2,17 +2,10 @@ import { useParams, Link } from 'react-router';
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
+import { Card, CardContent } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
-import { Input, Textarea } from '@tangle-network/blueprint-ui/components';
-import { SessionSidebar } from '~/components/shared/SessionSidebar';
-import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
-import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
-import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
-import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
 import { ResourceTabs } from '~/components/shared/ResourceTabs';
 import { instanceListStore, getInstance, updateInstanceStatus } from '~/lib/stores/instances';
-import { getBlueprint } from '@tangle-network/blueprint-ui';
 import { useOperatorAuth } from '~/lib/hooks/useOperatorAuth';
 import { useOperatorApiCall } from '~/lib/hooks/useOperatorApiCall';
 import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
@@ -21,81 +14,31 @@ import { useInstanceProvisionWatcher } from '~/lib/hooks/useProvisionWatcher';
 import { useInstanceHydration } from '~/lib/hooks/useInstanceHydration';
 import { createProxiedInstanceClient, type SandboxClient } from '~/lib/api/sandboxClient';
 import { INSTANCE_OPERATOR_API_URL, OPERATOR_API_URL } from '~/lib/config';
-import { cn } from '@tangle-network/blueprint-ui';
-import { truncateAddress } from '~/lib/utils/truncate-address';
-import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
-import { OnChainVerificationCard } from '~/components/shared/OnChainVerificationCard';
 import { ResourceWorkspaceNav } from '~/components/console/ResourceWorkspaceNav';
-import { ConsoleMetricStrip, type ConsoleMetric } from '~/components/console/ConsolePrimitives';
-import {
-  AutomationWorkspace,
-  ResourceWorkspaceRail,
-  StorageWorkspace,
-  type WorkspaceRailRow,
-} from '~/components/console/ResourceWorkspacePanels';
-import {
-  IdentityMark,
-  OperatorIdenticon,
-  getAgentIdentity,
-  getBlueprintIdentity,
-  getImageIdentity,
-  getResourceIdentity,
-  getRuntimeIdentity,
-  getTeeSecurityIdentity,
-  getStatusIdentity,
-} from '~/components/shared/VisualIdentity';
-
+import { ResourceWorkspaceRail } from '~/components/console/ResourceWorkspacePanels';
 import { useAccount } from 'wagmi';
-import {
-  getInstanceSandboxDisplayValue,
-  getInstanceServiceDisplayValue,
-  getInstanceStatusLabel,
-} from '~/lib/instances/display';
 import { normalizeAgentIdentifier } from '~/lib/agents';
-import { isAttestationVerified } from '~/lib/tee';
 
-interface AgentDescriptor {
-  identifier: string;
-  displayName?: string;
-  description?: string;
-}
-
-interface SshKey {
-  username: string;
-  publicKey: string;
-}
-
-type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation' | 'automation' | 'storage';
-
-function getInitialTabFromPath(pathname: string): ActionTab {
-  if (pathname.endsWith('/runtime')) return 'terminal';
-  if (pathname.endsWith('/sessions')) return 'chat';
-  if (pathname.endsWith('/automation')) return 'automation';
-  if (pathname.endsWith('/network')) return 'ssh';
-  if (pathname.endsWith('/security')) return 'secrets';
-  if (pathname.endsWith('/storage')) return 'storage';
-  return 'overview';
-}
-
-function getCurrentPathname() {
-  return typeof window === 'undefined' ? '' : window.location.pathname;
-}
-
-/** Extract human-readable error from operator API Error messages. */
-function parseApiError(err: Error): string {
-  const idx = err.message.indexOf('): ');
-  if (idx === -1) return err.message;
-  const body = err.message.slice(idx + 3);
-  try {
-    const parsed = JSON.parse(body) as { error?: string };
-    if (typeof parsed.error === 'string') return parsed.error;
-  } catch {
-    // ignore non-JSON error bodies
-  }
-  return err.message;
-}
+import { InstanceHeader, InstanceAlerts } from '~/components/instance-detail/header';
+import { OverviewTab } from '~/components/instance-detail/overview';
+import { AutomationTab } from '~/components/instance-detail/automation';
+import { StorageTab } from '~/components/instance-detail/storage';
+import { TerminalTab } from '~/components/instance-detail/terminal';
+import { ChatTab } from '~/components/instance-detail/chat';
+import { SshTab } from '~/components/instance-detail/ssh';
+import { SecretsTab } from '~/components/instance-detail/secrets';
+import { AttestationTab } from '~/components/instance-detail/attestation';
+import { buildInstanceSummary } from '~/components/instance-detail/summary';
+import {
+  type ActionTab,
+  type AgentDescriptor,
+  type SshKey,
+  getCurrentPathname,
+  getInitialTabFromPath,
+  parseApiError,
+} from '~/components/instance-detail/helpers';
 
 export default function InstanceDetail() {
   const { id } = useParams<{ id: string }>();
@@ -520,248 +463,53 @@ export default function InstanceDetail() {
   const hasAgentValidationResult = availableAgents != null;
   const agentAvailableList = agentIdentifiers.length > 0 ? agentIdentifiers.join(', ') : 'none reported';
 
-  const tabs: { key: ActionTab; label: string; icon: string; hidden?: boolean }[] = [
-    { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
-    { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal' },
-    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', hidden: !hasAgent },
-    { key: 'automation', label: 'Automation', icon: 'i-ph:flow-arrow' },
-    { key: 'ssh' as const, label: 'SSH', icon: 'i-ph:key', hidden: !inst.sshPort },
-    { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', hidden: !!inst.teeEnabled },
-    { key: 'storage', label: 'Storage', icon: 'i-ph:database' },
-    ...(inst.teeEnabled ? [{ key: 'attestation' as const, label: 'Attestation', icon: 'i-ph:shield-check' }] : []),
-  ];
-
-  const workspaceBasePath = `/instances/${encodeURIComponent(inst.id)}`;
-  const workspaceNavItems = [
-    { label: 'Runtime', href: `${workspaceBasePath}/runtime`, icon: 'i-ph:terminal' },
-    { label: 'Sessions', href: `${workspaceBasePath}/sessions`, icon: 'i-ph:chat-circle', disabled: !hasAgent },
-    { label: 'Automation', href: `${workspaceBasePath}/automation`, icon: 'i-ph:flow-arrow' },
-    { label: 'Network', href: `${workspaceBasePath}/network`, icon: 'i-ph:plugs', disabled: !inst.sshPort },
-    { label: 'Security', href: `${workspaceBasePath}/security`, icon: 'i-ph:shield-check' },
-    { label: 'Storage', href: `${workspaceBasePath}/storage`, icon: 'i-ph:database' },
-  ];
-  const exposedPortCount = ports?.length ?? 0;
-  const statusTone = inst.status === 'running' ? 'ready' : inst.status === 'creating' ? 'brand' : inst.status === 'error' ? 'danger' : 'muted';
-  const workspaceMetrics: ConsoleMetric[] = [
-    {
-      label: 'Status',
-      value: getInstanceStatusLabel(inst),
-      detail: inst.status === 'running' ? 'operator ready' : 'lifecycle',
-      tone: statusTone,
-      identity: getStatusIdentity(inst.status),
-    },
-    {
-      label: 'Runtime',
-      value: inst.teeEnabled ? 'TEE' : 'Docker',
-      detail: `${inst.cpuCores}c / ${Math.round(inst.memoryMb / 1024)}g / ${inst.diskGb}g`,
-      tone: inst.teeEnabled ? 'warn' : 'brand',
-      identity: getRuntimeIdentity(inst.teeEnabled ? 'tee' : 'docker'),
-    },
-    {
-      label: 'Network',
-      value: inst.sshPort ? `ssh:${inst.sshPort}` : exposedPortCount > 0 ? `${exposedPortCount} ports` : 'proxy',
-      detail: operatorUrl.replace(/^https?:\/\//, ''),
-      tone: inst.sshPort || exposedPortCount > 0 ? 'ready' : 'muted',
-      identity: getResourceIdentity('network'),
-    },
-    {
-      label: 'Agent',
-      value: configuredAgentIdentifier || 'none',
-      detail: hasAgent ? 'sessions enabled' : 'compute only',
-      tone: hasAgent ? 'brand' : 'muted',
-      identity: getAgentIdentity(configuredAgentIdentifier),
-    },
-  ];
-  const contextRows: WorkspaceRailRow[] = [
-    { label: 'Instance ID', value: inst.id, detail: getInstanceSandboxDisplayValue(inst), tone: 'brand', identity: getBlueprintIdentity(bpId) },
-    { label: 'Blueprint', value: getBlueprint(bpId)?.name ?? bpId, detail: getInstanceServiceDisplayValue(inst), tone: 'brand', identity: getBlueprintIdentity(bpId) },
-    { label: 'Operator', value: inst.operator ? truncateAddress(inst.operator) : 'unknown', detail: inst.operator ?? 'operator not resolved', tone: inst.operator ? 'ready' : 'muted', leading: inst.operator ? <OperatorIdenticon address={inst.operator} size="sm" /> : undefined },
-    { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted', identity: getStatusIdentity('processing') },
-  ];
-  // Secrets trust signal comes from the real server attestation verdict, not the
-  // `teeEnabled` config flag: "Attested / hardware trust" only once the verdict
-  // is `verified`, otherwise "TEE requested — unverified" with no shield-check.
-  const secretsTeeVerified = Boolean(inst.teeEnabled) && isAttestationVerified(attestationVerification);
-  const secretsRowIdentity = getTeeSecurityIdentity({
-    credentialsMissing: inst.credentialsAvailable === false,
-    teeRequested: Boolean(inst.teeEnabled),
-    verified: secretsTeeVerified,
-  });
-  const secretsRowDetail = inst.teeEnabled
-    ? secretsTeeVerified
-      ? 'TEE attested'
-      : 'TEE requested — unverified'
-    : 'operator encrypted';
-  const storageRows: WorkspaceRailRow[] = [
-    { label: 'Image', value: inst.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand', identity: getImageIdentity(inst.image) },
-    { label: 'Disk', value: `${inst.diskGb} GB`, detail: 'allocated volume', tone: 'ready', identity: getResourceIdentity('disk') },
-    { label: 'Lifecycle', value: inst.status, detail: new Date(inst.createdAt).toLocaleString(), tone: statusTone, identity: getStatusIdentity(inst.status) },
-    { label: 'Secrets', value: inst.credentialsAvailable === false ? 'missing' : 'available', detail: secretsRowDetail, tone: inst.credentialsAvailable === false ? 'warn' : 'ready', identity: secretsRowIdentity },
-  ];
-  const workflowCreateHref = inst.status === 'running' && inst.serviceId
-    ? `/workflows/create?target=${encodeURIComponent(`instance:${inst.id}`)}`
-    : undefined;
+  const { tabs, workspaceNavItems, workspaceMetrics, contextRows, storageRows, workflowCreateHref } =
+    buildInstanceSummary({
+      inst,
+      bpId,
+      hasAgent,
+      configuredAgentIdentifier,
+      operatorUrl,
+      ports,
+      tab,
+      currentPathname,
+      attestationVerification,
+    });
 
   return (
     <AnimatedPage className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 mb-6 text-sm text-cloud-elements-textTertiary">
-        <Link to="/instances" className="hover:text-cloud-elements-textSecondary transition-colors">Instances</Link>
-        <span>/</span>
-        <span className="text-cloud-elements-textPrimary font-display">{inst.name}</span>
-      </div>
-
-      {/* Header */}
-      <div className="flex items-start mb-6">
-        <div className="flex items-center gap-4">
-          <IdentityMark identity={getBlueprintIdentity(bpId)} size="lg" className="h-14 w-14 rounded-[6px]" />
-          <ResourceIdentity
-            name={inst.name}
-            status={inst.status}
-            statusLabel={getInstanceStatusLabel(inst)}
-            teeEnabled={inst.teeEnabled}
-            image={inst.image}
-            specs={`${inst.cpuCores} CPU · ${inst.memoryMb}MB · ${inst.diskGb}GB`}
-            titleClassName="text-xl"
-            teeStyle="pill"
-          />
-        </div>
-        {inst.status === 'running' && (
-          <div className="ml-auto flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => setSnapshotOpen(true)}>
-              <div className="i-ph:camera text-sm" />
-              Snapshot
-            </Button>
-            {inst.serviceId && (
-              <Link to={`/workflows/create?target=${encodeURIComponent(`instance:${inst.id}`)}`}>
-                <Button variant="secondary" size="sm" title={!hasAgent ? 'No agent configured — workflow executions will fail' : undefined}>
-                  <div className="i-ph:flow-arrow text-sm" />
-                  Create Workflow
-                </Button>
-              </Link>
-            )}
-          </div>
-        )}
-      </div>
-
-      {inst.circuitBreakerActive && (
-        <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-          <p className="text-sm font-display font-medium text-amber-300">
-            Sidecar unreachable — circuit breaker active
-          </p>
-          <p className="mt-1 text-xs text-amber-200/90">
-            {inst.circuitBreakerProbing
-              ? 'Recovery probe in progress\u2026'
-              : `Cooldown active — retrying in ~${inst.circuitBreakerRemainingSecs ?? '?'}s`}
-          </p>
-        </div>
-      )}
-
-      <div className="mb-4">
-        <ConsoleMetricStrip metrics={workspaceMetrics} />
-      </div>
+      <InstanceHeader
+        inst={inst}
+        bpId={bpId}
+        hasAgent={hasAgent}
+        setSnapshotOpen={setSnapshotOpen}
+        workspaceMetrics={workspaceMetrics}
+      />
 
       <div className="mb-4 grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="min-w-0 space-y-4">
           <ResourceWorkspaceNav items={workspaceNavItems} activePath={currentPathname} />
           <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-0" />
 
-      {agentConfigured && hasAgentValidationResult && !agentIdentifierValid && (
-        <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-          <p className="text-sm font-display font-medium text-amber-300">
-            Configured agent not available in this image
-          </p>
-          <p className="mt-1 text-xs text-amber-200/90">
-            This instance is configured to use <span className="font-data">{configuredAgentIdentifier}</span>, but the running image only reports {agentAvailableList}.
-          </p>
-        </div>
-      )}
+      <InstanceAlerts
+        agentConfigured={agentConfigured}
+        hasAgentValidationResult={hasAgentValidationResult}
+        agentIdentifierValid={agentIdentifierValid}
+        configuredAgentIdentifier={configuredAgentIdentifier}
+        agentAvailableList={agentAvailableList}
+      />
 
       {/* Overview */}
       {tab === 'overview' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Instance Details</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <LabeledValueRow label="ID" value={inst.id} mono copyable identity={getBlueprintIdentity(bpId)} />
-              <LabeledValueRow
-                label="Sandbox"
-                value={getInstanceSandboxDisplayValue(inst)}
-                mono={!!inst.sandboxId}
-                copyable={!!inst.sandboxId}
-                copyValue={inst.sandboxId ?? undefined}
-                identity={getStatusIdentity(inst.sandboxId ? 'running' : 'creating')}
-              />
-              <LabeledValueRow label="Image" value={inst.image} mono copyable identity={getImageIdentity(inst.image)} />
-              <LabeledValueRow label="CPU" value={`${inst.cpuCores} cores`} identity={getResourceIdentity('cpu')} />
-              <LabeledValueRow label="Memory" value={`${inst.memoryMb} MB`} identity={getResourceIdentity('memory')} />
-              <LabeledValueRow label="Disk" value={`${inst.diskGb} GB`} identity={getResourceIdentity('disk')} />
-              <LabeledValueRow label="Created" value={new Date(inst.createdAt).toLocaleString()} />
-              <LabeledValueRow label="Blueprint" value={getBlueprint(bpId)?.name ?? bpId} identity={getBlueprintIdentity(bpId)} />
-              <LabeledValueRow label="Service" value={getInstanceServiceDisplayValue(inst)} />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Runtime Details</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <LabeledValueRow
-                label="Operator"
-                value={inst.operator ? truncateAddress(inst.operator) : 'Unknown'}
-                mono
-                copyable={!!inst.operator}
-                copyValue={inst.operator}
-                leading={inst.operator ? <OperatorIdenticon address={inst.operator} size="sm" /> : undefined}
-              />
-              {inst.txHash && (
-                <LabeledValueRow
-                  label="TX Hash"
-                  value={truncateAddress(inst.txHash)}
-                  mono
-                  copyable
-                  copyValue={inst.txHash}
-                />
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Exposed Ports */}
-          {ports && ports.length > 0 && (
-            <ExposedPortsCard
-              ports={ports}
-              proxyBaseUrl={`${operatorUrl}/api/sandbox/port/`}
-              className="lg:col-span-2"
-            />
-          )}
-
-          {/* On-Chain Verification */}
-          {serviceId !== null && (
-            <OnChainVerificationCard
-              serviceId={serviceId}
-              operator={inst.operator}
-              sidecarUrl={inst.sidecarUrl}
-              blueprintType={inst.teeEnabled ? 'tee-instance' : 'instance'}
-              className="lg:col-span-2"
-            />
-          )}
-        </div>
+        <OverviewTab inst={inst} bpId={bpId} serviceId={serviceId} ports={ports} operatorUrl={operatorUrl} />
       )}
 
       {tab === 'automation' && (
-        <AutomationWorkspace
-          createHref={workflowCreateHref}
-          scope={inst.teeEnabled ? 'tee-instance' : 'instance'}
-          target={inst.id}
-          status={inst.status}
-          hasAgent={hasAgent}
-        />
+        <AutomationTab inst={inst} workflowCreateHref={workflowCreateHref} hasAgent={hasAgent} />
       )}
 
       {tab === 'storage' && (
-        <StorageWorkspace
+        <StorageTab
           rows={storageRows}
           onSnapshot={() => setSnapshotOpen(true)}
           snapshotEnabled={inst.status === 'running'}
@@ -770,314 +518,94 @@ export default function InstanceDetail() {
 
       {/* Terminal */}
       {tab === 'terminal' && (
-        <Card className="overflow-hidden">
-          <CardContent className="p-0">
-            {isOperatorAuthed && operatorToken ? (
-              sshUserDetecting ? (
-                <div className="p-6 text-center">
-                  <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                    Preparing the sandbox terminal
-                  </p>
-                  <p className="text-xs text-cloud-elements-textTertiary">
-                    Resolving the sandbox user so Terminal starts in the same home directory as SSH.
-                  </p>
-                </div>
-              ) : (
-                <div className="h-[min(500px,60vh)]">
-                  <OperatorTerminalView
-                    apiUrl={operatorUrl}
-                    resourcePath="/api/sandbox"
-                    token={operatorToken}
-                    title="Instance Shell"
-                    subtitle="Secure shell via operator relay"
-                    initialCwd={terminalPath}
-                    displayUsername={terminalUsername}
-                    displayPath={terminalPath}
-                  />
-                </div>
-              )
-            ) : (
-              <div className="p-6 text-center">
-                <p className="text-sm text-cloud-elements-textSecondary mb-3">
-                  Authenticate with the operator to access the terminal
-                </p>
-                <p className="text-xs text-cloud-elements-textTertiary mb-4">
-                  Commands are relayed through the operator API and no longer connect directly to the sandbox container.
-                </p>
-                {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
-                <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
-                  {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <TerminalTab
+          isOperatorAuthed={isOperatorAuthed}
+          operatorToken={operatorToken}
+          sshUserDetecting={sshUserDetecting}
+          operatorUrl={operatorUrl}
+          terminalPath={terminalPath}
+          terminalUsername={terminalUsername}
+          operatorAuthError={operatorAuthError}
+          handleOperatorAuthenticate={handleOperatorAuthenticate}
+          isOperatorAuthenticating={isOperatorAuthenticating}
+          hasWallet={hasWallet}
+        />
       )}
 
       {/* Chat */}
       {tab === 'chat' && (
-        <Card className="overflow-hidden">
-          {!isOperatorAuthed ? (
-            <CardContent className="p-0">
-              <div className="p-6 text-center">
-                <p className="text-sm text-cloud-elements-textSecondary mb-3">
-                  Authenticate with the operator to chat with the instance agent
-                </p>
-                <p className="text-xs text-cloud-elements-textTertiary mb-4">
-                  Chat requests are proxied through the operator API and do not expose the sandbox container to the browser.
-                </p>
-                {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
-                <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
-                  {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
-                </Button>
-              </div>
-            </CardContent>
-          ) : agentConfigured && agentDiscoveryLoading && !hasAgentValidationResult ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:spinner-gap text-3xl text-cloud-elements-textTertiary mb-3 mx-auto animate-spin" />
-              <p className="text-sm text-cloud-elements-textSecondary">
-                Checking which agents this image exposes...
-              </p>
-            </CardContent>
-          ) : agentConfigured && hasAgentValidationResult && !agentIdentifierValid ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:warning-circle text-3xl text-amber-400 mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                The configured agent is not available in this instance image
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mb-2">
-                Configured agent: <span className="font-data">{configuredAgentIdentifier}</span>
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary">
-                Available agents: <span className="font-data">{agentAvailableList}</span>
-              </p>
-            </CardContent>
-          ) : inst.credentialsAvailable === false ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:key text-3xl text-amber-400 mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                AI credentials are not configured
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mb-3">
-                Add one of the following in the Secrets tab:
-              </p>
-              <ul className="text-xs text-cloud-elements-textTertiary space-y-1 mb-4">
-                <li><code className="font-data">ANTHROPIC_API_KEY</code></li>
-                <li><code className="font-data">ZAI_API_KEY</code></li>
-                <li><code className="font-data">OPENCODE_MODEL_PROVIDER</code> + <code className="font-data">OPENCODE_MODEL_NAME</code> + <code className="font-data">OPENCODE_MODEL_API_KEY</code></li>
-              </ul>
-              <Button size="sm" variant="outline" onClick={() => setTab('secrets')}>
-                Go to Secrets
-              </Button>
-            </CardContent>
-          ) : (
-            <CardContent className="p-0">
-              {agentDiscoveryError && (
-                <div className="border-b border-amber-500/20 bg-amber-500/5 px-3 py-2">
-                  <p className="text-xs text-amber-300">{agentDiscoveryError}</p>
-                </div>
-              )}
-              <div className="h-[min(600px,65vh)]">
-                <SessionSidebar
-                  sandboxId={inst.sandboxId ?? decodedId}
-                  client={client}
-                  systemPrompt={systemPrompt}
-                  onSystemPromptChange={setSystemPrompt}
-                />
-              </div>
-            </CardContent>
-          )}
-        </Card>
+        <ChatTab
+          isOperatorAuthed={isOperatorAuthed}
+          agentConfigured={agentConfigured}
+          agentDiscoveryLoading={agentDiscoveryLoading}
+          hasAgentValidationResult={hasAgentValidationResult}
+          agentIdentifierValid={agentIdentifierValid}
+          configuredAgentIdentifier={configuredAgentIdentifier}
+          agentAvailableList={agentAvailableList}
+          inst={inst}
+          operatorAuthError={operatorAuthError}
+          handleOperatorAuthenticate={handleOperatorAuthenticate}
+          isOperatorAuthenticating={isOperatorAuthenticating}
+          hasWallet={hasWallet}
+          setTab={setTab}
+          agentDiscoveryError={agentDiscoveryError}
+          decodedId={decodedId}
+          client={client}
+          systemPrompt={systemPrompt}
+          setSystemPrompt={setSystemPrompt}
+        />
       )}
 
       {/* SSH Tab — provision and revoke SSH keys */}
       {tab === 'ssh' && (
-        <div className="space-y-4">
-          {sshConnectionCommand && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">SSH Connection</CardTitle>
-                <CardDescription>
-                  Connect to this instance via SSH using the command below.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <p className="text-xs font-data rounded-lg bg-cloud-elements-background-depth-2 px-3 py-2 break-all">
-                  {sshConnectionCommand}
-                </p>
-              </CardContent>
-            </Card>
-          )}
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Add SSH Key</CardTitle>
-              <CardDescription>Provision an SSH public key for remote access</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-cloud-elements-textSecondary">Username</label>
-                <Input
-                  aria-label="SSH username"
-                  value={sshUsername}
-                  onChange={(e) => {
-                    sshUsernameDirtyRef.current = true;
-                    setSshUsername(e.target.value);
-                  }}
-                  placeholder={sshUserDetecting ? 'Detecting sandbox user...' : 'Auto-detected from sandbox'}
-                  className="font-data text-sm"
-                />
-                {sshUserHint && (
-                  <p className="text-xs text-cloud-elements-textSecondary">{sshUserHint}</p>
-                )}
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-cloud-elements-textSecondary">Public Key</label>
-                <Textarea
-                  aria-label="SSH public key"
-                  value={sshPublicKey}
-                  onChange={(e) => setSshPublicKey(e.target.value)}
-                  placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
-                  className="font-data text-xs min-h-[80px] resize-none"
-                />
-              </div>
-              {sshError && (
-                <p className="text-xs text-red-400">{sshError}</p>
-              )}
-              {sshSuccess && (
-                <p className="text-xs text-teal-400">{sshSuccess}</p>
-              )}
-              <Button
-                size="sm"
-                onClick={handleSshProvision}
-                disabled={sshBusy || !sshPublicKey.trim()}
-              >
-                {sshBusy ? 'Provisioning...' : 'Add Key'}
-              </Button>
-            </CardContent>
-          </Card>
-
-          {sshKeys.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Active Keys</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {sshKeys.map((key) => (
-                  <div
-                    key={key.publicKey}
-                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-cloud-elements-background-depth-2"
-                  >
-                    <div className="min-w-0">
-                      <span className="text-xs font-data text-cloud-elements-textSecondary">{key.username}@</span>
-                      <span className="text-xs font-data text-cloud-elements-textTertiary truncate block">
-                        {key.publicKey.length > 60 ? `${key.publicKey.slice(0, 60)}...` : key.publicKey}
-                      </span>
-                    </div>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => handleSshRevoke(key)}
-                      disabled={sshBusy}
-                    >
-                      Revoke
-                    </Button>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-        </div>
+        <SshTab
+          sshConnectionCommand={sshConnectionCommand}
+          sshUsername={sshUsername}
+          setSshUsername={setSshUsername}
+          sshUsernameDirtyRef={sshUsernameDirtyRef}
+          sshUserDetecting={sshUserDetecting}
+          sshUserHint={sshUserHint}
+          sshPublicKey={sshPublicKey}
+          setSshPublicKey={setSshPublicKey}
+          sshError={sshError}
+          sshSuccess={sshSuccess}
+          handleSshProvision={handleSshProvision}
+          sshBusy={sshBusy}
+          sshKeys={sshKeys}
+          handleSshRevoke={handleSshRevoke}
+        />
       )}
 
       {/* Secrets */}
       {tab === 'secrets' && (
-        <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Environment Secrets</CardTitle>
-              <CardDescription>Inject environment variables as secrets into the instance</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {isOperatorAuthed ? (
-                <>
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-medium text-cloud-elements-textSecondary" htmlFor="instance-secrets-json">
-                        Secrets (JSON object)
-                      </label>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 w-7 p-0"
-                        onClick={() => setSecretsVisible((v) => !v)}
-                        title={secretsVisible ? 'Hide secrets' : 'Show secrets'}
-                      >
-                        <div className={cn('text-sm', secretsVisible ? 'i-ph:eye' : 'i-ph:eye-slash')} />
-                      </Button>
-                    </div>
-                    {secretsLoading && (
-                      <p className="text-xs text-cloud-elements-textTertiary">Loading existing secrets...</p>
-                    )}
-                    <Textarea
-                      id="instance-secrets-json"
-                      value={secretsJson}
-                      onChange={(e) => setSecretsJson(e.target.value)}
-                      placeholder='{"API_KEY": "sk-...", "DB_URL": "postgres://..."}'
-                      className="font-data text-xs min-h-[120px] resize-y"
-                      style={{ filter: secretsVisible ? 'none' : 'blur(4px)' }}
-                      disabled={secretsLoading}
-                    />
-                    <p className="text-[11px] text-cloud-elements-textTertiary">
-                      Key-value pairs injected as environment variables. Injecting replaces all existing secrets. Values are encrypted at rest.
-                    </p>
-                  </div>
-                  {secretsError && (
-                    <p className="text-xs text-red-400">{secretsError}</p>
-                  )}
-                  {secretsSuccess && (
-                    <p className="text-xs text-teal-400">{secretsSuccess}</p>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <Button size="sm" onClick={handleInjectSecrets} disabled={secretsBusy || secretsLoading}>
-                      {secretsBusy ? 'Injecting...' : 'Inject Secrets'}
-                    </Button>
-                    <Button variant="destructive" size="sm" onClick={handleWipeSecrets} disabled={secretsBusy || secretsLoading}>
-                      Wipe All Secrets
-                    </Button>
-                  </div>
-                </>
-              ) : (
-                <div className="p-2 text-center">
-                  <p className="text-sm text-cloud-elements-textSecondary mb-3">
-                    Authenticate with the operator to manage instance secrets
-                  </p>
-                  <p className="text-xs text-cloud-elements-textTertiary mb-4">
-                    Secret updates are proxied through the operator API and may restart the instance sidecar to apply changes.
-                  </p>
-                  {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
-                  <Button size="sm" onClick={handleOperatorAuthenticate} disabled={isOperatorAuthenticating || !hasWallet}>
-                    {isOperatorAuthenticating ? 'Signing...' : !hasWallet ? 'Connect Wallet First' : 'Authenticate'}
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+        <SecretsTab
+          isOperatorAuthed={isOperatorAuthed}
+          secretsVisible={secretsVisible}
+          setSecretsVisible={setSecretsVisible}
+          secretsLoading={secretsLoading}
+          secretsJson={secretsJson}
+          setSecretsJson={setSecretsJson}
+          secretsError={secretsError}
+          secretsSuccess={secretsSuccess}
+          handleInjectSecrets={handleInjectSecrets}
+          secretsBusy={secretsBusy}
+          handleWipeSecrets={handleWipeSecrets}
+          operatorAuthError={operatorAuthError}
+          handleOperatorAuthenticate={handleOperatorAuthenticate}
+          isOperatorAuthenticating={isOperatorAuthenticating}
+          hasWallet={hasWallet}
+        />
       )}
 
       {/* Attestation Tab — TEE attestation verification */}
       {tab === 'attestation' && (
-        <div className="space-y-4">
-          <TeeAttestationCard
-            subjectLabel="instance"
-            attestation={attestation}
-            verification={attestationVerification}
-            busy={attestationBusy}
-            error={attestationError}
-            onFetch={handleFetchAttestation}
-          />
-        </div>
+        <AttestationTab
+          attestation={attestation}
+          attestationVerification={attestationVerification}
+          attestationBusy={attestationBusy}
+          attestationError={attestationError}
+          handleFetchAttestation={handleFetchAttestation}
+        />
       )}
         </div>
         <ResourceWorkspaceRail rows={contextRows} />
