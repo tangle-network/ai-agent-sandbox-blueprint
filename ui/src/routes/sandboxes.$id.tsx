@@ -3,17 +3,8 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '@nanostores/react';
 import { AnimatedPage } from '@tangle-network/blueprint-ui/components';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@tangle-network/blueprint-ui/components';
+import { Card, CardContent } from '@tangle-network/blueprint-ui/components';
 import { Button } from '@tangle-network/blueprint-ui/components';
-import { Input } from '@tangle-network/blueprint-ui/components';
-import { Textarea } from '@tangle-network/blueprint-ui/components';
-import { getBlueprint } from '@tangle-network/blueprint-ui';
-import { JobPriceBadge } from '~/components/shared/JobPriceBadge';
-import { SessionSidebar } from '~/components/shared/SessionSidebar';
-import { ResourceIdentity } from '~/components/shared/ResourceIdentity';
-import { LabeledValueRow } from '~/components/shared/LabeledValueRow';
-import { ExposedPortsCard } from '~/components/shared/ExposedPortsCard';
-import { TeeAttestationCard } from '~/components/shared/TeeAttestationCard';
 import { ResourceTabs } from '~/components/shared/ResourceTabs';
 import {
   sandboxListStore,
@@ -21,7 +12,6 @@ import {
   getSandboxRouteKey,
   updateSandboxStatus,
 } from '~/lib/stores/sandboxes';
-import { ProvisionProgress } from '~/components/shared/ProvisionProgress';
 import { useSubmitJob } from '@tangle-network/blueprint-ui';
 import { encodeJobArgs } from '@tangle-network/blueprint-ui';
 import { getJobById } from '@tangle-network/blueprint-ui';
@@ -32,36 +22,13 @@ import { useExposedPorts } from '~/lib/hooks/useExposedPorts';
 import { useTeeAttestation } from '~/lib/hooks/useTeeAttestation';
 import { useSandboxHydration } from '~/lib/hooks/useSandboxHydration';
 import { createProxiedClient, type SandboxClient } from '~/lib/api/sandboxClient';
-import { cn } from '@tangle-network/blueprint-ui';
-import { truncateAddress } from '~/lib/utils/truncate-address';
 import { ConfirmDialog } from '~/components/shared/ConfirmDialog';
 import { SnapshotDialog } from '~/components/shared/SnapshotDialog';
-import { OperatorTerminalView } from '~/components/shared/OperatorTerminalView';
 import { ResourceWorkspaceNav } from '~/components/console/ResourceWorkspaceNav';
-import { ConsoleMetricStrip, type ConsoleMetric } from '~/components/console/ConsolePrimitives';
-import {
-  AutomationWorkspace,
-  ResourceWorkspaceRail,
-  StorageWorkspace,
-  type WorkspaceRailRow,
-} from '~/components/console/ResourceWorkspacePanels';
-import {
-  IdentityMark,
-  OperatorIdenticon,
-  getAgentIdentity,
-  getBlueprintIdentity,
-  getImageIdentity,
-  getResourceIdentity,
-  getRuntimeIdentity,
-  getTeeSecurityIdentity,
-  getStatusIdentity,
-} from '~/components/shared/VisualIdentity';
+import { ResourceWorkspaceRail } from '~/components/console/ResourceWorkspacePanels';
 
 import { useAccount } from 'wagmi';
 import { normalizeAgentIdentifier } from '~/lib/agents';
-import { isAttestationVerified } from '~/lib/tee';
-
-type ActionTab = 'overview' | 'terminal' | 'chat' | 'ssh' | 'secrets' | 'attestation' | 'automation' | 'storage';
 
 import {
   INSTANCE_ONCHAIN_BLUEPRINT_ID,
@@ -72,64 +39,24 @@ import {
   TEE_INSTANCE_ONCHAIN_SERVICE_ID,
 } from '~/lib/config';
 
-interface SshKey {
-  username: string;
-  publicKey: string;
-}
-
-interface AgentDescriptor {
-  identifier: string;
-  displayName?: string;
-  description?: string;
-}
-
-function getInitialTabFromPath(pathname: string): ActionTab {
-  if (pathname.endsWith('/runtime')) return 'terminal';
-  if (pathname.endsWith('/sessions')) return 'chat';
-  if (pathname.endsWith('/automation')) return 'automation';
-  if (pathname.endsWith('/network')) return 'ssh';
-  if (pathname.endsWith('/security')) return 'secrets';
-  if (pathname.endsWith('/storage')) return 'storage';
-  return 'overview';
-}
-
-function getCurrentPathname() {
-  return typeof window === 'undefined' ? '' : window.location.pathname;
-}
-
-/** Extract human-readable error from operator API Error messages. */
-function parseApiError(err: Error): string {
-  const idx = err.message.indexOf('): ');
-  if (idx === -1) return err.message;
-  const body = err.message.slice(idx + 3);
-  try {
-    const parsed = JSON.parse(body);
-    if (typeof parsed.error === 'string') return parsed.error;
-  } catch { /* not JSON */ }
-  return err.message;
-}
-
-function formatBlueprintLabel(blueprintId: string): string {
-  const id = blueprintId.trim() || 'ai-agent-sandbox-blueprint';
-  return getBlueprint(id)?.name ?? id;
-}
-
-function formatServiceId(serviceId: string): string {
-  const trimmed = serviceId.trim();
-  if (!trimmed) return 'Not linked';
-  if (trimmed.startsWith('#')) return trimmed;
-  return /^\d+$/.test(trimmed) ? `#${trimmed}` : trimmed;
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds <= 0) return 'Unlimited';
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  if (hours > 0 && minutes > 0) return `${hours}h ${minutes}m`;
-  if (hours > 0) return `${hours} hour${hours !== 1 ? 's' : ''}`;
-  if (minutes > 0) return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
-  return `${seconds}s`;
-}
+import { OverviewTab } from '~/components/sandbox-detail/overview';
+import { AutomationTab } from '~/components/sandbox-detail/automation';
+import { StorageTab } from '~/components/sandbox-detail/storage';
+import { TerminalTab } from '~/components/sandbox-detail/terminal';
+import { ChatTab } from '~/components/sandbox-detail/chat';
+import { SshTab } from '~/components/sandbox-detail/ssh';
+import { SecretsTab } from '~/components/sandbox-detail/secrets';
+import { AttestationTab } from '~/components/sandbox-detail/attestation';
+import { SandboxAlerts, SandboxHeader } from '~/components/sandbox-detail/header';
+import { buildSandboxSummary } from '~/components/sandbox-detail/summary';
+import {
+  type ActionTab,
+  type AgentDescriptor,
+  type SshKey,
+  getCurrentPathname,
+  getInitialTabFromPath,
+  parseApiError,
+} from '~/components/sandbox-detail/helpers';
 
 export default function SandboxDetail() {
   const { id } = useParams<{ id: string }>();
@@ -633,303 +560,67 @@ export default function SandboxDetail() {
   const hasAgentValidationResult = availableAgents != null;
   const agentAvailableList = agentIdentifiers.length > 0 ? agentIdentifiers.join(', ') : 'none reported';
 
-  const tabs: { key: ActionTab; label: string; icon: string; disabled?: boolean; hidden?: boolean }[] = [
-    { key: 'overview', label: 'Overview', icon: 'i-ph:info' },
-    { key: 'terminal', label: 'Terminal', icon: 'i-ph:terminal', disabled: !hasProvisionedSandbox || !isRunning },
-    { key: 'chat', label: 'Chat', icon: 'i-ph:chat-circle', disabled: !hasProvisionedSandbox || !isRunning, hidden: !hasAgent },
-    { key: 'automation', label: 'Automation', icon: 'i-ph:flow-arrow', disabled: !hasProvisionedSandbox || !isRunning },
-    { key: 'ssh', label: 'SSH', icon: 'i-ph:key', disabled: !hasProvisionedSandbox || !isRunning, hidden: !sb.sshPort },
-    { key: 'secrets', label: 'Secrets', icon: 'i-ph:lock-simple', disabled: !hasProvisionedSandbox || !isRunning },
-    { key: 'storage', label: 'Storage', icon: 'i-ph:database', disabled: !hasProvisionedSandbox },
-    { key: 'attestation', label: 'Attestation', icon: 'i-ph:shield-check', hidden: !hasProvisionedSandbox || !sb.teeEnabled },
-  ];
-
-  const workspaceBasePath = `/sandboxes/${encodeURIComponent(routeKey)}`;
-  const workspaceNavItems = [
-    { label: 'Runtime', href: `${workspaceBasePath}/runtime`, icon: 'i-ph:terminal' },
-    { label: 'Sessions', href: `${workspaceBasePath}/sessions`, icon: 'i-ph:chat-circle', disabled: !hasAgent },
-    { label: 'Automation', href: `${workspaceBasePath}/automation`, icon: 'i-ph:flow-arrow' },
-    { label: 'Network', href: `${workspaceBasePath}/network`, icon: 'i-ph:plugs', disabled: !sb.sshPort },
-    { label: 'Security', href: `${workspaceBasePath}/security`, icon: 'i-ph:shield-check' },
-    { label: 'Storage', href: `${workspaceBasePath}/storage`, icon: 'i-ph:database' },
-  ];
-  const exposedPortCount = ports?.length ?? 0;
-  const statusTone = isRunning ? 'ready' : isCreating ? 'brand' : isStopped ? 'warn' : sb.status === 'error' ? 'danger' : 'muted';
-  const workspaceMetrics: ConsoleMetric[] = [
-    {
-      label: 'Status',
-      value: sb.status,
-      detail: isRunning ? 'operator ready' : isCreating ? 'provisioning' : 'lifecycle',
-      tone: statusTone,
-      identity: getStatusIdentity(sb.status),
-    },
-    {
-      label: 'Runtime',
-      value: sb.teeEnabled ? 'TEE' : 'Docker',
-      detail: `${sb.cpuCores}c / ${Math.round(sb.memoryMb / 1024)}g / ${sb.diskGb}g`,
-      tone: sb.teeEnabled ? 'warn' : 'brand',
-      identity: getRuntimeIdentity(sb.teeEnabled ? 'tee' : 'docker'),
-    },
-    {
-      label: 'Network',
-      value: sb.sshPort ? `ssh:${sb.sshPort}` : exposedPortCount > 0 ? `${exposedPortCount} ports` : 'proxy',
-      detail: operatorUrl.replace(/^https?:\/\//, ''),
-      tone: sb.sshPort || exposedPortCount > 0 ? 'ready' : 'muted',
-      identity: getResourceIdentity('network'),
-    },
-    {
-      label: 'Agent',
-      value: configuredAgentIdentifier || 'none',
-      detail: hasAgent ? 'sessions enabled' : 'compute only',
-      tone: hasAgent ? 'brand' : 'muted',
-      identity: getAgentIdentity(configuredAgentIdentifier),
-    },
-  ];
-  const contextRows: WorkspaceRailRow[] = [
-    { label: 'Sandbox ID', value: sb.sandboxId ? 'provisioned' : 'pending', detail: sb.sandboxId ?? sb.localId, tone: sb.sandboxId ? 'ready' : 'warn', identity: getStatusIdentity(sb.sandboxId ? 'running' : 'creating') },
-    { label: 'Blueprint', value: formatBlueprintLabel(sb.blueprintId), detail: `service ${formatServiceId(sb.serviceId)}`, tone: 'brand', identity: getBlueprintIdentity(sb.blueprintId) },
-    { label: 'Operator', value: sb.operator ? truncateAddress(sb.operator) : 'unknown', detail: sb.operator ?? 'operator not resolved', tone: sb.operator ? 'ready' : 'muted', leading: sb.operator ? <OperatorIdenticon address={sb.operator} size="sm" /> : undefined },
-    { label: 'Workspace', value: tab, detail: currentPathname, tone: 'muted', identity: getStatusIdentity('processing') },
-  ];
-  // Drive the Secrets row's trust signal from the REAL server attestation
-  // verdict, not the `teeEnabled` config flag. A TEE-requested sandbox is only
-  // shown as "Attested / hardware trust" once the server verdict is `verified`;
-  // otherwise it reads "TEE requested — unverified" with no shield-check.
-  const secretsTeeVerified = Boolean(sb.teeEnabled) && isAttestationVerified(attestationVerification);
-  const secretsRowIdentity = getTeeSecurityIdentity({
-    credentialsMissing: sb.credentialsAvailable === false,
-    teeRequested: Boolean(sb.teeEnabled),
-    verified: secretsTeeVerified,
-  });
-  const secretsRowDetail = sb.teeEnabled
-    ? secretsTeeVerified
-      ? 'TEE attested'
-      : 'TEE requested — unverified'
-    : 'operator encrypted';
-  const storageRows: WorkspaceRailRow[] = [
-    { label: 'Image', value: sb.image.replace('ghcr.io/tangle-network/', ''), detail: 'source image', tone: 'brand', identity: getImageIdentity(sb.image) },
-    { label: 'Disk', value: `${sb.diskGb} GB`, detail: 'allocated volume', tone: 'ready', identity: getResourceIdentity('disk') },
-    { label: 'Lifecycle', value: isStopped ? 'warm' : isGone ? 'gone' : sb.status, detail: sb.lastActivityAt ? new Date(sb.lastActivityAt).toLocaleString() : 'no activity timestamp', tone: statusTone, identity: getStatusIdentity(isStopped ? 'stopped' : isGone ? 'error' : sb.status) },
-    { label: 'Secrets', value: sb.credentialsAvailable === false ? 'missing' : 'available', detail: secretsRowDetail, tone: sb.credentialsAvailable === false ? 'warn' : 'ready', identity: secretsRowIdentity },
-  ];
-  const workflowCreateHref = isRunning && sb.sandboxId
-    ? `/workflows/create?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`
-    : undefined;
+  const { tabs, workspaceNavItems, workspaceMetrics, contextRows, storageRows, workflowCreateHref } =
+    buildSandboxSummary({
+      sb,
+      isRunning,
+      isCreating,
+      isStopped,
+      isGone,
+      hasProvisionedSandbox,
+      hasAgent,
+      configuredAgentIdentifier,
+      operatorUrl,
+      ports,
+      tab,
+      currentPathname,
+      routeKey,
+      attestationVerification,
+    });
 
   return (
     <AnimatedPage className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
-      {/* Header */}
-      <div className="flex items-center gap-2 mb-6 text-sm text-cloud-elements-textTertiary">
-        <Link to="/sandboxes" className="hover:text-cloud-elements-textSecondary transition-colors">Sandboxes</Link>
-        <span>/</span>
-        <span className="text-cloud-elements-textPrimary font-display">{sb.name}</span>
-      </div>
-
-      <div className="flex items-start justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <IdentityMark identity={getBlueprintIdentity(sb.teeEnabled ? 'ai-agent-tee-instance-blueprint' : sb.blueprintId)} size="lg" className="h-14 w-14 rounded-[6px]" />
-          <ResourceIdentity
-            name={sb.name}
-            status={sb.status}
-            teeEnabled={sb.teeEnabled}
-            image={sb.image}
-            specs={`${sb.cpuCores} CPU · ${sb.memoryMb}MB · ${sb.diskGb}GB`}
-            titleClassName="text-xl"
-            teeStyle="pill"
-          />
-        </div>
-
-        {/* Actions */}
-        <div className="flex items-center gap-2">
-          {hasProvisionedSandbox && isRunning && !isCreating && (
-            <Button variant="secondary" size="sm" onClick={handleStop}>
-              <div className="i-ph:stop text-sm" />
-              Stop
-            </Button>
-          )}
-          {hasProvisionedSandbox && isStopped && (
-            <Button variant="success" size="sm" onClick={handleResume}>
-              <div className="i-ph:play text-sm" />
-              Resume
-            </Button>
-          )}
-          {hasProvisionedSandbox && !isGone && (
-            <>
-              <Button variant="secondary" size="sm" onClick={() => setSnapshotOpen(true)}>
-                <div className="i-ph:camera text-sm" />
-                Snapshot
-              </Button>
-              {isRunning && sb.sandboxId && (
-                <Link to={`/workflows/create?target=${encodeURIComponent(`sandbox:${sb.sandboxId}`)}`}>
-                  <Button variant="secondary" size="sm" title={!hasAgent ? 'No agent configured — workflow executions will fail' : undefined}>
-                    <div className="i-ph:flow-arrow text-sm" />
-                    Create Workflow
-                  </Button>
-                </Link>
-              )}
-              <Button variant="destructive" size="sm" onClick={handleDelete}>
-                <div className="i-ph:trash text-sm" />
-                Delete
-                <JobPriceBadge jobIndex={JOB_IDS.SANDBOX_DELETE} pricingMultiplier={PRICING_TIERS[JOB_IDS.SANDBOX_DELETE]?.multiplier ?? 1} compact />
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="mb-4">
-        <ConsoleMetricStrip metrics={workspaceMetrics} />
-      </div>
+      <SandboxHeader
+        sb={sb}
+        hasProvisionedSandbox={hasProvisionedSandbox}
+        isRunning={isRunning}
+        isCreating={isCreating}
+        isStopped={isStopped}
+        isGone={isGone}
+        hasAgent={hasAgent}
+        handleStop={handleStop}
+        handleResume={handleResume}
+        setSnapshotOpen={setSnapshotOpen}
+        handleDelete={handleDelete}
+        workspaceMetrics={workspaceMetrics}
+      />
 
       <div className="mb-4 grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="min-w-0 space-y-4">
           <ResourceWorkspaceNav items={workspaceNavItems} activePath={currentPathname} />
           <ResourceTabs tabs={tabs} value={tab} onValueChange={setTab} className="mb-0" />
 
-      {agentConfigured && hasAgentValidationResult && !agentIdentifierValid && (
-        <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-          <p className="text-sm font-display font-medium text-amber-300">
-            Configured agent not available in this image
-          </p>
-          <p className="mt-1 text-xs text-amber-200/90">
-            This sandbox is configured to use <span className="font-data">{configuredAgentIdentifier}</span>, but the running image only reports {agentAvailableList}.
-          </p>
-        </div>
-      )}
-
-      {/* Provision Progress (shown when creating) */}
-      {sb.status === 'creating' && sb.callId != null && (
-        <ProvisionProgress
-          callId={sb.callId}
-          className="mb-4"
-          onReady={(sandboxId, sidecarUrl) => {
-            updateSandboxStatus(routeKey, 'running', { sandboxId, sidecarUrl, errorMessage: undefined });
-          }}
-          onFailed={(message) => updateSandboxStatus(routeKey, 'error', { errorMessage: message })}
-        />
-      )}
-
-      {sb.status === 'error' && sb.errorMessage && (
-        <div className="mb-4 rounded-xl border border-crimson-500/20 bg-crimson-500/5 p-4">
-          <p className="text-sm font-display font-medium text-crimson-300">Provisioning failed</p>
-          <p className="mt-1 text-xs text-crimson-200/90">{sb.errorMessage}</p>
-        </div>
-      )}
-
-      {sb.circuitBreakerActive && (
-        <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-          <p className="text-sm font-display font-medium text-amber-300">
-            Sidecar unreachable — circuit breaker active
-          </p>
-          <p className="mt-1 text-xs text-amber-200/90">
-            {sb.circuitBreakerProbing
-              ? 'Recovery probe in progress\u2026'
-              : `Cooldown active — retrying in ~${sb.circuitBreakerRemainingSecs ?? '?'}s`}
-          </p>
-        </div>
-      )}
+      <SandboxAlerts
+        sb={sb}
+        routeKey={routeKey}
+        agentConfigured={agentConfigured}
+        hasAgentValidationResult={hasAgentValidationResult}
+        agentIdentifierValid={agentIdentifierValid}
+        configuredAgentIdentifier={configuredAgentIdentifier}
+        agentAvailableList={agentAvailableList}
+      />
 
       {/* Tab Content */}
       {tab === 'overview' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Configuration</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2.5">
-              <LabeledValueRow
-                label="Sandbox ID"
-                value={sb.sandboxId && sb.sandboxId.length > 24 ? `${sb.sandboxId.slice(0, 20)}...${sb.sandboxId.slice(-4)}` : (sb.sandboxId || 'Pending operator provision')}
-                mono={!!sb.sandboxId}
-                copyable={!!sb.sandboxId}
-                copyValue={sb.sandboxId ?? undefined}
-                alignRight
-                identity={getStatusIdentity(sb.sandboxId ? 'running' : 'creating')}
-              />
-              {sb.sandboxId == null && (
-                <LabeledValueRow label="Draft Key" value={sb.localId} mono alignRight identity={getStatusIdentity('creating')} />
-              )}
-              <LabeledValueRow label="Image" value={sb.image} mono copyable alignRight identity={getImageIdentity(sb.image)} />
-              <LabeledValueRow label="CPU" value={`${sb.cpuCores} cores`} alignRight identity={getResourceIdentity('cpu')} />
-              <LabeledValueRow label="Memory" value={`${sb.memoryMb} MB`} alignRight identity={getResourceIdentity('memory')} />
-              <LabeledValueRow label="Disk" value={`${sb.diskGb} GB`} alignRight identity={getResourceIdentity('disk')} />
-              <LabeledValueRow label="Created" value={new Date(sb.createdAt).toLocaleString()} alignRight />
-              <LabeledValueRow label="Blueprint" value={formatBlueprintLabel(sb.blueprintId)} alignRight identity={getBlueprintIdentity(sb.blueprintId)} />
-              <LabeledValueRow label="Service ID" value={formatServiceId(sb.serviceId)} alignRight />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Runtime Details</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2.5">
-              <LabeledValueRow
-                label="Operator"
-                value={sb.operator ? truncateAddress(sb.operator) : 'Unknown'}
-                mono
-                copyable={!!sb.operator}
-                copyValue={sb.operator}
-                alignRight
-                leading={sb.operator ? <OperatorIdenticon address={sb.operator} size="sm" /> : undefined}
-              />
-              {sb.txHash && <LabeledValueRow label="TX Hash" value={truncateAddress(sb.txHash)} mono copyable copyValue={sb.txHash} alignRight />}
-            </CardContent>
-          </Card>
-
-          {/* Lifecycle Limits */}
-          {(sb.idleTimeoutSeconds != null || sb.maxLifetimeSeconds != null) && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Lifecycle Limits</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2.5">
-                {sb.idleTimeoutSeconds != null && (
-                  <LabeledValueRow label="Idle Timeout" value={formatDuration(sb.idleTimeoutSeconds)} alignRight />
-                )}
-                {sb.maxLifetimeSeconds != null && (
-                  <LabeledValueRow label="Max Lifetime" value={formatDuration(sb.maxLifetimeSeconds)} alignRight />
-                )}
-                {sb.lastActivityAt != null && (
-                  <LabeledValueRow label="Last Activity" value={new Date(sb.lastActivityAt).toLocaleString()} alignRight />
-                )}
-                {sb.maxLifetimeSeconds != null && sb.maxLifetimeSeconds > 0 && (
-                  <LabeledValueRow
-                    label="Expires At"
-                    value={(() => {
-                      const expiresAt = sb.createdAt + sb.maxLifetimeSeconds * 1000;
-                      return expiresAt < Date.now() ? 'Expired' : new Date(expiresAt).toLocaleString();
-                    })()}
-                    alignRight
-                  />
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Exposed Ports */}
-          {ports && ports.length > 0 && (
-            <ExposedPortsCard
-              ports={ports}
-              proxyBaseUrl={`${operatorUrl}/api/sandboxes/${sb.sandboxId}/port/`}
-              className="md:col-span-2"
-            />
-          )}
-        </div>
+        <OverviewTab sb={sb} ports={ports} operatorUrl={operatorUrl} />
       )}
 
       {tab === 'automation' && (
-        <AutomationWorkspace
-          createHref={workflowCreateHref}
-          scope="sandbox"
-          target={sb.sandboxId ?? sb.localId}
-          status={sb.status}
-          hasAgent={hasAgent}
-        />
+        <AutomationTab sb={sb} workflowCreateHref={workflowCreateHref} hasAgent={hasAgent} />
       )}
 
       {tab === 'storage' && (
-        <StorageWorkspace
+        <StorageTab
           rows={storageRows}
           onSnapshot={() => setSnapshotOpen(true)}
           snapshotEnabled={hasProvisionedSandbox && !isGone}
@@ -938,326 +629,92 @@ export default function SandboxDetail() {
 
       {/* Terminal Tab — operator-backed terminal */}
       {tab === 'terminal' && (
-        <Card className="overflow-hidden">
-          {!isOperatorAuthed || !operatorToken ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:terminal-window text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                Authenticate with the operator to access the sandbox terminal
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mb-4">
-                The browser talks only to the operator API, which verifies sandbox ownership before relaying commands.
-              </p>
-              {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleOperatorAuthenticate}
-                disabled={isOperatorAuthenticating || !hasWallet || !hasProvisionedSandbox}
-              >
-                {isOperatorAuthenticating
-                  ? 'Signing...'
-                  : !hasWallet
-                    ? 'Connect Wallet First'
-                    : !hasProvisionedSandbox
-                      ? 'Waiting for Sandbox...'
-                      : 'Connect Terminal'}
-              </Button>
-            </CardContent>
-          ) : sshUserDetecting ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:terminal-window text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                Preparing the sandbox terminal
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary">
-                Resolving the sandbox user so Terminal starts in the same home directory as SSH.
-              </p>
-            </CardContent>
-          ) : (
-            <CardContent className="p-0">
-              <div className="h-[min(500px,60vh)]">
-                <OperatorTerminalView
-                  apiUrl={operatorUrl}
-                  resourcePath={operatorResourcePath}
-                  token={operatorToken}
-                  title="Sandbox Shell"
-                  subtitle="Secure shell via operator relay"
-                  initialCwd={terminalPath}
-                  displayUsername={terminalUsername}
-                  displayPath={terminalPath}
-                />
-              </div>
-            </CardContent>
-          )}
-        </Card>
+        <TerminalTab
+          isOperatorAuthed={isOperatorAuthed}
+          operatorToken={operatorToken}
+          operatorAuthError={operatorAuthError}
+          onAuthenticate={handleOperatorAuthenticate}
+          isOperatorAuthenticating={isOperatorAuthenticating}
+          hasWallet={hasWallet}
+          hasProvisionedSandbox={hasProvisionedSandbox}
+          sshUserDetecting={sshUserDetecting}
+          operatorUrl={operatorUrl}
+          operatorResourcePath={operatorResourcePath}
+          terminalPath={terminalPath}
+          terminalUsername={terminalUsername}
+        />
       )}
 
       {/* Chat Tab — multi-session agent chat */}
       {tab === 'chat' && (
-        <Card className="overflow-hidden">
-          {!isOperatorAuthed ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:chat-circle text-3xl text-cloud-elements-textTertiary mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                Authenticate with the operator to chat with the sandbox agent
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mb-4">
-                Chat requests are proxied through the operator API and no longer connect directly to sandbox containers.
-              </p>
-              {operatorAuthError && <p className="text-xs text-crimson-500 mb-4">{operatorAuthError}</p>}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleOperatorAuthenticate}
-                disabled={isOperatorAuthenticating || !hasWallet || !hasProvisionedSandbox}
-              >
-                {isOperatorAuthenticating
-                  ? 'Signing...'
-                  : !hasWallet
-                    ? 'Connect Wallet First'
-                    : !hasProvisionedSandbox
-                      ? 'Waiting for Sandbox...'
-                      : 'Authenticate to Chat'}
-              </Button>
-            </CardContent>
-          ) : agentConfigured && agentDiscoveryLoading && !hasAgentValidationResult ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:spinner-gap text-3xl text-cloud-elements-textTertiary mb-3 mx-auto animate-spin" />
-              <p className="text-sm text-cloud-elements-textSecondary">
-                Checking which agents this image exposes...
-              </p>
-            </CardContent>
-          ) : agentConfigured && hasAgentValidationResult && !agentIdentifierValid ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:warning-circle text-3xl text-amber-400 mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                The configured agent is not available in this sandbox image
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mb-2">
-                Configured agent: <span className="font-data">{configuredAgentIdentifier}</span>
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary">
-                Available agents: <span className="font-data">{agentAvailableList}</span>
-              </p>
-            </CardContent>
-          ) : sb.credentialsAvailable === false ? (
-            <CardContent className="py-16 text-center">
-              <div className="i-ph:key text-3xl text-amber-400 mb-3 mx-auto" />
-              <p className="text-sm text-cloud-elements-textSecondary mb-2">
-                AI credentials are not configured
-              </p>
-              <p className="text-xs text-cloud-elements-textTertiary mb-3">
-                Add one of the following in the Secrets tab:
-              </p>
-              <ul className="text-xs text-cloud-elements-textTertiary space-y-1 mb-4">
-                <li><code className="font-data">ANTHROPIC_API_KEY</code></li>
-                <li><code className="font-data">ZAI_API_KEY</code></li>
-                <li><code className="font-data">OPENCODE_MODEL_PROVIDER</code> + <code className="font-data">OPENCODE_MODEL_NAME</code> + <code className="font-data">OPENCODE_MODEL_API_KEY</code></li>
-              </ul>
-              <Button size="sm" variant="outline" onClick={() => setTab('secrets')}>
-                Go to Secrets
-              </Button>
-            </CardContent>
-          ) : (
-            <CardContent className="p-0">
-              {agentDiscoveryError && (
-                <div className="border-b border-amber-500/20 bg-amber-500/5 px-3 py-2">
-                  <p className="text-xs text-amber-300">{agentDiscoveryError}</p>
-                </div>
-              )}
-              <div className="h-[min(600px,65vh)]">
-                <SessionSidebar
-                  sandboxId={canonicalSandboxId ?? sb.localId}
-                  client={client}
-                  systemPrompt={systemPrompt}
-                  onSystemPromptChange={setSystemPrompt}
-                />
-              </div>
-            </CardContent>
-          )}
-        </Card>
+        <ChatTab
+          isOperatorAuthed={isOperatorAuthed}
+          agentConfigured={agentConfigured}
+          agentDiscoveryLoading={agentDiscoveryLoading}
+          hasAgentValidationResult={hasAgentValidationResult}
+          agentIdentifierValid={agentIdentifierValid}
+          configuredAgentIdentifier={configuredAgentIdentifier}
+          agentAvailableList={agentAvailableList}
+          sb={sb}
+          operatorAuthError={operatorAuthError}
+          handleOperatorAuthenticate={handleOperatorAuthenticate}
+          isOperatorAuthenticating={isOperatorAuthenticating}
+          hasWallet={hasWallet}
+          hasProvisionedSandbox={hasProvisionedSandbox}
+          setTab={setTab}
+          agentDiscoveryError={agentDiscoveryError}
+          canonicalSandboxId={canonicalSandboxId}
+          client={client}
+          systemPrompt={systemPrompt}
+          setSystemPrompt={setSystemPrompt}
+        />
       )}
 
       {/* SSH Tab — provision and revoke SSH keys */}
       {tab === 'ssh' && (
-        <div className="space-y-4">
-          {sshConnectionCommand && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">SSH Connection</CardTitle>
-                <CardDescription>
-                  Docker sandboxes are usually reachable from this machine only unless the runtime exposes them more broadly.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <p className="text-xs font-data rounded-lg bg-cloud-elements-background-depth-2 px-3 py-2 break-all">
-                  {sshConnectionCommand}
-                </p>
-              </CardContent>
-            </Card>
-          )}
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Add SSH Key</CardTitle>
-              <CardDescription>Provision an SSH public key for remote access</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-cloud-elements-textSecondary">Username</label>
-                <Input
-                  aria-label="SSH username"
-                  value={sshUsername}
-                  onChange={(e) => {
-                    sshUsernameDirtyRef.current = true;
-                    setSshUsername(e.target.value);
-                  }}
-                  placeholder={sshUserDetecting ? 'Detecting sandbox user...' : 'Auto-detected from sandbox'}
-                  className="font-data text-sm"
-                />
-                {sshUserHint && (
-                  <p className="text-xs text-cloud-elements-textSecondary">{sshUserHint}</p>
-                )}
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-cloud-elements-textSecondary">Public Key</label>
-                <Textarea
-                  aria-label="SSH public key"
-                  value={sshPublicKey}
-                  onChange={(e) => setSshPublicKey(e.target.value)}
-                  placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
-                  className="font-data text-xs min-h-[80px] resize-none"
-                />
-              </div>
-              {sshError && (
-                <p className="text-xs text-red-400">{sshError}</p>
-              )}
-              {sshSuccess && (
-                <p className="text-xs text-teal-400">{sshSuccess}</p>
-              )}
-              <Button
-                size="sm"
-                onClick={handleSshProvision}
-                disabled={sshBusy || !sshPublicKey.trim()}
-              >
-                {sshBusy ? 'Provisioning...' : 'Add Key'}
-              </Button>
-            </CardContent>
-          </Card>
-
-          {sshKeys.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Active Keys</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {sshKeys.map((key) => (
-                  <div
-                    key={key.publicKey}
-                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-cloud-elements-background-depth-2"
-                  >
-                    <div className="min-w-0">
-                      <span className="text-xs font-data text-cloud-elements-textSecondary">{key.username}@</span>
-                      <span className="text-xs font-data text-cloud-elements-textTertiary truncate block">
-                        {key.publicKey.length > 60 ? `${key.publicKey.slice(0, 60)}...` : key.publicKey}
-                      </span>
-                    </div>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => handleSshRevoke(key)}
-                      disabled={sshBusy}
-                    >
-                      Revoke
-                    </Button>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-        </div>
+        <SshTab
+          sshConnectionCommand={sshConnectionCommand}
+          sshUsername={sshUsername}
+          setSshUsername={setSshUsername}
+          sshUsernameDirtyRef={sshUsernameDirtyRef}
+          sshUserDetecting={sshUserDetecting}
+          sshUserHint={sshUserHint}
+          sshPublicKey={sshPublicKey}
+          setSshPublicKey={setSshPublicKey}
+          sshError={sshError}
+          sshSuccess={sshSuccess}
+          handleSshProvision={handleSshProvision}
+          sshBusy={sshBusy}
+          sshKeys={sshKeys}
+          handleSshRevoke={handleSshRevoke}
+        />
       )}
 
       {/* Secrets Tab — inject and wipe environment secrets */}
       {tab === 'secrets' && (
-        <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Environment Secrets</CardTitle>
-              <CardDescription>Inject environment variables as secrets into the sandbox</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-medium text-cloud-elements-textSecondary">
-                    Secrets (JSON object)
-                  </label>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 w-7 p-0"
-                    onClick={() => setSecretsVisible((v) => !v)}
-                    title={secretsVisible ? 'Hide secrets' : 'Show secrets'}
-                  >
-                    <div className={cn('text-sm', secretsVisible ? 'i-ph:eye' : 'i-ph:eye-slash')} />
-                  </Button>
-                </div>
-                {secretsLoading && (
-                  <p className="text-xs text-cloud-elements-textTertiary">Loading existing secrets...</p>
-                )}
-                <Textarea
-                  value={secretsJson}
-                  onChange={(e) => setSecretsJson(e.target.value)}
-                  placeholder='{"API_KEY": "sk-...", "DB_URL": "postgres://..."}'
-                  className="font-data text-xs min-h-[120px] resize-y"
-                  style={{ filter: secretsVisible ? 'none' : 'blur(4px)' }}
-                  disabled={secretsLoading}
-                />
-                <p className="text-[11px] text-cloud-elements-textTertiary">
-                  Key-value pairs injected as environment variables. Injecting replaces all existing secrets. Values are encrypted at rest.
-                </p>
-              </div>
-              {secretsError && (
-                <p className="text-xs text-red-400">{secretsError}</p>
-              )}
-              {secretsSuccess && (
-                <p className="text-xs text-teal-400">{secretsSuccess}</p>
-              )}
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={handleInjectSecrets}
-                  disabled={secretsBusy || secretsLoading}
-                >
-                  {secretsBusy ? 'Injecting...' : 'Inject Secrets'}
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={handleWipeSecrets}
-                  disabled={secretsBusy || secretsLoading}
-                >
-                  Wipe All Secrets
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <SecretsTab
+          secretsVisible={secretsVisible}
+          setSecretsVisible={setSecretsVisible}
+          secretsLoading={secretsLoading}
+          secretsJson={secretsJson}
+          setSecretsJson={setSecretsJson}
+          secretsError={secretsError}
+          secretsSuccess={secretsSuccess}
+          handleInjectSecrets={handleInjectSecrets}
+          secretsBusy={secretsBusy}
+          handleWipeSecrets={handleWipeSecrets}
+        />
       )}
 
       {/* Attestation Tab — TEE attestation verification */}
       {tab === 'attestation' && (
-        <div className="space-y-4">
-          <TeeAttestationCard
-            subjectLabel="sandbox"
-            attestation={attestation}
-            verification={attestationVerification}
-            busy={attestationBusy}
-            error={attestationError}
-            onFetch={handleFetchAttestation}
-          />
-        </div>
+        <AttestationTab
+          attestation={attestation}
+          attestationVerification={attestationVerification}
+          attestationBusy={attestationBusy}
+          attestationError={attestationError}
+          handleFetchAttestation={handleFetchAttestation}
+        />
       )}
         </div>
         <ResourceWorkspaceRail rows={contextRows} />
