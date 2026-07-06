@@ -19,6 +19,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Pure bash + git; no toolchain needed, so it fails fast before the
+      # heavier steps. Enforces scripts/.god-object-baseline.txt (CLAUDE.md
+      # "Module Size Discipline") in CI, not only the local pre-commit hook,
+      # so a baselined file growing past its ceiling is caught on every push.
+      - name: Module-size ratchet (no god objects)
+        run: bash scripts/check-file-sizes.sh
+
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
