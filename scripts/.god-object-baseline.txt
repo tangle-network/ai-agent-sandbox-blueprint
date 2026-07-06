@@ -5,6 +5,7 @@
 1095 ai-agent-sandbox-blueprint-lib/src/workflows.rs
 1065 sandbox-runtime/src/session_auth.rs
 922 ui/src/routes/workflows._index.tsx
+744 sandbox-runtime/src/scoped_session_auth.rs
 838 sandbox-runtime/src/reaper.rs
 738 ui/src/routes/sandboxes.$id.tsx
 701 ui/src/lib/stores/chatSessions.ts
