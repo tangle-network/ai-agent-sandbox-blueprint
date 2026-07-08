@@ -1085,6 +1085,55 @@ mod workflow_jobs {
 
     #[tokio::test]
     #[serial]
+    async fn legacy_workflow_with_empty_record_token_uses_spec_sidecar_token() {
+        // Regression: a sandbox provisioned before 2-phase provisioning stores
+        // no token on its record. run_workflow must fall back to the workflow
+        // spec's sidecar_token and authenticate the request with it. Before the
+        // fix the legacy branch validated the fallback but discarded it (the
+        // request went out with an empty token) and, worse, pre-checked it
+        // against the empty stored token via ct_eq — which always failed — so
+        // legacy workflows could never run.
+        reset_workflows();
+        let srv = MockServer::start().await;
+        // Record token is EMPTY (legacy sandbox).
+        let sid = insert_sandbox(&srv.uri(), "");
+
+        // The request must carry the spec's sidecar_token as the bearer.
+        Mock::given(method("POST"))
+            .and(path("/agents/run"))
+            .and(header("Authorization", "Bearer spec-tok"))
+            .respond_with(mock_agent_ok("legacy-ok"))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        let entry = WorkflowEntry {
+            id: 90013,
+            name: "wf-legacy-tok".to_string(),
+            workflow_json: format!(
+                r#"{{"sidecar_url":"{}","prompt":"run","sidecar_token":"spec-tok"}}"#,
+                srv.uri()
+            ),
+            trigger_type: "manual".to_string(),
+            trigger_config: String::new(),
+            sandbox_config_json: "{}".to_string(),
+            target_kind: 0,
+            target_sandbox_id: sid.clone(),
+            target_service_id: 1,
+            active: true,
+            next_run_at: None,
+            last_run_at: None,
+            owner: String::new(),
+        };
+
+        let exec = run_workflow(&entry).await.unwrap();
+        assert!(exec.response["task"]["success"].as_bool().unwrap());
+
+        rm(&sid);
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn run_workflow_uses_record_token() {
         reset_workflows();
         let srv = MockServer::start().await;
