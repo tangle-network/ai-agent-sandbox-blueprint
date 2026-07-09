@@ -25,13 +25,27 @@ contract SetSandboxSourcesV013 is Script {
     // so the same script can wire the fresh 0.19-BSM blueprint (id 8 on Tempo).
     uint64 immutable BLUEPRINT_ID = uint64(vm.envOr("BLUEPRINT_ID", uint256(4)));
 
-    // v0.1.3 release, inner binary sha256 = the fix (41242ef4…).
-    bytes32 constant BIN_SHA = 0x41242ef4a8aa9c3420660b7969eba77b781331a677f035943babe93a60a09cf9;
+    // Release tag + inner binary sha256. Default to v0.1.3 (the 0.19 operator
+    // fix, sha 41242ef4…); override RELEASE_TAG + BIN_SHA env to point at a newer
+    // release (e.g. v0.1.4 which also carries the per-service port fix).
+    string RELEASE_TAG = vm.envOr("RELEASE_TAG", string("v0.1.3"));
+    bytes32 BIN_SHA =
+        vm.envOr("BIN_SHA", bytes32(0x41242ef4a8aa9c3420660b7969eba77b781331a677f035943babe93a60a09cf9));
 
-    string constant ARTIFACT_URI =
-        "{\"dist_url\":\"https://github.com/tangle-network/ai-agent-sandbox-blueprint/releases/download/v0.1.3/dist-manifest.json\",\"archive_url\":\"https://github.com/tangle-network/ai-agent-sandbox-blueprint/releases/download/v0.1.3/ai-agent-sandbox-blueprint-x86_64-unknown-linux-gnu.tar.xz\",\"binaries\":[]}";
+    function _artifactUri() internal view returns (string memory) {
+        string memory base = string.concat(
+            "https://github.com/tangle-network/ai-agent-sandbox-blueprint/releases/download/", RELEASE_TAG, "/"
+        );
+        return string.concat(
+            "{\"dist_url\":\"",
+            base,
+            "dist-manifest.json\",\"archive_url\":\"",
+            base,
+            "ai-agent-sandbox-blueprint-x86_64-unknown-linux-gnu.tar.xz\",\"binaries\":[]}"
+        );
+    }
 
-    function _buildSources() internal pure returns (Types.BlueprintSource[] memory sources) {
+    function _buildSources() internal view returns (Types.BlueprintSource[] memory sources) {
         sources = new Types.BlueprintSource[](1);
 
         Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
@@ -46,7 +60,7 @@ contract SetSandboxSourcesV013 is Script {
             kind: Types.BlueprintSourceKind.Native,
             container: Types.ImageRegistrySource("", "", ""),
             wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
-            native: Types.NativeSource(Types.BlueprintFetcherKind.Http, ARTIFACT_URI, "ai-agent-sandbox-blueprint"),
+            native: Types.NativeSource(Types.BlueprintFetcherKind.Http, _artifactUri(), "ai-agent-sandbox-blueprint"),
             testing: Types.TestingSource("", "", ""),
             binaries: bins
         });
