@@ -23,3 +23,48 @@ split-debuginfo = "unpacked"  # separate debug info from binaries
 
 [profile.dev.package."*"]
 debug = 1  # line tables only for dependencies (not full DWARF)
+
+# Point the blueprint SDK graph at tnt-core 0.19 bindings (#1467/#1468).
+# Pinned to commit 5a2dcbbd on tangle-network/blueprint main, which carries the
+# 0.19 Service/Blueprint struct changes while still versioned 0.2.0-alpha.10 so the
+# workspace's `=0.2.0-alpha.10` pins resolve. Remove once blueprint-sdk 0.2.0-alpha.11
+# (with 0.19 bindings) is published to crates.io.
+[patch.crates-io]
+blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-auth = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-chain-setup = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-chain-setup-anvil = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-client-core = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-client-eigenlayer = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-client-evm = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-client-tangle = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-clients = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-context-derive = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-contexts = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-core = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-core-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-crypto = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-crypto-bls = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-crypto-bn254 = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-crypto-core = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-crypto-ed25519 = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-crypto-hashing = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-crypto-k256 = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-crypto-sr25519 = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-eigenlayer-extra = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-evm-extra = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-keystore = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-macros = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-manager-bridge = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-metrics-rpc-calls = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-networking = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-producers-extra = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-qos = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-router = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-runner = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-std = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-store-local-database = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-stores = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-tangle-extra = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
+blueprint-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
