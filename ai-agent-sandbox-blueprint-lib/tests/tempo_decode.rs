@@ -5,7 +5,7 @@
 //! Run explicitly (network + live chain):
 //!   cargo test -p ai-agent-sandbox-blueprint-lib --test tempo_decode -- --ignored --nocapture
 
-use blueprint_sdk::alloy::primitives::{address, Address};
+use blueprint_sdk::alloy::primitives::{Address, address};
 use blueprint_sdk::clients::tangle::{TangleClient, TangleClientConfig, TangleSettings};
 use blueprint_sdk::crypto::KeyType;
 use blueprint_sdk::crypto::k256::K256Ecdsa;
