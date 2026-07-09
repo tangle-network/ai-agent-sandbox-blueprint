@@ -54,6 +54,16 @@ library SandboxStorage {
         mapping(uint64 => bytes) pendingRequestConfig;
         mapping(uint64 => bytes) serviceConfig;
         mapping(uint64 => address) serviceOwner;
+        // ── Job-call inputs cache (tnt-core 0.19) ────────────────────────
+        // 0.19's onJobResult delivers only `bytes32 inputsHash`, not the raw
+        // `bytes inputs` that 0.13 passed. The DELETE and WORKFLOW result
+        // handlers still need the original inputs, so onJobCall stashes them
+        // here keyed by [serviceId][jobCallId]; onJobResult reads, verifies
+        // against inputsHash, then clears the entry. Keyed by service too so a
+        // jobCallId that is only unique within a service cannot collide across
+        // services. Appended last to keep the ERC-7201 slot layout of every
+        // prior field unchanged.
+        mapping(uint64 => mapping(uint64 => bytes)) jobCallInputs;
     }
 
     /// keccak256(abi.encode(uint256(keccak256("tangle.sandbox.blueprint.main")) - 1)) & ~bytes32(uint256(0xff))

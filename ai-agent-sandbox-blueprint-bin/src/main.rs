@@ -221,17 +221,30 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     // Determine operator API port and binding address.
     // Behind BPM: request allocated port, bind 127.0.0.1 (only proxy can reach us).
     // Standalone: bind 0.0.0.0 on configured port (dev mode only).
-    let preferred_port: u16 = std::env::var("OPERATOR_API_PORT")
+    //
+    // A single operator box can run one sandbox service per blueprint (e.g. a
+    // legacy blueprint plus its redeployed successor). The BPM port allocator
+    // honours the *preferred* port verbatim and fails ("Address already in use")
+    // rather than falling back, so every sandbox service preferring the same
+    // 9090 makes all but the first-reconciled service fail to bind. Offset the
+    // preferred port by service_id (wrapping within the ephemeral range) so
+    // co-located sandbox services request distinct ports. OPERATOR_API_PORT, when
+    // set, pins an explicit base for deployments that manage ports externally.
+    let base_port: u16 = std::env::var("OPERATOR_API_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(9090);
+    // Keep the offset small and bounded so it stays inside the manager's
+    // allocatable range; service_id is unique per operator so this is collision-free
+    // across co-located services on the same box.
+    let preferred_port: u16 = base_port.wrapping_add((service_id % 1000) as u16);
 
     let (api_port, bind_addr) = if let Some(ref b) = bridge {
         let port = b
             .request_port(Some(preferred_port))
             .await
             .map_err(|e| blueprint_sdk::Error::Other(format!("BPM port allocation failed: {e}")))?;
-        info!("BPM allocated port {port} for operator API");
+        info!("BPM allocated port {port} for operator API (service {service_id}, preferred {preferred_port})");
         (port, [127, 0, 0, 1u8])
     } else {
         (preferred_port, [0, 0, 0, 0u8])

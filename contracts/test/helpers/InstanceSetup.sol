@@ -55,6 +55,8 @@ contract InstanceBlueprintTestSetup is Test {
         instance.onJobCall(serviceId, jobIndex, callId, inputs);
     }
 
+    /// @dev tnt-core 0.19: onJobResult takes `bytes32 inputsHash`; the raw inputs
+    ///      are cached by a prior onJobCall. Mirror the driver: cache then hash.
     function simulateJobResult(
         uint64 serviceId,
         uint8 jobIndex,
@@ -63,8 +65,12 @@ contract InstanceBlueprintTestSetup is Test {
         bytes memory inputs,
         bytes memory outputs
     ) internal {
+        if (inputs.length > 0) {
+            vm.prank(tangleCore);
+            instance.onJobCall(serviceId, jobIndex, callId, inputs);
+        }
         vm.prank(tangleCore);
-        instance.onJobResult(serviceId, jobIndex, callId, operator, inputs, outputs);
+        instance.onJobResult(serviceId, jobIndex, callId, operator, keccak256(inputs), outputs);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -161,6 +167,8 @@ contract TeeInstanceBlueprintTestSetup is Test {
         teeInstance.onJobCall(serviceId, jobIndex, callId, inputs);
     }
 
+    /// @dev tnt-core 0.19: onJobResult takes `bytes32 inputsHash`; the raw inputs
+    ///      are cached by a prior onJobCall. Mirror the driver: cache then hash.
     function simulateJobResult(
         uint64 serviceId,
         uint8 jobIndex,
@@ -169,8 +177,12 @@ contract TeeInstanceBlueprintTestSetup is Test {
         bytes memory inputs,
         bytes memory outputs
     ) internal {
+        if (inputs.length > 0) {
+            vm.prank(tangleCore);
+            teeInstance.onJobCall(serviceId, jobIndex, callId, inputs);
+        }
         vm.prank(tangleCore);
-        teeInstance.onJobResult(serviceId, jobIndex, callId, operator, inputs, outputs);
+        teeInstance.onJobResult(serviceId, jobIndex, callId, operator, keccak256(inputs), outputs);
     }
 
     function encodeProvisionOutputs(

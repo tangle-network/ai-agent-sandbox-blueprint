@@ -171,7 +171,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.OperatorMismatch.selector, operator1, operator2));
         blueprint.onJobResult(
-            1, 0, 30, operator2, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs("sandbox-wrong", "{}")
+            1, 0, 30, operator2, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs("sandbox-wrong", "{}")
         );
     }
 
@@ -182,7 +182,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.OperatorMismatch.selector, address(0), operator1));
         blueprint.onJobResult(
-            1, 0, 40, operator1, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs("sandbox-clear2", "{}")
+            1, 0, 40, operator1, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs("sandbox-clear2", "{}")
         );
     }
 
@@ -256,8 +256,13 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         _createSandbox(1, 100, operator1, "sandbox-own");
 
         vm.prank(tangleCore);
+        blueprint.onJobCall(1, 1, 101, encodeSandboxIdInputs("sandbox-own")); // JOB_SANDBOX_DELETE = 1
+
+        vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.OperatorMismatch.selector, operator1, operator2));
-        blueprint.onJobResult(1, 1, 101, operator2, encodeSandboxIdInputs("sandbox-own"), encodeJsonOutputs("{}"));
+        blueprint.onJobResult(
+            1, 1, 101, operator2, keccak256(encodeSandboxIdInputs("sandbox-own")), encodeJsonOutputs("{}")
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -405,11 +410,15 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
             target_service_id: 1
         });
 
+        uint8 workflowJobId = blueprint.JOB_WORKFLOW_CREATE();
+        simulateJobCall(1, workflowJobId, 500, encodeWorkflowCreateInputs(req));
+
         vm.expectEmit(true, false, false, true);
         emit SandboxTypes.WorkflowStored(500, "cron", "0 * * * *");
 
-        simulateJobResult(
-            1, blueprint.JOB_WORKFLOW_CREATE(), 500, operator1, encodeWorkflowCreateInputs(req), encodeJsonOutputs("{}")
+        vm.prank(tangleCore);
+        blueprint.onJobResult(
+            1, workflowJobId, 500, operator1, keccak256(encodeWorkflowCreateInputs(req)), encodeJsonOutputs("{}")
         );
 
         SandboxTypes.WorkflowConfig memory config = blueprint.getWorkflow(500);
@@ -459,7 +468,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(0)));
-        blueprint.onJobResult(1, workflowJobId, 503, operator1, encodeWorkflowCreateInputs(req), bytes(""));
+        blueprint.onJobResult(1, workflowJobId, 503, operator1, keccak256(encodeWorkflowCreateInputs(req)), bytes(""));
     }
 
     function test_workflowCreateRevertsOnInstanceTargetKindInCloudMode() public {
@@ -479,7 +488,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(1)));
-        blueprint.onJobResult(1, workflowJobId, 504, operator1, encodeWorkflowCreateInputs(req), bytes(""));
+        blueprint.onJobResult(1, workflowJobId, 504, operator1, keccak256(encodeWorkflowCreateInputs(req)), bytes(""));
     }
 
     function test_workflowCreateRevertsOnInvalidTargetKind() public {
@@ -499,7 +508,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         simulateJobCall(1, workflowJobId, 505, encodeWorkflowCreateInputs(req2));
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(2)));
-        blueprint.onJobResult(1, workflowJobId, 505, operator1, encodeWorkflowCreateInputs(req2), bytes(""));
+        blueprint.onJobResult(1, workflowJobId, 505, operator1, keccak256(encodeWorkflowCreateInputs(req2)), bytes(""));
 
         SandboxTypes.WorkflowCreateRequest memory req255 = SandboxTypes.WorkflowCreateRequest({
             name: "bad-kind-255",
@@ -515,7 +524,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         simulateJobCall(1, workflowJobId, 506, encodeWorkflowCreateInputs(req255));
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(255)));
-        blueprint.onJobResult(1, workflowJobId, 506, operator1, encodeWorkflowCreateInputs(req255), bytes(""));
+        blueprint.onJobResult(1, workflowJobId, 506, operator1, keccak256(encodeWorkflowCreateInputs(req255)), bytes(""));
     }
 
     function test_workflowCreateRevertsOnEmptySandboxId() public {
@@ -535,7 +544,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         vm.prank(tangleCore);
         vm.expectRevert(SandboxTypes.EmptySandboxId.selector);
-        blueprint.onJobResult(1, workflowJobId, 507, operator1, encodeWorkflowCreateInputs(req), bytes(""));
+        blueprint.onJobResult(1, workflowJobId, 507, operator1, keccak256(encodeWorkflowCreateInputs(req)), bytes(""));
     }
 
     function test_workflowCreateRevertsOnSandboxIdTooLong() public {
@@ -560,7 +569,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.SandboxIdTooLong.selector, uint256(256)));
-        blueprint.onJobResult(1, workflowJobId, 508, operator1, encodeWorkflowCreateInputs(req), bytes(""));
+        blueprint.onJobResult(1, workflowJobId, 508, operator1, keccak256(encodeWorkflowCreateInputs(req)), bytes(""));
     }
 
     function test_workflowCreateStoresRealisticJsonPayload() public {
@@ -610,12 +619,14 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         SandboxTypes.WorkflowControlRequest memory ctrl = SandboxTypes.WorkflowControlRequest({workflow_id: 510});
 
+        uint8 triggerJobId = blueprint.JOB_WORKFLOW_TRIGGER();
+        simulateJobCall(1, triggerJobId, 511, abi.encode(ctrl));
+
         vm.expectEmit(true, false, false, true);
         emit SandboxTypes.WorkflowTriggered(510, 1000);
 
-        simulateJobResult(
-            1, blueprint.JOB_WORKFLOW_TRIGGER(), 511, operator1, abi.encode(ctrl), encodeJsonOutputs("{}")
-        );
+        vm.prank(tangleCore);
+        blueprint.onJobResult(1, triggerJobId, 511, operator1, keccak256(abi.encode(ctrl)), encodeJsonOutputs("{}"));
 
         SandboxTypes.WorkflowConfig memory config = blueprint.getWorkflow(510);
         assertEq(config.last_triggered_at, 1000);
@@ -640,10 +651,14 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         SandboxTypes.WorkflowControlRequest memory ctrl = SandboxTypes.WorkflowControlRequest({workflow_id: 520});
 
+        uint8 cancelJobId = blueprint.JOB_WORKFLOW_CANCEL();
+        simulateJobCall(1, cancelJobId, 521, abi.encode(ctrl));
+
         vm.expectEmit(true, false, false, true);
         emit SandboxTypes.WorkflowCanceled(520, uint64(block.timestamp));
 
-        simulateJobResult(1, blueprint.JOB_WORKFLOW_CANCEL(), 521, operator1, abi.encode(ctrl), encodeJsonOutputs("{}"));
+        vm.prank(tangleCore);
+        blueprint.onJobResult(1, cancelJobId, 521, operator1, keccak256(abi.encode(ctrl)), encodeJsonOutputs("{}"));
 
         assertFalse(blueprint.getWorkflow(520).active);
     }
@@ -662,7 +677,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.SandboxAlreadyExists.selector, dupHash));
         blueprint.onJobResult(
-            1, 0, 801, operator1, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs("sandbox-dup", "{}")
+            1, 0, 801, operator1, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs("sandbox-dup", "{}")
         );
     }
 
@@ -751,7 +766,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         for (uint8 jobId = 5; jobId <= 6; jobId++) {
             vm.prank(tangleCore);
             vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, jobId));
-            blueprint.onJobResult(1, jobId, uint64(962 + jobId), operator1, bytes(""), bytes(""));
+            blueprint.onJobResult(1, jobId, uint64(962 + jobId), operator1, keccak256(bytes("")), bytes(""));
         }
     }
 
@@ -775,7 +790,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         vm.prank(tangleCore);
         vm.expectRevert(SandboxTypes.EmptySandboxId.selector);
-        blueprint.onJobResult(1, 0, 900, operator1, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs("", "{}"));
+        blueprint.onJobResult(1, 0, 900, operator1, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs("", "{}"));
     }
 
     function test_createResultRevertsTooLongSandboxId() public {
@@ -792,7 +807,7 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.SandboxIdTooLong.selector, 256));
         blueprint.onJobResult(
-            1, 0, 901, operator1, encodeSandboxCreateInputs(), encodeSandboxCreateOutputs(longId, "{}")
+            1, 0, 901, operator1, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs(longId, "{}")
         );
     }
 
@@ -865,13 +880,13 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
     function test_unknownJobIdRevertsOnJobResult() public {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
-        blueprint.onJobResult(1, 7, 972, operator1, bytes(""), bytes(""));
+        blueprint.onJobResult(1, 7, 972, operator1, keccak256(bytes("")), bytes(""));
     }
 
     function test_unknownJobIdRevertsOnJobResultHighId() public {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 255));
-        blueprint.onJobResult(1, 255, 973, operator1, bytes(""), bytes(""));
+        blueprint.onJobResult(1, 255, 973, operator1, keccak256(bytes("")), bytes(""));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1066,13 +1081,16 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         SandboxTypes.WorkflowControlRequest memory ctrl = SandboxTypes.WorkflowControlRequest({workflow_id: 99999});
 
         vm.prank(tangleCore);
+        blueprint.onJobCall(1, 3, 5000, abi.encode(ctrl)); // JOB_WORKFLOW_TRIGGER = 3
+
+        vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.WorkflowNotFound.selector, uint64(99999)));
         blueprint.onJobResult(
             1,
             3,
             5000,
             operator1, // JOB_WORKFLOW_TRIGGER = 3
-            abi.encode(ctrl),
+            keccak256(abi.encode(ctrl)),
             encodeJsonOutputs("{}")
         );
     }
@@ -1085,13 +1103,16 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         SandboxTypes.WorkflowControlRequest memory ctrl = SandboxTypes.WorkflowControlRequest({workflow_id: 88888});
 
         vm.prank(tangleCore);
+        blueprint.onJobCall(1, 4, 5001, abi.encode(ctrl)); // JOB_WORKFLOW_CANCEL = 4
+
+        vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.WorkflowNotFound.selector, uint64(88888)));
         blueprint.onJobResult(
             1,
             4,
             5001,
             operator1, // JOB_WORKFLOW_CANCEL = 4
-            abi.encode(ctrl),
+            keccak256(abi.encode(ctrl)),
             encodeJsonOutputs("{}")
         );
     }

@@ -382,7 +382,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         for (uint8 jobId = 0; jobId <= 1; jobId++) {
             vm.prank(tangleCore);
             vm.expectRevert(AgentSandboxBlueprint.CloudModeOnly.selector);
-            instance.onJobResult(testServiceId, jobId, uint64(2010 + jobId), operator1, bytes(""), bytes(""));
+            instance.onJobResult(testServiceId, jobId, uint64(2010 + jobId), operator1, keccak256(bytes("")), bytes(""));
         }
     }
 
@@ -480,7 +480,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(1)));
         instance.onJobResult(
-            testServiceId, workflowJobId, createCallId, operator1, encodeWorkflowCreateInputs(req), bytes("")
+            testServiceId, workflowJobId, createCallId, operator1, keccak256(encodeWorkflowCreateInputs(req)), bytes("")
         );
     }
 
@@ -503,7 +503,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(0)));
         instance.onJobResult(
-            testServiceId, workflowJobId, createCallId, operator1, encodeWorkflowCreateInputs(req), bytes("")
+            testServiceId, workflowJobId, createCallId, operator1, keccak256(encodeWorkflowCreateInputs(req)), bytes("")
         );
     }
 
@@ -526,7 +526,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(2)));
         instance.onJobResult(
-            testServiceId, workflowJobId, callId2, operator1, encodeWorkflowCreateInputs(req2), bytes("")
+            testServiceId, workflowJobId, callId2, operator1, keccak256(encodeWorkflowCreateInputs(req2)), bytes("")
         );
 
         SandboxTypes.WorkflowCreateRequest memory req255 = SandboxTypes.WorkflowCreateRequest({
@@ -545,7 +545,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(255)));
         instance.onJobResult(
-            testServiceId, workflowJobId, callId255, operator1, encodeWorkflowCreateInputs(req255), bytes("")
+            testServiceId, workflowJobId, callId255, operator1, keccak256(encodeWorkflowCreateInputs(req255)), bytes("")
         );
     }
 
@@ -568,7 +568,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(1)));
         instance.onJobResult(
-            testServiceId, workflowJobId, createCallId, operator1, encodeWorkflowCreateInputs(req), bytes("")
+            testServiceId, workflowJobId, createCallId, operator1, keccak256(encodeWorkflowCreateInputs(req)), bytes("")
         );
     }
 
@@ -585,7 +585,7 @@ contract AgentInstanceBlueprintTest is InstanceBlueprintTestSetup {
     function test_unknownJobIdRevertsOnJobResultInstanceMode() public {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(AgentSandboxBlueprint.UnknownJobId.selector, 7));
-        instance.onJobResult(testServiceId, 7, 3001, operator1, bytes(""), bytes(""));
+        instance.onJobResult(testServiceId, 7, 3001, operator1, keccak256(bytes("")), bytes(""));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

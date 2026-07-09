@@ -103,6 +103,8 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     error CloudModeOnly();
     error InstanceModeOnly();
     error UnknownJobId(uint8 jobId);
+    /// @notice Cached onJobCall inputs did not hash to the inputsHash 0.19 supplied at result time.
+    error InputsHashMismatch(uint64 jobCallId, bytes32 got, bytes32 expected);
     error CannotChangeWithActiveResources();
     error CannotLeaveWithActiveResources();
     error ZeroOperatorsInRequest();
@@ -344,9 +346,15 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             bytes32 sandboxHash = keccak256(bytes(sandboxId));
             address routed = $.sandboxOperator[sandboxHash];
             if (routed == address(0)) revert SandboxTypes.SandboxNotFound(sandboxHash);
+            // tnt-core 0.19: onJobResult only receives inputsHash, so cache the
+            // raw request here for handleDeleteResult to consume at result time.
+            $.jobCallInputs[serviceId][jobCallId] = inputs;
             emit OperatorRouted(serviceId, jobCallId, routed);
         } else if (job == JOB_WORKFLOW_CREATE || job == JOB_WORKFLOW_TRIGGER || job == JOB_WORKFLOW_CANCEL) {
-            // Supported in both cloud and instance modes.
+            // Supported in both cloud and instance modes. The workflow result
+            // handlers decode the original inputs (config / workflowId), which
+            // 0.19's onJobResult no longer forwards — cache them at call time.
+            $.jobCallInputs[serviceId][jobCallId] = inputs;
         } else {
             revert UnknownJobId(job);
         }
@@ -361,27 +369,50 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         uint8 job,
         uint64 jobCallId,
         address operator,
-        bytes calldata inputs,
+        bytes32 inputsHash,
         bytes calldata outputs
     ) external payable override onlyFromTangle {
         SandboxStorage.Data storage $ = SandboxStorage.load();
         if (job == JOB_SANDBOX_CREATE) {
+            // CREATE derives all state from `outputs` (the sandbox id the
+            // operator returned); no cached inputs needed.
             if ($.instanceMode) revert CloudModeOnly();
             SandboxLogic.handleCreateResult(serviceId, jobCallId, operator, outputs);
         } else if (job == JOB_SANDBOX_DELETE) {
             if ($.instanceMode) revert CloudModeOnly();
+            bytes memory inputs = _consumeJobCallInputs(serviceId, jobCallId, inputsHash);
             SandboxLogic.handleDeleteResult(operator, inputs);
         } else if (job == JOB_WORKFLOW_CREATE) {
+            bytes memory inputs = _consumeJobCallInputs(serviceId, jobCallId, inputsHash);
             SandboxLogic.handleWorkflowCreateResult(serviceId, jobCallId, inputs);
         } else if (job == JOB_WORKFLOW_TRIGGER) {
+            bytes memory inputs = _consumeJobCallInputs(serviceId, jobCallId, inputsHash);
             (uint64 workflowId) = abi.decode(inputs, (uint64));
             SandboxLogic.markTriggered(workflowId);
         } else if (job == JOB_WORKFLOW_CANCEL) {
+            bytes memory inputs = _consumeJobCallInputs(serviceId, jobCallId, inputsHash);
             (uint64 workflowId) = abi.decode(inputs, (uint64));
             SandboxLogic.cancelWorkflow(workflowId);
         } else {
             revert UnknownJobId(job);
         }
+    }
+
+    /// @notice Reads the raw job inputs cached at `onJobCall`, binds them to the
+    ///         0.19 result-time `inputsHash`, and clears the cache entry.
+    /// @dev tnt-core 0.19 delivers only `inputsHash` to `onJobResult`; the raw
+    ///      inputs are stashed by `onJobCall`. Asserting keccak256 equality
+    ///      guarantees the consumed inputs are exactly those the caller hashed
+    ///      over — a defense against any storage-cache desync or a forgotten
+    ///      cache write (an empty entry hashes to keccak256("") and fails here).
+    function _consumeJobCallInputs(uint64 serviceId, uint64 jobCallId, bytes32 inputsHash)
+        internal
+        returns (bytes memory inputs)
+    {
+        SandboxStorage.Data storage $ = SandboxStorage.load();
+        inputs = $.jobCallInputs[serviceId][jobCallId];
+        if (keccak256(inputs) != inputsHash) revert InputsHashMismatch(jobCallId, keccak256(inputs), inputsHash);
+        delete $.jobCallInputs[serviceId][jobCallId];
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

@@ -93,6 +93,10 @@ contract BlueprintTestSetup is Test {
     }
 
     /// @dev Simulate onJobResult as tangleCore.
+    /// @dev tnt-core 0.19: onJobResult takes `bytes32 inputsHash`, and the raw
+    ///      inputs must have been cached by a prior onJobCall. This helper mirrors
+    ///      the real driver: it caches inputs via onJobCall (for the DELETE/WORKFLOW
+    ///      paths that consume them), then passes keccak256(inputs) as inputsHash.
     function simulateJobResult(
         uint64 serviceId,
         uint8 jobIndex,
@@ -101,8 +105,12 @@ contract BlueprintTestSetup is Test {
         bytes memory inputs,
         bytes memory outputs
     ) internal {
+        if (inputs.length > 0) {
+            vm.prank(tangleCore);
+            blueprint.onJobCall(serviceId, jobIndex, callId, inputs);
+        }
         vm.prank(tangleCore);
-        blueprint.onJobResult(serviceId, jobIndex, callId, operator, inputs, outputs);
+        blueprint.onJobResult(serviceId, jobIndex, callId, operator, keccak256(inputs), outputs);
     }
 
     /// @dev Encode sandbox create inputs (empty for create — no sandboxId needed on input).

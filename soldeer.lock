@@ -7,7 +7,7 @@ integrity = "e9ecdc364d152157431e5df5aa041ffddbe9bb1c1ad81634b1e72df9e23814e8"
 
 [[dependencies]]
 name = "tnt-core"
-version = "0.13.0"
-url = "https://soldeer-revisions.s3.amazonaws.com/tnt-core/0_13_0_08-05-2026_21:58:28_tnt-core.zip"
-checksum = "b800ed4ca62ef85a7db2cbfcbfb0649459c5dfe714851581ef3069cccb595391"
-integrity = "f3a9b91524f1d24b5a3a48e47cf8576d9d965b4ac79edba67870e3f2ea9d550a"
+version = "0.19.0"
+url = "https://soldeer-revisions.s3.amazonaws.com/tnt-core/0_19_0_09-07-2026_14:56:15_tnt-core-019.zip"
+checksum = "70c583e94f61c6cc4c4c6f5827a9f84083e269c4e34e4334b8dad8315b6ec288"
+integrity = "d5c1a30301b69e62bac407f90d2af3fb2b18b49699f39a7dbc9dfbd95fb98ec4"
