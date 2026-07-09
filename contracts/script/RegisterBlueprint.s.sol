@@ -27,22 +27,49 @@ contract RegisterBlueprint is Script {
         address tangleAddr = vm.envOr("TANGLE_CORE", DEFAULT_TANGLE);
         address restakingAddr = vm.envOr("RESTAKING", DEFAULT_RESTAKING);
 
+        // Some chains (e.g. Tempo) meter execution far above eth_estimateGas AND
+        // enforce a per-tx gas cap (Tempo: 30M). createBlueprint's cost is
+        // dominated by the master blueprint service manager re-encoding the full
+        // definition; the full ~10.6KB definition pushes it past 30M there.
+        // COMPACT_DEFINITION trims the definition to the driver-essential jobs
+        // (sandbox_create/delete) with empty descriptions and minimal metadata,
+        // which halves the encoded size and brings the call under the cap. The
+        // job *names/indices* the driver relies on are preserved.
+        bool compact = vm.envOr("COMPACT_DEFINITION", false);
+
         ITangle tangle = ITangle(tangleAddr);
 
         vm.startBroadcast(deployerKey);
 
-        // ── Deploy Blueprint Service Managers ────────────────────────────
+        // ── Blueprint Service Managers ───────────────────────────────────
+        // Reuse already-deployed managers when their addresses are supplied
+        // (SANDBOX_BSM / INSTANCE_BSM / TEE_INSTANCE_BSM). On chains that
+        // enforce a per-tx gas cap (e.g. Tempo's 30M), a manager deploy (~18M)
+        // and createBlueprint (~7.5M) cannot share one gas-estimate multiplier
+        // without one of them exceeding the cap or running out of gas. Splitting
+        // the two phases across runs lets each pick a safe multiplier: deploy
+        // the managers once, then re-run with the addresses to register only.
+        address sandboxBsm = vm.envOr("SANDBOX_BSM", address(0));
+        address instanceBsm = vm.envOr("INSTANCE_BSM", address(0));
+        address teeBsm = vm.envOr("TEE_INSTANCE_BSM", address(0));
+
         // Cloud mode: capacity-weighted operator selection
-        AgentSandboxBlueprint sandbox = new AgentSandboxBlueprint(restakingAddr, false, false);
+        AgentSandboxBlueprint sandbox = sandboxBsm != address(0)
+            ? AgentSandboxBlueprint(payable(sandboxBsm))
+            : new AgentSandboxBlueprint(restakingAddr, false, false);
         // Instance mode: per-service singleton sandbox
-        AgentSandboxBlueprint instance = new AgentSandboxBlueprint(address(0), true, false);
+        AgentSandboxBlueprint instance = instanceBsm != address(0)
+            ? AgentSandboxBlueprint(payable(instanceBsm))
+            : new AgentSandboxBlueprint(address(0), true, false);
         // TEE instance mode: singleton with attestation enforcement
-        AgentSandboxBlueprint teeInstance = new AgentSandboxBlueprint(address(0), true, true);
+        AgentSandboxBlueprint teeInstance = teeBsm != address(0)
+            ? AgentSandboxBlueprint(payable(teeBsm))
+            : new AgentSandboxBlueprint(address(0), true, true);
 
         // ── Register on Tangle ──────────────────────────────────────────
-        uint64 sandboxId = tangle.createBlueprint(_buildSandboxDefinition(address(sandbox)));
-        uint64 instanceId = tangle.createBlueprint(_buildInstanceDefinition(address(instance)));
-        uint64 teeInstanceId = tangle.createBlueprint(_buildTeeInstanceDefinition(address(teeInstance)));
+        uint64 sandboxId = tangle.createBlueprint(_buildSandboxDefinition(address(sandbox), compact));
+        uint64 instanceId = tangle.createBlueprint(_buildInstanceDefinition(address(instance), compact));
+        uint64 teeInstanceId = tangle.createBlueprint(_buildTeeInstanceDefinition(address(teeInstance), compact));
 
         vm.stopBroadcast();
 
@@ -82,8 +109,49 @@ contract RegisterBlueprint is Script {
         jobs[4] = Types.JobDefinition("workflow_cancel", "Cancel an active workflow", "", "", "");
     }
 
-    function _buildSandboxDefinition(address manager) internal pure returns (Types.BlueprintDefinition memory def) {
-        def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
+    /// @dev Gas-lean job set: the two lifecycle jobs the driver submits (indices
+    /// 0/1, sandbox_create/delete) with empty descriptions. Trims the definition
+    /// the master manager stores on-chain for chains that meter storage above
+    /// standard while preserving the driver's job-index contract.
+    function _compactJobs() internal pure returns (Types.JobDefinition[] memory jobs) {
+        jobs = new Types.JobDefinition[](2);
+        jobs[0] = Types.JobDefinition("sandbox_create", "", "", "", "");
+        jobs[1] = Types.JobDefinition("sandbox_delete", "", "", "", "");
+    }
+
+    /// @dev Minimal metadata (name only) for gas-cap-constrained chains.
+    function _compactMetadata(string memory name) internal pure returns (Types.BlueprintMetadata memory) {
+        return Types.BlueprintMetadata(name, "", "", "", "", "", "", "", "");
+    }
+
+    /// @dev Minimal single native source (createBlueprint requires >=1 source;
+    /// an empty array reverts). Short strings keep the definition the master
+    /// manager stores on-chain as small as possible for gas-cap-constrained chains.
+    function _compactSources() internal pure returns (Types.BlueprintSource[] memory sources) {
+        sources = new Types.BlueprintSource[](1);
+        Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
+        bins[0] = Types.BlueprintBinary({
+            arch: Types.BlueprintArchitecture.Amd64,
+            os: Types.BlueprintOperatingSystem.Linux,
+            name: "bin",
+            sha256: bytes32(uint256(0xdeadbeef))
+        });
+        sources[0] = Types.BlueprintSource({
+            kind: Types.BlueprintSourceKind.Native,
+            container: Types.ImageRegistrySource("", "", ""),
+            wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
+            native: Types.NativeSource(Types.BlueprintFetcherKind.None, "bin", "bin"),
+            testing: Types.TestingSource("bin", "bin", "."),
+            binaries: bins
+        });
+    }
+
+    function _buildSandboxDefinition(address manager, bool compact)
+        internal
+        pure
+        returns (Types.BlueprintDefinition memory def)
+    {
+        def.metadataUri = compact ? "tangle:ai-agent-sandbox" : "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;
         def.masterManagerRevision = 0;
@@ -99,50 +167,60 @@ contract RegisterBlueprint is Script {
             eventRate: 1e15 // 0.001 TNT base rate
         });
 
-        def.metadata = Types.BlueprintMetadata({
-            name: "AI Agent Sandbox Blueprint",
-            description: "Multi-operator AI sandbox with Docker backends, workflows, and SSH access",
-            author: "Tangle",
-            category: "AI/Compute",
-            codeRepository: "https://github.com/tangle-network/ai-agent-sandbox-blueprint",
-            logo: "",
-            website: "https://tangle.network",
-            license: "UNLICENSE",
-            profilingData: ""
-        });
+        def.metadata = compact
+            ? _compactMetadata("AI Agent Sandbox Blueprint")
+            : Types.BlueprintMetadata({
+                name: "AI Agent Sandbox Blueprint",
+                description: "Multi-operator AI sandbox with Docker backends, workflows, and SSH access",
+                author: "Tangle",
+                category: "AI/Compute",
+                codeRepository: "https://github.com/tangle-network/ai-agent-sandbox-blueprint",
+                logo: "",
+                website: "https://tangle.network",
+                license: "UNLICENSE",
+                profilingData: ""
+            });
 
-        def.jobs = _buildCloudJobs();
+        def.jobs = compact ? _compactJobs() : _buildCloudJobs();
 
         def.registrationSchema = "";
         def.requestSchema = "";
 
-        def.sources = new Types.BlueprintSource[](1);
-        Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
-        bins[0] = Types.BlueprintBinary({
-            arch: Types.BlueprintArchitecture.Amd64,
-            os: Types.BlueprintOperatingSystem.Linux,
-            name: "ai-agent-sandbox-blueprint",
-            sha256: bytes32(uint256(0xdeadbeef))
-        });
-        def.sources[0] = Types.BlueprintSource({
-            kind: Types.BlueprintSourceKind.Native,
-            container: Types.ImageRegistrySource("", "", ""),
-            wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
-            native: Types.NativeSource(
-                Types.BlueprintFetcherKind.None,
-                "file:///target/release/ai-agent-sandbox-blueprint-bin",
-                "./target/release/ai-agent-sandbox-blueprint-bin"
-            ),
-            testing: Types.TestingSource("ai-agent-sandbox-blueprint-bin", "ai-agent-sandbox-blueprint", "."),
-            binaries: bins
-        });
+        if (compact) {
+            def.sources = _compactSources();
+        } else {
+            def.sources = new Types.BlueprintSource[](1);
+            Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
+            bins[0] = Types.BlueprintBinary({
+                arch: Types.BlueprintArchitecture.Amd64,
+                os: Types.BlueprintOperatingSystem.Linux,
+                name: "ai-agent-sandbox-blueprint",
+                sha256: bytes32(uint256(0xdeadbeef))
+            });
+            def.sources[0] = Types.BlueprintSource({
+                kind: Types.BlueprintSourceKind.Native,
+                container: Types.ImageRegistrySource("", "", ""),
+                wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
+                native: Types.NativeSource(
+                    Types.BlueprintFetcherKind.None,
+                    "file:///target/release/ai-agent-sandbox-blueprint-bin",
+                    "./target/release/ai-agent-sandbox-blueprint-bin"
+                ),
+                testing: Types.TestingSource("ai-agent-sandbox-blueprint-bin", "ai-agent-sandbox-blueprint", "."),
+                binaries: bins
+            });
+        }
 
         def.supportedMemberships = new Types.MembershipModel[](1);
         def.supportedMemberships[0] = Types.MembershipModel.Dynamic;
     }
 
-    function _buildInstanceDefinition(address manager) internal pure returns (Types.BlueprintDefinition memory def) {
-        def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
+    function _buildInstanceDefinition(address manager, bool compact)
+        internal
+        pure
+        returns (Types.BlueprintDefinition memory def)
+    {
+        def.metadataUri = compact ? "tangle:ai-agent-instance" : "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;
         def.masterManagerRevision = 0;
@@ -158,7 +236,9 @@ contract RegisterBlueprint is Script {
             eventRate: 0
         });
 
-        def.metadata = Types.BlueprintMetadata({
+        def.metadata = compact
+            ? _compactMetadata("AI Agent Instance Blueprint")
+            : Types.BlueprintMetadata({
             name: "AI Agent Instance Blueprint",
             description: "Subscription-based replicated AI sandbox with multi-operator redundancy",
             author: "Tangle",
@@ -170,38 +250,46 @@ contract RegisterBlueprint is Script {
             profilingData: ""
         });
 
-        def.jobs = _buildInstanceJobs();
+        def.jobs = compact ? _compactJobs() : _buildInstanceJobs();
 
         def.registrationSchema = "";
         def.requestSchema = "";
 
-        def.sources = new Types.BlueprintSource[](1);
-        Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
-        bins[0] = Types.BlueprintBinary({
-            arch: Types.BlueprintArchitecture.Amd64,
-            os: Types.BlueprintOperatingSystem.Linux,
-            name: "ai-agent-instance-blueprint",
-            sha256: bytes32(uint256(0xdeadbeef))
-        });
-        def.sources[0] = Types.BlueprintSource({
-            kind: Types.BlueprintSourceKind.Native,
-            container: Types.ImageRegistrySource("", "", ""),
-            wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
-            native: Types.NativeSource(
-                Types.BlueprintFetcherKind.None,
-                "file:///target/release/ai-agent-instance-blueprint-bin",
-                "./target/release/ai-agent-instance-blueprint-bin"
-            ),
-            testing: Types.TestingSource("ai-agent-instance-blueprint-bin", "ai-agent-instance-blueprint", "."),
-            binaries: bins
-        });
+        if (compact) {
+            def.sources = _compactSources();
+        } else {
+            def.sources = new Types.BlueprintSource[](1);
+            Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
+            bins[0] = Types.BlueprintBinary({
+                arch: Types.BlueprintArchitecture.Amd64,
+                os: Types.BlueprintOperatingSystem.Linux,
+                name: "ai-agent-instance-blueprint",
+                sha256: bytes32(uint256(0xdeadbeef))
+            });
+            def.sources[0] = Types.BlueprintSource({
+                kind: Types.BlueprintSourceKind.Native,
+                container: Types.ImageRegistrySource("", "", ""),
+                wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
+                native: Types.NativeSource(
+                    Types.BlueprintFetcherKind.None,
+                    "file:///target/release/ai-agent-instance-blueprint-bin",
+                    "./target/release/ai-agent-instance-blueprint-bin"
+                ),
+                testing: Types.TestingSource("ai-agent-instance-blueprint-bin", "ai-agent-instance-blueprint", "."),
+                binaries: bins
+            });
+        }
 
         def.supportedMemberships = new Types.MembershipModel[](1);
         def.supportedMemberships[0] = Types.MembershipModel.Fixed;
     }
 
-    function _buildTeeInstanceDefinition(address manager) internal pure returns (Types.BlueprintDefinition memory def) {
-        def.metadataUri = "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
+    function _buildTeeInstanceDefinition(address manager, bool compact)
+        internal
+        pure
+        returns (Types.BlueprintDefinition memory def)
+    {
+        def.metadataUri = compact ? "tangle:ai-agent-tee" : "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;
         def.masterManagerRevision = 0;
@@ -217,7 +305,9 @@ contract RegisterBlueprint is Script {
             eventRate: 0
         });
 
-        def.metadata = Types.BlueprintMetadata({
+        def.metadata = compact
+            ? _compactMetadata("AI Agent TEE Instance Blueprint")
+            : Types.BlueprintMetadata({
             name: "AI Agent TEE Instance Blueprint",
             description: "TEE-backed replicated AI sandbox with attestation verification",
             author: "Tangle",
@@ -229,31 +319,35 @@ contract RegisterBlueprint is Script {
             profilingData: ""
         });
 
-        def.jobs = _buildInstanceJobs();
+        def.jobs = compact ? _compactJobs() : _buildInstanceJobs();
 
         def.registrationSchema = "";
         def.requestSchema = "";
 
-        def.sources = new Types.BlueprintSource[](1);
-        Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
-        bins[0] = Types.BlueprintBinary({
-            arch: Types.BlueprintArchitecture.Amd64,
-            os: Types.BlueprintOperatingSystem.Linux,
-            name: "ai-agent-tee-instance-blueprint",
-            sha256: bytes32(uint256(0xdeadbeef))
-        });
-        def.sources[0] = Types.BlueprintSource({
-            kind: Types.BlueprintSourceKind.Native,
-            container: Types.ImageRegistrySource("", "", ""),
-            wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
-            native: Types.NativeSource(
-                Types.BlueprintFetcherKind.None,
-                "file:///target/release/ai-agent-tee-instance-blueprint-bin",
-                "./target/release/ai-agent-tee-instance-blueprint-bin"
-            ),
-            testing: Types.TestingSource("ai-agent-tee-instance-blueprint-bin", "ai-agent-tee-instance-blueprint", "."),
-            binaries: bins
-        });
+        if (compact) {
+            def.sources = _compactSources();
+        } else {
+            def.sources = new Types.BlueprintSource[](1);
+            Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
+            bins[0] = Types.BlueprintBinary({
+                arch: Types.BlueprintArchitecture.Amd64,
+                os: Types.BlueprintOperatingSystem.Linux,
+                name: "ai-agent-tee-instance-blueprint",
+                sha256: bytes32(uint256(0xdeadbeef))
+            });
+            def.sources[0] = Types.BlueprintSource({
+                kind: Types.BlueprintSourceKind.Native,
+                container: Types.ImageRegistrySource("", "", ""),
+                wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
+                native: Types.NativeSource(
+                    Types.BlueprintFetcherKind.None,
+                    "file:///target/release/ai-agent-tee-instance-blueprint-bin",
+                    "./target/release/ai-agent-tee-instance-blueprint-bin"
+                ),
+                testing: Types.TestingSource("ai-agent-tee-instance-blueprint-bin", "ai-agent-tee-instance-blueprint", "."),
+                binaries: bins
+            });
+        }
 
         def.supportedMemberships = new Types.MembershipModel[](1);
         def.supportedMemberships[0] = Types.MembershipModel.Fixed;
