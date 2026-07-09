@@ -94,7 +94,7 @@ contract SandboxHandler is Test {
             0, // JOB_SANDBOX_CREATE
             callId,
             operator,
-            bytes(""), // inputs (empty for create)
+            keccak256(bytes("")), // inputsHash (empty for create)
             abi.encode(sandboxId, "{}") // outputs: (string sandboxId, string json)
         );
 
@@ -118,14 +118,19 @@ contract SandboxHandler is Test {
 
         uint64 callId = nextCallId++;
 
-        // onJobResult for delete — inputs carry the sandboxId, outputs carry JSON
+        // onJobCall caches the raw delete inputs (tnt-core 0.19); onJobResult
+        // then receives only the inputsHash and consumes the cached entry.
+        vm.prank(tangleCore);
+        blueprint.onJobCall(1, 1, callId, abi.encode(sandboxId)); // JOB_SANDBOX_DELETE = 1
+
+        // onJobResult for delete — inputsHash binds the cached sandboxId, outputs carry JSON
         vm.prank(tangleCore);
         blueprint.onJobResult(
             1, // serviceId
             1, // JOB_SANDBOX_DELETE
             callId,
             operator,
-            abi.encode(sandboxId), // inputs: (string sandboxId)
+            keccak256(abi.encode(sandboxId)), // inputsHash: keccak256((string sandboxId))
             abi.encode("{}") // outputs: (string json)
         );
 
