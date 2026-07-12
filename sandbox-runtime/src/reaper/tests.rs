@@ -71,6 +71,7 @@ fn test_config() -> SidecarRuntimeConfig {
         sandbox_max_memory_mb: 0,
         sandbox_max_disk_gb: 0,
         sandbox_host_memory_budget_mb: 0,
+        sandbox_host_cpu_budget: 0,
     }
 }
 

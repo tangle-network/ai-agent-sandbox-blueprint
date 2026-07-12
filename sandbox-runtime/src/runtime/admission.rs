@@ -192,7 +192,107 @@ pub(crate) fn enforce_host_memory_budget(
     )
 }
 
-/// Per-sandbox resource maxima + host memory budget, applied under
+/// CPU cores a sandbox is accounted at for the host CPU budget.
+///
+/// Symmetric with [`accounted_memory_mb`]: `None` means the footprint is
+/// unknowable — the sandbox requests unlimited CPU (0) and no
+/// `SANDBOX_MAX_CPU_CORES` clamp is configured — callers skip it (with a
+/// one-time warning) rather than guessing.
+pub(crate) fn accounted_cpu_cores(cpu_cores: u64, sandbox_max_cpu_cores: u64) -> Option<u64> {
+    if cpu_cores > 0 {
+        Some(cpu_cores)
+    } else if sandbox_max_cpu_cores > 0 {
+        Some(sandbox_max_cpu_cores)
+    } else {
+        None
+    }
+}
+
+pub(crate) static UNACCOUNTABLE_CPU_WARN: std::sync::Once = std::sync::Once::new();
+
+/// Decision core of the host CPU budget, separated from store access so it is
+/// unit-testable. `budget == 0` disables the check. Records (and an incoming
+/// request) with unknowable footprint are skipped with a one-time warning —
+/// see [`accounted_cpu_cores`]. Mirrors [`check_host_memory_budget`]; there is
+/// no CPU analogue of the warm-pool memory reservation because warm VMs pin
+/// host RAM but time-share CPU.
+pub(crate) fn check_host_cpu_budget(
+    running_cpu_cores: impl IntoIterator<Item = u64>,
+    incoming_cpu_cores: u64,
+    sandbox_max_cpu_cores: u64,
+    budget: u64,
+) -> Result<()> {
+    if budget == 0 {
+        return Ok(());
+    }
+
+    let mut live_cores: u64 = 0;
+    let mut unaccounted = 0usize;
+    for cpu_cores in running_cpu_cores {
+        match accounted_cpu_cores(cpu_cores, sandbox_max_cpu_cores) {
+            Some(cores) => live_cores = live_cores.saturating_add(cores),
+            None => unaccounted += 1,
+        }
+    }
+    let incoming = match accounted_cpu_cores(incoming_cpu_cores, sandbox_max_cpu_cores) {
+        Some(cores) => cores,
+        None => {
+            unaccounted += 1;
+            0
+        }
+    };
+    if unaccounted > 0 {
+        UNACCOUNTABLE_CPU_WARN.call_once(|| {
+            tracing::warn!(
+                unaccounted,
+                "Host CPU budget cannot account for sandboxes with unlimited CPU; \
+                 set SANDBOX_MAX_CPU_CORES so every sandbox has a bounded footprint"
+            );
+        });
+    }
+
+    let committed = live_cores.saturating_add(incoming);
+    if committed > budget {
+        return Err(SandboxError::Unavailable(format!(
+            "Host CPU budget exceeded: {committed} cores committed ({live_cores} running + \
+             {incoming} requested) > SANDBOX_HOST_CPU_BUDGET={budget}. Retry on another operator."
+        )));
+    }
+
+    Ok(())
+}
+
+/// Enforce `SANDBOX_HOST_CPU_BUDGET` at admission. Must be called with
+/// [`CREATION_PERMIT`] held so the running-CPU sum cannot race a concurrent
+/// create. Mirrors [`enforce_host_memory_budget`].
+pub(crate) fn enforce_host_cpu_budget(
+    config: &SidecarRuntimeConfig,
+    incoming_cpu_cores: u64,
+    reused_sandbox_id: Option<&str>,
+) -> Result<()> {
+    if config.sandbox_host_cpu_budget == 0 {
+        return Ok(());
+    }
+
+    let running_cpu_cores: Vec<u64> = sandboxes()?
+        .values()?
+        .into_iter()
+        .filter(|record| record.state == SandboxState::Running)
+        // A create that replaces an existing record (recreate / image upgrade)
+        // frees the old container's CPU, so it doesn't count against the budget.
+        .filter(|record| reused_sandbox_id != Some(record.id.as_str()))
+        .map(|record| record.cpu_cores)
+        .collect();
+
+    check_host_cpu_budget(
+        running_cpu_cores,
+        incoming_cpu_cores,
+        config.sandbox_max_cpu_cores,
+        config.sandbox_host_cpu_budget,
+    )
+}
+
+/// Per-sandbox resource maxima + host memory/CPU budgets, applied under
 /// [`CREATION_PERMIT`] before backend dispatch. Returns the request with
 /// effective (possibly clamped) resource values so the container, the stored
 /// record, and the budget accounting all agree.
@@ -209,6 +309,7 @@ pub(crate) fn admit_sandbox_resources(
     admitted.disk_gb =
         enforce_resource_max(request.disk_gb, config.sandbox_max_disk_gb, "disk_gb")?;
     enforce_host_memory_budget(config, admitted.memory_mb, sandbox_id_override)?;
+    enforce_host_cpu_budget(config, admitted.cpu_cores, sandbox_id_override)?;
     Ok(admitted)
 }
 

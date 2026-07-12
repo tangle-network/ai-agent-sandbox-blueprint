@@ -989,6 +989,7 @@ mod core_logic_tests {
             sandbox_max_memory_mb: 0,
             sandbox_max_disk_gb: 0,
             sandbox_host_memory_budget_mb: 0,
+            sandbox_host_cpu_budget: 0,
         }
     }
 
@@ -1111,6 +1112,55 @@ mod core_logic_tests {
         assert!(check_host_memory_budget([0u64; 0], 1, 2048, 2048, 2048).is_err());
         // A zero budget still disables the check even with a reservation set.
         assert!(check_host_memory_budget([0u64; 0], 0, 0, 0, 4096).is_ok());
+    }
+
+    // ── admission control: host CPU budget (symmetric with memory budget) ──
+
+    #[test]
+    fn accounted_cpu_prefers_request_then_max_then_unknown() {
+        assert_eq!(accounted_cpu_cores(4, 8), Some(4));
+        assert_eq!(accounted_cpu_cores(0, 8), Some(8));
+        assert_eq!(accounted_cpu_cores(0, 0), None);
+    }
+
+    #[test]
+    fn cpu_budget_disabled_when_zero() {
+        // budget == 0 is unlimited: any committed load admits (back-compat with
+        // deployments that never set SANDBOX_HOST_CPU_BUDGET).
+        assert!(check_host_cpu_budget([u64::MAX, u64::MAX], 999_999, 0, 0).is_ok());
+    }
+
+    #[test]
+    fn cpu_budget_rejects_over_budget_as_unavailable() {
+        // 2 + 4 running + 4 requested = 10 > 8.
+        let err = check_host_cpu_budget([2, 4], 4, 0, 8).unwrap_err();
+        assert!(matches!(err, SandboxError::Unavailable(_)), "got {err:?}");
+        assert!(err.to_string().contains("CPU budget"), "got {err}");
+    }
+
+    #[test]
+    fn cpu_budget_admits_exactly_at_budget() {
+        // 2 + 4 running + 2 requested = 8 == 8 boundary admits.
+        assert!(check_host_cpu_budget([2, 4], 2, 0, 8).is_ok());
+        // One more core over the boundary rejects.
+        assert!(check_host_cpu_budget([2, 4], 3, 0, 8).is_err());
+    }
+
+    #[test]
+    fn cpu_budget_counts_unlimited_records_at_max() {
+        // A running record with cpu_cores=0 is accounted at SANDBOX_MAX_CPU_CORES:
+        // 4 (0→max) + 4 requested = 8 ≤ 8 passes…
+        assert!(check_host_cpu_budget([0], 4, 4, 8).is_ok());
+        // …and one extra running core rejects.
+        assert!(check_host_cpu_budget([0, 1], 4, 4, 8).is_err());
+    }
+
+    #[test]
+    fn cpu_budget_skips_unaccountable_records() {
+        // Without SANDBOX_MAX_CPU_CORES, unlimited records can't be accounted
+        // and are skipped (warned once) rather than guessed.
+        assert!(check_host_cpu_budget([0, 0], 2, 0, 4).is_ok());
+        assert!(check_host_cpu_budget([3, 0], 2, 0, 4).is_err());
     }
 
     #[test]
