@@ -1,5 +1,34 @@
 use super::*;
 
+/// Merged post-start workspace bootstrap, run as root in ONE exec round-trip.
+///
+/// Covers both ownership states the image can ship in:
+///  - root-owned `/home/agent` (repair path): root's own `mkdir` succeeds —
+///    it owns the tree, no `DAC_OVERRIDE` needed — and must run BEFORE the
+///    chown hands the tree to agent (after which `cap_drop=ALL` root can no
+///    longer write into it);
+///  - agent-owned `/home/agent` without the dirs (the canonical sidecar
+///    image, verified: `agent 755`, no `.opencode-home`): root's mkdir is
+///    denied, so drop to the agent user via `su` (the container keeps
+///    SETUID/SETGID; the image ships /usr/bin/su) and create them as the
+///    owner, matching the pre-merge dedicated agent exec.
+///
+/// The chown then runs unconditionally (`;` + `|| true`), exactly like the
+/// pre-merge dedicated exec. The trailing `test -d` makes the exit code
+/// report whether the dirs exist, so the caller knows to fall back to a
+/// separate agent-user exec (images with an agent-owned tree but no `su`).
+pub(crate) const WORKSPACE_BOOTSTRAP_ROOT_CMD: &str = "mkdir -p /home/agent/.opencode-home/.config 2>/dev/null \
+     || su agent -s /bin/sh -c 'mkdir -p /home/agent/.opencode-home/.config' 2>/dev/null; \
+     chown -R agent:agent /home/agent 2>/dev/null || true; \
+     test -d /home/agent/.opencode-home/.config";
+
+/// Last-resort fallback when the merged exec cannot produce the dirs (an
+/// agent-owned `/home/agent` on an image without `su`): create them as the
+/// agent user through Docker's own exec-user mechanism, which needs nothing
+/// from the image — the pre-merge behavior, verbatim.
+pub(crate) const WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD: &str =
+    "mkdir -p /home/agent/.opencode-home/.config";
+
 /// Docker-backed create with per-stage [`CreateTimings`]. The shared entry
 /// point (`create_sidecar_with_token`) fills the permit/admission/total
 /// fields; this function fills every Docker stage it passes through.
@@ -130,61 +159,78 @@ pub(crate) async fn create_sidecar_docker(
         timings.port_mapping = Some(stage.elapsed());
 
         let stage = std::time::Instant::now();
-        // Repair workspace ownership before the sidecar spawns OpenCode as the
-        // agent user (uid 1000).  Without this, /home/agent dirs may be root-owned
-        // and the demoted process crashes with EACCES on mkdir .local.
-        match docker_exec_as_user(
+        // ── Workspace bootstrap ────────────────────────────────────────────
+        // Two jobs, historically two exec round-trips (each also rebuilding a
+        // Docker client — connect + ping — via `docker_exec_as_user`):
+        //   1. as root:  chown -R agent:agent /home/agent — repair image
+        //      builds that leave workspace dirs root-owned, so the sidecar's
+        //      demoted (uid 1000) process doesn't crash with EACCES on
+        //      mkdir .local;
+        //   2. as agent: mkdir -p ~/.opencode-home/.config — pre-create dirs
+        //      the sidecar's root process cannot create itself (cap_drop=ALL
+        //      leaves root without DAC_OVERRIDE, so it cannot write into
+        //      agent-owned directories).
+        // Merged into ONE root exec on the already-connected `builder` client
+        // (see WORKSPACE_BOOTSTRAP_ROOT_CMD for why mkdir-then-chown covers
+        // the repair path). When its `test -d` verification fails — an image
+        // that ships an agent-owned /home/agent without the dirs — fall back
+        // to the pre-merge agent-user mkdir. Net round-trips: 1 on the repair
+        // path and on images with the dirs baked in; 2 (unchanged) otherwise.
+        // Failures stay warn-and-continue, exactly as before.
+        let exec_client = builder.client();
+        let bootstrap_verified = match docker_exec_as_user_with_client(
+            &exec_client,
             &container_id,
             "root",
-            "chown -R agent:agent /home/agent 2>/dev/null || true",
+            WORKSPACE_BOOTSTRAP_ROOT_CMD,
         )
         .await
         {
-            Ok(r) if r.exit_code != 0 => {
-                tracing::warn!(
+            Ok(r) if r.exit_code == 0 => true,
+            Ok(r) => {
+                tracing::info!(
                     sandbox_id,
                     exit_code = r.exit_code,
                     stderr = %r.stderr,
-                    "workspace ownership repair returned non-zero (continuing)"
+                    "merged workspace bootstrap could not verify dirs; falling back to agent-user mkdir"
                 );
+                false
             }
             Err(e) => {
                 tracing::warn!(
                     sandbox_id,
                     error = %e,
-                    "workspace ownership repair failed (continuing)"
+                    "merged workspace bootstrap failed; falling back to agent-user mkdir"
                 );
+                false
             }
-            _ => {}
-        }
-
-        // Pre-create directories that the sidecar's root process will try to
-        // mkdir before demoting to uid 1000.  Without DAC_OVERRIDE the root
-        // process cannot write to agent-owned /home/agent, so we create them
-        // as the agent user who legitimately owns the parent directory.
-        match docker_exec_as_user(
-            &container_id,
-            "agent",
-            "mkdir -p /home/agent/.opencode-home/.config",
-        )
-        .await
-        {
-            Ok(r) if r.exit_code != 0 => {
-                tracing::warn!(
-                    sandbox_id,
-                    exit_code = r.exit_code,
-                    stderr = %r.stderr,
-                    "opencode-home pre-creation returned non-zero (continuing)"
-                );
+        };
+        if !bootstrap_verified {
+            match docker_exec_as_user_with_client(
+                &exec_client,
+                &container_id,
+                "agent",
+                WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD,
+            )
+            .await
+            {
+                Ok(r) if r.exit_code != 0 => {
+                    tracing::warn!(
+                        sandbox_id,
+                        exit_code = r.exit_code,
+                        stderr = %r.stderr,
+                        "opencode-home pre-creation returned non-zero (continuing)"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        sandbox_id,
+                        error = %e,
+                        "opencode-home pre-creation failed (continuing)"
+                    );
+                }
+                _ => {}
             }
-            Err(e) => {
-                tracing::warn!(
-                    sandbox_id,
-                    error = %e,
-                    "opencode-home pre-creation failed (continuing)"
-                );
-            }
-            _ => {}
         }
         timings.bootstrap_exec = Some(stage.elapsed());
 

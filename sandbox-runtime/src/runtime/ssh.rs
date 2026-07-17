@@ -83,10 +83,32 @@ pub(crate) async fn docker_exec_as_user(
     user: &str,
     command: &str,
 ) -> Result<ExecCommandResult> {
+    // Fresh client per call: most callers (SSH bootstrap, key management)
+    // have no live connection in scope, and process-wide caching is
+    // deliberately avoided so a stale Docker Desktop socket can't wedge a
+    // long-lived operator (see `docker_builder`). Hot paths that already
+    // hold a connected client thread it through
+    // [`docker_exec_as_user_with_client`] instead of paying connect+ping
+    // per exec.
     let builder = docker_builder().await?;
+    docker_exec_as_user_with_client(&builder.client(), container_id, user, command).await
+}
+
+/// [`docker_exec_as_user`] on an already-connected Docker client.
+///
+/// Used by the create path, which has a live `DockerBuilder` in scope and
+/// runs several execs back-to-back; threading the handle avoids rebuilding
+/// (connect + ping) a client per exec without introducing a cached
+/// process-wide client and its stale-socket failure mode.
+pub(crate) async fn docker_exec_as_user_with_client(
+    client: &docktopus::bollard::Docker,
+    container_id: &str,
+    user: &str,
+    command: &str,
+) -> Result<ExecCommandResult> {
     let exec = docker_timeout(
         "create_exec",
-        builder.client().create_exec(
+        client.create_exec(
             container_id,
             CreateExecOptions::<String> {
                 attach_stdout: Some(true),
@@ -107,9 +129,7 @@ pub(crate) async fn docker_exec_as_user(
     let mut stderr = Vec::new();
     match docker_timeout(
         "start_exec",
-        builder
-            .client()
-            .start_exec(&exec.id, None::<StartExecOptions>),
+        client.start_exec(&exec.id, None::<StartExecOptions>),
     )
     .await?
     {
@@ -133,7 +153,7 @@ pub(crate) async fn docker_exec_as_user(
         }
     }
 
-    let inspect = docker_timeout("inspect_exec", builder.client().inspect_exec(&exec.id)).await?;
+    let inspect = docker_timeout("inspect_exec", client.inspect_exec(&exec.id)).await?;
     Ok(ExecCommandResult {
         exit_code: inspect.exit_code.unwrap_or_default(),
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
