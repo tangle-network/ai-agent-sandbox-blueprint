@@ -9,9 +9,10 @@ pub(crate) async fn create_sidecar_firecracker(
     let sandbox_id = sandbox_id_override
         .map(ToString::to_string)
         .unwrap_or_else(next_sandbox_id);
-    let previous_store_entry = existing_store_entry_for_override(&sandbox_id)?;
-
-    enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
+    // Count cap + memory budget were already enforced in a single store pass
+    // by `admit_sandbox_resources` under the CREATION_PERMIT (still held).
+    // Unlike the Docker path, the Firecracker path never used its previous
+    // store entry for rollback, so no extra store read remains here.
 
     // Parse and validate port mappings strictly — malformed entries fail
     // fast here rather than being silently dropped. Both legacy `[3000]` and

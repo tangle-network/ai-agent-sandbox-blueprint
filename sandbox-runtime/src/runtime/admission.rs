@@ -54,12 +54,86 @@ pub(crate) fn check_sandbox_count_limit(
     Ok(())
 }
 
-pub(crate) fn enforce_sandbox_count_limit(
+/// One-pass scan of the store's records for admission: total row count,
+/// whether the incoming create replaces an existing slot, and the running
+/// set's memory footprints. Pure over a record slice so it is unit-testable
+/// without a store; decisions stay in [`check_sandbox_count_limit`] and
+/// [`check_host_memory_budget`], which are unchanged.
+pub(crate) struct AdmissionScan {
+    pub(crate) total_count: usize,
+    pub(crate) reusing_existing_slot: bool,
+    pub(crate) running_memory_mb: Vec<u64>,
+}
+
+pub(crate) fn scan_records_for_admission(
+    records: &[SandboxRecord],
+    reused_sandbox_id: Option<&str>,
+) -> AdmissionScan {
+    let mut scan = AdmissionScan {
+        total_count: records.len(),
+        reusing_existing_slot: false,
+        running_memory_mb: Vec::with_capacity(records.len()),
+    };
+    for record in records {
+        // Store keys always equal record ids (every insert uses the record's
+        // id as its key), so id equality here is the same signal as the
+        // former per-backend `store.get(sandbox_id).is_some()` check.
+        if reused_sandbox_id == Some(record.id.as_str()) {
+            // A create that replaces an existing record (recreate / image
+            // upgrade) frees the old container's memory — excluded from the
+            // running sum — and the count cap treats the slot as reused.
+            scan.reusing_existing_slot = true;
+            continue;
+        }
+        if record.state == SandboxState::Running {
+            scan.running_memory_mb.push(record.memory_mb);
+        }
+    }
+    scan
+}
+
+/// Sandbox count cap + host memory budget from ONE store read, under
+/// [`CREATION_PERMIT`].
+///
+/// Replaces the former `enforce_sandbox_count_limit` (called per backend) +
+/// `enforce_host_memory_budget` (called at admission) pair, which each
+/// deserialized the full store per create. Same decisions, same error
+/// precedence: the budget check ran before the backends' count check, and
+/// still does. When neither limit is configured the store is not read at all.
+pub(crate) fn enforce_store_admission(
     config: &SidecarRuntimeConfig,
-    reusing_existing_slot: bool,
+    incoming_memory_mb: u64,
+    reused_sandbox_id: Option<&str>,
 ) -> Result<()> {
-    let current = sandboxes()?.values()?.len();
-    check_sandbox_count_limit(current, reusing_existing_slot, config.sandbox_max_count)
+    let budget_enabled = config.sandbox_host_memory_budget_mb != 0;
+    let count_capped = config.sandbox_max_count != 0;
+    if !budget_enabled && !count_capped {
+        return Ok(());
+    }
+
+    let records = sandboxes()?.values()?;
+    let scan = scan_records_for_admission(&records, reused_sandbox_id);
+
+    if budget_enabled {
+        // The warm pool's standing footprint (templates + pre-restored
+        // entries) never enters the store, so reserve it here or an enabled
+        // pool silently over-commits host RAM. Only read when the budget is
+        // on — zero-cost otherwise, as before.
+        let reserved_mb = crate::firecracker_warm::reserved_host_memory_mb()?;
+        check_host_memory_budget(
+            scan.running_memory_mb,
+            incoming_memory_mb,
+            config.sandbox_max_memory_mb,
+            config.sandbox_host_memory_budget_mb,
+            reserved_mb,
+        )?;
+    }
+
+    check_sandbox_count_limit(
+        scan.total_count,
+        scan.reusing_existing_slot,
+        config.sandbox_max_count,
+    )
 }
 
 /// Apply a per-sandbox operator maximum to one requested resource value.
@@ -156,46 +230,11 @@ pub(crate) fn check_host_memory_budget(
     Ok(())
 }
 
-/// Enforce `SANDBOX_HOST_MEMORY_BUDGET_MB` at admission. Must be called with
-/// [`CREATION_PERMIT`] held so the running-memory sum cannot race a
-/// concurrent create.
-pub(crate) fn enforce_host_memory_budget(
-    config: &SidecarRuntimeConfig,
-    incoming_memory_mb: u64,
-    reused_sandbox_id: Option<&str>,
-) -> Result<()> {
-    if config.sandbox_host_memory_budget_mb == 0 {
-        return Ok(());
-    }
-
-    let running_memory_mb: Vec<u64> = sandboxes()?
-        .values()?
-        .into_iter()
-        .filter(|record| record.state == SandboxState::Running)
-        // A create that replaces an existing record (recreate / image upgrade)
-        // frees the old container's memory, so it doesn't count against the budget.
-        .filter(|record| reused_sandbox_id != Some(record.id.as_str()))
-        .map(|record| record.memory_mb)
-        .collect();
-
-    // The warm pool's standing footprint (templates + pre-restored entries)
-    // never enters the store, so reserve it here or an enabled pool silently
-    // over-commits host RAM. Zero when warm serving is disabled.
-    let reserved_mb = crate::firecracker_warm::reserved_host_memory_mb()?;
-
-    check_host_memory_budget(
-        running_memory_mb,
-        incoming_memory_mb,
-        config.sandbox_max_memory_mb,
-        config.sandbox_host_memory_budget_mb,
-        reserved_mb,
-    )
-}
-
-/// Per-sandbox resource maxima + host memory budget, applied under
-/// [`CREATION_PERMIT`] before backend dispatch. Returns the request with
-/// effective (possibly clamped) resource values so the container, the stored
-/// record, and the budget accounting all agree.
+/// Per-sandbox resource maxima + single-pass store admission (host memory
+/// budget and sandbox count cap), applied under [`CREATION_PERMIT`] before
+/// backend dispatch. Returns the request with effective (possibly clamped)
+/// resource values so the container, the stored record, and the budget
+/// accounting all agree.
 pub(crate) fn admit_sandbox_resources(
     config: &SidecarRuntimeConfig,
     request: &CreateSandboxParams,
@@ -208,7 +247,7 @@ pub(crate) fn admit_sandbox_resources(
         enforce_resource_max(request.memory_mb, config.sandbox_max_memory_mb, "memory_mb")?;
     admitted.disk_gb =
         enforce_resource_max(request.disk_gb, config.sandbox_max_disk_gb, "disk_gb")?;
-    enforce_host_memory_budget(config, admitted.memory_mb, sandbox_id_override)?;
+    enforce_store_admission(config, admitted.memory_mb, sandbox_id_override)?;
     Ok(admitted)
 }
 

@@ -42,10 +42,10 @@ pub(crate) async fn create_sidecar_docker(
     let sandbox_id = sandbox_id_override
         .map(ToString::to_string)
         .unwrap_or_else(next_sandbox_id);
+    // Count cap + memory budget were already enforced in a single store pass
+    // by `admit_sandbox_resources` under the CREATION_PERMIT (still held).
+    // The previous entry is kept for slot-reuse semantics + failure rollback.
     let previous_store_entry = existing_store_entry_for_override(&sandbox_id)?;
-
-    // Recreating an existing sandbox reuses its existing store slot.
-    enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
 
     let stage = std::time::Instant::now();
     let builder = docker_builder().await?;

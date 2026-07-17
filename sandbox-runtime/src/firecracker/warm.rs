@@ -25,10 +25,11 @@ pub fn reconcile_warm_orphans_for_tests() {
 /// the caller logs misses and proceeds with the cold path.
 ///
 /// MUST only be called from [`create_and_start`]: the runtime layer runs
-/// `admit_sandbox_resources` + `enforce_sandbox_count_limit` (under the
-/// creation permit) before dispatching here, which is what makes a warm
-/// claim count against `SANDBOX_MAX_COUNT` / the host memory budget exactly
-/// like a cold boot. Pool inventory itself is not a sandbox and is never
+/// `admit_sandbox_resources` (per-sandbox maxima + the single-pass store
+/// admission covering the count cap and memory budget, under the creation
+/// permit) before dispatching here, which is what makes a warm claim count
+/// against `SANDBOX_MAX_COUNT` / the host memory budget exactly like a
+/// cold boot. Pool inventory itself is not a sandbox and is never
 /// admission-accounted — see the invariant note in [`firecracker_warm`].
 pub(crate) async fn warm_claim(req: &FirecrackerCreateRequest) -> Result<WarmOutcome> {
     let pool_size = firecracker_warm::configured_pool_size()?;

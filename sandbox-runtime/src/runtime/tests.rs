@@ -1398,6 +1398,164 @@ mod core_logic_tests {
     }
 }
 
+/// Single-pass store admission scan (admission.rs): one `values()` walk must
+/// reproduce exactly what the former two dedicated scans computed — the
+/// count-check inputs and the memory-budget inputs.
+#[cfg(test)]
+mod admission_scan_tests {
+    use super::*;
+
+    fn record(id: &str, state: SandboxState, memory_mb: u64) -> SandboxRecord {
+        SandboxRecord {
+            id: id.into(),
+            container_id: format!("ctr-{id}"),
+            sidecar_url: "http://127.0.0.1:0".into(),
+            sidecar_port: 0,
+            ssh_port: None,
+            token: "t".into(),
+            created_at: 0,
+            cpu_cores: 1,
+            memory_mb,
+            state,
+            idle_timeout_seconds: 0,
+            max_lifetime_seconds: 0,
+            last_activity_at: 0,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: String::new(),
+            base_env_json: String::new(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            tee_attestation_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            service_id: None,
+            tee_config: None,
+            extra_ports: HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
+        }
+    }
+
+    #[test]
+    fn scan_empty_store() {
+        let scan = scan_records_for_admission(&[], None);
+        assert_eq!(scan.total_count, 0);
+        assert!(!scan.reusing_existing_slot);
+        assert!(scan.running_memory_mb.is_empty());
+    }
+
+    #[test]
+    fn scan_counts_all_rows_but_sums_only_running_memory() {
+        let records = vec![
+            record("a", SandboxState::Running, 1024),
+            record("b", SandboxState::Stopped, 2048),
+            record("c", SandboxState::Running, 512),
+        ];
+        let scan = scan_records_for_admission(&records, None);
+        // Count cap sees every row (stopped sandboxes hold store slots)…
+        assert_eq!(scan.total_count, 3);
+        // …the budget sees only running footprints.
+        assert_eq!(scan.running_memory_mb, vec![1024, 512]);
+        assert!(!scan.reusing_existing_slot);
+    }
+
+    #[test]
+    fn scan_running_unlimited_rows_stay_visible() {
+        // memory_mb=0 rows must remain in the vec so check_host_memory_budget
+        // keeps its accounted-at-max / unaccounted-warning semantics.
+        let records = vec![record("a", SandboxState::Running, 0)];
+        let scan = scan_records_for_admission(&records, None);
+        assert_eq!(scan.running_memory_mb, vec![0]);
+    }
+
+    #[test]
+    fn scan_reused_id_counts_slot_but_frees_memory() {
+        let records = vec![
+            record("a", SandboxState::Running, 1024),
+            record("b", SandboxState::Running, 2048),
+        ];
+        let scan = scan_records_for_admission(&records, Some("b"));
+        // The replaced record still occupies a store slot (the count check
+        // then subtracts it via reusing_existing_slot)…
+        assert_eq!(scan.total_count, 2);
+        assert!(scan.reusing_existing_slot);
+        // …but its container's memory is freed by the recreate.
+        assert_eq!(scan.running_memory_mb, vec![1024]);
+    }
+
+    #[test]
+    fn scan_reused_id_flagged_even_when_stopped() {
+        // Recreating a STOPPED sandbox also reuses its slot: the former
+        // count check keyed off store presence (`get(id).is_some()`), not
+        // state, and the stopped row never contributed running memory.
+        let records = vec![record("a", SandboxState::Stopped, 1024)];
+        let scan = scan_records_for_admission(&records, Some("a"));
+        assert_eq!(scan.total_count, 1);
+        assert!(scan.reusing_existing_slot);
+        assert!(scan.running_memory_mb.is_empty());
+    }
+
+    #[test]
+    fn scan_absent_reused_id_sets_no_flag() {
+        // A fresh sandbox id (no override, or an override that was never
+        // stored) must not claim slot reuse — matches `get(id) == None`.
+        let records = vec![record("a", SandboxState::Running, 1024)];
+        let scan = scan_records_for_admission(&records, Some("zz"));
+        assert!(!scan.reusing_existing_slot);
+        assert_eq!(scan.running_memory_mb, vec![1024]);
+    }
+
+    /// Differential check: the single pass must equal the legacy two-pass
+    /// computation (count scan + filtered memory scan) row-for-row across a
+    /// matrix of store shapes and reuse targets.
+    #[test]
+    fn scan_matches_legacy_two_pass_semantics() {
+        let stores: Vec<Vec<SandboxRecord>> = vec![
+            vec![],
+            vec![record("a", SandboxState::Running, 0)],
+            vec![
+                record("a", SandboxState::Running, 1024),
+                record("b", SandboxState::Stopped, 2048),
+                record("c", SandboxState::Running, 0),
+                record("d", SandboxState::Running, 4096),
+            ],
+        ];
+        for records in &stores {
+            for reused in [None, Some("a"), Some("b"), Some("missing")] {
+                // Legacy pass 1: count = all rows; reuse = presence by id.
+                let legacy_count = records.len();
+                let legacy_reusing = records.iter().any(|r| reused == Some(r.id.as_str()));
+                // Legacy pass 2: running memory, reused id excluded.
+                let legacy_memory: Vec<u64> = records
+                    .iter()
+                    .filter(|r| r.state == SandboxState::Running)
+                    .filter(|r| reused != Some(r.id.as_str()))
+                    .map(|r| r.memory_mb)
+                    .collect();
+
+                let scan = scan_records_for_admission(records, reused);
+                assert_eq!(scan.total_count, legacy_count, "reused={reused:?}");
+                assert_eq!(
+                    scan.reusing_existing_slot, legacy_reusing,
+                    "reused={reused:?}"
+                );
+                assert_eq!(scan.running_memory_mb, legacy_memory, "reused={reused:?}");
+            }
+        }
+    }
+}
+
 /// Invariants of the merged workspace-bootstrap exec (docker_create.rs).
 /// The merge collapses two post-start exec round-trips into one; these pin
 /// the properties that make it semantically equal to the pre-merge pair.

@@ -128,12 +128,12 @@ pub(crate) async fn create_sidecar_tee(
     let sandbox_id = sandbox_id_override
         .map(ToString::to_string)
         .unwrap_or_else(next_sandbox_id);
-    let previous_store_entry = existing_store_entry_for_override(&sandbox_id)?;
-
-    // Same admission gate as the Docker/Firecracker paths — TEE creates must
-    // not bypass the host sandbox count cap. Runs with [`CREATION_PERMIT`]
-    // held (acquired in `create_sidecar_with_token`) so the check can't race.
-    enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
+    // Count cap + memory budget were already enforced for every backend —
+    // TEE included — in a single store pass by `admit_sandbox_resources`,
+    // under the [`CREATION_PERMIT`] acquired in `create_sidecar_with_token`
+    // (still held here), so the check can't race. Unlike the Docker path,
+    // the TEE path never used its previous store entry for rollback, so no
+    // extra store read remains here.
 
     let token = match token_override {
         Some(t) if !t.trim().is_empty() => t.to_string(),
