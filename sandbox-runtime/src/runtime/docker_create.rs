@@ -1,10 +1,14 @@
 use super::*;
 
+/// Docker-backed create with per-stage [`CreateTimings`]. The shared entry
+/// point (`create_sidecar_with_token`) fills the permit/admission/total
+/// fields; this function fills every Docker stage it passes through.
 pub(crate) async fn create_sidecar_docker(
     request: &CreateSandboxParams,
     token_override: Option<&str>,
     sandbox_id_override: Option<&str>,
-) -> Result<SandboxRecord> {
+) -> Result<(SandboxRecord, CreateTimings)> {
+    let mut timings = CreateTimings::default();
     let config = SidecarRuntimeConfig::load();
     let sandbox_id = sandbox_id_override
         .map(ToString::to_string)
@@ -14,7 +18,9 @@ pub(crate) async fn create_sidecar_docker(
     // Recreating an existing sandbox reuses its existing store slot.
     enforce_sandbox_count_limit(config, previous_store_entry.is_some())?;
 
+    let stage = std::time::Instant::now();
     let builder = docker_builder().await?;
+    timings.docker_connect = Some(stage.elapsed());
 
     // Use the user-supplied image if provided, otherwise fall back to the
     // operator's SIDECAR_IMAGE env var.
@@ -24,7 +30,9 @@ pub(crate) async fn create_sidecar_docker(
         request.image.clone()
     };
 
+    let stage = std::time::Instant::now();
     ensure_image_pulled(&builder, &effective_image).await?;
+    timings.image_pull = Some(stage.elapsed());
     let original_image = effective_image.clone();
 
     let token = match token_override {
@@ -75,7 +83,19 @@ pub(crate) async fn create_sidecar_docker(
         .env(env_vars)
         .config_override(override_config);
 
+    // Split Docker-side create from start so each hop is visible. On a
+    // transient create failure we do NOT bail: `Container::start(false)`
+    // re-runs create while the container id is unset, so the pre-existing
+    // retry-once semantics of `start_container_with_retry` are preserved.
+    let stage = std::time::Instant::now();
+    if let Err(err) = docker_timeout("create_container", container.create()).await {
+        tracing::debug!(error = %err, "container create failed; start path will retry it");
+    }
+    timings.container_create = Some(stage.elapsed());
+
+    let stage = std::time::Instant::now();
     start_container_with_retry(&mut container).await?;
+    timings.container_start = Some(stage.elapsed());
 
     let container_id = container
         .id()
@@ -88,6 +108,7 @@ pub(crate) async fn create_sidecar_docker(
             .copied()
             .map(|port| (port, 0u16))
             .collect::<HashMap<_, _>>();
+        let stage = std::time::Instant::now();
         let (sidecar_url, sidecar_port, ssh_port, extra_port_map) =
             retry_port_mapping_lookup_inner(
                 "create endpoint resolution",
@@ -106,7 +127,9 @@ pub(crate) async fn create_sidecar_docker(
                 },
             )
             .await?;
+        timings.port_mapping = Some(stage.elapsed());
 
+        let stage = std::time::Instant::now();
         // Repair workspace ownership before the sidecar spawns OpenCode as the
         // agent user (uid 1000).  Without this, /home/agent dirs may be root-owned
         // and the demoted process crashes with EACCES on mkdir .local.
@@ -163,6 +186,7 @@ pub(crate) async fn create_sidecar_docker(
             }
             _ => {}
         }
+        timings.bootstrap_exec = Some(stage.elapsed());
 
         let now = crate::util::now_ts();
         let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
@@ -208,12 +232,17 @@ pub(crate) async fn create_sidecar_docker(
             capabilities_json: request.capabilities_json.clone(),
         };
 
+        let stage = std::time::Instant::now();
         let mut sealed = record.clone();
         seal_record(&mut sealed)?;
         sandboxes()?.insert(sandbox_id.clone(), sealed)?;
+        timings.store_insert = Some(stage.elapsed());
 
         let ready_record = if request.ssh_enabled {
-            ensure_ssh_ready(&record).await?
+            let stage = std::time::Instant::now();
+            let ready = ensure_ssh_ready(&record).await?;
+            timings.ssh_ready = Some(stage.elapsed());
+            ready
         } else {
             record.clone()
         };
@@ -228,5 +257,5 @@ pub(crate) async fn create_sidecar_docker(
         let _ = restore_previous_store_entry(&sandbox_id, previous_store_entry);
         cleanup_orphaned_container(&builder, &container_id).await;
     }
-    finish
+    finish.map(|record| (record, timings))
 }

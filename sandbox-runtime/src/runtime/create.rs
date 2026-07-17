@@ -9,6 +9,24 @@ pub async fn create_sidecar(
     request: &CreateSandboxParams,
     tee: Option<&dyn crate::tee::TeeBackend>,
 ) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
+    create_sidecar_with_token(request, tee, None, None)
+        .await
+        .map(|(record, attestation, _timings)| (record, attestation))
+}
+
+/// [`create_sidecar`] plus the measured per-stage [`CreateTimings`] breakdown.
+///
+/// Same create, same side effects — the timings are pure observation. Used by
+/// the lifecycle bench (`tests/lifecycle_bench.rs`) and available to any
+/// caller that wants the real create latency decomposition.
+pub async fn create_sidecar_timed(
+    request: &CreateSandboxParams,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<(
+    SandboxRecord,
+    Option<crate::tee::AttestationReport>,
+    CreateTimings,
+)> {
     create_sidecar_with_token(request, tee, None, None).await
 }
 
@@ -21,15 +39,24 @@ pub(crate) async fn create_sidecar_with_token(
     tee: Option<&dyn crate::tee::TeeBackend>,
     token_override: Option<&str>,
     sandbox_id_override: Option<&str>,
-) -> Result<(SandboxRecord, Option<crate::tee::AttestationReport>)> {
+) -> Result<(
+    SandboxRecord,
+    Option<crate::tee::AttestationReport>,
+    CreateTimings,
+)> {
+    let requested = std::time::Instant::now();
     let _creation_permit = acquire_creation_permit().await;
+    let permit_wait = requested.elapsed();
     // Resource admission runs under the permit and before backend dispatch:
     // per-sandbox maxima (reject over-max, clamp unlimited-to-max) and the
     // host memory budget apply identically to Docker, Firecracker, and TEE.
+    let admission_span = std::time::Instant::now();
     let admitted =
         admit_sandbox_resources(SidecarRuntimeConfig::load(), request, sandbox_id_override)?;
+    let admission = admission_span.elapsed();
     let request = &admitted;
-    match resolve_runtime_backend(request)? {
+    let backend = resolve_runtime_backend(request)?;
+    let (record, attestation, mut timings) = match backend {
         RuntimeBackend::Tee => {
             let backend = tee.ok_or_else(|| {
                 SandboxError::Validation(
@@ -37,19 +64,26 @@ pub(crate) async fn create_sidecar_with_token(
                 )
             })?;
             validate_requested_tee_backend(request, backend)?;
-            create_sidecar_tee(request, backend, token_override, sandbox_id_override).await
+            let (record, attestation) =
+                create_sidecar_tee(request, backend, token_override, sandbox_id_override).await?;
+            (record, attestation, CreateTimings::default())
         }
         RuntimeBackend::Firecracker => {
-            create_sidecar_firecracker(request, token_override, sandbox_id_override)
-                .await
-                .map(|r| (r, None))
+            let record =
+                create_sidecar_firecracker(request, token_override, sandbox_id_override).await?;
+            (record, None, CreateTimings::default())
         }
         RuntimeBackend::Docker => {
-            create_sidecar_docker(request, token_override, sandbox_id_override)
-                .await
-                .map(|r| (r, None))
+            let (record, timings) =
+                create_sidecar_docker(request, token_override, sandbox_id_override).await?;
+            (record, None, timings)
         }
-    }
+    };
+    timings.permit_wait = Some(permit_wait);
+    timings.admission = Some(admission);
+    timings.total = requested.elapsed();
+    timings.log(&record.id, backend);
+    Ok((record, attestation, timings))
 }
 
 pub(crate) fn validate_requested_tee_backend(
