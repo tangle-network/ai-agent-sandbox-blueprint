@@ -5,9 +5,10 @@
 //! host budget is blind to it.
 //!
 //! Named bug it catches: dropping the `reserved_host_memory_mb()` term from
-//! `enforce_host_memory_budget`. With it gone, a create that only fits because
-//! the pool's footprint is ignored is wrongly admitted, over-committing the
-//! host — the third create below succeeds when it must not.
+//! the single-pass store admission (`enforce_store_admission`). With it gone,
+//! a create that only fits because the pool's footprint is ignored is wrongly
+//! admitted, over-committing the host — the third create below succeeds when
+//! it must not.
 //!
 //! Own test binary (own process): `SidecarRuntimeConfig` is a process-global
 //! snapshot of the environment (same convention as `firecracker_warm_admission.rs`).

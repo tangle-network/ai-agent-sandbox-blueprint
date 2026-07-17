@@ -56,13 +56,15 @@ pub(crate) fn check_sandbox_count_limit(
 
 /// One-pass scan of the store's records for admission: total row count,
 /// whether the incoming create replaces an existing slot, and the running
-/// set's memory footprints. Pure over a record slice so it is unit-testable
-/// without a store; decisions stay in [`check_sandbox_count_limit`] and
-/// [`check_host_memory_budget`], which are unchanged.
+/// set's memory + CPU footprints. Pure over a record slice so it is
+/// unit-testable without a store; decisions stay in
+/// [`check_sandbox_count_limit`], [`check_host_memory_budget`], and
+/// [`check_host_cpu_budget`], which are unchanged.
 pub(crate) struct AdmissionScan {
     pub(crate) total_count: usize,
     pub(crate) reusing_existing_slot: bool,
     pub(crate) running_memory_mb: Vec<u64>,
+    pub(crate) running_cpu_cores: Vec<u64>,
 }
 
 pub(crate) fn scan_records_for_admission(
@@ -73,6 +75,7 @@ pub(crate) fn scan_records_for_admission(
         total_count: records.len(),
         reusing_existing_slot: false,
         running_memory_mb: Vec::with_capacity(records.len()),
+        running_cpu_cores: Vec::with_capacity(records.len()),
     };
     for record in records {
         // Store keys always equal record ids (every insert uses the record's
@@ -80,45 +83,51 @@ pub(crate) fn scan_records_for_admission(
         // former per-backend `store.get(sandbox_id).is_some()` check.
         if reused_sandbox_id == Some(record.id.as_str()) {
             // A create that replaces an existing record (recreate / image
-            // upgrade) frees the old container's memory — excluded from the
-            // running sum — and the count cap treats the slot as reused.
+            // upgrade) frees the old container's memory and CPU — excluded
+            // from the running sums — and the count cap treats the slot as
+            // reused.
             scan.reusing_existing_slot = true;
             continue;
         }
         if record.state == SandboxState::Running {
             scan.running_memory_mb.push(record.memory_mb);
+            scan.running_cpu_cores.push(record.cpu_cores);
         }
     }
     scan
 }
 
-/// Sandbox count cap + host memory budget from ONE store read, under
-/// [`CREATION_PERMIT`].
+/// Sandbox count cap + host memory budget + host CPU budget from ONE store
+/// read, under [`CREATION_PERMIT`].
 ///
 /// Replaces the former `enforce_sandbox_count_limit` (called per backend) +
-/// `enforce_host_memory_budget` (called at admission) pair, which each
-/// deserialized the full store per create. Same decisions, same error
-/// precedence: the budget check ran before the backends' count check, and
-/// still does. When neither limit is configured the store is not read at all.
+/// `enforce_host_memory_budget` + `enforce_host_cpu_budget` (called at
+/// admission) trio, which each deserialized the full store per create. Same
+/// decisions, same error precedence: memory budget, then CPU budget, then
+/// the count check the backends used to run last. When no limit is
+/// configured the store is not read at all.
 pub(crate) fn enforce_store_admission(
     config: &SidecarRuntimeConfig,
     incoming_memory_mb: u64,
+    incoming_cpu_cores: u64,
     reused_sandbox_id: Option<&str>,
 ) -> Result<()> {
-    let budget_enabled = config.sandbox_host_memory_budget_mb != 0;
+    let memory_budget_enabled = config.sandbox_host_memory_budget_mb != 0;
+    let cpu_budget_enabled = config.sandbox_host_cpu_budget != 0;
     let count_capped = config.sandbox_max_count != 0;
-    if !budget_enabled && !count_capped {
+    if !memory_budget_enabled && !cpu_budget_enabled && !count_capped {
         return Ok(());
     }
 
     let records = sandboxes()?.values()?;
     let scan = scan_records_for_admission(&records, reused_sandbox_id);
 
-    if budget_enabled {
+    if memory_budget_enabled {
         // The warm pool's standing footprint (templates + pre-restored
         // entries) never enters the store, so reserve it here or an enabled
         // pool silently over-commits host RAM. Only read when the budget is
-        // on — zero-cost otherwise, as before.
+        // on — zero-cost otherwise, as before. (No CPU analogue: warm VMs
+        // pin host RAM but time-share CPU.)
         let reserved_mb = crate::firecracker_warm::reserved_host_memory_mb()?;
         check_host_memory_budget(
             scan.running_memory_mb,
@@ -126,6 +135,15 @@ pub(crate) fn enforce_store_admission(
             config.sandbox_max_memory_mb,
             config.sandbox_host_memory_budget_mb,
             reserved_mb,
+        )?;
+    }
+
+    if cpu_budget_enabled {
+        check_host_cpu_budget(
+            scan.running_cpu_cores,
+            incoming_cpu_cores,
+            config.sandbox_max_cpu_cores,
+            config.sandbox_host_cpu_budget,
         )?;
     }
 
@@ -230,11 +248,81 @@ pub(crate) fn check_host_memory_budget(
     Ok(())
 }
 
+/// CPU cores a sandbox is accounted at for the host CPU budget.
+///
+/// Symmetric with [`accounted_memory_mb`]: `None` means the footprint is
+/// unknowable — the sandbox requests unlimited CPU (0) and no
+/// `SANDBOX_MAX_CPU_CORES` clamp is configured — callers skip it (with a
+/// one-time warning) rather than guessing.
+pub(crate) fn accounted_cpu_cores(cpu_cores: u64, sandbox_max_cpu_cores: u64) -> Option<u64> {
+    if cpu_cores > 0 {
+        Some(cpu_cores)
+    } else if sandbox_max_cpu_cores > 0 {
+        Some(sandbox_max_cpu_cores)
+    } else {
+        None
+    }
+}
+
+pub(crate) static UNACCOUNTABLE_CPU_WARN: std::sync::Once = std::sync::Once::new();
+
+/// Decision core of the host CPU budget, separated from store access so it is
+/// unit-testable. `budget == 0` disables the check. Records (and an incoming
+/// request) with unknowable footprint are skipped with a one-time warning —
+/// see [`accounted_cpu_cores`]. Mirrors [`check_host_memory_budget`]; there is
+/// no CPU analogue of the warm-pool memory reservation because warm VMs pin
+/// host RAM but time-share CPU.
+pub(crate) fn check_host_cpu_budget(
+    running_cpu_cores: impl IntoIterator<Item = u64>,
+    incoming_cpu_cores: u64,
+    sandbox_max_cpu_cores: u64,
+    budget: u64,
+) -> Result<()> {
+    if budget == 0 {
+        return Ok(());
+    }
+
+    let mut live_cores: u64 = 0;
+    let mut unaccounted = 0usize;
+    for cpu_cores in running_cpu_cores {
+        match accounted_cpu_cores(cpu_cores, sandbox_max_cpu_cores) {
+            Some(cores) => live_cores = live_cores.saturating_add(cores),
+            None => unaccounted += 1,
+        }
+    }
+    let incoming = match accounted_cpu_cores(incoming_cpu_cores, sandbox_max_cpu_cores) {
+        Some(cores) => cores,
+        None => {
+            unaccounted += 1;
+            0
+        }
+    };
+    if unaccounted > 0 {
+        UNACCOUNTABLE_CPU_WARN.call_once(|| {
+            tracing::warn!(
+                unaccounted,
+                "Host CPU budget cannot account for sandboxes with unlimited CPU; \
+                 set SANDBOX_MAX_CPU_CORES so every sandbox has a bounded footprint"
+            );
+        });
+    }
+
+    let committed = live_cores.saturating_add(incoming);
+    if committed > budget {
+        return Err(SandboxError::Unavailable(format!(
+            "Host CPU budget exceeded: {committed} cores committed ({live_cores} running + \
+             {incoming} requested) > SANDBOX_HOST_CPU_BUDGET={budget}. Retry on another operator."
+        )));
+    }
+
+    Ok(())
+}
+
 /// Per-sandbox resource maxima + single-pass store admission (host memory
-/// budget and sandbox count cap), applied under [`CREATION_PERMIT`] before
-/// backend dispatch. Returns the request with effective (possibly clamped)
-/// resource values so the container, the stored record, and the budget
-/// accounting all agree.
+/// budget, host CPU budget, and sandbox count cap), applied under
+/// [`CREATION_PERMIT`] before backend dispatch. Returns the request with
+/// effective (possibly clamped) resource values so the container, the stored
+/// record, and the budget accounting all agree.
 pub(crate) fn admit_sandbox_resources(
     config: &SidecarRuntimeConfig,
     request: &CreateSandboxParams,
@@ -247,7 +335,12 @@ pub(crate) fn admit_sandbox_resources(
         enforce_resource_max(request.memory_mb, config.sandbox_max_memory_mb, "memory_mb")?;
     admitted.disk_gb =
         enforce_resource_max(request.disk_gb, config.sandbox_max_disk_gb, "disk_gb")?;
-    enforce_store_admission(config, admitted.memory_mb, sandbox_id_override)?;
+    enforce_store_admission(
+        config,
+        admitted.memory_mb,
+        admitted.cpu_cores,
+        sandbox_id_override,
+    )?;
     Ok(admitted)
 }
 

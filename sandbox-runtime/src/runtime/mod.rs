@@ -198,6 +198,8 @@ pub struct SidecarRuntimeConfig {
     pub sandbox_max_disk_gb: u64,
     /// Total memory (MB) admissible across all running sandboxes. 0 = disabled.
     pub sandbox_host_memory_budget_mb: u64,
+    /// Total CPU cores admissible across all running sandboxes. 0 = disabled.
+    pub sandbox_host_cpu_budget: u64,
 }
 
 static RUNTIME_CONFIG: OnceCell<SidecarRuntimeConfig> = OnceCell::new();
@@ -320,6 +322,14 @@ impl SidecarRuntimeConfig {
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(0);
+            // Total CPU cores admissible across all running sandboxes. Primary
+            // name mirrors SANDBOX_HOST_MEMORY_BUDGET_MB; SANDBOX_CPU_BUDGET is
+            // accepted as an alias. 0 = disabled (unlimited).
+            let sandbox_host_cpu_budget = env::var("SANDBOX_HOST_CPU_BUDGET")
+                .or_else(|_| env::var("SANDBOX_CPU_BUDGET"))
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
 
             // Validate critical configuration values. Panics are intentional here —
             // these represent unrecoverable startup misconfigurations. Unlike process::exit,
@@ -341,6 +351,7 @@ impl SidecarRuntimeConfig {
                 max_memory_mb = sandbox_max_memory_mb,
                 max_disk_gb = sandbox_max_disk_gb,
                 host_memory_budget_mb = sandbox_host_memory_budget_mb,
+                host_cpu_budget = sandbox_host_cpu_budget,
                 "Runtime configuration loaded"
             );
 
@@ -368,6 +379,7 @@ impl SidecarRuntimeConfig {
                 sandbox_max_memory_mb,
                 sandbox_max_disk_gb,
                 sandbox_host_memory_budget_mb,
+                sandbox_host_cpu_budget,
             }
         })
     }

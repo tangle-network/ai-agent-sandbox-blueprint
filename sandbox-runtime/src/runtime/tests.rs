@@ -989,6 +989,7 @@ mod core_logic_tests {
             sandbox_max_memory_mb: 0,
             sandbox_max_disk_gb: 0,
             sandbox_host_memory_budget_mb: 0,
+            sandbox_host_cpu_budget: 0,
         }
     }
 
@@ -1111,6 +1112,55 @@ mod core_logic_tests {
         assert!(check_host_memory_budget([0u64; 0], 1, 2048, 2048, 2048).is_err());
         // A zero budget still disables the check even with a reservation set.
         assert!(check_host_memory_budget([0u64; 0], 0, 0, 0, 4096).is_ok());
+    }
+
+    // ── admission control: host CPU budget (symmetric with memory budget) ──
+
+    #[test]
+    fn accounted_cpu_prefers_request_then_max_then_unknown() {
+        assert_eq!(accounted_cpu_cores(4, 8), Some(4));
+        assert_eq!(accounted_cpu_cores(0, 8), Some(8));
+        assert_eq!(accounted_cpu_cores(0, 0), None);
+    }
+
+    #[test]
+    fn cpu_budget_disabled_when_zero() {
+        // budget == 0 is unlimited: any committed load admits (back-compat with
+        // deployments that never set SANDBOX_HOST_CPU_BUDGET).
+        assert!(check_host_cpu_budget([u64::MAX, u64::MAX], 999_999, 0, 0).is_ok());
+    }
+
+    #[test]
+    fn cpu_budget_rejects_over_budget_as_unavailable() {
+        // 2 + 4 running + 4 requested = 10 > 8.
+        let err = check_host_cpu_budget([2, 4], 4, 0, 8).unwrap_err();
+        assert!(matches!(err, SandboxError::Unavailable(_)), "got {err:?}");
+        assert!(err.to_string().contains("CPU budget"), "got {err}");
+    }
+
+    #[test]
+    fn cpu_budget_admits_exactly_at_budget() {
+        // 2 + 4 running + 2 requested = 8 == 8 boundary admits.
+        assert!(check_host_cpu_budget([2, 4], 2, 0, 8).is_ok());
+        // One more core over the boundary rejects.
+        assert!(check_host_cpu_budget([2, 4], 3, 0, 8).is_err());
+    }
+
+    #[test]
+    fn cpu_budget_counts_unlimited_records_at_max() {
+        // A running record with cpu_cores=0 is accounted at SANDBOX_MAX_CPU_CORES:
+        // 4 (0→max) + 4 requested = 8 ≤ 8 passes…
+        assert!(check_host_cpu_budget([0], 4, 4, 8).is_ok());
+        // …and one extra running core rejects.
+        assert!(check_host_cpu_budget([0, 1], 4, 4, 8).is_err());
+    }
+
+    #[test]
+    fn cpu_budget_skips_unaccountable_records() {
+        // Without SANDBOX_MAX_CPU_CORES, unlimited records can't be accounted
+        // and are skipped (warned once) rather than guessed.
+        assert!(check_host_cpu_budget([0, 0], 2, 0, 4).is_ok());
+        assert!(check_host_cpu_budget([3, 0], 2, 0, 4).is_err());
     }
 
     #[test]
@@ -1399,13 +1449,13 @@ mod core_logic_tests {
 }
 
 /// Single-pass store admission scan (admission.rs): one `values()` walk must
-/// reproduce exactly what the former two dedicated scans computed — the
-/// count-check inputs and the memory-budget inputs.
+/// reproduce exactly what the former dedicated scans computed — the
+/// count-check inputs and the memory/CPU-budget inputs.
 #[cfg(test)]
 mod admission_scan_tests {
     use super::*;
 
-    fn record(id: &str, state: SandboxState, memory_mb: u64) -> SandboxRecord {
+    fn record(id: &str, state: SandboxState, memory_mb: u64, cpu_cores: u64) -> SandboxRecord {
         SandboxRecord {
             id: id.into(),
             container_id: format!("ctr-{id}"),
@@ -1414,7 +1464,7 @@ mod admission_scan_tests {
             ssh_port: None,
             token: "t".into(),
             created_at: 0,
-            cpu_cores: 1,
+            cpu_cores,
             memory_mb,
             state,
             idle_timeout_seconds: 0,
@@ -1453,82 +1503,89 @@ mod admission_scan_tests {
         assert_eq!(scan.total_count, 0);
         assert!(!scan.reusing_existing_slot);
         assert!(scan.running_memory_mb.is_empty());
+        assert!(scan.running_cpu_cores.is_empty());
     }
 
     #[test]
-    fn scan_counts_all_rows_but_sums_only_running_memory() {
+    fn scan_counts_all_rows_but_sums_only_running_footprints() {
         let records = vec![
-            record("a", SandboxState::Running, 1024),
-            record("b", SandboxState::Stopped, 2048),
-            record("c", SandboxState::Running, 512),
+            record("a", SandboxState::Running, 1024, 2),
+            record("b", SandboxState::Stopped, 2048, 8),
+            record("c", SandboxState::Running, 512, 1),
         ];
         let scan = scan_records_for_admission(&records, None);
         // Count cap sees every row (stopped sandboxes hold store slots)…
         assert_eq!(scan.total_count, 3);
-        // …the budget sees only running footprints.
+        // …the budgets see only running footprints.
         assert_eq!(scan.running_memory_mb, vec![1024, 512]);
+        assert_eq!(scan.running_cpu_cores, vec![2, 1]);
         assert!(!scan.reusing_existing_slot);
     }
 
     #[test]
     fn scan_running_unlimited_rows_stay_visible() {
-        // memory_mb=0 rows must remain in the vec so check_host_memory_budget
-        // keeps its accounted-at-max / unaccounted-warning semantics.
-        let records = vec![record("a", SandboxState::Running, 0)];
+        // memory_mb=0 / cpu_cores=0 rows must remain in the vecs so the
+        // budget checks keep their accounted-at-max / unaccounted-warning
+        // semantics.
+        let records = vec![record("a", SandboxState::Running, 0, 0)];
         let scan = scan_records_for_admission(&records, None);
         assert_eq!(scan.running_memory_mb, vec![0]);
+        assert_eq!(scan.running_cpu_cores, vec![0]);
     }
 
     #[test]
-    fn scan_reused_id_counts_slot_but_frees_memory() {
+    fn scan_reused_id_counts_slot_but_frees_footprints() {
         let records = vec![
-            record("a", SandboxState::Running, 1024),
-            record("b", SandboxState::Running, 2048),
+            record("a", SandboxState::Running, 1024, 2),
+            record("b", SandboxState::Running, 2048, 4),
         ];
         let scan = scan_records_for_admission(&records, Some("b"));
         // The replaced record still occupies a store slot (the count check
         // then subtracts it via reusing_existing_slot)…
         assert_eq!(scan.total_count, 2);
         assert!(scan.reusing_existing_slot);
-        // …but its container's memory is freed by the recreate.
+        // …but its container's memory and CPU are freed by the recreate.
         assert_eq!(scan.running_memory_mb, vec![1024]);
+        assert_eq!(scan.running_cpu_cores, vec![2]);
     }
 
     #[test]
     fn scan_reused_id_flagged_even_when_stopped() {
         // Recreating a STOPPED sandbox also reuses its slot: the former
         // count check keyed off store presence (`get(id).is_some()`), not
-        // state, and the stopped row never contributed running memory.
-        let records = vec![record("a", SandboxState::Stopped, 1024)];
+        // state, and the stopped row never contributed running footprints.
+        let records = vec![record("a", SandboxState::Stopped, 1024, 2)];
         let scan = scan_records_for_admission(&records, Some("a"));
         assert_eq!(scan.total_count, 1);
         assert!(scan.reusing_existing_slot);
         assert!(scan.running_memory_mb.is_empty());
+        assert!(scan.running_cpu_cores.is_empty());
     }
 
     #[test]
     fn scan_absent_reused_id_sets_no_flag() {
         // A fresh sandbox id (no override, or an override that was never
         // stored) must not claim slot reuse — matches `get(id) == None`.
-        let records = vec![record("a", SandboxState::Running, 1024)];
+        let records = vec![record("a", SandboxState::Running, 1024, 2)];
         let scan = scan_records_for_admission(&records, Some("zz"));
         assert!(!scan.reusing_existing_slot);
         assert_eq!(scan.running_memory_mb, vec![1024]);
+        assert_eq!(scan.running_cpu_cores, vec![2]);
     }
 
-    /// Differential check: the single pass must equal the legacy two-pass
-    /// computation (count scan + filtered memory scan) row-for-row across a
-    /// matrix of store shapes and reuse targets.
+    /// Differential check: the single pass must equal the legacy multi-pass
+    /// computation (count scan + filtered memory scan + filtered CPU scan)
+    /// row-for-row across a matrix of store shapes and reuse targets.
     #[test]
-    fn scan_matches_legacy_two_pass_semantics() {
+    fn scan_matches_legacy_multi_pass_semantics() {
         let stores: Vec<Vec<SandboxRecord>> = vec![
             vec![],
-            vec![record("a", SandboxState::Running, 0)],
+            vec![record("a", SandboxState::Running, 0, 0)],
             vec![
-                record("a", SandboxState::Running, 1024),
-                record("b", SandboxState::Stopped, 2048),
-                record("c", SandboxState::Running, 0),
-                record("d", SandboxState::Running, 4096),
+                record("a", SandboxState::Running, 1024, 2),
+                record("b", SandboxState::Stopped, 2048, 8),
+                record("c", SandboxState::Running, 0, 0),
+                record("d", SandboxState::Running, 4096, 16),
             ],
         ];
         for records in &stores {
@@ -1543,6 +1600,13 @@ mod admission_scan_tests {
                     .filter(|r| reused != Some(r.id.as_str()))
                     .map(|r| r.memory_mb)
                     .collect();
+                // Legacy pass 3: running CPU, reused id excluded.
+                let legacy_cpu: Vec<u64> = records
+                    .iter()
+                    .filter(|r| r.state == SandboxState::Running)
+                    .filter(|r| reused != Some(r.id.as_str()))
+                    .map(|r| r.cpu_cores)
+                    .collect();
 
                 let scan = scan_records_for_admission(records, reused);
                 assert_eq!(scan.total_count, legacy_count, "reused={reused:?}");
@@ -1551,6 +1615,7 @@ mod admission_scan_tests {
                     "reused={reused:?}"
                 );
                 assert_eq!(scan.running_memory_mb, legacy_memory, "reused={reused:?}");
+                assert_eq!(scan.running_cpu_cores, legacy_cpu, "reused={reused:?}");
             }
         }
     }
