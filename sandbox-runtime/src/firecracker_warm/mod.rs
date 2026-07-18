@@ -32,8 +32,9 @@
 //! Pool inventory (templates + pre-restored entries) is NOT a live sandbox:
 //! it never enters the sandbox store. A warm claim itself is admitted exactly
 //! like a cold boot — the claim runs inside `firecracker::create_and_start`,
-//! which the runtime layer only calls AFTER `admit_sandbox_resources` +
-//! `enforce_sandbox_count_limit` have passed under the creation permit.
+//! which the runtime layer only calls AFTER `admit_sandbox_resources` (the
+//! per-sandbox maxima plus the single-pass store admission covering the
+//! count cap and memory budget) has passed under the creation permit.
 //!
 //! The pool's own standing footprint is reserved against the host memory
 //! budget by [`reserved_host_memory_mb`]: `admit_sandbox_resources` adds
