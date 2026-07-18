@@ -43,8 +43,11 @@ pub(crate) async fn create_sidecar_docker(
         .map(ToString::to_string)
         .unwrap_or_else(next_sandbox_id);
     // Count cap + memory budget were already enforced in a single store pass
-    // by `admit_sandbox_resources` under the CREATION_PERMIT (still held).
-    // The previous entry is kept for slot-reuse semantics + failure rollback.
+    // by `admit_sandbox_resources` under the CREATION_PERMIT (still held); the
+    // slot-reuse decision now lives entirely in that scan (keyed off the
+    // override id). This entry is read solely to restore the prior record on a
+    // create failure (`restore_previous_store_entry`), so the Docker rollback
+    // path can't clobber the sandbox it replaced.
     let previous_store_entry = existing_store_entry_for_override(&sandbox_id)?;
 
     let stage = std::time::Instant::now();

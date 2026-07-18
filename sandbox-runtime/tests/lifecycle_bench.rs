@@ -51,6 +51,11 @@ use sandbox_runtime::runtime::{
 
 const DEFAULT_IMAGE: &str = "ghcr.io/tangle-network/blueprint-sidecar:all-harness";
 
+/// Serializes the process-env mutation in `setup_env`. See the note at its
+/// acquisition site for why this is a local static rather than the crate's
+/// feature-gated `TEST_ENV_GUARD`.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn bench_enabled() -> bool {
     std::env::var("RUN_LIFECYCLE_BENCH")
         .map(|v| v == "1")
@@ -190,6 +195,15 @@ async fn lifecycle_create_ready_delete_bench() {
          (or set LIFECYCLE_BENCH_IMAGE)"
     );
 
+    // Serialize env mutation, matching this dir's convention for env-mutating
+    // tests. We use a local static (like ssh_e2e's TEST_LOCK) rather than
+    // sandbox_runtime::TEST_ENV_GUARD because that symbol is gated behind the
+    // `test-utils` feature, which this bench does not enable — it runs in the
+    // default (no-feature) nextest lane. Today the binary has a single
+    // #[ignore] test so nothing contends, but this keeps a future second test
+    // from racing on the global SidecarRuntimeConfig OnceCell. Held for the
+    // whole run (the config is a one-shot snapshot of these vars).
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let state_dir = TempDir::new().expect("temp state dir");
     setup_env(&state_dir, &image);
 
@@ -208,6 +222,13 @@ async fn lifecycle_create_ready_delete_bench() {
     let mut create_to_ready = StageSeries::new("create_to_ready");
     let mut delete = StageSeries::new("delete");
 
+    // NOTE: delete_sidecar force-removes the Docker container but does NOT
+    // remove the store row (consistent with the operator's own delete path),
+    // so the isolated store accumulates reps+1 stale records over the run.
+    // Harmless while reps+1 stays under SANDBOX_MAX_COUNT (default 100); a
+    // user setting LIFECYCLE_BENCH_REPS near/over that cap would start hitting
+    // admission rejection on later reps for a reason unrelated to the bench.
+    //
     // Warmup rep (discarded): primes the process-wide image-pull once-cell,
     // the HTTP client, and the Docker daemon's caches so measured reps
     // reflect steady state. Cold-start cost is visible in its own log line.
@@ -219,7 +240,12 @@ async fn lifecycle_create_ready_delete_bench() {
         let rep_start = Instant::now();
         let (record, _attestation, timings) = create_sidecar_timed(&params, None)
             .await
-            .unwrap_or_else(|e| panic!("rep {rep}: create failed: {e}"));
+            .unwrap_or_else(|e| {
+                panic!(
+                    "rep {rep}{}: create failed: {e}",
+                    if warmup { " (warmup)" } else { "" }
+                )
+            });
 
         let health_start = Instant::now();
         let ready = wait_for_sidecar_health(&record.sidecar_url, 120).await;
