@@ -158,4 +158,6 @@ allow-git = [
     "https://github.com/tangle-network/blueprint.git",
     "https://github.com/tangle-network/tnt-core",
     "https://github.com/tangle-network/tnt-core.git",
+    "https://github.com/tangle-network/microvm-runtime",
+    "https://github.com/tangle-network/microvm-runtime.git",
 ]
