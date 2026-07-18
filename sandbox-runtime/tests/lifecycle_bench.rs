@@ -195,17 +195,23 @@ async fn lifecycle_create_ready_delete_bench() {
          (or set LIFECYCLE_BENCH_IMAGE)"
     );
 
-    // Serialize env mutation, matching this dir's convention for env-mutating
-    // tests. We use a local static (like ssh_e2e's TEST_LOCK) rather than
-    // sandbox_runtime::TEST_ENV_GUARD because that symbol is gated behind the
-    // `test-utils` feature, which this bench does not enable — it runs in the
-    // default (no-feature) nextest lane. Today the binary has a single
-    // #[ignore] test so nothing contends, but this keeps a future second test
-    // from racing on the global SidecarRuntimeConfig OnceCell. Held for the
-    // whole run (the config is a one-shot snapshot of these vars).
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let state_dir = TempDir::new().expect("temp state dir");
-    setup_env(&state_dir, &image);
+    {
+        // Serialize env mutation, matching this dir's convention for
+        // env-mutating tests. We use a local static (like ssh_e2e's
+        // TEST_LOCK) rather than sandbox_runtime::TEST_ENV_GUARD because that
+        // symbol is gated behind the `test-utils` feature, which this bench
+        // does not enable — it runs in the default (no-feature) nextest lane.
+        //
+        // Guard scoped to the env mutation only (NOT held across awaits — a
+        // std Mutex guard across an await is a clippy denial and a deadlock
+        // risk): this binary has a single #[ignore] test, so nothing else
+        // reads the env before the first SidecarRuntimeConfig::load() inside
+        // the loop below. A future second test in this binary must acquire the
+        // same lock around its own setup_env to stay race-free.
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        setup_env(&state_dir, &image);
+    }
 
     let reps = bench_reps();
     let mut create_total = StageSeries::new("create_total");
