@@ -65,6 +65,7 @@ mod secrets;
 mod snapshots;
 mod ssh;
 mod ssh_commands;
+mod timings;
 mod upgrades;
 
 pub(crate) use admission::*;
@@ -75,7 +76,6 @@ pub(crate) use docker_config::*;
 pub(crate) use docker_create::*;
 pub(crate) use env_vars::*;
 pub(crate) use firecracker_create::*;
-pub(crate) use lifecycle::*;
 pub(crate) use lookup::*;
 pub(crate) use ports::*;
 #[cfg(test)]
@@ -85,11 +85,12 @@ pub(crate) use ssh_commands::*;
 
 // Externally-reachable items re-exported at their original visibility:
 pub use admission::acquire_creation_permit;
-pub use create::create_sidecar;
+pub use create::{create_sidecar, create_sidecar_timed};
 pub use docker_client::docker_builder;
 pub use env_vars::{merge_env_json, workflow_runtime_credentials_available};
 pub use lifecycle::{
     delete_sidecar, refresh_docker_sandbox_endpoint, resume_sidecar, stop_sidecar,
+    wait_for_sidecar_health,
 };
 pub use lookup::{
     get_sandbox_by_id, get_sandbox_by_url, get_sandbox_by_url_opt, require_sandbox_owner,
@@ -103,6 +104,7 @@ pub use snapshots::{
 pub use ssh::{
     detect_ssh_username, ensure_ssh_ready, provision_ssh_key, restore_ssh_access, revoke_ssh_key,
 };
+pub use timings::CreateTimings;
 pub use upgrades::{
     SidecarReconcileReport, SidecarUpgradePolicy, current_sidecar_image, reconcile_sidecar_images,
     recreate_sidecar_with_env, sandboxes_needing_image_upgrade, upgrade_sidecar_image,

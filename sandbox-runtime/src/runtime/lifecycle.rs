@@ -52,7 +52,13 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
 }
 
 /// Poll a sidecar's `/health` endpoint until it responds successfully or the timeout expires.
-pub(crate) async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
+///
+/// This is the "ready" boundary of the lifecycle: the Docker create path
+/// returns before `/health` passes (unless `ssh_enabled` forces the SSH
+/// bootstrap), so callers that need a live sidecar poll this themselves.
+/// Public so the lifecycle bench can measure create→ready on the real path.
+pub async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64) -> bool {
+    let start = std::time::Instant::now();
     let ready = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
         loop {
             let url = format!("{sidecar_url}/health");
@@ -66,7 +72,14 @@ pub(crate) async fn wait_for_sidecar_health(sidecar_url: &str, timeout_secs: u64
         }
     })
     .await;
-    ready.is_ok()
+    let is_ready = ready.is_ok();
+    tracing::info!(
+        sidecar_url,
+        ready = is_ready,
+        waited_ms = start.elapsed().as_millis() as u64,
+        "sidecar health wait finished"
+    );
+    is_ready
 }
 
 /// Re-inspect a running Docker-backed sandbox and persist its current host port mappings.
@@ -268,6 +281,21 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
 /// For TEE-managed sandboxes, delegates to the TEE backend's `destroy()` method.
 /// Accepts an explicit backend reference, or falls back to the global TEE backend.
 pub async fn delete_sidecar(
+    record: &SandboxRecord,
+    tee: Option<&dyn crate::tee::TeeBackend>,
+) -> Result<()> {
+    let start = std::time::Instant::now();
+    let result = delete_sidecar_inner(record, tee).await;
+    tracing::info!(
+        sandbox_id = %record.id,
+        ok = result.is_ok(),
+        duration_ms = start.elapsed().as_millis() as u64,
+        "sandbox delete finished"
+    );
+    result
+}
+
+async fn delete_sidecar_inner(
     record: &SandboxRecord,
     tee: Option<&dyn crate::tee::TeeBackend>,
 ) -> Result<()> {

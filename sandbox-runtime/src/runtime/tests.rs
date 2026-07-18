@@ -1447,3 +1447,269 @@ mod core_logic_tests {
         );
     }
 }
+
+/// Single-pass store admission scan (admission.rs): one `values()` walk must
+/// reproduce exactly what the former dedicated scans computed — the
+/// count-check inputs and the memory/CPU-budget inputs.
+#[cfg(test)]
+mod admission_scan_tests {
+    use super::*;
+
+    fn record(id: &str, state: SandboxState, memory_mb: u64, cpu_cores: u64) -> SandboxRecord {
+        SandboxRecord {
+            id: id.into(),
+            container_id: format!("ctr-{id}"),
+            sidecar_url: "http://127.0.0.1:0".into(),
+            sidecar_port: 0,
+            ssh_port: None,
+            token: "t".into(),
+            created_at: 0,
+            cpu_cores,
+            memory_mb,
+            state,
+            idle_timeout_seconds: 0,
+            max_lifetime_seconds: 0,
+            last_activity_at: 0,
+            stopped_at: None,
+            snapshot_image_id: None,
+            snapshot_s3_url: None,
+            container_removed_at: None,
+            image_removed_at: None,
+            original_image: String::new(),
+            base_env_json: String::new(),
+            user_env_json: String::new(),
+            snapshot_destination: None,
+            tee_deployment_id: None,
+            tee_metadata_json: None,
+            tee_attestation_json: None,
+            name: String::new(),
+            agent_identifier: String::new(),
+            metadata_json: String::new(),
+            disk_gb: 0,
+            stack: String::new(),
+            owner: String::new(),
+            service_id: None,
+            tee_config: None,
+            extra_ports: HashMap::new(),
+            ssh_login_user: None,
+            ssh_authorized_keys: Vec::new(),
+            capabilities_json: String::new(),
+        }
+    }
+
+    #[test]
+    fn scan_empty_store() {
+        let scan = scan_records_for_admission(&[], None);
+        assert_eq!(scan.total_count, 0);
+        assert!(!scan.reusing_existing_slot);
+        assert!(scan.running_memory_mb.is_empty());
+        assert!(scan.running_cpu_cores.is_empty());
+    }
+
+    #[test]
+    fn scan_counts_all_rows_but_sums_only_running_footprints() {
+        let records = vec![
+            record("a", SandboxState::Running, 1024, 2),
+            record("b", SandboxState::Stopped, 2048, 8),
+            record("c", SandboxState::Running, 512, 1),
+        ];
+        let scan = scan_records_for_admission(&records, None);
+        // Count cap sees every row (stopped sandboxes hold store slots)…
+        assert_eq!(scan.total_count, 3);
+        // …the budgets see only running footprints.
+        assert_eq!(scan.running_memory_mb, vec![1024, 512]);
+        assert_eq!(scan.running_cpu_cores, vec![2, 1]);
+        assert!(!scan.reusing_existing_slot);
+    }
+
+    #[test]
+    fn scan_running_unlimited_rows_stay_visible() {
+        // memory_mb=0 / cpu_cores=0 rows must remain in the vecs so the
+        // budget checks keep their accounted-at-max / unaccounted-warning
+        // semantics.
+        let records = vec![record("a", SandboxState::Running, 0, 0)];
+        let scan = scan_records_for_admission(&records, None);
+        assert_eq!(scan.running_memory_mb, vec![0]);
+        assert_eq!(scan.running_cpu_cores, vec![0]);
+    }
+
+    #[test]
+    fn scan_reused_id_counts_slot_but_frees_footprints() {
+        let records = vec![
+            record("a", SandboxState::Running, 1024, 2),
+            record("b", SandboxState::Running, 2048, 4),
+        ];
+        let scan = scan_records_for_admission(&records, Some("b"));
+        // The replaced record still occupies a store slot (the count check
+        // then subtracts it via reusing_existing_slot)…
+        assert_eq!(scan.total_count, 2);
+        assert!(scan.reusing_existing_slot);
+        // …but its container's memory and CPU are freed by the recreate.
+        assert_eq!(scan.running_memory_mb, vec![1024]);
+        assert_eq!(scan.running_cpu_cores, vec![2]);
+    }
+
+    #[test]
+    fn scan_reused_id_flagged_even_when_stopped() {
+        // Recreating a STOPPED sandbox also reuses its slot: the former
+        // count check keyed off store presence (`get(id).is_some()`), not
+        // state, and the stopped row never contributed running footprints.
+        let records = vec![record("a", SandboxState::Stopped, 1024, 2)];
+        let scan = scan_records_for_admission(&records, Some("a"));
+        assert_eq!(scan.total_count, 1);
+        assert!(scan.reusing_existing_slot);
+        assert!(scan.running_memory_mb.is_empty());
+        assert!(scan.running_cpu_cores.is_empty());
+    }
+
+    #[test]
+    fn scan_absent_reused_id_sets_no_flag() {
+        // A fresh sandbox id (no override, or an override that was never
+        // stored) must not claim slot reuse — matches `get(id) == None`.
+        let records = vec![record("a", SandboxState::Running, 1024, 2)];
+        let scan = scan_records_for_admission(&records, Some("zz"));
+        assert!(!scan.reusing_existing_slot);
+        assert_eq!(scan.running_memory_mb, vec![1024]);
+        assert_eq!(scan.running_cpu_cores, vec![2]);
+    }
+
+    /// Differential check: the single pass must equal the legacy multi-pass
+    /// computation (count scan + filtered memory scan + filtered CPU scan)
+    /// row-for-row across a matrix of store shapes and reuse targets.
+    #[test]
+    fn scan_matches_legacy_multi_pass_semantics() {
+        let stores: Vec<Vec<SandboxRecord>> = vec![
+            vec![],
+            vec![record("a", SandboxState::Running, 0, 0)],
+            vec![
+                record("a", SandboxState::Running, 1024, 2),
+                record("b", SandboxState::Stopped, 2048, 8),
+                record("c", SandboxState::Running, 0, 0),
+                record("d", SandboxState::Running, 4096, 16),
+            ],
+        ];
+        for records in &stores {
+            for reused in [None, Some("a"), Some("b"), Some("missing")] {
+                // Legacy pass 1: count = all rows; reuse = presence by id.
+                let legacy_count = records.len();
+                let legacy_reusing = records.iter().any(|r| reused == Some(r.id.as_str()));
+                // Legacy pass 2: running memory, reused id excluded.
+                let legacy_memory: Vec<u64> = records
+                    .iter()
+                    .filter(|r| r.state == SandboxState::Running)
+                    .filter(|r| reused != Some(r.id.as_str()))
+                    .map(|r| r.memory_mb)
+                    .collect();
+                // Legacy pass 3: running CPU, reused id excluded.
+                let legacy_cpu: Vec<u64> = records
+                    .iter()
+                    .filter(|r| r.state == SandboxState::Running)
+                    .filter(|r| reused != Some(r.id.as_str()))
+                    .map(|r| r.cpu_cores)
+                    .collect();
+
+                let scan = scan_records_for_admission(records, reused);
+                assert_eq!(scan.total_count, legacy_count, "reused={reused:?}");
+                assert_eq!(
+                    scan.reusing_existing_slot, legacy_reusing,
+                    "reused={reused:?}"
+                );
+                assert_eq!(scan.running_memory_mb, legacy_memory, "reused={reused:?}");
+                assert_eq!(scan.running_cpu_cores, legacy_cpu, "reused={reused:?}");
+            }
+        }
+    }
+}
+
+/// Invariants of the merged workspace-bootstrap exec (docker_create.rs).
+/// The merge collapses two post-start exec round-trips into one; these pin
+/// the properties that make it semantically equal to the pre-merge pair.
+#[cfg(test)]
+mod workspace_bootstrap_tests {
+    use super::*;
+
+    const CONFIG_DIR: &str = "/home/agent/.opencode-home/.config";
+
+    #[test]
+    fn merged_command_mkdirs_before_chown() {
+        // Repair-path precondition: /home/agent is root-owned, so root's
+        // mkdir must run BEFORE the chown hands the tree to agent (after
+        // which cap_drop=ALL root has no DAC_OVERRIDE to write into it).
+        let mkdir_at = WORKSPACE_BOOTSTRAP_ROOT_CMD
+            .find("mkdir -p")
+            .expect("merged command must create the opencode dirs");
+        let chown_at = WORKSPACE_BOOTSTRAP_ROOT_CMD
+            .find("chown -R agent:agent /home/agent")
+            .expect("merged command must repair workspace ownership");
+        assert!(
+            mkdir_at < chown_at,
+            "mkdir must precede chown: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
+        );
+    }
+
+    #[test]
+    fn merged_command_drops_to_agent_when_root_mkdir_denied() {
+        // Canonical-image case (agent-owned /home/agent, dirs absent): root's
+        // mkdir is denied under cap_drop=ALL, so the merged exec must retry
+        // as the agent user via su, targeting the same directory, BEFORE the
+        // chown (the decision keys off the tree's CURRENT owner).
+        let su_at = WORKSPACE_BOOTSTRAP_ROOT_CMD
+            .find(&format!("su agent -s /bin/sh -c 'mkdir -p {CONFIG_DIR}'"))
+            .expect("merged command must retry the mkdir as the agent user");
+        let chown_at = WORKSPACE_BOOTSTRAP_ROOT_CMD
+            .find("chown -R agent:agent /home/agent")
+            .expect("merged command must repair workspace ownership");
+        assert!(
+            su_at < chown_at,
+            "su fallback must precede chown: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
+        );
+    }
+
+    #[test]
+    fn merged_command_chown_is_unconditional_and_tolerant() {
+        // The pre-merge chown exec ran regardless of any mkdir outcome and
+        // tolerated failure (`|| true`). The merged form must keep both:
+        // `;` separators (not `&&`) so chown runs even when mkdir fails,
+        // and `|| true` so a chown failure doesn't change the exit path.
+        assert!(
+            WORKSPACE_BOOTSTRAP_ROOT_CMD
+                .contains("chown -R agent:agent /home/agent 2>/dev/null || true"),
+            "chown must stay best-effort: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
+        );
+        assert!(
+            !WORKSPACE_BOOTSTRAP_ROOT_CMD.contains("&&"),
+            "stages must be `;`-separated so each runs unconditionally: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
+        );
+    }
+
+    #[test]
+    fn merged_command_exit_code_reports_dir_existence() {
+        // The caller's fallback decision keys off the exit code, so the
+        // command must END with the `test -d` verification of the exact
+        // directory the fallback would create.
+        assert!(
+            WORKSPACE_BOOTSTRAP_ROOT_CMD
+                .trim_end()
+                .ends_with(&format!("test -d {CONFIG_DIR}")),
+            "merged command must end with the dir verification: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
+        );
+    }
+
+    #[test]
+    fn fallback_matches_pre_merge_agent_exec() {
+        // The fallback IS the pre-merge second exec: same mkdir, same target,
+        // run as the agent user (asserted at the call site), and no chown —
+        // the agent user cannot chown and never needed to.
+        assert_eq!(
+            WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD,
+            format!("mkdir -p {CONFIG_DIR}")
+        );
+        assert!(!WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD.contains("chown"));
+    }
+
+    #[test]
+    fn merged_and_fallback_target_the_same_directory() {
+        assert!(WORKSPACE_BOOTSTRAP_ROOT_CMD.contains(CONFIG_DIR));
+        assert!(WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD.contains(CONFIG_DIR));
+    }
+}

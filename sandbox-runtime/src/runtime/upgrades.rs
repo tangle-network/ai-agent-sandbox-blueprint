@@ -214,7 +214,7 @@ pub(crate) async fn recreate_sidecar_impl(
     };
 
     // Preserve the original token so existing workflows/references keep working.
-    let (_new_record, _attestation) =
+    let (_new_record, _attestation, _timings) =
         create_sidecar_with_token(&params, tee, Some(&old_token), Some(&old.id)).await?;
     let updated = sandboxes()?.update(&old.id, |record| {
         record.ssh_login_user = old.ssh_login_user.clone();

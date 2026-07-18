@@ -244,7 +244,9 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
             .request_port(Some(preferred_port))
             .await
             .map_err(|e| blueprint_sdk::Error::Other(format!("BPM port allocation failed: {e}")))?;
-        info!("BPM allocated port {port} for operator API (service {service_id}, preferred {preferred_port})");
+        info!(
+            "BPM allocated port {port} for operator API (service {service_id}, preferred {preferred_port})"
+        );
         (port, [127, 0, 0, 1u8])
     } else {
         (preferred_port, [0, 0, 0, 0u8])
