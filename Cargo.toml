@@ -30,6 +30,7 @@ debug = 1  # line tables only for dependencies (not full DWARF)
 # workspace's `=0.2.0-alpha.10` pins resolve. Remove once blueprint-sdk 0.2.0-alpha.11
 # (with 0.19 bindings) is published to crates.io.
 [patch.crates-io]
+microvm-runtime = { git = "https://github.com/tangle-network/microvm-runtime", rev = "611111ffe5696e3dd319924b52631349ea97c6ec" }
 blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
 blueprint-auth = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
 blueprint-chain-setup = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
