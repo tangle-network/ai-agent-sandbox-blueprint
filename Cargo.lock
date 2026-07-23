@@ -129,7 +129,7 @@ dependencies = [
  "futures-util",
  "sandbox-runtime",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing-subscriber 0.3.23",
 ]
