@@ -123,12 +123,15 @@ pub(crate) fn enforce_store_admission(
     let scan = scan_records_for_admission(&records, reused_sandbox_id);
 
     if memory_budget_enabled {
-        // The warm pool's standing footprint (templates + pre-restored
-        // entries) never enters the store, so reserve it here or an enabled
-        // pool silently over-commits host RAM. Only read when the budget is
-        // on — zero-cost otherwise, as before. (No CPU analogue: warm VMs
-        // pin host RAM but time-share CPU.)
-        let reserved_mb = crate::firecracker_warm::reserved_host_memory_mb()?;
+        // The warm pools' standing footprint (Firecracker templates +
+        // pre-restored entries, and Docker warm containers) never enters the
+        // store, so reserve it here or an enabled pool silently over-commits
+        // host RAM. Only read when the budget is on — zero-cost otherwise, as
+        // before. On any given host only one backend's pool is enabled, so
+        // exactly one term is nonzero; summing both stays fail-closed. (No CPU
+        // analogue: warm inventory pins host RAM but time-shares CPU.)
+        let reserved_mb = crate::firecracker_warm::reserved_host_memory_mb()?
+            .saturating_add(crate::docker_warm::reserved_host_memory_mb()?);
         check_host_memory_budget(
             scan.running_memory_mb,
             incoming_memory_mb,

@@ -17,6 +17,15 @@ pub async fn reconcile_on_startup() {
         }
     };
 
+    // Reap Docker warm-pool containers orphaned by a previous operator process,
+    // BEFORE the records loop / any create that could seed a fresh pool. Warm
+    // containers never enter the store, so the records loop below never sees
+    // them; this label-based sweep is the only thing that reclaims them (and it
+    // leaves any warm container already claimed into a live store record — the
+    // data-loss guard). Mirrors the Firecracker `reconcile_warm_orphans()` call
+    // above, which stays untouched.
+    crate::docker_warm::reconcile_docker_warm_orphans(&builder).await;
+
     let records = match sandboxes().and_then(|s| s.values()) {
         Ok(v) => v,
         Err(err) => {

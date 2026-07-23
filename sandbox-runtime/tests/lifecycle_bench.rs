@@ -314,3 +314,165 @@ async fn lifecycle_create_ready_delete_bench() {
         delete,
     ]);
 }
+
+/// The docker warm-pool proof-of-win: measure `create_to_ready` for the cold
+/// path (pool disabled) vs a warm hit (pool pre-seeded), in one process.
+///
+/// A warm hit is identified structurally — `timings.warm_claim.is_some()` and
+/// the `container_create` / `container_start` / `bootstrap_exec` stages are
+/// `None` because they were pre-paid by the background refill. The pool shape is
+/// set to exactly match [`bench_params`] (cpu 2, mem 2048, default image, no
+/// user env, no extra ports, ssh disabled) so the create qualifies.
+///
+/// ```bash
+/// docker pull ghcr.io/tangle-network/blueprint-sidecar:all-harness
+/// RUN_LIFECYCLE_BENCH=1 cargo test -p sandbox-runtime --test lifecycle_bench \
+///     warm_vs_cold -- --ignored --nocapture
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real-docker warm-pool bench; set RUN_LIFECYCLE_BENCH=1 and run with --ignored on a host with Docker"]
+async fn warm_vs_cold_create_ready_bench() {
+    if !bench_enabled() {
+        eprintln!("SKIP: set RUN_LIFECYCLE_BENCH=1 to run the warm-vs-cold bench");
+        return;
+    }
+    assert!(
+        docker_available(),
+        "RUN_LIFECYCLE_BENCH=1 but no reachable Docker daemon (`docker info` failed)"
+    );
+    let image = bench_image();
+    assert!(
+        image_present(&image),
+        "RUN_LIFECYCLE_BENCH=1 but image {image} is not local; run `docker pull {image}`"
+    );
+
+    let state_dir = TempDir::new().expect("temp state dir");
+    {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        setup_env(&state_dir, &image);
+        // Start with the pool disabled for the cold baseline.
+        // SAFETY: single test in its own binary section, guarded by ENV_LOCK.
+        unsafe {
+            std::env::remove_var("SANDBOX_DOCKER_WARM_POOL_SIZE");
+        }
+    }
+
+    let reps = bench_reps();
+    reap_warm_leftovers();
+
+    // ── Phase A: cold baseline (pool disabled) ──
+    eprintln!("=== warm-vs-cold: image={image} reps={reps} — phase A (cold) ===");
+    let mut cold = StageSeries::new("cold_create_to_ready");
+    for rep in 0..=reps {
+        let warmup = rep == 0;
+        let params = bench_params(&image, 1000 + rep);
+        let rep_start = Instant::now();
+        let (record, _a, timings) = create_sidecar_timed(&params, None)
+            .await
+            .unwrap_or_else(|e| panic!("cold rep {rep}: create failed: {e}"));
+        let ready = wait_for_sidecar_health(&record.sidecar_url, 120).await;
+        let ready_elapsed = rep_start.elapsed();
+        let _ = delete_sidecar(&record, None).await;
+        assert!(ready, "cold rep {rep}: sidecar never healthy");
+        assert!(
+            timings.warm_claim.is_none(),
+            "cold rep {rep}: pool disabled but a warm claim fired"
+        );
+        eprintln!(
+            "cold rep {rep}{}: create_to_ready={:.1}ms [{}]",
+            if warmup { " (warmup, discarded)" } else { "" },
+            ready_elapsed.as_secs_f64() * 1e3,
+            timings.summary(),
+        );
+        if !warmup {
+            cold.push(Some(ready_elapsed));
+        }
+    }
+
+    // ── Phase B: warm hits (pool enabled, shape matches bench_params) ──
+    {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: guarded by ENV_LOCK; the warm-pool config helpers read env
+        // live on the next create.
+        unsafe {
+            std::env::set_var("SANDBOX_DOCKER_WARM_POOL_SIZE", "2");
+            std::env::set_var("SANDBOX_DOCKER_WARM_MEMORY_MB", "2048");
+            std::env::set_var("SANDBOX_DOCKER_WARM_CPU_CORES", "2");
+            std::env::set_var("SANDBOX_DOCKER_WARM_IMAGE", &image);
+        }
+    }
+    eprintln!("=== warm-vs-cold: phase B (warm) — priming pool ===");
+
+    let mut warm = StageSeries::new("warm_create_to_ready");
+    let mut warm_claim = StageSeries::new("warm_claim");
+    let mut warm_total = StageSeries::new("warm_create_total");
+    let mut warm_health = StageSeries::new("warm_health_ready");
+    let mut collected = 0usize;
+    let max_attempts = reps * 6 + 24;
+    for attempt in 0..max_attempts {
+        if collected >= reps {
+            break;
+        }
+        // Let the background refill land (~1s create + bootstrap + health).
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let params = bench_params(&image, 2000 + attempt);
+        let rep_start = Instant::now();
+        let (record, _a, timings) = create_sidecar_timed(&params, None)
+            .await
+            .unwrap_or_else(|e| panic!("warm attempt {attempt}: create failed: {e}"));
+        let health_start = Instant::now();
+        let ready = wait_for_sidecar_health(&record.sidecar_url, 120).await;
+        let health_elapsed = health_start.elapsed();
+        let ready_elapsed = rep_start.elapsed();
+        let _ = delete_sidecar(&record, None).await;
+        assert!(ready, "warm attempt {attempt}: sidecar never healthy");
+
+        let hit = timings.warm_claim.is_some();
+        eprintln!(
+            "warm attempt {attempt}: {} create_to_ready={:.1}ms [{}]",
+            if hit { "HIT " } else { "miss" },
+            ready_elapsed.as_secs_f64() * 1e3,
+            timings.summary(),
+        );
+        if hit {
+            warm.push(Some(ready_elapsed));
+            warm_claim.push(timings.warm_claim);
+            warm_total.push(Some(timings.total));
+            warm_health.push(Some(health_elapsed));
+            collected += 1;
+        }
+    }
+
+    reap_warm_leftovers();
+
+    assert!(
+        collected > 0,
+        "no warm hit observed after {max_attempts} attempts — the pool never served a claim"
+    );
+    print_summaries(&[cold, warm, warm_total, warm_claim, warm_health]);
+    eprintln!(
+        "warm hits collected: {collected}/{reps}. A warm hit erases container_create + \
+         container_start + bootstrap_exec from the request path (they are pre-paid by refill)."
+    );
+}
+
+/// Force-remove any warm-pool containers this bench left running (the pool
+/// seeds up to `pool_size` containers that are never claimed). Keyed on the
+/// `tangle.warm-pool` label so it never touches a real sandbox.
+fn reap_warm_leftovers() {
+    let ids = Command::new("docker")
+        .args(["ps", "-aq", "--filter", "label=tangle.warm-pool=1"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for id in ids {
+        let _ = Command::new("docker").args(["rm", "-f", &id]).output();
+    }
+}

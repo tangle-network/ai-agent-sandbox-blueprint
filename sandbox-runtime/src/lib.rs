@@ -9,6 +9,7 @@ pub mod auth;
 pub mod chat_state;
 pub mod circuit_breaker;
 pub mod contracts;
+mod docker_warm;
 pub mod error;
 pub mod firecracker;
 mod firecracker_dnat;
