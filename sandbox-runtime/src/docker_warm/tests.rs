@@ -367,39 +367,54 @@ async fn claim_failure_reaps_and_misses() {
 // Restart reconcile — the reap decision (data-loss guard)
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[test]
-fn reconcile_reaps_orphans_and_leaves_claimed() {
-    let listings = vec![
-        WarmContainerListing {
-            id: "orphan-1".into(),
-        },
-        WarmContainerListing {
-            id: "claimed".into(),
-        }, // has a live store record
-        WarmContainerListing {
-            id: "orphan-2".into(),
-        },
-    ];
-    // "claimed" is a live sandbox: its id is a store record's container_id.
-    let live: HashSet<String> = ["claimed".to_string()].into_iter().collect();
+/// Helper: a warm-labelled listing with an explicit name.
+fn listing(id: &str, name: &str) -> WarmContainerListing {
+    WarmContainerListing {
+        id: id.into(),
+        name: name.into(),
+    }
+}
 
-    let mut reap = containers_to_reap(&listings, &live);
+#[test]
+fn reconcile_reaps_name_prefixed_orphans_and_leaves_claimed() {
+    let listings = vec![
+        listing("orphan-1", "sidecar-warm-1"), // never claimed
+        listing("claimed", "sidecar-abc-123"), // renamed by a claim → not reaped
+        listing("orphan-2", "sidecar-warm-2"),
+    ];
+    let mut reap = containers_to_reap(&listings);
     reap.sort();
     assert_eq!(
         reap,
         vec!["orphan-1".to_string(), "orphan-2".to_string()],
-        "orphans reaped, the claimed live sandbox left untouched"
+        "name-prefixed orphans reaped, the renamed (claimed) container left untouched"
     );
 }
 
 #[test]
-fn reconcile_leaves_everything_when_all_are_live() {
+fn reconcile_leaves_everything_when_none_are_name_prefixed() {
+    // All renamed (claimed) — none carry the `sidecar-warm-` prefix.
+    let listings = vec![listing("a", "sidecar-alpha"), listing("b", "sidecar-beta")];
+    assert!(containers_to_reap(&listings).is_empty());
+}
+
+/// The data-loss guard is purely structural: a claimed container (renamed to
+/// `sidecar-<id>`) is NEVER reaped, no matter the store state. This covers the
+/// catastrophic path — startup after a crash with a corrupt/unreadable
+/// `sandboxes.json` (which loads as an empty map, not an error) — that an
+/// id-in-store guard would have gotten wrong by reaping the live sandbox.
+#[test]
+fn reconcile_never_reaps_renamed_container_regardless_of_store() {
     let listings = vec![
-        WarmContainerListing { id: "a".into() },
-        WarmContainerListing { id: "b".into() },
+        listing("orphan", "sidecar-warm-7"), // pooled, safe to reap by name
+        listing("live-customer", "sidecar-xyz-999"), // a running claimed sandbox
     ];
-    let live: HashSet<String> = ["a".to_string(), "b".to_string()].into_iter().collect();
-    assert!(containers_to_reap(&listings, &live).is_empty());
+    let reap = containers_to_reap(&listings);
+    assert_eq!(
+        reap,
+        vec!["orphan".to_string()],
+        "reap only the name-prefixed orphan; the renamed live sandbox is never a candidate"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

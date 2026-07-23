@@ -89,11 +89,26 @@ fn image_present(image: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn setup_env(state_dir: &TempDir, image: &str) {
-    // SAFETY: this is the only test in this binary (own process), and the env
-    // is set before the first `SidecarRuntimeConfig::load()` / store access.
+/// One state dir shared by every bench in this binary, lived for the whole
+/// process. The `SANDBOXES` store is a process-global `OnceCell` bound to
+/// `BLUEPRINT_STATE_DIR` on FIRST access — so a per-test `TempDir` (dropped at
+/// test end) would leave a second bench in the same process writing to a
+/// deleted path (`storage error: No such file or directory`). A single dir that
+/// never drops keeps that OnceCell valid for all benches; each bench uses fresh
+/// sandbox ids, so their records never collide.
+fn bench_state_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| TempDir::new().expect("temp state dir"))
+        .path()
+}
+
+fn setup_env(image: &str) {
+    // SAFETY: every bench in this binary sets the env under `ENV_LOCK` before
+    // the first `SidecarRuntimeConfig::load()` / store access, and they share
+    // one process-lived state dir (`bench_state_dir`) so the store `OnceCell`
+    // stays valid across tests.
     unsafe {
-        std::env::set_var("BLUEPRINT_STATE_DIR", state_dir.path());
+        std::env::set_var("BLUEPRINT_STATE_DIR", bench_state_dir());
         std::env::set_var("SIDECAR_IMAGE", image);
         // Keep registry pulls out of the measured loop: the image must be
         // local (checked above), so `image_pull` measures only the local
@@ -195,7 +210,6 @@ async fn lifecycle_create_ready_delete_bench() {
          (or set LIFECYCLE_BENCH_IMAGE)"
     );
 
-    let state_dir = TempDir::new().expect("temp state dir");
     {
         // Serialize env mutation, matching this dir's convention for
         // env-mutating tests. We use a local static (like ssh_e2e's
@@ -205,12 +219,11 @@ async fn lifecycle_create_ready_delete_bench() {
         //
         // Guard scoped to the env mutation only (NOT held across awaits — a
         // std Mutex guard across an await is a clippy denial and a deadlock
-        // risk): this binary has a single #[ignore] test, so nothing else
-        // reads the env before the first SidecarRuntimeConfig::load() inside
-        // the loop below. A future second test in this binary must acquire the
-        // same lock around its own setup_env to stay race-free.
+        // risk). Both benches in this binary acquire this same lock around
+        // their setup_env, and they share `bench_state_dir()`, so the store
+        // OnceCell stays valid whichever bench runs first.
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        setup_env(&state_dir, &image);
+        setup_env(&image);
     }
 
     let reps = bench_reps();
@@ -346,12 +359,11 @@ async fn warm_vs_cold_create_ready_bench() {
         "RUN_LIFECYCLE_BENCH=1 but image {image} is not local; run `docker pull {image}`"
     );
 
-    let state_dir = TempDir::new().expect("temp state dir");
     {
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        setup_env(&state_dir, &image);
+        setup_env(&image);
         // Start with the pool disabled for the cold baseline.
-        // SAFETY: single test in its own binary section, guarded by ENV_LOCK.
+        // SAFETY: env mutation guarded by ENV_LOCK; shared bench state dir.
         unsafe {
             std::env::remove_var("SANDBOX_DOCKER_WARM_POOL_SIZE");
         }

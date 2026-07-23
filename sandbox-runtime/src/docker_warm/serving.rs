@@ -23,6 +23,13 @@ pub(crate) const WARM_POOL_LABEL: &str = "tangle.warm-pool";
 pub(crate) const WARM_IMAGE_LABEL: &str = "tangle.warm-image";
 pub(crate) const WARM_SEQ_LABEL: &str = "tangle.warm-seq";
 
+/// Container-name prefix for an UNCLAIMED warm entry (`sidecar-warm-<seq>`). A
+/// claim renames the container to `sidecar-<sandbox_id>`, so this prefix is the
+/// structural signal that a container is still pooled and never handed to a
+/// customer — the reconcile guard uses it so a claimed live sandbox can never
+/// be a reap candidate even if the store is unreadable (see [`reconcile`]).
+pub(crate) const WARM_NAME_PREFIX: &str = "sidecar-warm-";
+
 /// Never seed more than this many containers concurrently, so a cold-start
 /// burst does not create the entire pool at once (each seed is a ~700ms Docker
 /// create + a `memory_mb` RAM spike). The pool still fills across subsequent
@@ -103,6 +110,7 @@ impl DockerWarmServing {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn ready_count(&self) -> usize {
         lock_ready(&self.ready).len()
     }
@@ -125,8 +133,16 @@ impl DockerWarmServing {
     pub(crate) fn ensure_seeding(self: &Arc<Self>) {
         self.evict_over_age();
         loop {
-            let ready = self.ready_count();
-            let in_flight = self.seeds_in_flight.load(Ordering::SeqCst);
+            // Sample `ready` and `in_flight` TOGETHER under the ready lock. The
+            // seed-completion path below publishes the container and clears its
+            // in-flight slot inside this same lock, so a completing seed is
+            // always visible in exactly one of the two counts — never neither
+            // (which would let a concurrent create over-seed past pool_size and
+            // exceed the up-front memory reservation) and never both.
+            let (ready, in_flight) = {
+                let guard = lock_ready(&self.ready);
+                (guard.len(), self.seeds_in_flight.load(Ordering::SeqCst))
+            };
             if ready + in_flight >= self.settings.pool_size {
                 return;
             }
@@ -145,22 +161,33 @@ impl DockerWarmServing {
             }
             let this = Arc::clone(self);
             tokio::spawn(async move {
-                let outcome = this.seed_one().await;
-                this.seeds_in_flight.fetch_sub(1, Ordering::SeqCst);
-                if let Err(err) = outcome {
-                    this.counters.seed_failures.fetch_add(1, Ordering::Relaxed);
-                    tracing::error!(%err, "docker warm-pool container seed failed");
+                match this.seed_one().await {
+                    Ok(container) => {
+                        // Publish the container and release the in-flight slot as
+                        // ONE critical section (the fetch_sub is a non-blocking
+                        // atomic, so no await is held under the lock). This makes
+                        // the (push, decrement) pair atomic against
+                        // `ensure_seeding`'s paired read above.
+                        let mut guard = lock_ready(&this.ready);
+                        guard.push(container);
+                        this.seeds_in_flight.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    Err(err) => {
+                        this.seeds_in_flight.fetch_sub(1, Ordering::SeqCst);
+                        this.counters.seed_failures.fetch_add(1, Ordering::Relaxed);
+                        tracing::error!(%err, "docker warm-pool container seed failed");
+                    }
                 }
             });
         }
     }
 
-    async fn seed_one(&self) -> Result<()> {
+    async fn seed_one(&self) -> Result<WarmContainer> {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let token = crate::auth::generate_token();
         let spec = WarmSeedSpec {
             seq,
-            name: format!("sidecar-warm-{seq}"),
+            name: format!("{WARM_NAME_PREFIX}{seq}"),
             token: token.clone(),
             image: self.settings.image.clone(),
             cpu_cores: self.settings.cpu_cores,
@@ -169,17 +196,16 @@ impl DockerWarmServing {
             capabilities_json: self.settings.capabilities_json.clone(),
         };
         let container_id = self.host.seed_container(&spec).await?;
-        lock_ready(&self.ready).push(WarmContainer {
-            container_id,
-            token,
-            seq,
-            created_at: crate::util::now_ts(),
-        });
         tracing::info!(
             warm_seq = seq,
             "docker warm-pool container seeded and ready"
         );
-        Ok(())
+        Ok(WarmContainer {
+            container_id,
+            token,
+            seq,
+            created_at: crate::util::now_ts(),
+        })
     }
 
     /// Reap pooled containers older than the configured max age, then let
