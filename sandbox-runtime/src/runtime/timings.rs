@@ -41,6 +41,11 @@ pub struct CreateTimings {
     pub bootstrap_exec: Option<Duration>,
     /// Record seal + persistent-store insert.
     pub store_insert: Option<Duration>,
+    /// Docker warm-pool claim overhead (rename + port readback + health
+    /// probe). Present only on a warm hit — the `container_create` /
+    /// `container_start` / `bootstrap_exec` stages it replaces are `None`
+    /// because they were pre-paid by the background refill.
+    pub warm_claim: Option<Duration>,
     /// SSH readiness bootstrap; only present when `ssh_enabled`.
     pub ssh_ready: Option<Duration>,
     /// End-to-end create as observed by the caller, including permit wait.
@@ -70,6 +75,7 @@ impl CreateTimings {
         push_stage(&mut out, "container_start", self.container_start);
         push_stage(&mut out, "port_mapping", self.port_mapping);
         push_stage(&mut out, "bootstrap_exec", self.bootstrap_exec);
+        push_stage(&mut out, "warm_claim", self.warm_claim);
         push_stage(&mut out, "store_insert", self.store_insert);
         push_stage(&mut out, "ssh_ready", self.ssh_ready);
         out

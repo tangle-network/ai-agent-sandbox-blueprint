@@ -29,10 +29,228 @@ pub(crate) const WORKSPACE_BOOTSTRAP_ROOT_CMD: &str = "mkdir -p /home/agent/.ope
 pub(crate) const WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD: &str =
     "mkdir -p /home/agent/.opencode-home/.config";
 
-/// Docker-backed create with per-stage [`CreateTimings`]. The shared entry
-/// point (`create_sidecar_with_token`) fills the permit/admission/total
-/// fields; this function fills every Docker stage it passes through.
+/// Post-start workspace bootstrap, shared by the cold create path and the warm
+/// pool's seed.
+///
+/// Two jobs, historically two exec round-trips (each also rebuilding a Docker
+/// client — connect + ping — via `docker_exec_as_user`):
+///   1. as root:  chown -R agent:agent /home/agent — repair image builds that
+///      leave workspace dirs root-owned, so the sidecar's demoted (uid 1000)
+///      process doesn't crash with EACCES on mkdir .local;
+///   2. as agent: mkdir -p ~/.opencode-home/.config — pre-create dirs the
+///      sidecar's root process cannot create itself (cap_drop=ALL leaves root
+///      without DAC_OVERRIDE, so it cannot write into agent-owned directories).
+///
+/// Merged into ONE root exec on the already-connected client (see
+/// [`WORKSPACE_BOOTSTRAP_ROOT_CMD`] for why mkdir-then-chown covers the repair
+/// path). When its `test -d` verification fails — an image that ships an
+/// agent-owned /home/agent without the dirs — fall back to the pre-merge
+/// agent-user mkdir. Net round-trips: 1 on the repair path and on images with
+/// the dirs baked in; 2 otherwise. Failures stay warn-and-continue.
+pub(crate) async fn run_workspace_bootstrap(
+    exec_client: &docktopus::bollard::Docker,
+    container_id: &str,
+    sandbox_id: &str,
+) {
+    let bootstrap_verified = match docker_exec_as_user_with_client(
+        exec_client,
+        container_id,
+        "root",
+        WORKSPACE_BOOTSTRAP_ROOT_CMD,
+    )
+    .await
+    {
+        Ok(r) if r.exit_code == 0 => true,
+        Ok(r) => {
+            tracing::info!(
+                sandbox_id,
+                exit_code = r.exit_code,
+                stderr = %r.stderr,
+                "merged workspace bootstrap could not verify dirs; falling back to agent-user mkdir"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(
+                sandbox_id,
+                error = %e,
+                "merged workspace bootstrap failed; falling back to agent-user mkdir"
+            );
+            false
+        }
+    };
+    if !bootstrap_verified {
+        match docker_exec_as_user_with_client(
+            exec_client,
+            container_id,
+            "agent",
+            WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD,
+        )
+        .await
+        {
+            Ok(r) if r.exit_code != 0 => {
+                tracing::warn!(
+                    sandbox_id,
+                    exit_code = r.exit_code,
+                    stderr = %r.stderr,
+                    "opencode-home pre-creation returned non-zero (continuing)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    sandbox_id,
+                    error = %e,
+                    "opencode-home pre-creation failed (continuing)"
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Docker-backed create: try the warm pool first, then cold.
+///
+/// The warm claim only applies to a fresh create — both `token_override` and
+/// `sandbox_id_override` are `None`. Recreate, image-upgrade, and
+/// snapshot-restore paths pass an override (they need a specific token/id and
+/// their own store-rollback semantics) and go straight to
+/// [`cold_create_sidecar_docker`].
 pub(crate) async fn create_sidecar_docker(
+    request: &CreateSandboxParams,
+    token_override: Option<&str>,
+    sandbox_id_override: Option<&str>,
+) -> Result<(SandboxRecord, CreateTimings)> {
+    if token_override.is_none() && sandbox_id_override.is_none() {
+        let sandbox_id = next_sandbox_id();
+        let claim_stage = std::time::Instant::now();
+        let outcome = crate::docker_warm::claim_docker_warm(request, &sandbox_id).await?;
+        let warm_claim_elapsed = claim_stage.elapsed();
+        match outcome {
+            crate::docker_warm::DockerWarmOutcome::Claimed(claim) => {
+                return finish_warm_claim_docker(request, claim, sandbox_id, warm_claim_elapsed)
+                    .await;
+            }
+            crate::docker_warm::DockerWarmOutcome::Miss(miss) => {
+                tracing::debug!(
+                    sandbox_id = %sandbox_id,
+                    reason = %miss,
+                    "docker warm-pool miss; falling back to cold create"
+                );
+            }
+        }
+    }
+    cold_create_sidecar_docker(request, token_override, sandbox_id_override).await
+}
+
+/// Finish a warm claim: build the store record binding all per-request state
+/// (owner/name/agent_identifier/service_id/metadata/timeouts) onto the reused
+/// warm container id + baked warm token + resolved endpoint, insert it Running,
+/// and record metrics. Mirrors the record-build + insert tail of
+/// [`cold_create_sidecar_docker`]. The token MUST be the baked warm token
+/// (`claim.token`): it is inside the container's immutable env, so a fresh token
+/// would not match what the sidecar authenticates against.
+async fn finish_warm_claim_docker(
+    request: &CreateSandboxParams,
+    claim: crate::docker_warm::DockerWarmClaim,
+    sandbox_id: String,
+    warm_claim_elapsed: std::time::Duration,
+) -> Result<(SandboxRecord, CreateTimings)> {
+    let config = SidecarRuntimeConfig::load();
+    let mut timings = CreateTimings {
+        warm_claim: Some(warm_claim_elapsed),
+        ..Default::default()
+    };
+
+    // Shape gate guarantees the request's image equals the pooled image; resolve
+    // it the same way the cold path does for `original_image`.
+    let original_image = if request.image.is_empty() {
+        config.image.clone()
+    } else {
+        request.image.clone()
+    };
+
+    let metadata = parse_json_object(&request.metadata_json, "metadata_json")?;
+    let snapshot_destination = metadata
+        .as_ref()
+        .and_then(|v| v.get("snapshot_destination"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let now = crate::util::now_ts();
+    let idle_timeout = config.effective_idle_timeout(request.idle_timeout_seconds);
+    let max_lifetime = config.effective_max_lifetime(request.max_lifetime_seconds);
+    let container_id = claim.container_id.clone();
+
+    let record = SandboxRecord {
+        id: sandbox_id.clone(),
+        container_id: claim.container_id,
+        sidecar_url: claim.sidecar_url,
+        sidecar_port: claim.sidecar_port,
+        ssh_port: claim.ssh_port,
+        token: claim.token,
+        created_at: now,
+        cpu_cores: request.cpu_cores,
+        memory_mb: request.memory_mb,
+        state: SandboxState::Running,
+        idle_timeout_seconds: idle_timeout,
+        max_lifetime_seconds: max_lifetime,
+        last_activity_at: now,
+        stopped_at: None,
+        snapshot_image_id: None,
+        snapshot_s3_url: None,
+        container_removed_at: None,
+        image_removed_at: None,
+        original_image,
+        base_env_json: request.env_json.clone(),
+        user_env_json: request.user_env_json.clone(),
+        snapshot_destination,
+        tee_deployment_id: None,
+        tee_metadata_json: None,
+        tee_attestation_json: None,
+        name: request.name.clone(),
+        agent_identifier: request.agent_identifier.clone(),
+        metadata_json: request.metadata_json.clone(),
+        disk_gb: request.disk_gb,
+        stack: request.stack.clone(),
+        owner: request.owner.clone(),
+        service_id: request.service_id,
+        tee_config: None,
+        extra_ports: claim.extra_ports,
+        ssh_login_user: None,
+        ssh_authorized_keys: Vec::new(),
+        capabilities_json: request.capabilities_json.clone(),
+    };
+
+    let insert = async {
+        let stage = std::time::Instant::now();
+        let mut sealed = record.clone();
+        seal_record(&mut sealed)?;
+        sandboxes()?.insert(sandbox_id.clone(), sealed)?;
+        timings.store_insert = Some(stage.elapsed());
+        crate::metrics::metrics().record_sandbox_created(request.cpu_cores, request.memory_mb);
+        Ok::<SandboxRecord, SandboxError>(record.clone())
+    }
+    .await;
+
+    match insert {
+        Ok(ready_record) => Ok((ready_record, timings)),
+        Err(err) => {
+            // The container was already renamed onto sandbox_id and cannot
+            // return to the pool. It still carries the warm label, so the next
+            // restart reconcile would reap it, but reap now to avoid holding
+            // RAM + a host port until then.
+            if let Ok(builder) = docker_builder().await {
+                cleanup_orphaned_container(&builder, &container_id).await;
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Docker-backed cold create with per-stage [`CreateTimings`]. The shared entry
+/// point (`create_sidecar_with_token`) fills the permit/admission/total fields;
+/// this function fills every Docker stage it passes through.
+pub(crate) async fn cold_create_sidecar_docker(
     request: &CreateSandboxParams,
     token_override: Option<&str>,
     sandbox_id_override: Option<&str>,
@@ -162,79 +380,9 @@ pub(crate) async fn create_sidecar_docker(
         timings.port_mapping = Some(stage.elapsed());
 
         let stage = std::time::Instant::now();
-        // ── Workspace bootstrap ────────────────────────────────────────────
-        // Two jobs, historically two exec round-trips (each also rebuilding a
-        // Docker client — connect + ping — via `docker_exec_as_user`):
-        //   1. as root:  chown -R agent:agent /home/agent — repair image
-        //      builds that leave workspace dirs root-owned, so the sidecar's
-        //      demoted (uid 1000) process doesn't crash with EACCES on
-        //      mkdir .local;
-        //   2. as agent: mkdir -p ~/.opencode-home/.config — pre-create dirs
-        //      the sidecar's root process cannot create itself (cap_drop=ALL
-        //      leaves root without DAC_OVERRIDE, so it cannot write into
-        //      agent-owned directories).
-        // Merged into ONE root exec on the already-connected `builder` client
-        // (see WORKSPACE_BOOTSTRAP_ROOT_CMD for why mkdir-then-chown covers
-        // the repair path). When its `test -d` verification fails — an image
-        // that ships an agent-owned /home/agent without the dirs — fall back
-        // to the pre-merge agent-user mkdir. Net round-trips: 1 on the repair
-        // path and on images with the dirs baked in; 2 (unchanged) otherwise.
-        // Failures stay warn-and-continue, exactly as before.
-        let exec_client = builder.client();
-        let bootstrap_verified = match docker_exec_as_user_with_client(
-            &exec_client,
-            &container_id,
-            "root",
-            WORKSPACE_BOOTSTRAP_ROOT_CMD,
-        )
-        .await
-        {
-            Ok(r) if r.exit_code == 0 => true,
-            Ok(r) => {
-                tracing::info!(
-                    sandbox_id,
-                    exit_code = r.exit_code,
-                    stderr = %r.stderr,
-                    "merged workspace bootstrap could not verify dirs; falling back to agent-user mkdir"
-                );
-                false
-            }
-            Err(e) => {
-                tracing::warn!(
-                    sandbox_id,
-                    error = %e,
-                    "merged workspace bootstrap failed; falling back to agent-user mkdir"
-                );
-                false
-            }
-        };
-        if !bootstrap_verified {
-            match docker_exec_as_user_with_client(
-                &exec_client,
-                &container_id,
-                "agent",
-                WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD,
-            )
-            .await
-            {
-                Ok(r) if r.exit_code != 0 => {
-                    tracing::warn!(
-                        sandbox_id,
-                        exit_code = r.exit_code,
-                        stderr = %r.stderr,
-                        "opencode-home pre-creation returned non-zero (continuing)"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        sandbox_id,
-                        error = %e,
-                        "opencode-home pre-creation failed (continuing)"
-                    );
-                }
-                _ => {}
-            }
-        }
+        // Workspace bootstrap (chown + pre-create ~/.opencode-home) on the
+        // already-connected client — see `run_workspace_bootstrap`.
+        run_workspace_bootstrap(&builder.client(), &container_id, &sandbox_id).await;
         timings.bootstrap_exec = Some(stage.elapsed());
 
         let now = crate::util::now_ts();
