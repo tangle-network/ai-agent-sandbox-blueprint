@@ -36,8 +36,10 @@
 //! Warm containers are identified on the Docker side by the label
 //! `tangle.warm-pool=1` and named `sidecar-warm-<seq>` (distinct from the live
 //! `sidecar-<uuid>`). [`reconcile_docker_warm_orphans`] lists them by label and
-//! reaps every one that is not a live store record (the data-loss guard) BEFORE
-//! the first refill — from the pool's lazy init and from
+//! reaps every one whose name still carries the `sidecar-warm-` prefix BEFORE
+//! the first refill — a purely structural guard that never consults the store,
+//! so no store failure can misclassify a live claimed sandbox as reapable (see
+//! [`reconcile`]). Runs from the pool's lazy init and from
 //! [`crate::reaper::reconcile_on_startup`].
 //!
 //! ## Fail-loud boundaries
@@ -66,11 +68,13 @@ use crate::error::{Result, SandboxError};
 use crate::runtime::{CreateSandboxParams, SidecarRuntimeConfig};
 
 mod config;
+mod host;
 mod reconcile;
 mod serving;
 mod types;
 
 pub(crate) use config::*;
+pub(crate) use host::*;
 pub(crate) use reconcile::*;
 pub(crate) use serving::*;
 pub(crate) use types::*;
