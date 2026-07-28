@@ -4,7 +4,7 @@
  * Provides:
  *   - page: standard Playwright page
  *   - operatorApi: helper for calling operator API endpoints
- *   - agentTools: lazy-loaded agent-browser-driver tools
+ *   - agentTools: lazy-loaded browser-agent-driver tools
  */
 
 import { test as base, expect } from '@playwright/test';

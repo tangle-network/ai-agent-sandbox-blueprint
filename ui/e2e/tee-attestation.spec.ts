@@ -24,8 +24,8 @@ test.describe('TEE Attestation UI', () => {
   test('agent verifies TEE badge on sandbox list', async ({ page }) => {
     test.setTimeout(3 * 60 * 1000);
 
-    const { PlaywrightDriver, AgentRunner } = await import(
-      '@tangle-network/agent-browser-driver'
+    const { PlaywrightDriver, BrowserAgent } = await import(
+      '@tangle-network/browser-agent-driver'
     );
 
     const driver = new PlaywrightDriver(page, {
@@ -34,7 +34,7 @@ test.describe('TEE Attestation UI', () => {
       screenshotQuality: 50,
     });
 
-    const runner = new AgentRunner({
+    const runner = new BrowserAgent({
       driver,
       config: { ...brainConfig, debug: true, retries: 2, retryDelayMs: 2000 },
       onTurn: async (turn) => {
@@ -80,8 +80,8 @@ Complete when you have examined the sandbox list and can describe whether TEE ba
   test('agent navigates to TEE sandbox and fetches attestation', async ({ page }) => {
     test.setTimeout(5 * 60 * 1000);
 
-    const { PlaywrightDriver, AgentRunner } = await import(
-      '@tangle-network/agent-browser-driver'
+    const { PlaywrightDriver, BrowserAgent } = await import(
+      '@tangle-network/browser-agent-driver'
     );
 
     const driver = new PlaywrightDriver(page, {
@@ -90,7 +90,7 @@ Complete when you have examined the sandbox list and can describe whether TEE ba
       screenshotQuality: 50,
     });
 
-    const runner = new AgentRunner({
+    const runner = new BrowserAgent({
       driver,
       config: { ...brainConfig, debug: true, retries: 3, retryDelayMs: 2000 },
       onTurn: async (turn) => {
@@ -168,8 +168,8 @@ Complete when you have either:
   test('agent verifies TEE instance attestation tab', async ({ page }) => {
     test.setTimeout(5 * 60 * 1000);
 
-    const { PlaywrightDriver, AgentRunner } = await import(
-      '@tangle-network/agent-browser-driver'
+    const { PlaywrightDriver, BrowserAgent } = await import(
+      '@tangle-network/browser-agent-driver'
     );
 
     const driver = new PlaywrightDriver(page, {
@@ -178,7 +178,7 @@ Complete when you have either:
       screenshotQuality: 50,
     });
 
-    const runner = new AgentRunner({
+    const runner = new BrowserAgent({
       driver,
       config: { ...brainConfig, debug: true, retries: 3, retryDelayMs: 2000 },
       onTurn: async (turn) => {
