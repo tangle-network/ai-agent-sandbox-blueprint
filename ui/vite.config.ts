@@ -60,9 +60,12 @@ function ssrDomShim(): Plugin {
       if (typeof globalThis.document === 'undefined') {
         const { Window } = await import('happy-dom');
         const win = new Window({ url: 'http://localhost:1338' });
+        for (const key of ['Event', 'EventTarget', 'CustomEvent'] as const) {
+          (globalThis as any)[key] = (win as any)[key];
+        }
         for (const key of ['document', 'window', 'navigator', 'location',
-          'localStorage', 'sessionStorage', 'HTMLElement', 'CustomEvent',
-          'Event', 'MutationObserver', 'IntersectionObserver', 'ResizeObserver',
+          'localStorage', 'sessionStorage', 'HTMLElement', 'MutationObserver',
+          'IntersectionObserver', 'ResizeObserver',
           'requestAnimationFrame', 'cancelAnimationFrame', 'getComputedStyle',
           'matchMedia', 'URL', 'URLSearchParams',
         ] as const) {
