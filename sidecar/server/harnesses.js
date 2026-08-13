@@ -1,6 +1,7 @@
 'use strict'
 
 const { randomUUID } = require('crypto')
+const { hermesCommand } = require('./hermes-command')
 
 const agents = [
   {
@@ -37,6 +38,11 @@ const agents = [
     identifier: 'prime',
     displayName: 'Prime Agent',
     description: 'Runs Prime Agent in one-shot print mode.',
+  },
+  {
+    identifier: 'hermes',
+    displayName: 'Hermes',
+    description: 'Runs the Nous Research Hermes Agent CLI.',
   },
 ]
 
@@ -124,6 +130,8 @@ function harnessCommand(harness, payload) {
         timeout,
       }
     }
+    case 'hermes':
+      return hermesCommand(payload)
     default:
       return null
   }

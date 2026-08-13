@@ -4,7 +4,7 @@ set -eu
 harness="${1:-}"
 prime_agent_version="${PRIME_AGENT_VERSION:-0.7.2}"
 if [ -z "$harness" ]; then
-  echo "usage: sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|all>" >&2
+  echo "usage: sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|hermes|all>" >&2
   exit 2
 fi
 
@@ -117,6 +117,40 @@ install_prime() {
   }
 }
 
+install_hermes() {
+  command -v curl >/dev/null 2>&1 || {
+    echo "curl is required to install hermes" >&2
+    exit 1
+  }
+  command -v bash >/dev/null 2>&1 || {
+    echo "bash is required to install hermes" >&2
+    exit 1
+  }
+
+  # The sidecar uses Hermes's Python CLI path. Skip npm lifecycle scripts in
+  # the headless image because they only prepare browser/TUI tooling, which is
+  # disabled here and can require native build steps unrelated to chat.
+  hermes_install_env='NPM_CONFIG_IGNORE_SCRIPTS=true'
+  if [ -n "${HERMES_INSTALL_COMMIT:-}" ]; then
+    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | \
+      env "$hermes_install_env" bash -s -- \
+      --skip-setup --skip-browser --skip-computer-use --no-skills \
+      --non-interactive --commit "$HERMES_INSTALL_COMMIT"
+  else
+    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | \
+      env "$hermes_install_env" bash -s -- \
+      --skip-setup --skip-browser --skip-computer-use --no-skills \
+      --non-interactive
+  fi
+
+  if [ -x "${HOME:-/root}/.local/bin/hermes" ] && ! command -v hermes >/dev/null 2>&1; then
+    mkdir -p /usr/local/bin 2>/dev/null || true
+    cp "${HOME:-/root}/.local/bin/hermes" /usr/local/bin/hermes 2>/dev/null \
+      && chmod +x /usr/local/bin/hermes 2>/dev/null \
+      || true
+  fi
+}
+
 install_one() {
   case "$1" in
     claude) install_claude ;;
@@ -125,12 +159,13 @@ install_one() {
     kimi) install_kimi ;;
     gemini) install_gemini ;;
     prime) install_prime ;;
+    hermes) install_hermes ;;
     *) echo "unknown harness: $1" >&2; exit 2 ;;
   esac
 }
 
 if [ "$harness" = "all" ]; then
-  for name in claude codex opencode kimi gemini prime; do
+  for name in claude codex opencode kimi gemini prime hermes; do
     echo "==> installing $name"
     install_one "$name"
   done

@@ -256,6 +256,13 @@ async function runAgent(payload) {
     }
   }
 
+  if (spec.env?.HERMES_HOME) {
+    fs.mkdirSync(spec.env.HERMES_HOME, { recursive: true })
+    if (process.getuid && process.getuid() === 0) {
+      fs.chownSync(spec.env.HERMES_HOME, childUid, childGid)
+    }
+  }
+
   const result = await runProcess(spec.command, spec.args, {
     cwd: workspaceRoot,
     timeout: spec.timeout,

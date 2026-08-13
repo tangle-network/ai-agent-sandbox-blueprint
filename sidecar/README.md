@@ -12,6 +12,7 @@ HTTP contract plus the harness toolchain in a reviewable, reproducible place:
 - Kimi
 - Gemini
 - Prime Agent
+- Hermes Agent (Nous Research)
 
 ## Build
 
@@ -24,8 +25,8 @@ Build a smaller subset:
 
 ```bash
 docker build -f sidecar/Dockerfile.all-harness \
-  --build-arg BLUEPRINT_HARNESSES=codex,gemini,prime \
-  -t ghcr.io/tangle-network/blueprint-sidecar:codex-gemini-prime .
+  --build-arg BLUEPRINT_HARNESSES=codex,gemini,prime,hermes \
+  -t ghcr.io/tangle-network/blueprint-sidecar:codex-gemini-prime-hermes .
 ```
 
 ## Publish
@@ -83,6 +84,7 @@ Auth/config remains provider-specific and lives in the normal CLI directories:
 - `/root/.config/opencode`
 - `/root/.opencode`
 - `/home/agent/.prime`
+- `/root/.hermes` for Hermes install state
 
 Prime Agent runs with its official `-p --no-session` print contract.
 The sidecar assigns each run an isolated `PRIME_AGENT_CODING_AGENT_DIR` under
@@ -90,3 +92,9 @@ The sidecar assigns each run an isolated `PRIME_AGENT_CODING_AGENT_DIR` under
 `PRIME_API_KEY`.
 The image install pins Prime Agent `0.7.2`; update `PRIME_AGENT_VERSION` only
 with a matching official release check.
+
+The sidecar sets `HERMES_HOME` to `<AGENT_WORKSPACE_ROOT>/.hermes` before a
+Hermes run, so sessions and state stay in the sandbox workspace.
+The install script uses Nous Research's official installer with setup,
+browser, computer-use, and bundled skills disabled for a headless image.
+Set `HERMES_INSTALL_COMMIT` during image builds to pin the upstream commit.

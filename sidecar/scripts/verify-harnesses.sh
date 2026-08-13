@@ -2,7 +2,7 @@
 set -eu
 
 missing=""
-for bin in bun claude codex opencode kimi gemini prime-agent uv; do
+for bin in bun claude codex opencode kimi gemini prime-agent uv hermes; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     missing="$missing $bin"
   fi
