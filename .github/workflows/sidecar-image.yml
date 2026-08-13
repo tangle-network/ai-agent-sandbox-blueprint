@@ -42,7 +42,7 @@ jobs:
       - name: Smoke sidecar terminal API
         run: |
           node --check sidecar/server/server.js
-          node --test sidecar/server/harnesses.test.js
+          node --test sidecar/server/*.test.js sidecar/server/*.test.cjs
           sh -n sidecar/scripts/install-harness.sh sidecar/scripts/verify-harnesses.sh
           sidecar/scripts/smoke-terminal-api.sh
 

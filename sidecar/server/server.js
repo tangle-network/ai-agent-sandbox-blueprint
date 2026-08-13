@@ -247,7 +247,7 @@ async function runAgent(payload) {
   }
 
   const harness = selectHarness(identifier, payload.backend)
-  const spec = harnessCommand(harness, payload)
+  const spec = harnessCommand(harness, { ...payload, cwd: workspaceRoot })
   if (!spec) {
     return {
       success: false,

@@ -16,7 +16,7 @@ pkgs.mkShell {
 
   shellHook = ''
     echo "blueprint sidecar harness profile"
-    echo "Run: sh sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|hermes|all>"
+    echo "Run: sh sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|hermes|amp|factory-droids|pi|forge|openclaw|qwen|copilot|all>"
     echo "Auth/config stays in each CLI's normal home directory."
   '';
 }

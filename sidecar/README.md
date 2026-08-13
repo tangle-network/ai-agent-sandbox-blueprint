@@ -13,6 +13,13 @@ HTTP contract plus the harness toolchain in a reviewable, reproducible place:
 - Gemini
 - Prime Agent
 - Hermes Agent (Nous Research)
+- AMP
+- Factory Droids
+- Pi
+- ForgeCode
+- OpenClaw
+- Qwen Code
+- GitHub Copilot CLI
 
 ## Build
 
@@ -98,3 +105,10 @@ Hermes run, so sessions and state stay in the sandbox workspace.
 The install script uses Nous Research's official installer with setup,
 browser, computer-use, and bundled skills disabled for a headless image.
 Set `HERMES_INSTALL_COMMIT` during image builds to pin the upstream commit.
+- `/home/agent/.amp`
+- `/home/agent/.factory`
+- `/home/agent/.forge`
+- `/home/agent/.openclaw`
+- `/home/agent/.pi`
+- `/home/agent/.qwen`
+- `/home/agent/.copilot`

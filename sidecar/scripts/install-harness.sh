@@ -4,7 +4,7 @@ set -eu
 harness="${1:-}"
 prime_agent_version="${PRIME_AGENT_VERSION:-0.7.2}"
 if [ -z "$harness" ]; then
-  echo "usage: sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|hermes|all>" >&2
+  echo "usage: sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|hermes|amp|factory-droids|pi|forge|openclaw|qwen|copilot|all>" >&2
   exit 2
 fi
 
@@ -13,6 +13,25 @@ ensure_npm() {
     echo "npm is required to install $1" >&2
     exit 1
   }
+}
+
+ensure_curl() {
+  command -v curl >/dev/null 2>&1 || {
+    echo "curl is required to install $1" >&2
+    exit 1
+  }
+}
+
+copy_user_binary() {
+  source_path="$1"
+  destination_name="$2"
+  if [ ! -x "$source_path" ]; then
+    echo "installer did not produce executable $source_path" >&2
+    exit 1
+  fi
+  mkdir -p /usr/local/bin
+  cp "$source_path" "/usr/local/bin/$destination_name"
+  chmod 0755 "/usr/local/bin/$destination_name"
 }
 
 install_claude() {
@@ -151,6 +170,51 @@ install_hermes() {
   fi
 }
 
+install_amp() {
+  ensure_curl amp
+  command -v bash >/dev/null 2>&1 || {
+    echo "bash is required to install amp" >&2
+    exit 1
+  }
+  amp_home="${HOME:-/root}/.amp"
+  AMP_HOME="$amp_home" bash -c 'curl -fsSL https://ampcode.com/install.sh | bash'
+  copy_user_binary "$amp_home/bin/amp" amp
+}
+
+install_factory_droids() {
+  ensure_curl factory-droids
+  factory_home="${HOME:-/root}/.local"
+  curl -fsSL https://app.factory.ai/cli | sh
+  copy_user_binary "$factory_home/bin/droid" droid
+}
+
+install_pi() {
+  ensure_npm pi
+  npm install -g @earendil-works/pi-coding-agent@latest
+}
+
+install_forge() {
+  ensure_curl forge
+  forge_home="${HOME:-/root}/.local"
+  curl -fsSL https://forgecode.dev/cli | sh
+  copy_user_binary "$forge_home/bin/forge" forgecode
+}
+
+install_openclaw() {
+  ensure_npm openclaw
+  npm install -g openclaw@latest
+}
+
+install_qwen() {
+  ensure_npm qwen
+  npm install -g @qwen-code/qwen-code@latest
+}
+
+install_copilot() {
+  ensure_npm copilot
+  npm install -g @github/copilot@latest
+}
+
 install_one() {
   case "$1" in
     claude) install_claude ;;
@@ -160,12 +224,19 @@ install_one() {
     gemini) install_gemini ;;
     prime) install_prime ;;
     hermes) install_hermes ;;
+    amp) install_amp ;;
+    factory-droids) install_factory_droids ;;
+    pi) install_pi ;;
+    forge) install_forge ;;
+    openclaw) install_openclaw ;;
+    qwen) install_qwen ;;
+    copilot) install_copilot ;;
     *) echo "unknown harness: $1" >&2; exit 2 ;;
   esac
 }
 
 if [ "$harness" = "all" ]; then
-  for name in claude codex opencode kimi gemini prime hermes; do
+  for name in claude codex opencode kimi gemini prime hermes amp factory-droids pi forge openclaw qwen copilot; do
     echo "==> installing $name"
     install_one "$name"
   done

@@ -36,7 +36,7 @@ RUN set -eu; \
   else \
     echo "$BLUEPRINT_HARNESSES" | tr ',' ' ' | xargs -n1 sh /usr/local/share/blueprint-sidecar/install-harness.sh; \
   fi; \
-  mkdir -p /root/.local /root/.opencode /root/.hermes
+  mkdir -p /root/.amp /root/.local /root/.opencode /root/.hermes
 
 FROM node:22-slim AS runtime
 
@@ -54,7 +54,10 @@ RUN apt-get update \
   && if [ -n "$existing_user" ] && [ "$existing_user" != agent ]; then usermod --login agent --home /home/agent --move-home --shell /bin/bash "$existing_user"; elif [ -z "$existing_user" ]; then useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent; fi \
   && if ! getent group sidecar >/dev/null; then groupadd --gid 1001 sidecar; fi \
   && if ! id sidecar >/dev/null 2>&1; then useradd --uid 1001 --gid sidecar --create-home --shell /bin/bash sidecar; fi \
-  && mkdir -p /home/agent/.cache /home/agent/.config /home/agent/workspace \
+  && mkdir -p /home/agent/.amp /home/agent/.cache /home/agent/.config \
+    /home/agent/.copilot /home/agent/.factory /home/agent/.forge \
+    /home/agent/.openclaw /home/agent/.pi /home/agent/.qwen \
+    /home/agent/workspace \
   && chown -R agent:agent /home/agent
 
 COPY --from=harnesses /usr/local/ /usr/local/
@@ -62,6 +65,7 @@ COPY --from=harnesses /root/.bun/ /root/.bun/
 COPY --from=harnesses /root/.local/ /root/.local/
 COPY --from=harnesses /root/.opencode/ /root/.opencode/
 COPY --from=harnesses /root/.hermes/ /root/.hermes/
+COPY --from=harnesses /root/.amp/ /root/.amp/
 
 COPY sidecar/server/ /opt/blueprint-sidecar/
 COPY sidecar/scripts/verify-harnesses.sh /usr/local/bin/blueprint-verify-harnesses
@@ -85,9 +89,16 @@ VOLUME /root/.config/opencode
 VOLUME /root/.opencode
 VOLUME /home/agent/.prime
 VOLUME /root/.hermes
+VOLUME /home/agent/.amp
+VOLUME /home/agent/.factory
+VOLUME /home/agent/.forge
+VOLUME /home/agent/.openclaw
+VOLUME /home/agent/.pi
+VOLUME /home/agent/.qwen
+VOLUME /home/agent/.copilot
 
 LABEL org.opencontainers.image.title="Tangle Blueprint Sidecar All-Harness"
-LABEL org.opencontainers.image.description="AI Agent Sandbox sidecar with Claude Code, Codex, OpenCode, Kimi, Gemini, Prime Agent, and Hermes harnesses installed"
+LABEL org.opencontainers.image.description="AI Agent Sandbox sidecar with 14 CLI backends, including Prime Agent, Hermes, AMP, and Factory Droids"
 LABEL org.opencontainers.image.source="https://github.com/tangle-network/ai-agent-sandbox-blueprint"
 LABEL org.tangle.sidecar.harnesses="${BLUEPRINT_HARNESSES}"
 

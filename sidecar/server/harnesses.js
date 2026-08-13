@@ -2,6 +2,7 @@
 
 const { randomUUID } = require('crypto')
 const { hermesCommand } = require('./hermes-command')
+const { optionalAgents, optionalHarnessCommand } = require('./optional-harnesses')
 
 const agents = [
   {
@@ -44,6 +45,7 @@ const agents = [
     displayName: 'Hermes',
     description: 'Runs the Nous Research Hermes Agent CLI.',
   },
+  ...optionalAgents,
 ]
 
 function selectHarness(identifier, backend) {
@@ -80,6 +82,9 @@ function harnessCommand(harness, payload) {
       timeout,
     }
   }
+
+  const optional = optionalHarnessCommand(harness, payload)
+  if (optional) return optional
 
   switch (harness) {
     case 'codex':
