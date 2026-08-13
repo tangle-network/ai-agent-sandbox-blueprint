@@ -11,8 +11,8 @@
 #
 # Subset build:
 #   docker build -f sidecar/Dockerfile.all-harness \
-#     --build-arg BLUEPRINT_HARNESSES=codex,gemini \
-#     -t ghcr.io/tangle-network/blueprint-sidecar:codex-gemini .
+#     --build-arg BLUEPRINT_HARNESSES=codex,gemini,prime \
+#     -t ghcr.io/tangle-network/blueprint-sidecar:codex-gemini-prime .
 
 ARG BLUEPRINT_HARNESSES=all
 
@@ -66,12 +66,13 @@ COPY sidecar/scripts/verify-harnesses.sh /usr/local/bin/blueprint-verify-harness
 RUN chmod +x /usr/local/bin/blueprint-verify-harnesses \
   && if [ "$BLUEPRINT_HARNESSES" = "all" ]; then blueprint-verify-harnesses; fi
 
-ENV PATH="/root/.bun/bin:/root/.local/bin:/root/.opencode/bin:/usr/local/bin:${PATH}"
+ENV PATH="/home/agent/.local/bin:/root/.bun/bin:/root/.local/bin:/root/.opencode/bin:/usr/local/bin:${PATH}"
 ENV SIDECAR_CAPABILITIES="all_harness"
 ENV SIDECAR_PORT=8080
 ENV AGENT_WORKSPACE_ROOT="/home/agent/workspace"
 ENV AGENT_SUBPROCESS_UID=1000
 ENV AGENT_SUBPROCESS_GID=1000
+ENV PRIME_AGENT_INSTALL_UV=1
 
 VOLUME /root/.claude
 VOLUME /root/.codex
@@ -80,9 +81,10 @@ VOLUME /root/.config/kimi
 VOLUME /root/.gemini
 VOLUME /root/.config/opencode
 VOLUME /root/.opencode
+VOLUME /home/agent/.prime
 
 LABEL org.opencontainers.image.title="Tangle Blueprint Sidecar All-Harness"
-LABEL org.opencontainers.image.description="AI Agent Sandbox sidecar with Claude Code, Codex, opencode, Kimi, and Gemini harnesses installed"
+LABEL org.opencontainers.image.description="AI Agent Sandbox sidecar with Claude Code, Codex, opencode, Kimi, Gemini, and Prime Agent harnesses installed"
 LABEL org.opencontainers.image.source="https://github.com/tangle-network/ai-agent-sandbox-blueprint"
 LABEL org.tangle.sidecar.harnesses="${BLUEPRINT_HARNESSES}"
 

@@ -1120,7 +1120,7 @@ async fn test_capabilities_endpoint_includes_all_harness_runtime() {
         "missing all_harness capability: {json}",
     );
     let harnesses = json["harnesses"].as_array().expect("harnesses");
-    for id in ["claude-code", "codex", "opencode", "kimi-code", "gemini"] {
+    for id in ["claude-code", "codex", "opencode", "kimi-code", "gemini", "prime"] {
         assert!(
             harnesses.iter().any(|h| h["id"] == id),
             "missing harness {id}: {json}",

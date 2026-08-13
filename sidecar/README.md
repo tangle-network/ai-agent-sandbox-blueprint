@@ -11,6 +11,7 @@ HTTP contract plus the harness toolchain in a reviewable, reproducible place:
 - opencode
 - Kimi
 - Gemini
+- Prime Agent
 
 ## Build
 
@@ -23,8 +24,8 @@ Build a smaller subset:
 
 ```bash
 docker build -f sidecar/Dockerfile.all-harness \
-  --build-arg BLUEPRINT_HARNESSES=codex,gemini \
-  -t ghcr.io/tangle-network/blueprint-sidecar:codex-gemini .
+  --build-arg BLUEPRINT_HARNESSES=codex,gemini,prime \
+  -t ghcr.io/tangle-network/blueprint-sidecar:codex-gemini-prime .
 ```
 
 ## Publish
@@ -81,3 +82,11 @@ Auth/config remains provider-specific and lives in the normal CLI directories:
 - `/root/.gemini`
 - `/root/.config/opencode`
 - `/root/.opencode`
+- `/home/agent/.prime`
+
+Prime Agent runs with its official `-p --no-session` print contract.
+The sidecar assigns each run an isolated `PRIME_AGENT_CODING_AGENT_DIR` under
+`/tmp` and keeps the CLI's model credentials in environment variables such as
+`PRIME_API_KEY`.
+The image install pins Prime Agent `0.7.2`; update `PRIME_AGENT_VERSION` only
+with a matching official release check.

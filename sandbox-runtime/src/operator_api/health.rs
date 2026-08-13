@@ -244,7 +244,7 @@ pub(crate) fn runtime_capabilities_response() -> RuntimeCapabilitiesResponse {
             RuntimeCapabilityDescriptor {
                 id: "all_harness",
                 label: "All Harness Runtime",
-                description: "Enable the open-source all-harness agent runtime: Claude, Codex, opencode, Kimi, and Gemini.",
+                description: "Enable the open-source all-harness agent runtime: Claude, Codex, opencode, Kimi, Gemini, and Prime Agent.",
             },
         ],
         harnesses: vec![
@@ -280,6 +280,13 @@ pub(crate) fn runtime_capabilities_response() -> RuntimeCapabilitiesResponse {
                 id: "gemini",
                 label: "Gemini CLI",
                 mcp: true,
+                skills: false,
+                subagents: false,
+            },
+            HarnessCapabilityDescriptor {
+                id: "prime",
+                label: "Prime Agent",
+                mcp: false,
                 skills: false,
                 subagents: false,
             },

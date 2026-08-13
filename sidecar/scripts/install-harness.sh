@@ -2,8 +2,9 @@
 set -eu
 
 harness="${1:-}"
+prime_agent_version="${PRIME_AGENT_VERSION:-0.7.2}"
 if [ -z "$harness" ]; then
-  echo "usage: sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|all>" >&2
+  echo "usage: sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|all>" >&2
   exit 2
 fi
 
@@ -71,6 +72,51 @@ install_gemini() {
   npm install -g @google/gemini-cli@latest
 }
 
+install_uv() {
+  if command -v uv >/dev/null 2>&1; then
+    return
+  fi
+  command -v curl >/dev/null 2>&1 || {
+    echo "curl is required to install uv" >&2
+    exit 1
+  }
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  if [ -x "${HOME:-/root}/.local/bin/uv" ]; then
+    mkdir -p /usr/local/bin 2>/dev/null || true
+    cp "${HOME:-/root}/.local/bin/uv" /usr/local/bin/uv 2>/dev/null \
+      && chmod +x /usr/local/bin/uv 2>/dev/null \
+      || true
+  fi
+  command -v uv >/dev/null 2>&1 || [ -x /usr/local/bin/uv ] || {
+    echo "uv install did not produce a usable uv binary" >&2
+    exit 1
+  }
+}
+
+install_prime() {
+  ensure_npm prime-agent
+  install_uv
+  command -v curl >/dev/null 2>&1 || {
+    echo "curl is required to install Prime Agent" >&2
+    exit 1
+  }
+  curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh \
+    | PRIME_AGENT_INSTALLER_PLAIN=1 PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0 \
+      PRIME_AGENT_VERSION="$prime_agent_version" sh
+  if command -v prime-agent >/dev/null 2>&1; then
+    return
+  fi
+  npm_bin="$(npm bin -g 2>/dev/null || true)"
+  if [ -n "$npm_bin" ] && [ -x "$npm_bin/prime-agent" ]; then
+    mkdir -p /usr/local/bin 2>/dev/null || true
+    ln -sf "$npm_bin/prime-agent" /usr/local/bin/prime-agent 2>/dev/null || true
+  fi
+  command -v prime-agent >/dev/null 2>&1 || {
+    echo "Prime Agent installer did not produce a prime-agent binary" >&2
+    exit 1
+  }
+}
+
 install_one() {
   case "$1" in
     claude) install_claude ;;
@@ -78,12 +124,13 @@ install_one() {
     opencode) install_opencode ;;
     kimi) install_kimi ;;
     gemini) install_gemini ;;
+    prime) install_prime ;;
     *) echo "unknown harness: $1" >&2; exit 2 ;;
   esac
 }
 
 if [ "$harness" = "all" ]; then
-  for name in claude codex opencode kimi gemini; do
+  for name in claude codex opencode kimi gemini prime; do
     echo "==> installing $name"
     install_one "$name"
   done
