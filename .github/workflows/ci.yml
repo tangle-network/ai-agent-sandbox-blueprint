@@ -265,8 +265,8 @@ jobs:
           echo "::group::Login to GHCR"
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           echo "::endgroup::"
-          if docker pull ghcr.io/tangle-network/sidecar:latest; then
-            docker tag ghcr.io/tangle-network/sidecar:latest tangle-sidecar:local
+          if docker pull ghcr.io/tangle-network/blueprint-sidecar:all-harness; then
+            docker tag ghcr.io/tangle-network/blueprint-sidecar:all-harness tangle-sidecar:local
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::Sidecar image not available — E2E tests will be skipped"
@@ -310,7 +310,7 @@ jobs:
 
       - name: E2E skipped (no sidecar image)
         if: steps.sidecar.outputs.available != 'true'
-        run: echo "E2E tests skipped — sidecar Docker image not available. Publish ghcr.io/tangle-network/sidecar:latest to enable."
+        run: echo "E2E tests skipped — sidecar Docker image not available. Publish ghcr.io/tangle-network/blueprint-sidecar:all-harness to enable."
 
   # NOTE: the previous `firecracker-real-e2e` job exercised the host-agent
   # HTTP boundary that has been replaced by the in-process `microvm-runtime`
