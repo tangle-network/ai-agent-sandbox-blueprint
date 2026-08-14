@@ -268,16 +268,15 @@ install_hermes() {
 
 install_amp() {
   ensure_curl amp
-  amp_home='/home/agent/.amp'
+  amp_config='/home/agent/.config/amp'
   amp_dir="$(mktemp -d)"
   amp_binary="$amp_dir/amp"
   download_verified \
     "https://static.ampcode.com/cli/$amp_version/amp-linux-x64" \
     "$amp_binary_sha256" "$amp_binary"
-  mkdir -p "$amp_home/bin"
-  cp "$amp_binary" "$amp_home/bin/amp"
-  chmod 0755 "$amp_home/bin/amp"
-  copy_user_binary "$amp_home/bin/amp" amp
+  mkdir -p "$amp_config"
+  chmod 0755 "$amp_binary"
+  copy_user_binary "$amp_binary" amp
   rm -rf "$amp_dir"
 }
 

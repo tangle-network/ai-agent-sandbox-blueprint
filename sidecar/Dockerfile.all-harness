@@ -8,16 +8,8 @@
 # Build:
 #   docker build -f sidecar/Dockerfile.all-harness \
 #     -t ghcr.io/tangle-network/blueprint-sidecar:all-harness .
-#
-# Subset build:
-#   docker build -f sidecar/Dockerfile.all-harness \
-#     --build-arg BLUEPRINT_HARNESSES=codex,gemini,prime,hermes \
-#     -t ghcr.io/tangle-network/blueprint-sidecar:codex-gemini-prime-hermes .
-
-ARG BLUEPRINT_HARNESSES=all
 
 FROM node@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS harnesses
-ARG BLUEPRINT_HARNESSES
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -25,7 +17,10 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 RUN bun_dir="$(mktemp -d)" \
-  && curl -fsSL -o "$bun_dir/bun.zip" \
+  && curl --fail --silent --show-error --location \
+    --retry 3 --retry-delay 2 --retry-all-errors \
+    --connect-timeout 15 --max-time 300 \
+    -o "$bun_dir/bun.zip" \
     https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64.zip \
   && echo '951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f  '"$bun_dir/bun.zip" | sha256sum -c - \
   && unzip -p "$bun_dir/bun.zip" bun-linux-x64/bun > /usr/local/bin/bun \
@@ -34,16 +29,10 @@ RUN bun_dir="$(mktemp -d)" \
 
 COPY sidecar/scripts/install-harness.sh /usr/local/share/blueprint-sidecar/install-harness.sh
 RUN set -eu; \
-  if [ "$BLUEPRINT_HARNESSES" = "all" ]; then \
-    sh /usr/local/share/blueprint-sidecar/install-harness.sh all; \
-  else \
-    echo "$BLUEPRINT_HARNESSES" | tr ',' ' ' | xargs -n1 sh /usr/local/share/blueprint-sidecar/install-harness.sh; \
-  fi; \
-  mkdir -p /home/agent/.amp /home/agent/.local /root/.hermes
+  sh /usr/local/share/blueprint-sidecar/install-harness.sh all; \
+  mkdir -p /home/agent/.config/amp /home/agent/.local /root/.hermes
 
 FROM node@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS runtime
-
-ARG BLUEPRINT_HARNESSES
 
 USER root
 
@@ -57,7 +46,7 @@ RUN apt-get update \
   && if [ -n "$existing_user" ] && [ "$existing_user" != agent ]; then usermod --login agent --home /home/agent --move-home --shell /bin/bash "$existing_user"; elif [ -z "$existing_user" ]; then useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent; fi \
   && if ! getent group sidecar >/dev/null; then groupadd --gid 1001 sidecar; fi \
   && if ! id sidecar >/dev/null 2>&1; then useradd --uid 1001 --gid sidecar --create-home --shell /bin/bash sidecar; fi \
-  && mkdir -p /home/agent/.amp /home/agent/.cache /home/agent/.claude \
+  && mkdir -p /home/agent/.config/amp /home/agent/.cache /home/agent/.claude \
     /home/agent/.codex /home/agent/.config/kimi /home/agent/.config/opencode \
     /home/agent/.copilot /home/agent/.factory /home/agent/.forge \
     /home/agent/.gemini /home/agent/.kimi /home/agent/.opencode \
@@ -67,18 +56,18 @@ RUN apt-get update \
   && chown -R agent:agent /home/agent
 
 COPY --from=harnesses /usr/local/ /usr/local/
-COPY --chown=agent:agent --from=harnesses /home/agent/.amp/ /home/agent/.amp/
+COPY --chown=agent:agent --from=harnesses /home/agent/.config/amp/ /home/agent/.config/amp/
 COPY --chown=agent:agent --from=harnesses /home/agent/.local/ /home/agent/.local/
 COPY --chown=agent:agent --from=harnesses /root/.hermes/ /home/agent/.hermes/
 
 COPY sidecar/server/ /opt/blueprint-sidecar/
 COPY sidecar/scripts/verify-harnesses.sh /usr/local/bin/blueprint-verify-harnesses
 RUN chmod +x /usr/local/bin/blueprint-verify-harnesses \
-  && if [ "$BLUEPRINT_HARNESSES" = "all" ]; then blueprint-verify-harnesses; fi
+  && blueprint-verify-harnesses
 
 ENV PATH="/home/agent/.local/bin:/usr/local/bin:${PATH}"
 ENV SIDECAR_CAPABILITIES="all_harness"
-ENV SIDECAR_HARNESSES="${BLUEPRINT_HARNESSES}"
+ENV SIDECAR_HARNESSES="all"
 ENV SIDECAR_PORT=8080
 ENV AGENT_WORKSPACE_ROOT="/home/agent/workspace"
 ENV AGENT_SUBPROCESS_UID=1000
@@ -92,9 +81,9 @@ VOLUME /home/agent/.config/kimi
 VOLUME /home/agent/.gemini
 VOLUME /home/agent/.config/opencode
 VOLUME /home/agent/.opencode
+VOLUME /home/agent/.config/amp
 VOLUME /home/agent/.prime
 VOLUME /home/agent/.hermes
-VOLUME /home/agent/.amp
 VOLUME /home/agent/.factory
 VOLUME /home/agent/.forge
 VOLUME /home/agent/.openclaw
@@ -105,7 +94,7 @@ VOLUME /home/agent/.copilot
 LABEL org.opencontainers.image.title="Tangle Blueprint Sidecar All-Harness"
 LABEL org.opencontainers.image.description="AI Agent Sandbox sidecar with 14 CLI backends, including Prime Agent, Hermes, AMP, and Factory Droids"
 LABEL org.opencontainers.image.source="https://github.com/tangle-network/ai-agent-sandbox-blueprint"
-LABEL org.tangle.sidecar.harnesses="${BLUEPRINT_HARNESSES}"
+LABEL org.tangle.sidecar.harnesses="all"
 
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--"]

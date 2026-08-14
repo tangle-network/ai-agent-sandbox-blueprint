@@ -34,14 +34,6 @@ docker build -f sidecar/Dockerfile.all-harness \
   -t ghcr.io/tangle-network/blueprint-sidecar:all-harness .
 ```
 
-Build a smaller subset:
-
-```bash
-docker build -f sidecar/Dockerfile.all-harness \
-  --build-arg BLUEPRINT_HARNESSES=codex,gemini,prime,hermes \
-  -t ghcr.io/tangle-network/blueprint-sidecar:codex-gemini-prime-hermes .
-```
-
 ## Publish
 
 The GitHub Actions workflow publishes the runtime image to GHCR:
@@ -107,7 +99,7 @@ Auth/config remains provider-specific and lives in the normal CLI directories:
 - `/home/agent/.opencode`
 - `/home/agent/.prime/agent` for Prime Agent config and credentials
 - `/home/agent/.hermes` for Hermes state and credentials
-- `/home/agent/.amp`
+- `/home/agent/.config/amp`
 - `/home/agent/.factory`
 - `/home/agent/.forge`
 - `/home/agent/.openclaw`

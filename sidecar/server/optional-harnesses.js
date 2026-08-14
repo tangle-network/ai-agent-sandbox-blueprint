@@ -11,10 +11,17 @@ function optionalHarnessCommand(harness, payload) {
 
   switch (harness) {
     case 'amp':
-      if (model) env.AMP_MODEL_NAME = model
+      const mode = ['low', 'medium', 'high', 'ultra'].includes(model.toLowerCase())
+        ? model.toLowerCase()
+        : ''
       return {
         command: 'amp',
-        args: ['--dangerously-allow-all', '-x', '--stream-json', message],
+        args: [
+          '--execute',
+          message,
+          '--stream-json',
+          ...(mode ? ['--mode', mode] : []),
+        ],
         env,
         timeout,
       }

@@ -7,6 +7,10 @@ const fs = require('fs')
 const path = require('path')
 const { agents, selectHarness, harnessCommand } = require('./harnesses')
 const { normalizeHarnessOutput } = require('./output-normalizer')
+const {
+  openclawConcurrencyKey,
+  runWithKeyedSerialization,
+} = require('./openclaw-concurrency')
 
 const port = Number(process.env.SIDECAR_PORT || process.env.PORT || 8080)
 const authToken = process.env.SIDECAR_AUTH_TOKEN || ''
@@ -271,11 +275,12 @@ async function runAgent(payload) {
     }
   }
 
-  const result = await runProcess(spec.command, spec.args, {
+  const run = () => runProcess(spec.command, spec.args, {
     cwd: workspaceRoot,
     timeout: spec.timeout,
     env: spec.env,
   })
+  const result = await runWithKeyedSerialization(openclawConcurrencyKey(spec), run)
   const response = normalizeHarnessOutput(harness, result.stdout)
   const completed = result.exitCode === 0 && Boolean(response)
   return {

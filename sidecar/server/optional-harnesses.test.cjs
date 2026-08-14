@@ -56,14 +56,27 @@ test('install, verification, and documentation name every optional harness', () 
 })
 
 test('AMP uses documented execute JSON mode', () => {
+  const spec = optionalHarnessCommand('amp', {
+    ...payload,
+    backend: { model: 'ultra', provider: 'amp' },
+  })
+  assert.deepEqual(spec.args, [
+    '--execute',
+    'inspect the repository',
+    '--stream-json',
+    '--mode',
+    'ultra',
+  ])
+  assert.deepEqual(spec.env, {})
+})
+
+test('AMP omits model identifiers that are not supported execution modes', () => {
   const spec = optionalHarnessCommand('amp', payload)
   assert.deepEqual(spec.args, [
-    '--dangerously-allow-all',
-    '-x',
-    '--stream-json',
+    '--execute',
     'inspect the repository',
+    '--stream-json',
   ])
-  assert.equal(spec.env.AMP_MODEL_NAME, 'test-model')
 })
 
 test('Factory Droids uses documented non-interactive execute mode', () => {
