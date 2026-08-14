@@ -68,7 +68,7 @@ jobs:
       - name: Build universal profile
         run: |
           nix build .#default --print-out-paths | tee /tmp/profile-path
-          echo "PROFILE_PATH=$(cat /tmp/profile-path)" >> $GITHUB_ENV
+          echo "PROFILE_PATH=$(cat /tmp/profile-path)" >> "$GITHUB_ENV"
 
       - name: Build sub-profiles (rust, foundry)
         run: |
@@ -78,17 +78,30 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Build sidecar harness profile
+        run: |
+          nix flake check ./sidecar/nix --print-build-logs
+          nix build ./sidecar/nix#harness-profile --print-out-paths | tee /tmp/harness-profile-path
+          echo "HARNESS_PROFILE_PATH=$(cat /tmp/harness-profile-path)" >> "$GITHUB_ENV"
+
       - name: Profile info
         run: |
-          nix path-info -S ${{ env.PROFILE_PATH }} | awk '{printf "Closure: %.1f GB\n", $2/1024/1024/1024}'
-          ls ${{ env.PROFILE_PATH }}/bin 2>/dev/null | wc -l | xargs -I{} echo "Binaries: {}"
-          nix path-info -r ${{ env.PROFILE_PATH }} | wc -l | xargs -I{} echo "Store paths: {}"
+          nix path-info -S "${{ env.PROFILE_PATH }}" | awk '{printf "Closure: %.1f GB\n", $2/1024/1024/1024}'
+          nix path-info -S "${{ env.HARNESS_PROFILE_PATH }}" | awk '{printf "Harness closure: %.1f GB\n", $2/1024/1024/1024}'
+          find "${{ env.PROFILE_PATH }}/bin" -mindepth 1 -maxdepth 1 | wc -l | xargs -I{} echo "Binaries: {}"
+          find "${{ env.HARNESS_PROFILE_PATH }}/bin" -mindepth 1 -maxdepth 1 | wc -l | xargs -I{} echo "Harness binaries: {}"
+          nix path-info -r "${{ env.PROFILE_PATH }}" | wc -l | xargs -I{} echo "Store paths: {}"
 
       - name: Optimize store (hard-link dedup)
         run: nix-store --optimise
 
       - name: Push to Cachix
         if: github.event_name == 'push' && env.CACHIX_AUTH_TOKEN != ''
-        run: nix path-info --recursive ${{ env.PROFILE_PATH }} | cachix push tangle-sandbox
+        run: |
+          nix path-info --recursive \
+            "${{ env.PROFILE_PATH }}" \
+            "${{ env.HARNESS_PROFILE_PATH }}" \
+            | sort -u \
+            | cachix push tangle-sandbox
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}

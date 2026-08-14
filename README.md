@@ -115,7 +115,7 @@ UI behavior:
 Sandbox and instance provisioning accept `capabilities_json`, a JSON-encoded string array:
 
 - `computer_use`: enables the sidecar computer-use subsystem.
-- `all_harness`: requests the open-source all-harness runtime image path with Claude, Codex, opencode, Kimi, and Gemini available inside the sandbox.
+- `all_harness`: requests the runtime image with Claude, Codex, OpenCode, Kimi, Gemini, Prime Agent, Hermes, AMP, Factory Droids, Pi, ForgeCode, OpenClaw, Qwen Code, and GitHub Copilot CLI.
 
 The runtime injects accepted values into the sandbox as `SIDECAR_CAPABILITIES`, preserving the same contract surface for Docker, Firecracker, and TEE-backed creation. The UI exposes `all_harness` and `computer_use` as explicit create/provision options while keeping the ABI field itself internal.
 

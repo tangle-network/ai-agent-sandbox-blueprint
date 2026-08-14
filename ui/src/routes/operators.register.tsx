@@ -91,7 +91,7 @@ const TEE_BACKENDS: Array<{ id: string; label: string; needsKey?: string }> = [
 ];
 
 // Default sidecar image: docs/runbook.md §1 "Sandbox-mode only".
-const DEFAULT_SIDECAR_IMAGE = 'blueprint-sidecar:all-harness';
+const DEFAULT_SIDECAR_IMAGE = 'ghcr.io/tangle-network/blueprint-sidecar:all-harness';
 
 function ModeCard({
   spec,

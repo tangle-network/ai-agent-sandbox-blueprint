@@ -233,6 +233,22 @@ pub(crate) struct RuntimeCapabilitiesResponse {
     pub(crate) harnesses: Vec<HarnessCapabilityDescriptor>,
 }
 
+fn harness_capability(
+    id: &'static str,
+    label: &'static str,
+    mcp: bool,
+    skills: bool,
+    subagents: bool,
+) -> HarnessCapabilityDescriptor {
+    HarnessCapabilityDescriptor {
+        id,
+        label,
+        mcp,
+        skills,
+        subagents,
+    }
+}
+
 pub(crate) fn runtime_capabilities_response() -> RuntimeCapabilitiesResponse {
     RuntimeCapabilitiesResponse {
         capabilities: vec![
@@ -244,45 +260,24 @@ pub(crate) fn runtime_capabilities_response() -> RuntimeCapabilitiesResponse {
             RuntimeCapabilityDescriptor {
                 id: "all_harness",
                 label: "All Harness Runtime",
-                description: "Enable the open-source all-harness agent runtime: Claude, Codex, opencode, Kimi, and Gemini.",
+                description: "Enable 14 supported agent CLIs in one sandbox image.",
             },
         ],
         harnesses: vec![
-            HarnessCapabilityDescriptor {
-                id: "claude-code",
-                label: "Claude Code",
-                mcp: true,
-                skills: true,
-                subagents: true,
-            },
-            HarnessCapabilityDescriptor {
-                id: "codex",
-                label: "Codex",
-                mcp: true,
-                skills: false,
-                subagents: false,
-            },
-            HarnessCapabilityDescriptor {
-                id: "opencode",
-                label: "opencode",
-                mcp: true,
-                skills: true,
-                subagents: true,
-            },
-            HarnessCapabilityDescriptor {
-                id: "kimi-code",
-                label: "Kimi Code",
-                mcp: true,
-                skills: false,
-                subagents: false,
-            },
-            HarnessCapabilityDescriptor {
-                id: "gemini",
-                label: "Gemini CLI",
-                mcp: true,
-                skills: false,
-                subagents: false,
-            },
+            harness_capability("claude-code", "Claude Code", true, true, true),
+            harness_capability("codex", "Codex", true, false, false),
+            harness_capability("opencode", "OpenCode", true, true, true),
+            harness_capability("kimi-code", "Kimi Code", true, false, false),
+            harness_capability("gemini", "Gemini CLI", true, false, false),
+            harness_capability("prime", "Prime Agent", false, false, false),
+            harness_capability("hermes", "Hermes", false, false, false),
+            harness_capability("amp", "AMP", false, false, false),
+            harness_capability("factory-droids", "Factory Droids", false, false, false),
+            harness_capability("pi", "Pi", false, false, false),
+            harness_capability("forge", "ForgeCode", false, false, false),
+            harness_capability("openclaw", "OpenClaw", false, false, false),
+            harness_capability("qwen", "Qwen Code", false, false, false),
+            harness_capability("copilot", "GitHub Copilot CLI", false, false, false),
         ],
     }
 }

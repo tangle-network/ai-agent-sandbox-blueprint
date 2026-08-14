@@ -2,7 +2,7 @@
 set -eu
 
 missing=""
-for bin in bun claude codex opencode kimi gemini; do
+for bin in bun claude codex opencode kimi gemini prime-agent uv hermes amp droid pi forgecode openclaw qwen copilot; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     missing="$missing $bin"
   fi
@@ -13,4 +13,16 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 
-echo "all harness binaries are present"
+unusable=""
+for bin in bun claude codex opencode kimi gemini prime-agent uv hermes amp droid pi forgecode openclaw qwen copilot; do
+  if ! "$bin" --version >/dev/null 2>&1; then
+    unusable="$unusable $bin"
+  fi
+done
+
+if [ -n "$unusable" ]; then
+  echo "unusable harness binaries:$unusable" >&2
+  exit 1
+fi
+
+echo "all harness binaries are present and executable"

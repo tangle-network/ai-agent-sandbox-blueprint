@@ -42,16 +42,15 @@ jobs:
       - name: Smoke sidecar terminal API
         run: |
           node --check sidecar/server/server.js
+          node --test sidecar/server/*.test.js sidecar/server/*.test.cjs
+          sh -n sidecar/scripts/install-harness.sh sidecar/scripts/verify-harnesses.sh
           sidecar/scripts/smoke-terminal-api.sh
 
-      - name: Build harness layer
+      - name: Build all-harness image
         run: |
           docker build \
             -f sidecar/Dockerfile.all-harness \
-            --target harnesses \
-            --build-arg BLUEPRINT_HARNESSES=all \
-            --build-arg SIDECAR_BASE_IMAGE=scratch \
-            -t blueprint-sidecar-harnesses:test .
+            -t blueprint-sidecar-all:test .
 
   publish:
     name: Publish all-harness sidecar
@@ -109,8 +108,6 @@ jobs:
             org.opencontainers.image.source=https://github.com/tangle-network/ai-agent-sandbox-blueprint
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ github.ref_name }}
-          build-args: |
-            BLUEPRINT_HARNESSES=all
 
   cleanup:
     name: Prune old sidecar image versions

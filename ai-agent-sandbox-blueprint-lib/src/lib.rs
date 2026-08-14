@@ -87,8 +87,9 @@ sol! {
         /// Currently supported: ["computer_use", "all_harness"].
         /// "computer_use" boots Xvfb + dbus + an MCP server inside the sandbox
         /// so computer-use surfaces can drive mouse/keyboard/screenshots.
-        /// "all_harness" requests the open-source multi-harness agent runtime
-        /// with Claude, Codex, opencode, Kimi, and Gemini available in the
+        /// "all_harness" requests the multi-harness agent runtime with Claude,
+        /// Codex, OpenCode, Kimi, Gemini, Prime Agent, Hermes, AMP, Factory
+        /// Droids, Pi, ForgeCode, OpenClaw, Qwen Code, and Copilot CLI in the
         /// sandbox image. Empty or "" means no extra subsystems are started.
         ///
         /// Wire format: a JSON-encoded array of strings, e.g.

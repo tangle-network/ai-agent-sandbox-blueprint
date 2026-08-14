@@ -5,6 +5,12 @@ const { spawn } = require('child_process')
 const { randomUUID } = require('crypto')
 const fs = require('fs')
 const path = require('path')
+const { agents, selectHarness, harnessCommand } = require('./harnesses')
+const { normalizeHarnessOutput } = require('./output-normalizer')
+const {
+  openclawConcurrencyKey,
+  runWithKeyedSerialization,
+} = require('./openclaw-concurrency')
 
 const port = Number(process.env.SIDECAR_PORT || process.env.PORT || 8080)
 const authToken = process.env.SIDECAR_AUTH_TOKEN || ''
@@ -13,39 +19,6 @@ const childUid = Number(process.env.AGENT_SUBPROCESS_UID || 1000)
 const childGid = Number(process.env.AGENT_SUBPROCESS_GID || 1000)
 const terminalShell = process.env.SIDECAR_TERMINAL_SHELL || '/bin/bash'
 const terminalSessions = new Map()
-
-const agents = [
-  {
-    identifier: 'default',
-    displayName: 'Default',
-    description: 'Uses the first configured local coding harness.',
-  },
-  {
-    identifier: 'codex',
-    displayName: 'Codex',
-    description: 'Runs the Codex CLI.',
-  },
-  {
-    identifier: 'claude',
-    displayName: 'Claude Code',
-    description: 'Runs Claude Code.',
-  },
-  {
-    identifier: 'gemini',
-    displayName: 'Gemini',
-    description: 'Runs Gemini CLI.',
-  },
-  {
-    identifier: 'opencode',
-    displayName: 'OpenCode',
-    description: 'Runs OpenCode.',
-  },
-  {
-    identifier: 'kimi',
-    displayName: 'Kimi',
-    description: 'Runs Kimi CLI.',
-  },
-]
 
 fs.mkdirSync(workspaceRoot, { recursive: true })
 
@@ -267,68 +240,6 @@ function closeTerminalSession(session) {
   session.subscribers.clear()
 }
 
-function selectHarness(identifier, backend) {
-  const requested = (identifier || backend?.type || '').trim().toLowerCase()
-  if (requested && requested !== 'default') return requested
-  if (process.env.SIDECAR_DEFAULT_HARNESS) return process.env.SIDECAR_DEFAULT_HARNESS
-  if (process.env.OPENAI_API_KEY) return 'codex'
-  if (process.env.ANTHROPIC_API_KEY) return 'claude'
-  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return 'gemini'
-  return 'opencode'
-}
-
-function harnessCommand(harness, payload) {
-  const message = String(payload.message || '')
-  const model = payload.backend?.model ? String(payload.backend.model) : ''
-  const timeout = Number(payload.timeout || 0)
-
-  if (process.env.SIDECAR_AGENT_COMMAND) {
-    return {
-      command: '/bin/sh',
-      args: ['-lc', process.env.SIDECAR_AGENT_COMMAND],
-      env: { SIDECAR_AGENT_MESSAGE: message, SIDECAR_AGENT_MODEL: model },
-      timeout,
-    }
-  }
-
-  switch (harness) {
-    case 'codex':
-      return {
-        command: 'codex',
-        args: ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', message],
-        timeout,
-      }
-    case 'claude':
-      return {
-        command: 'claude',
-        args: ['-p', message, '--dangerously-skip-permissions'],
-        timeout,
-      }
-    case 'gemini':
-      return {
-        command: 'gemini',
-        args: model
-          ? ['--skip-trust', '--yolo', '-m', model, '-p', message]
-          : ['--skip-trust', '--yolo', '-p', message],
-        timeout,
-      }
-    case 'kimi':
-      return {
-        command: 'kimi',
-        args: ['-p', message],
-        timeout,
-      }
-    case 'opencode':
-      return {
-        command: 'opencode',
-        args: ['run', message],
-        timeout,
-      }
-    default:
-      return null
-  }
-}
-
 async function runAgent(payload) {
   const identifier = String(payload.identifier || 'default')
   const known = agents.some((agent) => agent.identifier === identifier)
@@ -341,7 +252,14 @@ async function runAgent(payload) {
   }
 
   const harness = selectHarness(identifier, payload.backend)
-  const spec = harnessCommand(harness, payload)
+  if (!harness) {
+    return {
+      success: false,
+      status: 400,
+      error: 'Requested harness is not advertised by this sidecar image',
+    }
+  }
+  const spec = harnessCommand(harness, { ...payload, cwd: workspaceRoot })
   if (!spec) {
     return {
       success: false,
@@ -350,16 +268,26 @@ async function runAgent(payload) {
     }
   }
 
-  const result = await runProcess(spec.command, spec.args, {
+  if (spec.env?.HERMES_HOME) {
+    fs.mkdirSync(spec.env.HERMES_HOME, { recursive: true })
+    if (process.getuid && process.getuid() === 0) {
+      fs.chownSync(spec.env.HERMES_HOME, childUid, childGid)
+    }
+  }
+
+  const run = () => runProcess(spec.command, spec.args, {
     cwd: workspaceRoot,
     timeout: spec.timeout,
     env: spec.env,
   })
-  const response = result.stdout.trim() || result.stderr.trim()
+  const result = await runWithKeyedSerialization(openclawConcurrencyKey(spec), run)
+  const response = normalizeHarnessOutput(harness, result.stdout)
+  const completed = result.exitCode === 0 && Boolean(response)
   return {
-    success: result.exitCode === 0,
-    status: result.exitCode === 0 ? 200 : 502,
-    response,
+    success: completed,
+    status: completed ? 200 : 502,
+    response: response || (result.exitCode === 0 ? '' : result.stderr.trim()),
+    error: result.exitCode === 0 && !response ? 'Harness returned no assistant response' : undefined,
     stderr: result.stderr,
     exitCode: result.exitCode,
     harness,
