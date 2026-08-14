@@ -46,14 +46,12 @@ jobs:
           sh -n sidecar/scripts/install-harness.sh sidecar/scripts/verify-harnesses.sh
           sidecar/scripts/smoke-terminal-api.sh
 
-      - name: Build harness layer
+      - name: Build all-harness image
         run: |
           docker build \
             -f sidecar/Dockerfile.all-harness \
-            --target harnesses \
             --build-arg BLUEPRINT_HARNESSES=all \
-            --build-arg SIDECAR_BASE_IMAGE=scratch \
-            -t blueprint-sidecar-harnesses:test .
+            -t blueprint-sidecar-all:test .
 
   publish:
     name: Publish all-harness sidecar

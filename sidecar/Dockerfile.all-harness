@@ -16,18 +16,21 @@
 
 ARG BLUEPRINT_HARNESSES=all
 
-FROM node:22-slim AS harnesses
+FROM node@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS harnesses
 ARG BLUEPRINT_HARNESSES
-ARG HERMES_INSTALL_COMMIT
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl git python3 unzip \
+    bash build-essential ca-certificates curl git libffi-dev python3 python3-dev unzip \
   && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://bun.sh/install | bash \
-  && cp /root/.bun/bin/bun /usr/local/bin/bun \
-  && chmod 0755 /usr/local/bin/bun
+RUN bun_dir="$(mktemp -d)" \
+  && curl -fsSL -o "$bun_dir/bun.zip" \
+    https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64.zip \
+  && echo '951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f  '"$bun_dir/bun.zip" | sha256sum -c - \
+  && unzip -p "$bun_dir/bun.zip" bun-linux-x64/bun > /usr/local/bin/bun \
+  && chmod 0755 /usr/local/bin/bun \
+  && rm -rf "$bun_dir"
 
 COPY sidecar/scripts/install-harness.sh /usr/local/share/blueprint-sidecar/install-harness.sh
 RUN set -eu; \
@@ -36,9 +39,9 @@ RUN set -eu; \
   else \
     echo "$BLUEPRINT_HARNESSES" | tr ',' ' ' | xargs -n1 sh /usr/local/share/blueprint-sidecar/install-harness.sh; \
   fi; \
-  mkdir -p /root/.amp /root/.local /root/.opencode /root/.hermes
+  mkdir -p /home/agent/.amp /home/agent/.local /root/.hermes
 
-FROM node:22-slim AS runtime
+FROM node@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS runtime
 
 ARG BLUEPRINT_HARNESSES
 
@@ -54,41 +57,43 @@ RUN apt-get update \
   && if [ -n "$existing_user" ] && [ "$existing_user" != agent ]; then usermod --login agent --home /home/agent --move-home --shell /bin/bash "$existing_user"; elif [ -z "$existing_user" ]; then useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent; fi \
   && if ! getent group sidecar >/dev/null; then groupadd --gid 1001 sidecar; fi \
   && if ! id sidecar >/dev/null 2>&1; then useradd --uid 1001 --gid sidecar --create-home --shell /bin/bash sidecar; fi \
-  && mkdir -p /home/agent/.amp /home/agent/.cache /home/agent/.config \
+  && mkdir -p /home/agent/.amp /home/agent/.cache /home/agent/.claude \
+    /home/agent/.codex /home/agent/.config/kimi /home/agent/.config/opencode \
     /home/agent/.copilot /home/agent/.factory /home/agent/.forge \
+    /home/agent/.gemini /home/agent/.kimi /home/agent/.opencode \
+    /home/agent/.hermes /home/agent/.prime/agent \
     /home/agent/.openclaw /home/agent/.pi /home/agent/.qwen \
     /home/agent/workspace \
   && chown -R agent:agent /home/agent
 
 COPY --from=harnesses /usr/local/ /usr/local/
-COPY --from=harnesses /root/.bun/ /root/.bun/
-COPY --from=harnesses /root/.local/ /root/.local/
-COPY --from=harnesses /root/.opencode/ /root/.opencode/
-COPY --from=harnesses /root/.hermes/ /root/.hermes/
-COPY --from=harnesses /root/.amp/ /root/.amp/
+COPY --chown=agent:agent --from=harnesses /home/agent/.amp/ /home/agent/.amp/
+COPY --chown=agent:agent --from=harnesses /home/agent/.local/ /home/agent/.local/
+COPY --chown=agent:agent --from=harnesses /root/.hermes/ /home/agent/.hermes/
 
 COPY sidecar/server/ /opt/blueprint-sidecar/
 COPY sidecar/scripts/verify-harnesses.sh /usr/local/bin/blueprint-verify-harnesses
 RUN chmod +x /usr/local/bin/blueprint-verify-harnesses \
   && if [ "$BLUEPRINT_HARNESSES" = "all" ]; then blueprint-verify-harnesses; fi
 
-ENV PATH="/home/agent/.local/bin:/root/.bun/bin:/root/.local/bin:/root/.opencode/bin:/usr/local/bin:${PATH}"
+ENV PATH="/home/agent/.local/bin:/usr/local/bin:${PATH}"
 ENV SIDECAR_CAPABILITIES="all_harness"
+ENV SIDECAR_HARNESSES="${BLUEPRINT_HARNESSES}"
 ENV SIDECAR_PORT=8080
 ENV AGENT_WORKSPACE_ROOT="/home/agent/workspace"
 ENV AGENT_SUBPROCESS_UID=1000
 ENV AGENT_SUBPROCESS_GID=1000
 ENV PRIME_AGENT_INSTALL_UV=1
 
-VOLUME /root/.claude
-VOLUME /root/.codex
-VOLUME /root/.kimi
-VOLUME /root/.config/kimi
-VOLUME /root/.gemini
-VOLUME /root/.config/opencode
-VOLUME /root/.opencode
+VOLUME /home/agent/.claude
+VOLUME /home/agent/.codex
+VOLUME /home/agent/.kimi
+VOLUME /home/agent/.config/kimi
+VOLUME /home/agent/.gemini
+VOLUME /home/agent/.config/opencode
+VOLUME /home/agent/.opencode
 VOLUME /home/agent/.prime
-VOLUME /root/.hermes
+VOLUME /home/agent/.hermes
 VOLUME /home/agent/.amp
 VOLUME /home/agent/.factory
 VOLUME /home/agent/.forge

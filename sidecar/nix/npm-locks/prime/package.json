@@ -1,0 +1,8 @@
+{
+  "name": "blueprint-prime-nix-root",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "prime-agent": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.7.2/prime-agent-0.7.2.tgz"
+  }
+}

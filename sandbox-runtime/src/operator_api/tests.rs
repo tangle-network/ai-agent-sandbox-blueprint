@@ -1120,12 +1120,56 @@ async fn test_capabilities_endpoint_includes_all_harness_runtime() {
         "missing all_harness capability: {json}",
     );
     let harnesses = json["harnesses"].as_array().expect("harnesses");
-    for id in ["claude-code", "codex", "opencode", "kimi-code", "gemini", "prime"] {
+    for id in [
+        "claude-code",
+        "codex",
+        "opencode",
+        "kimi-code",
+        "gemini",
+        "prime",
+        "hermes",
+        "amp",
+        "factory-droids",
+        "pi",
+        "forge",
+        "openclaw",
+        "qwen",
+        "copilot",
+    ] {
         assert!(
             harnesses.iter().any(|h| h["id"] == id),
             "missing harness {id}: {json}",
         );
     }
+
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../sidecar/server/harness-manifest.json"
+    ))
+    .expect("valid sidecar harness manifest");
+    let expected: Vec<_> = manifest
+        .as_array()
+        .expect("harness manifest array")
+        .iter()
+        .map(|entry| {
+            (
+                entry["capabilityId"].as_str().expect("capability id"),
+                entry["displayName"].as_str().expect("display name"),
+            )
+        })
+        .collect();
+    let actual: Vec<_> = harnesses
+        .iter()
+        .map(|entry| {
+            (
+                entry["id"].as_str().expect("capability response id"),
+                entry["label"].as_str().expect("capability response label"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "Rust capability metadata drifted from sidecar manifest"
+    );
 }
 
 #[serial_test::serial]

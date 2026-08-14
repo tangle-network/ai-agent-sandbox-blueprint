@@ -1,71 +1,32 @@
 'use strict'
 
-const { randomUUID } = require('crypto')
 const { hermesCommand } = require('./hermes-command')
-const { optionalAgents, optionalHarnessCommand } = require('./optional-harnesses')
+const { advertisedAgents } = require('./harness-manifest')
+const { optionalHarnessCommand } = require('./optional-harnesses')
 
-const agents = [
-  {
-    identifier: 'default',
-    displayName: 'Default',
-    description: 'Uses the first configured local coding harness.',
-  },
-  {
-    identifier: 'codex',
-    displayName: 'Codex',
-    description: 'Runs the Codex CLI.',
-  },
-  {
-    identifier: 'claude',
-    displayName: 'Claude Code',
-    description: 'Runs Claude Code.',
-  },
-  {
-    identifier: 'gemini',
-    displayName: 'Gemini',
-    description: 'Runs Gemini CLI.',
-  },
-  {
-    identifier: 'opencode',
-    displayName: 'OpenCode',
-    description: 'Runs OpenCode.',
-  },
-  {
-    identifier: 'kimi',
-    displayName: 'Kimi',
-    description: 'Runs Kimi CLI.',
-  },
-  {
-    identifier: 'prime',
-    displayName: 'Prime Agent',
-    description: 'Runs Prime Agent in one-shot print mode.',
-  },
-  {
-    identifier: 'hermes',
-    displayName: 'Hermes',
-    description: 'Runs the Nous Research Hermes Agent CLI.',
-  },
-  ...optionalAgents,
-]
+// The image advertises only commands present on PATH unless the build sets
+// SIDECAR_HARNESSES=all. The default entry remains available for auto-select.
+const agents = advertisedAgents()
 
-function selectHarness(identifier, backend) {
+function selectHarness(identifier, backend, availableAgents = agents) {
   const explicitIdentifier = String(identifier || '').trim().toLowerCase()
   const explicitBackend = String(backend?.type || '').trim().toLowerCase()
   const requested = explicitIdentifier && explicitIdentifier !== 'default'
     ? explicitIdentifier
     : explicitBackend
-  if (requested) return requested
-  if (process.env.SIDECAR_DEFAULT_HARNESS) return process.env.SIDECAR_DEFAULT_HARNESS
-  if (process.env.OPENAI_API_KEY) return 'codex'
-  if (process.env.ANTHROPIC_API_KEY) return 'claude'
-  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return 'gemini'
-  return 'opencode'
-}
+  const advertised = new Set(
+    availableAgents
+      .map((agent) => agent.identifier)
+      .filter((identifier) => identifier !== 'default'),
+  )
+  if (requested) return advertised.has(requested) ? requested : null
 
-function primeAgentConfigDir(sessionId) {
-  const source = String(sessionId || randomUUID())
-  const safe = source.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96) || randomUUID()
-  return `/tmp/blueprint-prime-agent-${safe}`
+  const configuredDefault = String(process.env.SIDECAR_DEFAULT_HARNESS || '').trim().toLowerCase()
+  if (configuredDefault && advertised.has(configuredDefault)) return configuredDefault
+  if (process.env.OPENAI_API_KEY && advertised.has('codex')) return 'codex'
+  if (process.env.ANTHROPIC_API_KEY && advertised.has('claude')) return 'claude'
+  if ((process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) && advertised.has('gemini')) return 'gemini'
+  return availableAgents.find((agent) => agent.identifier !== 'default')?.identifier || null
 }
 
 function harnessCommand(harness, payload) {
@@ -129,7 +90,7 @@ function harnessCommand(harness, payload) {
         command: 'prime-agent',
         args,
         env: {
-          PRIME_AGENT_CODING_AGENT_DIR: primeAgentConfigDir(payload.sessionId),
+          PRIME_AGENT_CODING_AGENT_DIR: '/home/agent/.prime/agent',
           PRIME_AGENT_INSTALL_UV: '1',
         },
         timeout,

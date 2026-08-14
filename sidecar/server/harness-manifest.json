@@ -1,0 +1,100 @@
+[
+  {
+    "identifier": "claude",
+    "capabilityId": "claude-code",
+    "displayName": "Claude Code",
+    "description": "Runs Claude Code.",
+    "command": "claude"
+  },
+  {
+    "identifier": "codex",
+    "capabilityId": "codex",
+    "displayName": "Codex",
+    "description": "Runs the Codex CLI.",
+    "command": "codex"
+  },
+  {
+    "identifier": "opencode",
+    "capabilityId": "opencode",
+    "displayName": "OpenCode",
+    "description": "Runs OpenCode.",
+    "command": "opencode"
+  },
+  {
+    "identifier": "kimi",
+    "capabilityId": "kimi-code",
+    "displayName": "Kimi Code",
+    "description": "Runs Kimi CLI.",
+    "command": "kimi"
+  },
+  {
+    "identifier": "gemini",
+    "capabilityId": "gemini",
+    "displayName": "Gemini CLI",
+    "description": "Runs Gemini CLI.",
+    "command": "gemini"
+  },
+  {
+    "identifier": "prime",
+    "capabilityId": "prime",
+    "displayName": "Prime Agent",
+    "description": "Runs Prime Agent in one-shot print mode.",
+    "command": "prime-agent"
+  },
+  {
+    "identifier": "hermes",
+    "capabilityId": "hermes",
+    "displayName": "Hermes",
+    "description": "Runs the Nous Research Hermes Agent CLI.",
+    "command": "hermes"
+  },
+  {
+    "identifier": "amp",
+    "capabilityId": "amp",
+    "displayName": "AMP",
+    "description": "Runs Sourcegraph AMP in execute mode.",
+    "command": "amp"
+  },
+  {
+    "identifier": "factory-droids",
+    "capabilityId": "factory-droids",
+    "displayName": "Factory Droids",
+    "description": "Runs Factory Droids in non-interactive execute mode.",
+    "command": "droid"
+  },
+  {
+    "identifier": "pi",
+    "capabilityId": "pi",
+    "displayName": "Pi",
+    "description": "Runs Pi in print mode with JSON output.",
+    "command": "pi"
+  },
+  {
+    "identifier": "forge",
+    "capabilityId": "forge",
+    "displayName": "ForgeCode",
+    "description": "Runs ForgeCode in one-shot prompt mode.",
+    "command": "forgecode"
+  },
+  {
+    "identifier": "openclaw",
+    "capabilityId": "openclaw",
+    "displayName": "OpenClaw",
+    "description": "Runs OpenClaw locally with a JSON result envelope.",
+    "command": "openclaw"
+  },
+  {
+    "identifier": "qwen",
+    "capabilityId": "qwen",
+    "displayName": "Qwen Code",
+    "description": "Runs Qwen Code in prompt mode.",
+    "command": "qwen"
+  },
+  {
+    "identifier": "copilot",
+    "capabilityId": "copilot",
+    "displayName": "GitHub Copilot CLI",
+    "description": "Runs GitHub Copilot CLI in prompt mode.",
+    "command": "copilot"
+  }
+]

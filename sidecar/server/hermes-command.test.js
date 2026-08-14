@@ -11,21 +11,27 @@ test('Hermes builds a safe quiet single-turn command', () => {
   const spec = hermesCommand({ message: prompt })
 
   assert.equal(spec.command, 'hermes')
-  assert.deepEqual(spec.args, ['chat', '--quiet', '-q', prompt])
+  assert.deepEqual(spec.args, ['chat', '--quiet', '--yolo', '-q', prompt])
   assert.equal(spec.timeout, 0)
-  assert.match(spec.env.HERMES_HOME, /\.hermes$/)
+  assert.equal(spec.env.HERMES_HOME, '/home/agent/.hermes')
 })
 
-test('Hermes passes an optional model without shell interpolation', () => {
+test('Hermes routes provider and model without shell interpolation', () => {
   const spec = hermesCommand({
     message: 'solve the task',
-    backend: { model: 'openrouter/anthropic/claude-sonnet-4' },
+    backend: {
+      provider: 'openrouter',
+      model: 'openrouter/anthropic/claude-sonnet-4',
+    },
     timeout_ms: 90000,
   })
 
   assert.deepEqual(spec.args, [
     'chat',
     '--quiet',
+    '--yolo',
+    '--provider',
+    'openrouter',
     '--model',
     'openrouter/anthropic/claude-sonnet-4',
     '-q',
@@ -45,5 +51,10 @@ test('Hermes is wired into the install, verification, image, and docs surfaces',
   assert.match(install, /hermes-agent\.nousresearch\.com\/install\.sh/)
   assert.match(verify, /hermes/)
   assert.match(docker, /Hermes/)
+  assert.match(docker, /FROM node@sha256:[0-9a-f]{64}/)
+  assert.match(docker, /ENV SIDECAR_HARNESSES="\$\{BLUEPRINT_HARNESSES\}"/)
+  assert.match(docker, /\/home\/agent\/.prime\/agent/)
+  assert.match(docker, /VOLUME \/home\/agent\/.hermes/)
+  assert.doesNotMatch(docker, /VOLUME \/root\/.hermes/)
   assert.match(readme, /Hermes/)
 })

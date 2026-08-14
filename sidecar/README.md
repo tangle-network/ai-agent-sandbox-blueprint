@@ -4,7 +4,7 @@ This directory owns the public all-harness sidecar runtime for the sandbox bluep
 
 The sandbox runtime should not assume that an external floating image contains
 the sidecar server or every agent CLI. The image built here ships the sidecar
-HTTP contract plus the harness toolchain in a reviewable, reproducible place:
+HTTP contract plus the harness toolchain in one reviewable, version-pinned place:
 
 - Claude Code
 - Codex
@@ -20,6 +20,12 @@ HTTP contract plus the harness toolchain in a reviewable, reproducible place:
 - OpenClaw
 - Qwen Code
 - GitHub Copilot CLI
+
+## Runtime Boundary
+
+[Exo](https://github.com/exoharness/exo) is not a sidecar harness entry.
+Exo is a stateful orchestration runtime, not a one-shot agent CLI.
+It should integrate above this process adapter through its socket and workspace contracts.
 
 ## Build
 
@@ -77,34 +83,30 @@ docker images 'ghcr.io/tangle-network/blueprint-sidecar' --format '{{.Repository
 ## Local Profile
 
 ```bash
-nix-shell sidecar/nix/harness-profile.nix
-sh sidecar/scripts/install-all-harnesses.sh
+nix develop ./sidecar/nix
 ```
+
+Build the same profile for a `/nix/profile` mount:
+
+```bash
+nix build ./sidecar/nix#harness-profile
+```
+
+The flake packages all 14 CLIs in the Nix store.
+Its lock file pins Nixpkgs, Hermes, Kimi, and every transitive package source.
+Byte-exact native CLIs run through the pinned Nix glibc without modifying their embedded bundles.
 
 Auth/config remains provider-specific and lives in the normal CLI directories:
 
-- `/root/.claude`
-- `/root/.codex`
-- `/root/.kimi`
-- `/root/.config/kimi`
-- `/root/.gemini`
-- `/root/.config/opencode`
-- `/root/.opencode`
-- `/home/agent/.prime`
-- `/root/.hermes` for Hermes install state
-
-Prime Agent runs with its official `-p --no-session` print contract.
-The sidecar assigns each run an isolated `PRIME_AGENT_CODING_AGENT_DIR` under
-`/tmp` and keeps the CLI's model credentials in environment variables such as
-`PRIME_API_KEY`.
-The image install pins Prime Agent `0.7.2`; update `PRIME_AGENT_VERSION` only
-with a matching official release check.
-
-The sidecar sets `HERMES_HOME` to `<AGENT_WORKSPACE_ROOT>/.hermes` before a
-Hermes run, so sessions and state stay in the sandbox workspace.
-The install script uses Nous Research's official installer with setup,
-browser, computer-use, and bundled skills disabled for a headless image.
-Set `HERMES_INSTALL_COMMIT` during image builds to pin the upstream commit.
+- `/home/agent/.claude`
+- `/home/agent/.codex`
+- `/home/agent/.kimi`
+- `/home/agent/.config/kimi`
+- `/home/agent/.gemini`
+- `/home/agent/.config/opencode`
+- `/home/agent/.opencode`
+- `/home/agent/.prime/agent` for Prime Agent config and credentials
+- `/home/agent/.hermes` for Hermes state and credentials
 - `/home/agent/.amp`
 - `/home/agent/.factory`
 - `/home/agent/.forge`
@@ -112,3 +114,20 @@ Set `HERMES_INSTALL_COMMIT` during image builds to pin the upstream commit.
 - `/home/agent/.pi`
 - `/home/agent/.qwen`
 - `/home/agent/.copilot`
+
+Prime Agent runs with its official `-p` print contract.
+The sidecar keeps the persistent Prime Agent config at
+`/home/agent/.prime/agent` and passes the official `--no-session` flag.
+Model credentials remain in the persistent config or environment variables such
+as `PRIME_API_KEY`.
+The image install pins Prime Agent `0.7.2`; update its package URL and checksum
+together in `sidecar/scripts/install-harness.sh`.
+
+The sidecar sets `HERMES_HOME=/home/agent/.hermes` before every Hermes run, so
+sessions and state use one persistent location.
+It passes `--provider` when the request selects one and always passes `--yolo`
+because sidecar calls have no interactive approval channel.
+The install script uses Nous Research's official installer with setup,
+browser, computer-use, and bundled skills disabled for a headless image.
+The installer checksum, source archive checksum, and upstream commit are pinned in
+`sidecar/scripts/install-harness.sh`.

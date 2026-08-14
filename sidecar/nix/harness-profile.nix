@@ -1,22 +1,4 @@
-{ pkgs ? import <nixpkgs> {} }:
-
-pkgs.mkShell {
-  name = "blueprint-sidecar-harness-profile";
-
-  packages = with pkgs; [
-    bash
-    bun
-    cacert
-    curl
-    git
-    nodejs_22
-    python313
-    uv
-  ];
-
-  shellHook = ''
-    echo "blueprint sidecar harness profile"
-    echo "Run: sh sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|hermes|amp|factory-droids|pi|forge|openclaw|qwen|copilot|all>"
-    echo "Auth/config stays in each CLI's normal home directory."
-  '';
-}
+let
+  flake = builtins.getFlake (toString ./.);
+in
+flake.devShells.${builtins.currentSystem}.default

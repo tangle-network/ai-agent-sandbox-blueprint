@@ -6,6 +6,7 @@ const { randomUUID } = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const { agents, selectHarness, harnessCommand } = require('./harnesses')
+const { normalizeHarnessOutput } = require('./output-normalizer')
 
 const port = Number(process.env.SIDECAR_PORT || process.env.PORT || 8080)
 const authToken = process.env.SIDECAR_AUTH_TOKEN || ''
@@ -247,6 +248,13 @@ async function runAgent(payload) {
   }
 
   const harness = selectHarness(identifier, payload.backend)
+  if (!harness) {
+    return {
+      success: false,
+      status: 400,
+      error: 'Requested harness is not advertised by this sidecar image',
+    }
+  }
   const spec = harnessCommand(harness, { ...payload, cwd: workspaceRoot })
   if (!spec) {
     return {
@@ -268,11 +276,13 @@ async function runAgent(payload) {
     timeout: spec.timeout,
     env: spec.env,
   })
-  const response = result.stdout.trim() || result.stderr.trim()
+  const response = normalizeHarnessOutput(harness, result.stdout)
+  const completed = result.exitCode === 0 && Boolean(response)
   return {
-    success: result.exitCode === 0,
-    status: result.exitCode === 0 ? 200 : 502,
-    response,
+    success: completed,
+    status: completed ? 200 : 502,
+    response: response || (result.exitCode === 0 ? '' : result.stderr.trim()),
+    error: result.exitCode === 0 && !response ? 'Harness returned no assistant response' : undefined,
     stderr: result.stderr,
     exitCode: result.exitCode,
     harness,

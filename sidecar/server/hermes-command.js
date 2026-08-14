@@ -1,7 +1,5 @@
 'use strict'
 
-const path = require('path')
-
 /**
  * Build Hermes's documented single-turn command.
  *
@@ -10,13 +8,12 @@ const path = require('path')
  */
 function hermesCommand(payload = {}) {
   const message = String(payload.message || '')
+  const provider = payload.backend?.provider ? String(payload.backend.provider) : ''
   const model = payload.backend?.model ? String(payload.backend.model) : ''
-  const hermesHome = process.env.HERMES_HOME || path.join(
-    process.env.AGENT_WORKSPACE_ROOT || '/home/agent/workspace',
-    '.hermes',
-  )
 
-  const args = ['chat', '--quiet']
+  // Sidecar calls cannot answer an approval prompt, so every run is unattended.
+  const args = ['chat', '--quiet', '--yolo']
+  if (provider) args.push('--provider', provider)
   if (model) args.push('--model', model)
   args.push('-q', message)
 
@@ -24,7 +21,7 @@ function hermesCommand(payload = {}) {
     command: 'hermes',
     args,
     timeout: Number(payload.timeout || payload.timeout_ms || 0),
-    env: { HERMES_HOME: hermesHome },
+    env: { HERMES_HOME: '/home/agent/.hermes' },
   }
 }
 

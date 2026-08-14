@@ -4,7 +4,11 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
-const { optionalAgents, optionalHarnessCommand } = require('./optional-harnesses')
+const { manifest } = require('./harness-manifest')
+const { optionalHarnessCommand } = require('./optional-harnesses')
+
+const builtInHarnesses = new Set(['claude', 'codex', 'opencode', 'kimi', 'gemini', 'prime', 'hermes'])
+const optionalAgents = manifest.filter((agent) => !builtInHarnesses.has(agent.identifier))
 
 const sidecarRoot = path.resolve(__dirname, '..')
 
@@ -110,9 +114,16 @@ test('OpenClaw uses local JSON agent mode', () => {
     'agent',
     '--local',
     '--json',
-    '-m',
+    '--agent',
+    'main',
+    '--session-id',
+    'blueprint-2276d56b31259ef6e1ed82e6',
+    '--model',
+    'openai/test-model',
+    '--message',
     'inspect the repository',
   ])
+  assert.equal(spec.env.OPENCLAW_WORKSPACE_DIR, '/home/agent/workspace')
 })
 
 test('Qwen Code uses documented prompt JSON mode', () => {
@@ -120,6 +131,8 @@ test('Qwen Code uses documented prompt JSON mode', () => {
   assert.deepEqual(spec.args, [
     '--output-format',
     'json',
+    '--approval-mode',
+    'yolo',
     '--model',
     'test-model',
     '--prompt',

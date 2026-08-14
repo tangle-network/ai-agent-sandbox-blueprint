@@ -1,48 +1,6 @@
 'use strict'
 
-/**
- * Optional command-line agents with documented non-interactive entrypoints.
- *
- * These specs stay separate from server.js so adding a provider does not grow
- * the HTTP server or turn it into a provider-specific switchboard.
- */
-const optionalAgents = [
-  {
-    identifier: 'amp',
-    displayName: 'AMP',
-    description: 'Runs Sourcegraph AMP in execute mode.',
-  },
-  {
-    identifier: 'factory-droids',
-    displayName: 'Factory Droids',
-    description: 'Runs Factory Droids in non-interactive execute mode.',
-  },
-  {
-    identifier: 'pi',
-    displayName: 'Pi',
-    description: 'Runs Pi in print mode with JSON output.',
-  },
-  {
-    identifier: 'forge',
-    displayName: 'Forge',
-    description: 'Runs ForgeCode in one-shot prompt mode.',
-  },
-  {
-    identifier: 'openclaw',
-    displayName: 'OpenClaw',
-    description: 'Runs OpenClaw locally with a JSON result envelope.',
-  },
-  {
-    identifier: 'qwen',
-    displayName: 'Qwen Code',
-    description: 'Runs Qwen Code in prompt mode.',
-  },
-  {
-    identifier: 'copilot',
-    displayName: 'GitHub Copilot CLI',
-    description: 'Runs GitHub Copilot CLI in prompt mode.',
-  },
-]
+const { createHash } = require('crypto')
 
 function optionalHarnessCommand(harness, payload) {
   const message = String(payload.message || '')
@@ -101,10 +59,27 @@ function optionalHarnessCommand(harness, payload) {
         timeout,
       }
     case 'openclaw':
+      // OpenClaw rejects an unscoped local turn. Select a configured agent and
+      // isolate the request with a stable session id so retries are replayable.
+      const agent = openclawAgentFor(payload)
       return {
         command: 'openclaw',
-        args: ['agent', '--local', '--json', '-m', message],
-        env,
+        args: [
+          'agent',
+          '--local',
+          '--json',
+          '--agent',
+          agent,
+          '--session-id',
+          openclawSessionId(payload),
+          ...(model ? ['--model', openclawModel(provider, model)] : []),
+          '--message',
+          message,
+        ],
+        env: {
+          ...env,
+          OPENCLAW_WORKSPACE_DIR: workspaceFor(payload),
+        },
         timeout,
       }
     case 'qwen':
@@ -113,6 +88,8 @@ function optionalHarnessCommand(harness, payload) {
         args: [
           '--output-format',
           'json',
+          '--approval-mode',
+          'yolo',
           ...(model ? ['--model', model] : []),
           '--prompt',
           message,
@@ -139,10 +116,40 @@ function optionalHarnessCommand(harness, payload) {
   }
 }
 
+function openclawAgentFor(payload) {
+  const requested = payload.backend?.agent || payload.agent || process.env.OPENCLAW_AGENT_ID || 'main'
+  const value = String(requested).trim()
+  return value || 'main'
+}
+
+function openclawModel(provider, model) {
+  if (!provider || model.includes('/')) return model
+  return `${provider}/${model}`
+}
+
+function openclawSessionId(payload) {
+  const requested = payload.sessionId ? String(payload.sessionId).trim() : ''
+  if (requested) return `blueprint-${safeSessionPart(requested)}`
+  const digest = createHash('sha256')
+    .update(JSON.stringify({
+      cwd: workspaceFor(payload),
+      message: String(payload.message || ''),
+      model: String(payload.backend?.model || ''),
+      provider: String(payload.backend?.provider || ''),
+    }))
+    .digest('hex')
+    .slice(0, 24)
+  return `blueprint-${digest}`
+}
+
+function safeSessionPart(value) {
+  return value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) || 'request'
+}
+
 function workspaceFor(payload) {
   return typeof payload.cwd === 'string' && payload.cwd.startsWith('/')
     ? payload.cwd
     : process.env.AGENT_WORKSPACE_ROOT || '/home/agent/workspace'
 }
 
-module.exports = { optionalAgents, optionalHarnessCommand }
+module.exports = { optionalHarnessCommand }
