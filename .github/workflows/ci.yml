@@ -205,6 +205,11 @@ jobs:
         # Yanked crates (e.g. keccak 0.1.5) are warnings by default, not errors
         # RUSTSEC-2026-0049: rustls-webpki — transitive dep via rustls 0.21
         # RUSTSEC-2026-0104: rustls-webpki — transitive dep via rustls 0.21
+        # RUSTSEC-2026-0258: h2 0.3.27 — transitive via reqwest 0.11 in
+        #   phala-tee-deploy-rs. The patched release is h2 0.4.16, but reqwest
+        #   0.11 cannot select that major version. The separate h2 0.4 path is
+        #   pinned to 0.4.16 in Cargo.lock. Remove this ignore when the upstream
+        #   TEE deploy client moves to reqwest 0.12 or publishes a fixed 0.3 line.
         # RUSTSEC-2026-0119: hickory-proto 0.24.4 — transitive via libp2p-mdns 0.46
         #   (pinned by blueprint-networking@alpha.15 in tangle-network/blueprint).
         #   Exposure is local-network mDNS only; real fix requires upstream
@@ -223,6 +228,7 @@ jobs:
           --ignore RUSTSEC-2025-0055
           --ignore RUSTSEC-2025-0111
           --ignore RUSTSEC-2026-0049
+          --ignore RUSTSEC-2026-0258
           --ignore RUSTSEC-2026-0098
           --ignore RUSTSEC-2026-0099
           --ignore RUSTSEC-2026-0104
