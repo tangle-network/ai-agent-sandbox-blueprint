@@ -43,9 +43,9 @@
 #   RPC_URL             — default https://sepolia.base.org.
 #   TANGLE_CORE         — Tangle proxy. Default: vendored base-sepolia manifest.
 #   BLUEPRINT_REPO      — default tangle-network/ai-agent-sandbox-blueprint.
-#   TEE_INSTANCE_BLUEPRINT_ID — on-chain id for the TEE instance blueprint. The
-#                         TEE instance is not confirmed deployed on Base Sepolia,
-#                         so it is SKIPPED unless this is set.
+#   TEE_INSTANCE_BLUEPRINT_ID — on-chain id for the TEE instance blueprint on a
+#                         non-canonical network. Base Sepolia selects 12
+#                         automatically when its canonical Tangle contract is used.
 #   BLUEPRINT_OWNER_PRIVATE_KEY — owner key (required with BROADCAST=true).
 #   SKIP_ARCHIVE_VERIFY — "1" to skip downloading + re-hashing the archives
 #                         before broadcast (verification is ON by default).
@@ -70,16 +70,22 @@ if [[ -z "${TANGLE_CORE:-}" ]]; then
 fi
 
 # Binary -> on-chain blueprint id. Source of truth: tnt-core
-# deployments/base-sepolia/blueprints.tsv (sandbox=10, instance=11 on Tangle
-# 0x8299d6 / chain 84532). The TEE instance blueprint is not confirmed
-# registered on this chain — it is only published when its id is supplied via
-# TEE_INSTANCE_BLUEPRINT_ID and is otherwise skipped.
+# deployments/base-sepolia/blueprints.tsv (sandbox=10, instance=11, TEE=12 on
+# Tangle 0x8299d6 / chain 84532). Keep the explicit override for other networks.
 declare -A BLUEPRINT_IDS=(
   [ai-agent-sandbox-blueprint]=10
   [ai-agent-instance-blueprint]=11
 )
 if [[ -n "${TEE_INSTANCE_BLUEPRINT_ID:-}" ]]; then
   BLUEPRINT_IDS[ai-agent-tee-instance-blueprint]="$TEE_INSTANCE_BLUEPRINT_ID"
+else
+  # Do not infer blueprint 12 from a user-supplied contract on another chain.
+  # The canonical manifest and chain id together identify Base Sepolia.
+  CANONICAL_BASE_SEPOLIA_CORE="$(jq -er '.tangle' "$ROOT_DIR/deploy/manifests/base-sepolia/tnt-core.latest.json")"
+  CHAIN_ID="$(cast chain-id --rpc-url "$RPC_URL")"
+  if [[ "$CHAIN_ID" == "84532" && "${TANGLE_CORE,,}" == "${CANONICAL_BASE_SEPOLIA_CORE,,}" ]]; then
+    BLUEPRINT_IDS[ai-agent-tee-instance-blueprint]=12
+  fi
 fi
 
 # arch discriminators from Types.BlueprintArchitecture (Amd64=5, Arm64=7).
@@ -217,8 +223,8 @@ publish_one() {
 
 # Fail fast: a failed publish means the chain/nonce state is unknown —
 # continuing could land later blueprints against a stale nonce. The TEE
-# instance binary is only attempted when TEE_INSTANCE_BLUEPRINT_ID supplied
-# its id into BLUEPRINT_IDS above.
+# Base Sepolia selects the registered TEE id above. Other networks must supply
+# TEE_INSTANCE_BLUEPRINT_ID explicitly before this binary is attempted.
 for bin in ai-agent-sandbox-blueprint ai-agent-instance-blueprint ai-agent-tee-instance-blueprint; do
   [[ -n "$ONLY" && "$ONLY" != "$bin" ]] && continue
   if [[ -z "${BLUEPRINT_IDS[$bin]:-}" ]]; then
