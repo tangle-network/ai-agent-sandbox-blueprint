@@ -1,0 +1,24 @@
+{
+  "schema": "tangle-blueprint-release/v1",
+  "repository": "tangle-network/ai-agent-sandbox-blueprint",
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "tangleCore": "0x8299d60f373f3a4a8c4878e335cb9d840e6e3730",
+  "blueprints": [
+    {
+      "binary": "ai-agent-sandbox-blueprint",
+      "id": 10,
+      "bsmAddress": "0x281d2D1160d80070eBe8989A529b6732C8403625"
+    },
+    {
+      "binary": "ai-agent-instance-blueprint",
+      "id": 11,
+      "bsmAddress": "0xDe25dad1757e5Dab5230d44779d7de6ad8181C5C"
+    },
+    {
+      "binary": "ai-agent-tee-instance-blueprint",
+      "id": 12,
+      "bsmAddress": "0x6D6deBfA88260558597Ad912439Ea1949962b3eb"
+    }
+  ]
+}

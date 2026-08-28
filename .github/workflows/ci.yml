@@ -26,6 +26,13 @@ jobs:
       - name: Module-size ratchet (no god objects)
         run: bash scripts/check-file-sizes.sh
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate release registry
+        run: node --test scripts/blueprint-release-config.test.mjs
+
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 

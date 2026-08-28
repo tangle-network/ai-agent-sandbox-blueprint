@@ -163,6 +163,10 @@ For instance / TEE-instance operator variants, also run
 
 ### 3.2 Register the blueprint with Tangle
 
+Run this step only when adding a new chain or blueprint registration. Do not
+run it again for the existing Base Sepolia IDs, because registration creates a
+new blueprint instead of updating a release.
+
 ```bash
 forge script contracts/script/RegisterBlueprint.s.sol \
   --rpc-url $RPC_URL --broadcast --slow
@@ -171,14 +175,52 @@ forge script contracts/script/RegisterBlueprint.s.sol \
 Capture the resulting `blueprint_id`. The operator binary needs it via
 `BLUEPRINT_ID` for heartbeats and on-chain identity.
 
-### 3.3 Configure pricing
+### 3.3 Publish release binaries and cold-start sources
+
+Base Sepolia release ownership is recorded in
+[`deploy/manifests/base-sepolia/blueprints.json`](../deploy/manifests/base-sepolia/blueprints.json).
+The registry maps the sandbox, instance, and TEE instance binaries to blueprint
+IDs 10, 11, and 12.
+
+The release workflow validates this registry against the network manifest,
+builds every listed binary, and dispatches one serialized tnt-core publish for
+each mapping.
+Before dispatch, it also checks each binary and ID against tnt-core's current
+`deployments/base-sepolia/blueprints.tsv` registration ledger.
+It then reads each BSM address from the selected chain before dispatch.
+It does not use a repository variable for the TEE ID.
+
+Validate the mapping locally before a release:
+
+```bash
+node scripts/blueprint-release-config.mjs \
+  --deployment-manifest deploy/manifests/base-sepolia/tnt-core.latest.json \
+  --format entries
+```
+
+The source publisher is idempotent and defaults to a dry run:
+
+```bash
+./deploy/publish-blueprint-sources.sh v0.1.4
+```
+
+Set `BROADCAST=true` only with the blueprint owner key when a source update is
+required.
+`SKIP_ARCHIVE_VERIFY=1` is permitted only for dry runs.
+The script verifies the RPC chain ID, release assets, extracted binary hashes,
+and owner before it sends any transaction.
+
+Update the registry and the matching tnt-core deployment record together when
+a new blueprint is registered.
+
+### 3.4 Configure pricing
 
 ```bash
 forge script contracts/script/ConfigureJobRates.s.sol \
   --rpc-url $RPC_URL --broadcast
 ```
 
-### 3.4 Provision the operator
+### 3.5 Provision the operator
 
 1. Generate / import an operator keystore (`cargo tangle key import`).
 2. Set the env vars from §1 above. **`SESSION_AUTH_SECRET` is required in
@@ -242,7 +284,7 @@ For each new EVM chain we want to support:
 6. **Wire UI chain registry.** Update `ui/src/lib/chains/` with the new
    chain entry so the operator UI can target it.
 
-7. **Provision an operator** following §3.4 above against the new chain.
+7. **Provision an operator** following §3.5 above against the new chain.
 
 8. **Smoke test** an end-to-end sandbox lifecycle (create → prompt →
    delete) before opening to users.
@@ -340,6 +382,7 @@ makes stored sandbox secrets unreadable.
 - **Deploy scripts**: `contracts/script/{Deploy,DeployInstance,DeployTeeInstance,RegisterBlueprint,ConfigureJobRates}.s.sol`
 - **Operator binaries**: `ai-agent-{sandbox-blueprint,instance-blueprint,tee-instance-blueprint}-bin/`
 - **Shared runtime**: `sandbox-runtime/`
+- **Release registry and publisher**: `deploy/manifests/base-sepolia/blueprints.json`, `scripts/blueprint-release-config.mjs`, and `deploy/publish-blueprint-sources.sh`
 - **Local deploy / e2e scripts**: `scripts/{deploy-local.sh,test-e2e.sh,fetch-localtestnet-fixtures.sh}`
 - **Architecture overview**: `docs/ARCHITECTURE.md`
 - **Contract surface**: `docs/CONTRACTS.md`
