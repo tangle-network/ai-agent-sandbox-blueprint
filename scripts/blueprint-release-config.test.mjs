@@ -82,6 +82,20 @@ test('binds configured binaries to exactly one registered tnt-core blueprint', (
     config.blueprints,
   )
   assert.equal(validateBlueprintRegistrations(config, registrations), config)
+  assert.equal(
+    validateBlueprintRegistrations(
+      config,
+      registrations.map((entry) => ({ ...entry, repo: `tangle-network/${entry.repo}` })),
+    ),
+    config,
+  )
+  assert.throws(
+    () => validateBlueprintRegistrations(
+      config,
+      registrations.map((entry) => ({ ...entry, repo: `other/${entry.repo}` })),
+    ),
+    BlueprintReleaseConfigError,
+  )
 })
 
 test('rejects missing, duplicate, inactive, and mismatched tnt-core registrations', () => {

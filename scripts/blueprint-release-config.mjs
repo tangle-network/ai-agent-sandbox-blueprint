@@ -81,6 +81,13 @@ function normalizeRepository(value, path) {
   return value.toLowerCase()
 }
 
+function registryRepositoryMatches(registryRepository, configuredRepository) {
+  if (typeof registryRepository !== 'string') return false
+  const normalized = registryRepository.toLowerCase()
+  const repositoryName = configuredRepository.split('/').at(-1)
+  return normalized === configuredRepository || normalized === repositoryName
+}
+
 function parseJsonFile(file, pathLabel) {
   const source = readTextFile(file, pathLabel)
   try {
@@ -173,7 +180,7 @@ export function validateBlueprintRegistrations(config, registrations) {
     if (registration.status !== 'registered') {
       fail(`tnt-core registry ${blueprint.binary}`, `status is ${registration.status}, not registered`)
     }
-    if (typeof registration.repo !== 'string' || registration.repo.toLowerCase() !== config.repository.split('/').at(-1)) {
+    if (!registryRepositoryMatches(registration.repo, config.repository)) {
       fail(
         `tnt-core registry ${blueprint.binary}`,
         `repository ${registration.repo} does not match configured ${config.repository}`,
