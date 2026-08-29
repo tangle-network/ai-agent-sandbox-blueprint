@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Pure bash + git; no toolchain needed, so it fails fast before the
       # heavier steps. Enforces scripts/.god-object-baseline.txt (CLAUDE.md
@@ -25,6 +25,13 @@ jobs:
       # so a baselined file growing past its ceiling is caught on every push.
       - name: Module-size ratchet (no god objects)
         run: bash scripts/check-file-sizes.sh
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Validate release registry
+        run: node --test scripts/blueprint-release-config.test.mjs
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -42,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -89,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -138,13 +145,13 @@ jobs:
     name: UI build & typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -169,7 +176,7 @@ jobs:
     name: Solidity tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: v1.5.1
@@ -184,7 +191,7 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-audit
       - name: Run cargo audit
@@ -198,6 +205,11 @@ jobs:
         # Yanked crates (e.g. keccak 0.1.5) are warnings by default, not errors
         # RUSTSEC-2026-0049: rustls-webpki — transitive dep via rustls 0.21
         # RUSTSEC-2026-0104: rustls-webpki — transitive dep via rustls 0.21
+        # RUSTSEC-2026-0258: h2 0.3.27 — transitive via reqwest 0.11 in
+        #   phala-tee-deploy-rs. The patched release is h2 0.4.16, but reqwest
+        #   0.11 cannot select that major version. The separate h2 0.4 path is
+        #   pinned to 0.4.16 in Cargo.lock. Remove this ignore when the upstream
+        #   TEE deploy client moves to reqwest 0.12 or publishes a fixed 0.3 line.
         # RUSTSEC-2026-0119: hickory-proto 0.24.4 — transitive via libp2p-mdns 0.46
         #   (pinned by blueprint-networking@alpha.15 in tangle-network/blueprint).
         #   Exposure is local-network mDNS only; real fix requires upstream
@@ -216,6 +228,7 @@ jobs:
           --ignore RUSTSEC-2025-0055
           --ignore RUSTSEC-2025-0111
           --ignore RUSTSEC-2026-0049
+          --ignore RUSTSEC-2026-0258
           --ignore RUSTSEC-2026-0098
           --ignore RUSTSEC-2026-0099
           --ignore RUSTSEC-2026-0104
@@ -228,7 +241,7 @@ jobs:
     timeout-minutes: 60
     needs: [test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -267,11 +280,15 @@ jobs:
           echo "::endgroup::"
           if docker pull ghcr.io/tangle-network/blueprint-sidecar:all-harness; then
             docker tag ghcr.io/tangle-network/blueprint-sidecar:all-harness tangle-sidecar:local
-            echo "available=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::Sidecar image not available — E2E tests will be skipped"
-            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "GHCR stable image is unavailable; building the checked-out sidecar image"
+            docker build \
+              -f sidecar/Dockerfile.all-harness \
+              -t tangle-sidecar:local \
+              .
           fi
+          docker image inspect tangle-sidecar:local >/dev/null
+          echo "available=true" >> "$GITHUB_OUTPUT"
 
       - name: Run E2E tests (sandbox)
         if: steps.sidecar.outputs.available == 'true'
@@ -279,7 +296,12 @@ jobs:
           SIDECAR_E2E: "1"
           SIDECAR_PUBLIC_HOST: "127.0.0.1"
           REQUEST_TIMEOUT_SECS: "60"
-        run: cargo nextest run --test-threads=1 -p ai-agent-sandbox-blueprint-lib --test e2e_operator_api --test anvil
+          # The runtime's canonical provider variable is ZAI_API_KEY. The
+          # organization secret retains the upstream provider name.
+          ZAI_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+        run: |
+          test -n "$ZAI_API_KEY"
+          cargo nextest run --test-threads=1 -p ai-agent-sandbox-blueprint-lib --test e2e_operator_api --test anvil
 
       - name: Run E2E tests (instance)
         if: steps.sidecar.outputs.available == 'true'
@@ -295,22 +317,19 @@ jobs:
           REAL_SIDECAR: "1"
           LIFECYCLE_BENCH: "1"
           LIFECYCLE_N: "5"
+          SIDECAR_IMAGE: "tangle-sidecar:local"
           SIDECAR_PUBLIC_HOST: "127.0.0.1"
           REQUEST_TIMEOUT_SECS: "120"
         run: cargo test -p ai-agent-sandbox-blueprint-lib --test lifecycle_bench -- --test-threads=1 --nocapture
 
       - name: Upload lifecycle bench results
         if: steps.sidecar.outputs.available == 'true' && always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lifecycle-bench-${{ github.sha }}
           path: bench-results/lifecycle-real.json
           retention-days: 90
           if-no-files-found: ignore
-
-      - name: E2E skipped (no sidecar image)
-        if: steps.sidecar.outputs.available != 'true'
-        run: echo "E2E tests skipped — sidecar Docker image not available. Publish ghcr.io/tangle-network/blueprint-sidecar:all-harness to enable."
 
   # NOTE: the previous `firecracker-real-e2e` job exercised the host-agent
   # HTTP boundary that has been replaced by the in-process `microvm-runtime`
@@ -327,7 +346,7 @@ jobs:
     timeout-minutes: 30
     # Run on PRs to detect regressions, and on main to refresh the baseline.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -383,7 +402,7 @@ jobs:
           fi
 
       - name: Upload current run as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ github.sha }}
           path: bench-results/
@@ -391,7 +410,7 @@ jobs:
 
       - name: Upload as new baseline (main branch only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-baseline
           path: bench-results/latest.json
@@ -409,7 +428,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -444,7 +463,7 @@ jobs:
           --exclude ai-agent-tee-instance-blueprint-bin
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         if: env.CODECOV_TOKEN != ''
         with:
           file: cobertura.xml

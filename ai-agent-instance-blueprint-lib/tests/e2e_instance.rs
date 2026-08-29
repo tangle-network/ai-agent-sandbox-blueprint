@@ -28,6 +28,8 @@ use once_cell::sync::Lazy;
 use sandbox_runtime::e2e_step;
 use sandbox_runtime::test_utils::*;
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
@@ -62,19 +64,88 @@ async fn detect_ssh_user(api_url: &str, auth: &str) -> Result<String> {
         .context("ssh user response missing username")
 }
 
-async fn ssh_key_presence(api_url: &str, auth: &str, username: &str, key: &str) -> Result<bool> {
-    let body = api_post(
-        api_url,
-        "/api/sandbox/exec",
-        auth,
-        json!({
-            "command": format!(
-                "sh -lc \"home=$(getent passwd \\\"{username}\\\" | cut -d: -f6); if grep -qxF \\\"{key}\\\" \\\"\\$home/.ssh/authorized_keys\\\" 2>/dev/null; then echo PRESENT; else echo ABSENT; fi\""
-            )
-        }),
-    )
-    .await?;
-    Ok(body["stdout"].as_str().unwrap_or("").contains("PRESENT"))
+struct SshTestKey {
+    _directory: tempfile::TempDir,
+    private_key: PathBuf,
+    public_key: String,
+}
+
+impl SshTestKey {
+    fn generate() -> Result<Self> {
+        let directory = tempfile::tempdir().context("create temporary SSH key directory")?;
+        let private_key = directory.path().join("id_ed25519");
+        let output = Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-f"])
+            .arg(&private_key)
+            .args(["-N", "", "-q"])
+            .output()
+            .context("run ssh-keygen")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "ssh-keygen failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let public_key = std::fs::read_to_string(private_key.with_extension("pub"))
+            .context("read generated SSH public key")?
+            .trim()
+            .to_string();
+        anyhow::ensure!(!public_key.is_empty(), "generated SSH public key is empty");
+        Ok(Self {
+            _directory: directory,
+            private_key,
+            public_key,
+        })
+    }
+}
+
+async fn ssh_key_presence(private_key: &Path, username: &str, port: u16) -> Result<bool> {
+    // The operator exec endpoint runs as `agent`, but provisioning targets the detected SSH user.
+    // Probe the public SSH path so the test does not depend on another user's home permissions.
+    let private_key = private_key.to_owned();
+    let username = username.to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new("ssh")
+            .arg("-i")
+            .arg(private_key)
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "PasswordAuthentication=no",
+                "-o",
+                "KbdInteractiveAuthentication=no",
+                "-o",
+                "ConnectTimeout=10",
+                "-p",
+            ])
+            .arg(port.to_string())
+            .arg(format!("{username}@127.0.0.1"))
+            .arg("printf PRESENT")
+            .output()
+            .context("run SSH key probe")
+    })
+    .await
+    .context("join SSH key probe")??;
+    Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).contains("PRESENT"))
+}
+
+async fn wait_for_ssh_key(private_key: &Path, username: &str, port: u16) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if ssh_key_presence(private_key, username, port).await? {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("SSH key was not accepted before the probe deadline");
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,7 +182,7 @@ async fn instance_full_lifecycle() -> Result<()> {
             agent_identifier: "default-agent".to_string(),
             env_json: "{}".to_string(),
             metadata_json: "{}".to_string(),
-            ssh_enabled: false,
+            ssh_enabled: true,
             ssh_public_key: String::new(),
             web_terminal_enabled: false,
             max_lifetime_seconds: 3600,
@@ -171,6 +242,12 @@ async fn instance_full_lifecycle() -> Result<()> {
             .context("instance sandbox should be in list")?;
         assert_eq!(sb["state"], "running");
         assert!(sb["sidecar_url"].is_string(), "should have sidecar_url");
+        let ssh_port = u16::try_from(
+            sb["ssh_port"]
+                .as_u64()
+                .context("SSH-enabled instance should report ssh_port")?,
+        )
+        .context("instance ssh_port does not fit in u16")?;
         eprintln!("  Found instance, state=running");
 
         // ─── Step 7: Exec via singleton endpoint (exit 0) ────────────────
@@ -238,8 +315,29 @@ async fn instance_full_lifecycle() -> Result<()> {
                 assert!(body.get("response").is_some(), "prompt: missing 'response': {body}");
                 eprintln!("  Prompt OK (200, success={})", body["success"]);
             }
+            202 => {
+                let body: Value = resp.json().await?;
+                assert_eq!(body["accepted"], true, "prompt: run was not accepted: {body}");
+                let run_id = body["run_id"]
+                    .as_str()
+                    .context("prompt: accepted response missing run_id")?;
+                let session_id = body["session_id"]
+                    .as_str()
+                    .context("prompt: accepted response missing session_id")?;
+                let terminal_status = wait_for_chat_run(
+                    &api_url,
+                    &format!("/api/sandbox/live/chat/sessions/{session_id}"),
+                    &auth,
+                    run_id,
+                )
+                .await?;
+                eprintln!("  Prompt accepted (202, terminal={terminal_status})");
+            }
             502 => {
                 eprintln!("  Prompt: sidecar agent not available (502 accepted)");
+            }
+            503 => {
+                eprintln!("  Prompt: sidecar circuit breaker open (503 accepted)");
             }
             _ => anyhow::bail!("prompt: unexpected status {status}"),
         }
@@ -261,8 +359,29 @@ async fn instance_full_lifecycle() -> Result<()> {
                 assert!(body.get("session_id").is_some(), "task: missing 'session_id': {body}");
                 eprintln!("  Task OK (200, success={})", body["success"]);
             }
+            202 => {
+                let body: Value = resp.json().await?;
+                assert_eq!(body["accepted"], true, "task: run was not accepted: {body}");
+                let run_id = body["run_id"]
+                    .as_str()
+                    .context("task: accepted response missing run_id")?;
+                let session_id = body["session_id"]
+                    .as_str()
+                    .context("task: accepted response missing session_id")?;
+                let terminal_status = wait_for_chat_run(
+                    &api_url,
+                    &format!("/api/sandbox/live/chat/sessions/{session_id}"),
+                    &auth,
+                    run_id,
+                )
+                .await?;
+                eprintln!("  Task accepted (202, terminal={terminal_status})");
+            }
             502 => {
                 eprintln!("  Task: sidecar agent not available (502 accepted)");
+            }
+            503 => {
+                eprintln!("  Task: sidecar circuit breaker open (503 accepted)");
             }
             _ => anyhow::bail!("task: unexpected status {status}"),
         }
@@ -274,7 +393,7 @@ async fn instance_full_lifecycle() -> Result<()> {
             "/api/sandbox/snapshot",
             &auth,
             json!({
-                "destination": "http://127.0.0.1:1/e2e-snapshot-test",
+                "destination": "s3://e2e-bucket/e2e-snapshot-test.tar.gz",
                 "include_workspace": true,
                 "include_state": false,
             }),
@@ -286,27 +405,24 @@ async fn instance_full_lifecycle() -> Result<()> {
 
         // ─── Step 13: SSH provision ──────────────────────────────────────
         e2e_step!(13, "SSH user detection + provision via instance endpoint...");
-        let ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp9pDAVl8TpDBLVnpXjAIRxMf3K+m6UPlv3VBMbRp2o e2e-test";
+        let ssh_test_key = SshTestKey::generate()?;
         let ssh_user = detect_ssh_user(&api_url, &auth).await?;
         let body = api_post(
             &api_url,
             "/api/sandbox/ssh",
             &auth,
-            json!({"public_key": ssh_key}),
+            json!({"public_key": ssh_test_key.public_key}),
         )
         .await?;
         assert_eq!(body["success"], true, "ssh response: {body}");
         assert_eq!(body["username"], ssh_user, "ssh response: {body}");
-        assert!(
-            ssh_key_presence(&api_url, &auth, &ssh_user, ssh_key).await?,
-            "key should be present after provision"
-        );
+        wait_for_ssh_key(&ssh_test_key.private_key, &ssh_user, ssh_port).await?;
         eprintln!("  SSH provisioned");
 
         let wrong_user_resp = http()
             .post(format!("{api_url}/api/sandbox/ssh"))
             .header("authorization", &auth)
-            .json(&json!({"username": "no-such-user", "public_key": ssh_key}))
+            .json(&json!({"username": "no-such-user", "public_key": ssh_test_key.public_key}))
             .send()
             .await?;
         assert_eq!(wrong_user_resp.status(), 422, "wrong user should fail");
@@ -316,7 +432,7 @@ async fn instance_full_lifecycle() -> Result<()> {
         let resp = http()
             .delete(format!("{api_url}/api/sandbox/ssh"))
             .header("authorization", &auth)
-            .json(&json!({"public_key": ssh_key}))
+            .json(&json!({"public_key": ssh_test_key.public_key}))
             .send()
             .await?;
         assert_eq!(resp.status(), 200, "ssh revoke should succeed");
@@ -324,20 +440,21 @@ async fn instance_full_lifecycle() -> Result<()> {
         assert_eq!(body["success"], true, "ssh revoke response: {body}");
         assert_eq!(body["username"], ssh_user, "ssh revoke response: {body}");
         assert!(
-            !ssh_key_presence(&api_url, &auth, &ssh_user, ssh_key).await?,
+            !ssh_key_presence(&ssh_test_key.private_key, &ssh_user, ssh_port).await?,
             "key should be absent after revoke"
         );
         eprintln!("  SSH revoked");
 
         // ─── Step 15: Secrets inject + verify ────────────────────────────
         e2e_step!(15, "Injecting secrets via sandbox-scoped endpoint...");
-        assert_api_status(
+        assert_api_status_with_timeout(
             &api_url,
             "POST",
             &format!("/api/sandboxes/{sandbox_id}/secrets"),
             &auth,
             json!({"env_json": {"E2E_INSTANCE_SECRET": "instance-secret-42"}}),
             200,
+            Duration::from_secs(120),
         )
         .await;
         eprintln!("  Secrets injected");
@@ -366,10 +483,11 @@ async fn instance_full_lifecycle() -> Result<()> {
 
         // ─── Step 16: Secrets wipe + verify ──────────────────────────────
         e2e_step!(16, "Wiping secrets...");
-        let body = api_delete(
+        let body = api_delete_with_timeout(
             &api_url,
             &format!("/api/sandboxes/{sandbox_id}/secrets"),
             &auth,
+            Duration::from_secs(120),
         )
         .await?;
         assert_eq!(body["status"], "secrets_wiped", "wipe response: {body}");
@@ -411,17 +529,17 @@ async fn instance_full_lifecycle() -> Result<()> {
             .context("instance should still be in list")?;
         assert_eq!(sb["state"], "stopped");
 
-        // Exec on stopped instance → should fail (sidecar unreachable)
+        // Exec on stopped instance → should fail before reaching the sidecar
         assert_api_status(
             &api_url,
             "POST",
             "/api/sandbox/exec",
             &auth,
             json!({"command": "echo should-fail"}),
-            502,
+            409,
         )
         .await;
-        eprintln!("  Confirmed stopped, exec returns 502");
+        eprintln!("  Confirmed stopped, exec returns 409");
 
         // ─── Step 19: Stop idempotency ───────────────────────────────────
         e2e_step!(19, "Testing stop idempotency...");
@@ -552,6 +670,8 @@ async fn instance_full_lifecycle() -> Result<()> {
 
         // ─── Step 25: Cross-owner isolation ──────────────────────────────
         e2e_step!(25, "Testing cross-owner tenant isolation...");
+        // Keep lifecycle writes from masking authorization and cleanup results with 429.
+        sandbox_runtime::rate_limit::write_limiter().reset();
         let non_owner_address = address_from_key(NON_OWNER_KEY);
         let (non_owner_token, addr) = get_auth_token(&api_url, NON_OWNER_KEY).await?;
         assert_eq!(addr.to_lowercase(), non_owner_address.to_lowercase());

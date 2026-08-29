@@ -12,8 +12,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # This repo ships the sandbox blueprint trio — build + host every operator binary.
-  BINARIES: "ai-agent-sandbox-blueprint ai-agent-instance-blueprint ai-agent-tee-instance-blueprint"
   # Base Sepolia operators currently run x86_64 Linux. Keep the production
   # publish path on that target so a secondary architecture cannot block the
   # active binary rollout.
@@ -29,9 +27,20 @@ jobs:
             runs-on: ubuntu-latest
     runs-on: ${{ matrix.runs-on }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Validate release registry
+        run: |
+          set -euo pipefail
+          BINARIES="$(node scripts/blueprint-release-config.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --deployment-manifest deploy/manifests/base-sepolia/tnt-core.latest.json \
+            --format space)"
+          echo "BINARIES=$BINARIES" >> "$GITHUB_ENV"
       - name: System dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
@@ -40,8 +49,9 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build all blueprint binaries
         run: |
-          ARGS=""; for b in $BINARIES; do ARGS="$ARGS --bin $b"; done
-          cargo build --release $ARGS
+          ARGS=()
+          for b in $BINARIES; do ARGS+=(--bin "$b"); done
+          cargo build --release "${ARGS[@]}"
       - name: Package each binary + checksum
         env:
           TARGET: ${{ matrix.target }}
@@ -67,9 +77,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          [[ "$RELEASE_TAG" =~ ^v[0-9A-Za-z._-]+$ ]] || {
+            echo "::error::invalid release tag: $RELEASE_TAG"
+            exit 1
+          }
+          TAG="$RELEASE_TAG"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "Operator binaries: $BINARIES"
 
@@ -107,12 +122,31 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Validate release registry
+        run: |
+          set -euo pipefail
+          BINARIES="$(node scripts/blueprint-release-config.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --deployment-manifest deploy/manifests/base-sepolia/tnt-core.latest.json \
+            --format space)"
+          echo "BINARIES=$BINARIES" >> "$GITHUB_ENV"
       - name: Build + upload per-binary multi-arch manifests
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          [[ "$RELEASE_TAG" =~ ^v[0-9A-Za-z._-]+$ ]] || {
+            echo "::error::invalid release tag: $RELEASE_TAG"
+            exit 1
+          }
+          TAG="$RELEASE_TAG"
           BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
           mkdir -p /tmp/m
 
@@ -185,43 +219,59 @@ jobs:
   # the same blueprint-owner key, and concurrent runs nonce-race ("replacement
   # transaction underpriced"). Each dispatch waits for the remote run to finish
   # before the next one starts.
-  #
-  # The TEE instance blueprint is not confirmed deployed on Base Sepolia. Its
-  # publish is gated on the TEE_INSTANCE_BLUEPRINT_ID repo/org variable; absent
-  # that, only sandbox (10) + instance (11) publish.
   publish-onchain:
     needs: [release, manifest]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1
+      - name: Validate release registry
+        run: |
+          set -euo pipefail
+          RPC_URL=https://sepolia.base.org
+          curl --fail --silent --show-error --retry 3 \
+            --output /tmp/tnt-core-blueprints.tsv \
+            https://raw.githubusercontent.com/tangle-network/tnt-core/main/deployments/base-sepolia/blueprints.tsv
+          node scripts/blueprint-release-config.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --registration-file /tmp/tnt-core-blueprints.tsv \
+            --deployment-manifest deploy/manifests/base-sepolia/tnt-core.latest.json \
+            --format details > /tmp/blueprint-release-details
+          TANGLE_CORE="$(node scripts/blueprint-release-config.mjs \
+            --deployment-manifest deploy/manifests/base-sepolia/tnt-core.latest.json \
+            --format tangle-core)"
+          CHAIN_ID="$(node scripts/blueprint-release-config.mjs \
+            --deployment-manifest deploy/manifests/base-sepolia/tnt-core.latest.json \
+            --format chain-id)"
+          scripts/verify-blueprint-release-registry.sh \
+            "$RPC_URL" "$TANGLE_CORE" "$CHAIN_ID" /tmp/blueprint-release-details
       - name: Trigger tnt-core binary publish (all blueprints, serialized)
         env:
           GH_TOKEN: ${{ secrets.TNT_CORE_PUBLISH_TOKEN }}
-          TEE_INSTANCE_BLUEPRINT_ID: ${{ vars.TEE_INSTANCE_BLUEPRINT_ID }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          [[ "$RELEASE_TAG" =~ ^v[0-9A-Za-z._-]+$ ]] || {
+            echo "::error::invalid release tag: $RELEASE_TAG"
+            exit 1
+          }
+          TAG="$RELEASE_TAG"
           REPO=tangle-network/tnt-core
           WORKFLOW=publish-blueprint-binary.yml
 
-          # Blueprint ids: tnt-core deployments/base-sepolia/blueprints.tsv.
-          # sandbox=10, instance=11 (Tangle 0x8299d6 / chain 84532). The TEE
-          # instance id is only published when TEE_INSTANCE_BLUEPRINT_ID is set
-          # (it is not confirmed registered on this chain).
-          PUBLISHES="
-          ai-agent-sandbox-blueprint:10
-          ai-agent-instance-blueprint:11
-          "
-          if [ -n "${TEE_INSTANCE_BLUEPRINT_ID:-}" ]; then
-            PUBLISHES="${PUBLISHES}
-          ai-agent-tee-instance-blueprint:${TEE_INSTANCE_BLUEPRINT_ID}
-          "
-          fi
-
           FAILED=0
-          for entry in $PUBLISHES; do
-            BIN="${entry%%:*}"
-            ID="${entry##*:}"
+          while IFS=: read -r BIN ID _; do
+            [ -n "$BIN" ] || continue
             SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            KNOWN_RUN_IDS="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" \
+              --limit 50 --json databaseId --jq '.[].databaseId')"
             echo "::group::publish $BIN -> blueprint $ID"
             gh workflow run "$WORKFLOW" \
               --repo "$REPO" \
@@ -236,15 +286,31 @@ jobs:
               -f set_active=true \
               -f update_sources_version="$TAG"
 
-            # Resolve the run we just dispatched, then block until it finishes
-            # so the next dispatch never races the owner key's nonce.
+            # Resolve exactly one run that appeared after dispatch, then block
+            # until it finishes so the next dispatch never races the owner key's
+            # nonce. Fail closed if concurrent runs make the result ambiguous.
             RUN_ID=""
-            for _ in $(seq 1 12); do
+            for _ in $(seq 1 24); do
               sleep 5
-              RUN_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" \
-                --created ">$SINCE" --limit 1 --json databaseId \
-                --jq '.[0].databaseId // empty')"
-              [ -n "$RUN_ID" ] && break
+              mapfile -t CANDIDATE_RUN_IDS < <(
+                gh run list --repo "$REPO" --workflow "$WORKFLOW" \
+                  --created ">$SINCE" --limit 50 --json databaseId \
+                  --jq '.[].databaseId'
+              )
+              FRESH_RUN_IDS=()
+              for CANDIDATE_RUN_ID in "${CANDIDATE_RUN_IDS[@]}"; do
+                if ! grep -Fqx "$CANDIDATE_RUN_ID" <<< "$KNOWN_RUN_IDS"; then
+                  FRESH_RUN_IDS+=("$CANDIDATE_RUN_ID")
+                fi
+              done
+              if [ "${#FRESH_RUN_IDS[@]}" -eq 1 ]; then
+                RUN_ID="${FRESH_RUN_IDS[0]}"
+                break
+              fi
+              if [ "${#FRESH_RUN_IDS[@]}" -gt 1 ]; then
+                echo "::error::multiple new tnt-core runs found for $BIN; refusing to watch an ambiguous run"
+                exit 1
+              fi
             done
             test -n "$RUN_ID" || { echo "::error::dispatched run for $BIN not found"; exit 1; }
 
@@ -255,5 +321,5 @@ jobs:
               FAILED=1
             fi
             echo "::endgroup::"
-          done
+          done < /tmp/blueprint-release-details
           exit "$FAILED"

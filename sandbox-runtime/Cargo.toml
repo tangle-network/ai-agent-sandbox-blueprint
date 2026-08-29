@@ -35,7 +35,7 @@ gcp_auth = { version = "0.12", optional = true }
 #  - sev: AMD SEV-SNP attestation report + VCEK/VLEK chain to the built-in AMD
 #    ARK/ASK roots. `crypto_nossl` selects the pure-Rust (p384/x509-cert) path.
 #  - coset: COSE_Sign1 parsing for AWS Nitro attestation documents.
-dcap-qvl = { version = "=0.5.2", default-features = false, features = [
+dcap-qvl = { version = "=0.5.3", default-features = false, features = [
     "std",
     "rustcrypto",
     "default-x509",

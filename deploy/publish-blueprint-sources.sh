@@ -41,11 +41,8 @@
 #   BROADCAST           — "true" to send transactions. Default: dry-run.
 #   ONLY                — restrict to one binary name (e.g. ai-agent-sandbox-blueprint).
 #   RPC_URL             — default https://sepolia.base.org.
-#   TANGLE_CORE         — Tangle proxy. Default: vendored base-sepolia manifest.
+#   TANGLE_CORE         — must match the vendored Base Sepolia manifest when set.
 #   BLUEPRINT_REPO      — default tangle-network/ai-agent-sandbox-blueprint.
-#   TEE_INSTANCE_BLUEPRINT_ID — on-chain id for the TEE instance blueprint. The
-#                         TEE instance is not confirmed deployed on Base Sepolia,
-#                         so it is SKIPPED unless this is set.
 #   BLUEPRINT_OWNER_PRIVATE_KEY — owner key (required with BROADCAST=true).
 #   SKIP_ARCHIVE_VERIFY — "1" to skip downloading + re-hashing the archives
 #                         before broadcast (verification is ON by default).
@@ -62,24 +59,67 @@ ONLY="${ONLY:-}"
 RPC_URL="${RPC_URL:-https://sepolia.base.org}"
 BLUEPRINT_REPO="${BLUEPRINT_REPO:-tangle-network/ai-agent-sandbox-blueprint}"
 SKIP_ARCHIVE_VERIFY="${SKIP_ARCHIVE_VERIFY:-0}"
+CONFIG="$ROOT_DIR/deploy/manifests/base-sepolia/blueprints.json"
+MANIFEST="$ROOT_DIR/deploy/manifests/base-sepolia/tnt-core.latest.json"
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
 
-if [[ -z "${TANGLE_CORE:-}" ]]; then
-  MANIFEST="$ROOT_DIR/deploy/manifests/base-sepolia/tnt-core.latest.json"
-  [[ -f "$MANIFEST" ]] || { echo "ERROR: TANGLE_CORE unset and no manifest at $MANIFEST" >&2; exit 1; }
-  TANGLE_CORE="$(jq -er '.tangle' "$MANIFEST")"
+[[ -f "$CONFIG" ]] || { echo "ERROR: release registry missing at $CONFIG" >&2; exit 1; }
+[[ -f "$MANIFEST" ]] || { echo "ERROR: deployment manifest missing at $MANIFEST" >&2; exit 1; }
+
+MANIFEST_NETWORK="$(jq -er '.network' "$MANIFEST")"
+MANIFEST_CHAIN_ID="$(jq -er '.chainId' "$MANIFEST")"
+MANIFEST_TANGLE_CORE="$(jq -er '.tangle' "$MANIFEST")"
+TANGLE_CORE="${TANGLE_CORE:-$MANIFEST_TANGLE_CORE}"
+REGISTRY_URL="https://raw.githubusercontent.com/tangle-network/tnt-core/main/deployments/base-sepolia/blueprints.tsv"
+
+[[ "$MANIFEST_NETWORK" == "base-sepolia" ]] || {
+  echo "ERROR: source publisher only supports the Base Sepolia manifest" >&2
+  exit 1
+}
+
+case "$BROADCAST" in
+  true|false) ;;
+  *) echo "ERROR: BROADCAST must be true or false" >&2; exit 1 ;;
+esac
+case "$SKIP_ARCHIVE_VERIFY" in
+  0|1) ;;
+  *) echo "ERROR: SKIP_ARCHIVE_VERIFY must be 0 or 1" >&2; exit 1 ;;
+esac
+if [[ "$BROADCAST" == "true" && "$SKIP_ARCHIVE_VERIFY" == "1" ]]; then
+  echo "ERROR: SKIP_ARCHIVE_VERIFY=1 is allowed only for dry runs" >&2
+  exit 1
 fi
 
-# Binary -> on-chain blueprint id. Source of truth: tnt-core
-# deployments/base-sepolia/blueprints.tsv (sandbox=10, instance=11 on Tangle
-# 0x8299d6 / chain 84532). The TEE instance blueprint is not confirmed
-# registered on this chain — it is only published when its id is supplied via
-# TEE_INSTANCE_BLUEPRINT_ID and is otherwise skipped.
-declare -A BLUEPRINT_IDS=(
-  [ai-agent-sandbox-blueprint]=10
-  [ai-agent-instance-blueprint]=11
-)
-if [[ -n "${TEE_INSTANCE_BLUEPRINT_ID:-}" ]]; then
-  BLUEPRINT_IDS[ai-agent-tee-instance-blueprint]="$TEE_INSTANCE_BLUEPRINT_ID"
+TNT_CORE_REGISTRY="$WORK_DIR/tnt-core-blueprints.tsv"
+curl -fsSL --retry 3 -o "$TNT_CORE_REGISTRY" "$REGISTRY_URL" \
+  || { echo "ERROR: cannot read the tnt-core Base Sepolia registration ledger" >&2; exit 1; }
+
+# The registry is checked against the deployment manifest before any release
+# asset is downloaded or chain state is read. It owns every binary/id pair,
+# including the registered TEE instance blueprint, and is checked against the
+# current tnt-core registration ledger.
+CONFIG_DETAILS_FILE="$WORK_DIR/config-details"
+node "$ROOT_DIR/scripts/blueprint-release-config.mjs" \
+  --file "$CONFIG" \
+  --repository "$BLUEPRINT_REPO" \
+  --registration-file "$TNT_CORE_REGISTRY" \
+  --deployment-manifest "$MANIFEST" \
+  --network "$MANIFEST_NETWORK" \
+  --chain-id "$MANIFEST_CHAIN_ID" \
+  --tangle-core "$TANGLE_CORE" \
+  --format details > "$CONFIG_DETAILS_FILE"
+CONFIG_ENTRIES="$(awk -F: '{print $1 ":" $2}' "$CONFIG_DETAILS_FILE")"
+
+if [[ -n "$ONLY" ]]; then
+  ONLY_FOUND=false
+  while IFS=: read -r config_bin _ _; do
+    [[ "$config_bin" == "$ONLY" ]] && ONLY_FOUND=true
+  done <<< "$CONFIG_ENTRIES"
+  [[ "$ONLY_FOUND" == true ]] || {
+    echo "ERROR: ONLY=$ONLY is not present in the release registry" >&2
+    exit 1
+  }
 fi
 
 # arch discriminators from Types.BlueprintArchitecture (Amd64=5, Arm64=7).
@@ -93,16 +133,18 @@ BASE_URL="https://github.com/${BLUEPRINT_REPO}/releases/download/${TAG}"
 SOURCES_SIG='blueprintSources(uint64)((uint8,(string,string,string),(uint8,uint8,string,string),(uint8,string,string),(string,string,string),(uint8,uint8,string,bytes32)[])[])'
 SET_SIG='setBlueprintSources(uint64,(uint8,(string,string,string),(uint8,uint8,string,string),(uint8,string,string),(string,string,string),(uint8,uint8,string,bytes32)[])[])'
 
-WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
-
 echo "=== Publish blueprint cold-start sources ==="
 echo "  Tag:         $TAG"
 echo "  Repo:        $BLUEPRINT_REPO"
+echo "  Network:     $MANIFEST_NETWORK"
+echo "  Chain ID:    $MANIFEST_CHAIN_ID"
 echo "  Tangle core: $TANGLE_CORE"
 echo "  RPC:         $RPC_URL"
 echo "  Broadcast:   $BROADCAST"
 echo
+
+"$ROOT_DIR/scripts/verify-blueprint-release-registry.sh" \
+  "$RPC_URL" "$TANGLE_CORE" "$MANIFEST_CHAIN_ID" "$CONFIG_DETAILS_FILE"
 
 # The manager refuses to download unless dist-manifest.json declares the
 # binary as an executable-zip artifact with an executable asset of that name.
@@ -130,7 +172,7 @@ publish_one() {
     "$DIST_MANIFEST" >/dev/null \
     || { echo "ERROR: dist-manifest.json does not declare executable $bin (manager would refuse the download)" >&2; return 1; }
 
-  local sources="" expected_pairs=() triple sha sha_file uri archive_url
+  local sources="" expected_sources=() triple sha sha_file uri archive_url
   for triple in "${TRIPLES[@]}"; do
     sha_file="$WORK_DIR/${bin}-${triple}.bin.sha256"
     if ! curl -fsSL --retry 3 -o "$sha_file" "$BASE_URL/${bin}-${triple}.bin.sha256" 2>/dev/null; then
@@ -162,20 +204,27 @@ publish_one() {
     uri="{\"dist_url\":\"${BASE_URL}/dist-manifest.json\",\"archive_url\":\"${archive_url}\",\"binaries\":[]}"
     local source="(2,(\"\",\"\",\"\"),(0,0,\"\",\"\"),(2,'${uri}',\"${bin}\"),(\"\",\"\",\"\"),[(${TRIPLE_ARCH[$triple]},1,\"${bin}\",${sha})])"
     sources="${sources:+${sources},}${source}"
-    expected_pairs+=("$archive_url" "${sha#0x}")
+    local escaped_uri
+    escaped_uri="${uri//\"/\\\"}"
+    expected_sources+=("(2,(\"\",\"\",\"\"),(0,0,\"\",\"\"),(2,\"${escaped_uri}\",\"${bin}\"),(\"\",\"\",\"\"),[(${TRIPLE_ARCH[$triple]},1,\"${bin}\",${sha})])")
     echo "  $triple: sha256 ${sha#0x}"
   done
 
   [[ -n "$sources" ]] || { echo "ERROR: no linux .bin.sha256 assets found for ${bin}@${TAG}" >&2; return 1; }
   sources="[${sources}]"
 
-  # Idempotency: skip when the on-chain sources already carry every archive
-  # URL + extracted-binary hash for this tag.
+  # Idempotency: skip only when every complete source tuple already contains
+  # this tag's URL, binary name, architecture, and extracted-binary hash.
   local current
   current="$(cast call "$TANGLE_CORE" "$SOURCES_SIG" "$id" --rpc-url "$RPC_URL")"
-  local up_to_date=1 item
-  for item in "${expected_pairs[@]}"; do
-    [[ "$current" == *"$item"* ]] || { up_to_date=0; break; }
+  local compact_current
+  compact_current="$(tr -d '[:space:]' <<< "$current")"
+  local up_to_date=1 expected_source
+  for expected_source in "${expected_sources[@]}"; do
+    case "$compact_current" in
+      *"$expected_source"*) ;;
+      *) up_to_date=0; break ;;
+    esac
   done
   if [[ "$up_to_date" -eq 1 ]]; then
     echo "  on-chain sources already at $TAG — skipping"
@@ -216,19 +265,13 @@ publish_one() {
 }
 
 # Fail fast: a failed publish means the chain/nonce state is unknown —
-# continuing could land later blueprints against a stale nonce. The TEE
-# instance binary is only attempted when TEE_INSTANCE_BLUEPRINT_ID supplied
-# its id into BLUEPRINT_IDS above.
-for bin in ai-agent-sandbox-blueprint ai-agent-instance-blueprint ai-agent-tee-instance-blueprint; do
+# continuing could land later blueprints against a stale nonce.
+while IFS=: read -r bin id _; do
+  [[ -n "$bin" ]] || continue
   [[ -n "$ONLY" && "$ONLY" != "$bin" ]] && continue
-  if [[ -z "${BLUEPRINT_IDS[$bin]:-}" ]]; then
-    echo "--- $bin: no blueprint id (set TEE_INSTANCE_BLUEPRINT_ID to publish) — skipping ---"
-    echo
-    continue
-  fi
-  publish_one "$bin" "${BLUEPRINT_IDS[$bin]}" \
+  publish_one "$bin" "$id" \
     || { echo "ERROR: aborting after blueprint $bin failure (remaining blueprints not attempted)" >&2; exit 1; }
   echo
-done
+done <<< "$CONFIG_ENTRIES"
 
 exit 0

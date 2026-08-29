@@ -49,6 +49,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         }
 
         setup_sidecar_env();
+        let (provider_env_name, provider_key) = configured_provider_credential()?;
 
         let Some(harness) = spawn_harness().await? else {
             return Ok(());
@@ -85,12 +86,15 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         let create_receipt = SandboxCreateOutput::abi_decode(&create_output)?;
         let create_json: serde_json::Value = serde_json::from_str(&create_receipt.json)
             .context("sandbox create response must be json")?;
-        let sidecar_url = create_json
+        let mut sidecar_url = create_json
             .get("sidecarUrl")
             .and_then(|value| value.as_str())
             .context("missing sidecarUrl")?
             .to_string();
-        eprintln!("Sandbox created: id={}, url={sidecar_url}", create_receipt.sandboxId);
+        eprintln!(
+            "Sandbox created: id={}, url={sidecar_url}",
+            create_receipt.sandboxId
+        );
 
         // ---------------------------------------------------------------
         // Operator API verification: start an API server and check state
@@ -107,6 +111,10 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             axum::serve(api_listener, api_app).await.ok();
         });
         let api_url = format!("http://127.0.0.1:{api_port}");
+        let operator_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .unwrap();
 
         // Wait for operator API to be ready.
         {
@@ -119,7 +127,10 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
                 if tokio::time::Instant::now() > api_deadline {
                     anyhow::bail!("Operator API not ready within 5s");
                 }
-                if let Ok(r) = api_client.get(format!("{api_url}/api/provisions")).send().await
+                if let Ok(r) = api_client
+                    .get(format!("{api_url}/api/provisions"))
+                    .send()
+                    .await
                     && r.status().is_success()
                 {
                     break;
@@ -135,8 +146,13 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             .send()
             .await?;
         let provisions_body: serde_json::Value = provisions_resp.json().await?;
-        let provisions = provisions_body["provisions"].as_array().context("provisions array")?;
-        eprintln!("Provisions after sandbox_create: {} entries", provisions.len());
+        let provisions = provisions_body["provisions"]
+            .as_array()
+            .context("provisions array")?;
+        eprintln!(
+            "Provisions after sandbox_create: {} entries",
+            provisions.len()
+        );
         // At least one provision should exist from the sandbox_create job.
         if !provisions.is_empty() {
             let last = provisions.last().unwrap();
@@ -152,13 +168,13 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
         }
 
         // Session auth flow via operator API.
+        let session_token;
         {
-            use k256::ecdsa::SigningKey;
-            use rand::rngs::OsRng;
-
-            let signing_key = SigningKey::random(&mut OsRng);
+            // The harness submits sandbox_create as the service owner. Use
+            // that same keystore key so the operator API sees the real owner.
+            let signing_key = harness.caller_client().ecdsa_signing_key()?;
             let verifying_key = signing_key.verifying_key();
-            let pubkey_bytes = verifying_key.to_encoded_point(false);
+            let pubkey_bytes = verifying_key.0.to_encoded_point(false);
             let pubkey_uncompressed = &pubkey_bytes.as_bytes()[1..];
             let address_hash = keccak256(pubkey_uncompressed);
             let expected_address = format!("0x{}", hex::encode(&address_hash[12..]));
@@ -172,13 +188,10 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             let nonce = challenge["nonce"].as_str().context("nonce")?;
             let message = challenge["message"].as_str().context("message")?;
 
-            let prefixed = format!(
-                "\x19Ethereum Signed Message:\n{}{}",
-                message.len(),
-                message
-            );
+            let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
             let digest = keccak256(prefixed.as_bytes());
             let (signature, recovery_id) = signing_key
+                .0
                 .sign_prehash_recoverable(&digest)
                 .expect("signing failed");
             let mut sig_bytes = Vec::with_capacity(65);
@@ -195,12 +208,18 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
                 }))
                 .send()
                 .await?;
-            assert_eq!(session_resp.status(), 200, "session exchange should succeed");
+            assert_eq!(
+                session_resp.status(),
+                200,
+                "session exchange should succeed"
+            );
             let session: serde_json::Value = session_resp.json().await?;
             let token = session["token"].as_str().context("token")?;
             let address = session["address"].as_str().context("address")?;
             assert!(token.starts_with("v4.local."), "PASETO v4 token");
             assert_eq!(address, expected_address);
+            assert_eq!(address, format!("{:#x}", harness.caller_account()));
+            session_token = token.to_string();
             eprintln!("Session auth OK: address={address}");
         }
 
@@ -209,18 +228,84 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap();
-        let health_deadline =
-            tokio::time::Instant::now() + Duration::from_secs(60);
+        let health_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
             if tokio::time::Instant::now() > health_deadline {
-                anyhow::bail!(
-                    "Sidecar not healthy within 60s at {sidecar_url}"
-                );
+                anyhow::bail!("Sidecar not healthy within 60s at {sidecar_url}");
             }
             if let Ok(resp) = client.get(format!("{sidecar_url}/health")).send().await
                 && resp.status().is_success()
             {
                 eprintln!("Sidecar healthy at {sidecar_url}");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        // Phase 2: inject the provider key through the authenticated
+        // operator API. The on-chain create payload remains secret-free.
+        let mut secret_env = serde_json::Map::new();
+        secret_env.insert(
+            provider_env_name.to_string(),
+            serde_json::Value::String(provider_key),
+        );
+        if provider_env_name == "ZAI_API_KEY" {
+            // The released all-harness image selects Claude first unless the
+            // Z.AI-backed OpenCode harness is selected explicitly.
+            secret_env.insert(
+                "SIDECAR_DEFAULT_HARNESS".to_string(),
+                serde_json::Value::String("opencode".to_string()),
+            );
+        }
+        let secrets_resp = operator_client
+            .post(format!(
+                "{api_url}/api/sandboxes/{}/secrets",
+                create_receipt.sandboxId
+            ))
+            .bearer_auth(&session_token)
+            .json(&serde_json::json!({ "env_json": secret_env }))
+            .send()
+            .await?;
+        let secrets_status = secrets_resp.status();
+        if !secrets_status.is_success() {
+            anyhow::bail!("provider credential injection failed with HTTP {secrets_status}");
+        }
+        let secrets_json: serde_json::Value = secrets_resp.json().await?;
+        assert_eq!(secrets_json["status"], "secrets_configured");
+        assert_eq!(secrets_json["credentials_available"], true);
+
+        // Secret injection recreates the sidecar. Refresh the URL from the
+        // owner-scoped API before the workflow uses the new container.
+        let sandboxes_resp = operator_client
+            .get(format!("{api_url}/api/sandboxes"))
+            .bearer_auth(&session_token)
+            .send()
+            .await?;
+        assert_eq!(sandboxes_resp.status(), 200);
+        let sandboxes_json: serde_json::Value = sandboxes_resp.json().await?;
+        let sandbox_summary = sandboxes_json["sandboxes"]
+            .as_array()
+            .and_then(|sandboxes| {
+                sandboxes
+                    .iter()
+                    .find(|sandbox| sandbox["id"].as_str() == Some(&create_receipt.sandboxId))
+            })
+            .context("injected sandbox missing from owner-scoped listing")?;
+        assert_eq!(sandbox_summary["credentials_available"], true);
+        sidecar_url = sandbox_summary["sidecar_url"]
+            .as_str()
+            .context("injected sandbox missing sidecar_url")?
+            .to_string();
+
+        let injected_health_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            if tokio::time::Instant::now() > injected_health_deadline {
+                anyhow::bail!("Sidecar not healthy after credential injection");
+            }
+            if let Ok(resp) = client.get(format!("{sidecar_url}/health")).send().await
+                && resp.status().is_success()
+            {
+                eprintln!("Sidecar healthy after credential injection");
                 break;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -232,15 +317,17 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
 
         let workflow_payload = WorkflowCreateRequest {
             name: "daily".to_string(),
-            workflow_json: format!(
-                "{{\"sidecar_url\":\"{sidecar_url}\",\"prompt\":\"run\",\"sidecar_token\":\"sandbox-token\"}}"
-            ),
+            workflow_json: serde_json::json!({
+                "sidecar_url": sidecar_url,
+                "prompt": "run"
+            })
+            .to_string(),
             trigger_type: "cron".to_string(),
             trigger_config: "0 * * * * *".to_string(),
             sandbox_config_json: "{}".to_string(),
             target_kind: 0,
             target_sandbox_id: create_receipt.sandboxId.clone(),
-            target_service_id: 1,
+            target_service_id: harness.service_id(),
         }
         .abi_encode();
         let workflow_submission = harness
@@ -347,4 +434,16 @@ fn keccak256(data: &[u8]) -> [u8; 32] {
     hasher.update(data);
     hasher.finalize(&mut output);
     output
+}
+
+fn configured_provider_credential() -> Result<(&'static str, String)> {
+    for name in ["ANTHROPIC_API_KEY", "ZAI_API_KEY"] {
+        if let Ok(value) = std::env::var(name)
+            && !value.trim().is_empty()
+        {
+            return Ok((name, value));
+        }
+    }
+
+    anyhow::bail!("SIDECAR_E2E requires ANTHROPIC_API_KEY or ZAI_API_KEY before creating a sandbox")
 }
