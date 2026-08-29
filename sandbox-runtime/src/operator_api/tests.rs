@@ -4821,6 +4821,51 @@ async fn test_health_and_readyz_unauthenticated() {
 // =====================================================================
 
 #[serial_test::serial]
+#[test]
+fn test_scoped_secret_sync_refreshes_instance_endpoint() {
+    reset_test_state();
+    let sandbox_id = "scoped-secret-instance-sync-1";
+    insert_instance_sandbox_with_url(sandbox_id, OP_TEST_OWNER, "http://127.0.0.1:32000");
+
+    let mut recreated = runtime::get_instance_sandbox()
+        .unwrap()
+        .expect("instance record should exist");
+    recreated.sidecar_url = "http://127.0.0.1:32001".into();
+    recreated.sidecar_port = 32001;
+    recreated.ssh_port = Some(2223);
+    recreated.token = "rotated-instance-token".into();
+    crate::runtime::seal_record(&mut recreated).unwrap();
+    sandboxes()
+        .unwrap()
+        .insert(sandbox_id.to_string(), recreated)
+        .unwrap();
+
+    // This mirrors the record returned after scoped secret recreation.
+    sync_instance_record(sandbox_id).unwrap();
+
+    let synced = runtime::get_instance_sandbox()
+        .unwrap()
+        .expect("synced instance record should exist");
+    assert_eq!(synced.sidecar_url, "http://127.0.0.1:32001");
+    assert_eq!(synced.sidecar_port, 32001);
+    assert_eq!(synced.ssh_port, Some(2223));
+    assert_eq!(synced.token, "rotated-instance-token");
+
+    // An existing fleet sandbox must not take over the singleton record.
+    let fleet_id = "scoped-secret-fleet-sync-1";
+    insert_plain_sandbox_with_url(fleet_id, OP_TEST_OWNER, "http://127.0.0.1:32999");
+    sync_instance_record(fleet_id).unwrap();
+    let unchanged = runtime::get_instance_sandbox()
+        .unwrap()
+        .expect("instance record should remain available");
+    assert_eq!(unchanged.id, sandbox_id);
+    assert_eq!(unchanged.sidecar_url, synced.sidecar_url);
+
+    // An unknown sandbox ID is also a safe no-op.
+    sync_instance_record("scoped-secret-not-an-instance").unwrap();
+}
+
+#[serial_test::serial]
 #[tokio::test]
 async fn test_instance_store_survives_missing_record() {
     init();

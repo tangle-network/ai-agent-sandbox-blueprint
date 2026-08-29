@@ -74,7 +74,9 @@ pub(crate) async fn instance_inject_secrets(
 
     match secret_provisioning::inject_secrets(&record.id, body.env_json, None).await {
         Ok(updated) => {
-            sync_instance_record(&updated.id);
+            if let Err(err) = sync_instance_record(&updated.id) {
+                return classify_sandbox_error(err).into_response();
+            }
             let creds = workflow_runtime_credentials_available(&updated.effective_env_json())
                 .unwrap_or(false);
             (
@@ -102,7 +104,9 @@ pub(crate) async fn instance_wipe_secrets(SessionAuth(address): SessionAuth) -> 
 
     match secret_provisioning::wipe_secrets(&record.id, None).await {
         Ok(updated) => {
-            sync_instance_record(&updated.id);
+            if let Err(err) = sync_instance_record(&updated.id) {
+                return classify_sandbox_error(err).into_response();
+            }
             let creds = workflow_runtime_credentials_available(&updated.effective_env_json())
                 .unwrap_or(false);
             (
@@ -170,6 +174,10 @@ pub(crate) async fn inject_secrets(
     let _lock = runtime::acquire_lifecycle_lock(&sandbox_id).await;
     match secret_provisioning::inject_secrets(&sandbox_id, body.env_json, None).await {
         Ok(record) => {
+            // Scoped recreation can serve the singleton instance as well.
+            if let Err(err) = sync_instance_record(&record.id) {
+                return classify_sandbox_error(err).into_response();
+            }
             let creds = workflow_runtime_credentials_available(&record.effective_env_json())
                 .unwrap_or(false);
             (
@@ -197,6 +205,10 @@ pub(crate) async fn wipe_secrets(
     let _lock = runtime::acquire_lifecycle_lock(&sandbox_id).await;
     match secret_provisioning::wipe_secrets(&sandbox_id, None).await {
         Ok(record) => {
+            // Scoped recreation can serve the singleton instance as well.
+            if let Err(err) = sync_instance_record(&record.id) {
+                return classify_sandbox_error(err).into_response();
+            }
             let creds = workflow_runtime_credentials_available(&record.effective_env_json())
                 .unwrap_or(false);
             (
@@ -226,8 +238,19 @@ pub(crate) fn reject_instance_tee_secrets(
     Ok(())
 }
 
-pub(crate) fn sync_instance_record(id: &str) {
-    if let Ok(Some(updated)) = sandboxes().and_then(|s| s.get(id)) {
-        let _ = runtime::instance_store().and_then(|s| s.insert("instance".to_string(), updated));
+pub(crate) fn sync_instance_record(id: &str) -> crate::error::Result<()> {
+    let instance_store = runtime::instance_store()?;
+    let Some(instance) = instance_store.get("instance")? else {
+        return Ok(());
+    };
+    if instance.id != id {
+        return Ok(());
     }
+
+    let updated = sandboxes()?.get(id)?.ok_or_else(|| {
+        crate::SandboxError::Storage(format!(
+            "sandbox record {id} disappeared during instance synchronization"
+        ))
+    })?;
+    instance_store.insert("instance".to_string(), updated)
 }
