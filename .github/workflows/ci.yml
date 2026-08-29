@@ -313,6 +313,7 @@ jobs:
           REAL_SIDECAR: "1"
           LIFECYCLE_BENCH: "1"
           LIFECYCLE_N: "5"
+          SIDECAR_IMAGE: "tangle-sidecar:local"
           SIDECAR_PUBLIC_HOST: "127.0.0.1"
           REQUEST_TIMEOUT_SECS: "120"
         run: cargo test -p ai-agent-sandbox-blueprint-lib --test lifecycle_bench -- --test-threads=1 --nocapture

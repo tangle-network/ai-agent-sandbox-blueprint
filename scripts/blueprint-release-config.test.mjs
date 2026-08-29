@@ -19,6 +19,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CONFIG_FILE = resolve(ROOT, 'deploy/manifests/base-sepolia/blueprints.json')
 const DEPLOYMENT_FILE = resolve(ROOT, 'deploy/manifests/base-sepolia/tnt-core.latest.json')
 const SOURCE_PUBLISHER = resolve(ROOT, 'deploy/publish-blueprint-sources.sh')
+const CI_WORKFLOW = resolve(ROOT, '.github/workflows/ci.yml')
 const CONFIG = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
 const REGISTRY = [
   'repo\tblueprint_id\tbsm_address\tstatus\tbinary_version_id\tbinary_sha256\tbinary_uri\tbinary_attestation\tnote\ttimestamp',
@@ -252,6 +253,21 @@ test('release paths consume the registry and have no stale TEE variable gate', (
   assert.match(sourcePublisher, /verify-blueprint-release-registry\.sh/)
   assert.doesNotMatch(sourcePublisher, /TEE_INSTANCE_BLUEPRINT_ID/)
   assert.doesNotMatch(sourcePublisher, /declare -A BLUEPRINT_IDS/)
+})
+
+test('real lifecycle bench uses the image pulled by CI', () => {
+  const workflow = readFileSync(CI_WORKFLOW, 'utf8')
+  assert.match(
+    workflow,
+    /docker tag ghcr\.io\/tangle-network\/blueprint-sidecar:all-harness tangle-sidecar:local/,
+  )
+  const lifecycleBench = workflow.match(
+    /- name: Run lifecycle bench \(real sidecar\)[\s\S]*?(?=\n\s*- name: Upload lifecycle bench results)/,
+  )?.[0]
+  assert.ok(lifecycleBench, 'lifecycle benchmark step should be present')
+  assert.match(lifecycleBench, /SIDECAR_IMAGE: "tangle-sidecar:local"/)
+  assert.match(lifecycleBench, /REAL_SIDECAR: "1"/)
+  assert.match(lifecycleBench, /LIFECYCLE_BENCH: "1"/)
 })
 
 test('source publisher rejects an unknown selection before any RPC call', () => {
