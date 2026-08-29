@@ -393,7 +393,7 @@ async fn instance_full_lifecycle() -> Result<()> {
             "/api/sandbox/snapshot",
             &auth,
             json!({
-                "destination": "http://127.0.0.1:1/e2e-snapshot-test",
+                "destination": "s3://e2e-bucket/e2e-snapshot-test.tar.gz",
                 "include_workspace": true,
                 "include_state": false,
             }),
