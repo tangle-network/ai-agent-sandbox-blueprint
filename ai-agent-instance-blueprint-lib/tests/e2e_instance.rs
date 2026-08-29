@@ -238,8 +238,29 @@ async fn instance_full_lifecycle() -> Result<()> {
                 assert!(body.get("response").is_some(), "prompt: missing 'response': {body}");
                 eprintln!("  Prompt OK (200, success={})", body["success"]);
             }
+            202 => {
+                let body: Value = resp.json().await?;
+                assert_eq!(body["accepted"], true, "prompt: run was not accepted: {body}");
+                let run_id = body["run_id"]
+                    .as_str()
+                    .context("prompt: accepted response missing run_id")?;
+                let session_id = body["session_id"]
+                    .as_str()
+                    .context("prompt: accepted response missing session_id")?;
+                let terminal_status = wait_for_chat_run(
+                    &api_url,
+                    &format!("/api/sandbox/live/chat/sessions/{session_id}"),
+                    &auth,
+                    run_id,
+                )
+                .await?;
+                eprintln!("  Prompt accepted (202, terminal={terminal_status})");
+            }
             502 => {
                 eprintln!("  Prompt: sidecar agent not available (502 accepted)");
+            }
+            503 => {
+                eprintln!("  Prompt: sidecar circuit breaker open (503 accepted)");
             }
             _ => anyhow::bail!("prompt: unexpected status {status}"),
         }
@@ -261,8 +282,29 @@ async fn instance_full_lifecycle() -> Result<()> {
                 assert!(body.get("session_id").is_some(), "task: missing 'session_id': {body}");
                 eprintln!("  Task OK (200, success={})", body["success"]);
             }
+            202 => {
+                let body: Value = resp.json().await?;
+                assert_eq!(body["accepted"], true, "task: run was not accepted: {body}");
+                let run_id = body["run_id"]
+                    .as_str()
+                    .context("task: accepted response missing run_id")?;
+                let session_id = body["session_id"]
+                    .as_str()
+                    .context("task: accepted response missing session_id")?;
+                let terminal_status = wait_for_chat_run(
+                    &api_url,
+                    &format!("/api/sandbox/live/chat/sessions/{session_id}"),
+                    &auth,
+                    run_id,
+                )
+                .await?;
+                eprintln!("  Task accepted (202, terminal={terminal_status})");
+            }
             502 => {
                 eprintln!("  Task: sidecar agent not available (502 accepted)");
+            }
+            503 => {
+                eprintln!("  Task: sidecar circuit breaker open (503 accepted)");
             }
             _ => anyhow::bail!("task: unexpected status {status}"),
         }

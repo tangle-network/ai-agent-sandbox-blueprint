@@ -142,6 +142,32 @@ pub async fn api_delete(api_url: &str, path: &str, auth: &str) -> Result<Value> 
     Ok(resp_body)
 }
 
+/// Wait for an accepted chat run to reach a terminal state.
+pub async fn wait_for_chat_run(
+    api_url: &str,
+    session_path: &str,
+    auth: &str,
+    run_id: &str,
+) -> Result<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let detail = api_get(api_url, session_path, auth).await?;
+        if let Some(run) = detail["runs"]
+            .as_array()
+            .and_then(|runs| runs.iter().find(|run| run["id"] == run_id))
+        {
+            let status = run["status"].as_str().context("chat run status missing")?;
+            if !matches!(status, "queued" | "running" | "cancelling") {
+                return Ok(status.to_string());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("chat run {run_id} did not reach a terminal state")
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Assert that an API call returns a specific HTTP status code.
 ///
 /// Supports GET, POST, and DELETE methods.
