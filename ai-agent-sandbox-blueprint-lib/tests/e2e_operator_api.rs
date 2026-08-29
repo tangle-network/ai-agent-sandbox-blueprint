@@ -866,7 +866,7 @@ async fn workflow_create_and_cancel() -> Result<()> {
             sandbox_config_json: "{}".to_string(),
             target_kind: 0,
             target_sandbox_id: sandbox_id.clone(),
-            target_service_id: 1,
+            target_service_id: harness.service_id(),
         }
         .abi_encode();
 

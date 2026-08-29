@@ -240,7 +240,7 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             sandbox_config_json: "{}".to_string(),
             target_kind: 0,
             target_sandbox_id: create_receipt.sandboxId.clone(),
-            target_service_id: 1,
+            target_service_id: harness.service_id(),
         }
         .abi_encode();
         let workflow_submission = harness
