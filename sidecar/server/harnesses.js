@@ -8,7 +8,7 @@ const { optionalHarnessCommand } = require('./optional-harnesses')
 // SIDECAR_HARNESSES=all. The default entry remains available for auto-select.
 const agents = advertisedAgents()
 
-function selectHarness(identifier, backend, availableAgents = agents) {
+function selectHarness(identifier, backend, availableAgents = agents, environment = process.env) {
   const explicitIdentifier = String(identifier || '').trim().toLowerCase()
   const explicitBackend = String(backend?.type || '').trim().toLowerCase()
   const requested = explicitIdentifier && explicitIdentifier !== 'default'
@@ -21,11 +21,12 @@ function selectHarness(identifier, backend, availableAgents = agents) {
   )
   if (requested) return advertised.has(requested) ? requested : null
 
-  const configuredDefault = String(process.env.SIDECAR_DEFAULT_HARNESS || '').trim().toLowerCase()
+  const configuredDefault = String(environment.SIDECAR_DEFAULT_HARNESS || '').trim().toLowerCase()
   if (configuredDefault && advertised.has(configuredDefault)) return configuredDefault
-  if (process.env.OPENAI_API_KEY && advertised.has('codex')) return 'codex'
-  if (process.env.ANTHROPIC_API_KEY && advertised.has('claude')) return 'claude'
-  if ((process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) && advertised.has('gemini')) return 'gemini'
+  if (environment.OPENAI_API_KEY && advertised.has('codex')) return 'codex'
+  if (environment.ANTHROPIC_API_KEY && advertised.has('claude')) return 'claude'
+  if (environment.ZAI_API_KEY && advertised.has('opencode')) return 'opencode'
+  if ((environment.GEMINI_API_KEY || environment.GOOGLE_API_KEY) && advertised.has('gemini')) return 'gemini'
   return availableAgents.find((agent) => agent.identifier !== 'default')?.identifier || null
 }
 

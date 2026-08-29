@@ -852,8 +852,37 @@ async fn workflow_create_and_cancel() -> Result<()> {
             "workflow target sandbox_id should not be empty"
         );
 
-        // ─── Step 3: Create workflow via Tangle ──────────────────────────
-        e2e_step!(3, "Submitting JOB_WORKFLOW_CREATE...");
+        // ─── Step 3: Configure provider credentials through operator API ─
+        e2e_step!(3, "Injecting provider credentials through operator API...");
+        let (api_url, _api_handle) = spawn_operator_api().await?;
+        let (token, _owner_address) = get_auth_token(&api_url, OWNER_KEY).await?;
+        let auth = format!("Bearer {token}");
+        let (provider_env_name, provider_key) = configured_provider_credential()?;
+        let secrets = api_post(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/secrets"),
+            &auth,
+            json!({
+                "env_json": {
+                    provider_env_name: provider_key,
+                },
+            }),
+        )
+        .await?;
+        assert_eq!(
+            secrets["status"], "secrets_configured",
+            "provider credentials should be configured: {secrets}"
+        );
+        assert_eq!(
+            secrets["credentials_available"], true,
+            "provider credentials should be available: {secrets}"
+        );
+        let sidecar_url = get_sidecar_url(&api_url, &auth, &sandbox_id).await?;
+        wait_for_sidecar(&sidecar_url).await?;
+        eprintln!("  Provider credentials configured and sidecar healthy");
+
+        // ─── Step 4: Create workflow via Tangle ──────────────────────────
+        e2e_step!(4, "Submitting JOB_WORKFLOW_CREATE...");
         let create_payload = WorkflowCreateRequest {
             name: "e2e-test-workflow".to_string(),
             workflow_json: serde_json::to_string(&json!({
@@ -890,8 +919,8 @@ async fn workflow_create_and_cancel() -> Result<()> {
             .context("missing workflowId")?;
         eprintln!("  Workflow created: id={workflow_id}, status=active");
 
-        // ─── Step 4: Cancel workflow via Tangle ──────────────────────────
-        e2e_step!(4, "Submitting JOB_WORKFLOW_CANCEL...");
+        // ─── Step 5: Cancel workflow via Tangle ──────────────────────────
+        e2e_step!(5, "Submitting JOB_WORKFLOW_CANCEL...");
         let cancel_payload = WorkflowControlRequest { workflow_id }.abi_encode();
 
         let cancel_sub = harness
@@ -911,12 +940,24 @@ async fn workflow_create_and_cancel() -> Result<()> {
         );
         eprintln!("  Workflow canceled: {cancel_json}");
 
-        // ─── Step 5: Shutdown ────────────────────────────────────────────
-        e2e_step!(5, "Shutting down...");
+        // ─── Step 6: Shutdown ────────────────────────────────────────────
+        e2e_step!(6, "Shutting down...");
         harness.shutdown().await;
-        eprintln!("\n=== Workflow E2E tests passed (5 steps) ===");
+        eprintln!("\n=== Workflow E2E tests passed (6 steps) ===");
         Ok(())
     })
     .await
     .context("workflow_create_and_cancel timed out")?
+}
+
+fn configured_provider_credential() -> Result<(&'static str, String)> {
+    for name in ["ANTHROPIC_API_KEY", "ZAI_API_KEY"] {
+        if let Ok(value) = std::env::var(name)
+            && !value.trim().is_empty()
+        {
+            return Ok((name, value));
+        }
+    }
+
+    anyhow::bail!("SIDECAR_E2E requires ANTHROPIC_API_KEY or ZAI_API_KEY before creating a sandbox")
 }

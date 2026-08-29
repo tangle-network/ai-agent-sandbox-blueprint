@@ -82,6 +82,13 @@ test('default selection falls back only to an advertised harness', () => {
   ]), 'hermes')
 })
 
+test('Z.AI credentials select the OpenCode harness', () => {
+  assert.equal(selectHarness('default', {}, [
+    { identifier: 'default' },
+    { identifier: 'opencode' },
+  ], { ZAI_API_KEY: 'test-key' }), 'opencode')
+})
+
 test('manifest has one entry for each supported CLI', () => {
   const identifiers = manifest.map((agent) => agent.identifier)
   assert.equal(manifest.length, 14)

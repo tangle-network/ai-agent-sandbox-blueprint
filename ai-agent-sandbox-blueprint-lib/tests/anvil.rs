@@ -249,6 +249,14 @@ async fn runs_sandbox_jobs_end_to_end() -> Result<()> {
             provider_env_name.to_string(),
             serde_json::Value::String(provider_key),
         );
+        if provider_env_name == "ZAI_API_KEY" {
+            // The released all-harness image selects Claude first unless the
+            // Z.AI-backed OpenCode harness is selected explicitly.
+            secret_env.insert(
+                "SIDECAR_DEFAULT_HARNESS".to_string(),
+                serde_json::Value::String("opencode".to_string()),
+            );
+        }
         let secrets_resp = operator_client
             .post(format!(
                 "{api_url}/api/sandboxes/{}/secrets",
