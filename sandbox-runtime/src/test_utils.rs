@@ -44,8 +44,13 @@ pub fn address_from_key(key_hex: &str) -> String {
 
 /// Build a reqwest client with a 30s default timeout.
 pub fn http() -> Client {
+    http_with_timeout(Duration::from_secs(30))
+}
+
+/// Build a reqwest client for an operation with a longer server-side budget.
+pub fn http_with_timeout(timeout: Duration) -> Client {
     Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(timeout)
         .build()
         .expect("failed to build HTTP client")
 }
@@ -111,7 +116,18 @@ pub async fn api_get_unauth(api_url: &str, path: &str) -> Result<Value> {
 
 /// Authenticated POST with JSON body, returning parsed JSON. Fails on non-2xx.
 pub async fn api_post(api_url: &str, path: &str, auth: &str, body: Value) -> Result<Value> {
-    let resp = http()
+    api_post_with_timeout(api_url, path, auth, body, Duration::from_secs(30)).await
+}
+
+/// Authenticated POST with a caller-selected timeout.
+pub async fn api_post_with_timeout(
+    api_url: &str,
+    path: &str,
+    auth: &str,
+    body: Value,
+    timeout: Duration,
+) -> Result<Value> {
+    let resp = http_with_timeout(timeout)
         .post(format!("{api_url}{path}"))
         .header("authorization", auth)
         .json(&body)
@@ -128,7 +144,17 @@ pub async fn api_post(api_url: &str, path: &str, auth: &str, body: Value) -> Res
 
 /// Authenticated DELETE (no body), returning parsed JSON. Fails on non-2xx.
 pub async fn api_delete(api_url: &str, path: &str, auth: &str) -> Result<Value> {
-    let resp = http()
+    api_delete_with_timeout(api_url, path, auth, Duration::from_secs(30)).await
+}
+
+/// Authenticated DELETE with a caller-selected timeout.
+pub async fn api_delete_with_timeout(
+    api_url: &str,
+    path: &str,
+    auth: &str,
+    timeout: Duration,
+) -> Result<Value> {
+    let resp = http_with_timeout(timeout)
         .delete(format!("{api_url}{path}"))
         .header("authorization", auth)
         .send()
@@ -179,11 +205,39 @@ pub async fn assert_api_status(
     body: Value,
     expected_status: u16,
 ) {
+    assert_api_status_with_timeout(
+        api_url,
+        method,
+        path,
+        auth,
+        body,
+        expected_status,
+        Duration::from_secs(30),
+    )
+    .await;
+}
+
+/// Assert an API status with a caller-selected request timeout.
+pub async fn assert_api_status_with_timeout(
+    api_url: &str,
+    method: &str,
+    path: &str,
+    auth: &str,
+    body: Value,
+    expected_status: u16,
+    timeout: Duration,
+) {
     let url = format!("{api_url}{path}");
     let resp = match method {
-        "GET" => http().get(&url).header("authorization", auth).send().await,
+        "GET" => {
+            http_with_timeout(timeout)
+                .get(&url)
+                .header("authorization", auth)
+                .send()
+                .await
+        }
         "POST" => {
-            http()
+            http_with_timeout(timeout)
                 .post(&url)
                 .header("authorization", auth)
                 .json(&body)
@@ -191,7 +245,7 @@ pub async fn assert_api_status(
                 .await
         }
         "DELETE" => {
-            http()
+            http_with_timeout(timeout)
                 .delete(&url)
                 .header("authorization", auth)
                 .json(&body)

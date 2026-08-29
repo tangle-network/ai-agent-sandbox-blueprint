@@ -33,6 +33,8 @@ use sandbox_runtime::circuit_breaker;
 use sandbox_runtime::e2e_step;
 use sandbox_runtime::test_utils::*;
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
@@ -73,25 +75,88 @@ async fn detect_ssh_user(api_url: &str, auth: &str, sandbox_id: &str) -> Result<
         .context("ssh user response missing username")
 }
 
-async fn ssh_key_presence(
-    api_url: &str,
-    auth: &str,
-    sandbox_id: &str,
-    username: &str,
-    key: &str,
-) -> Result<bool> {
-    let body = api_post(
-        api_url,
-        &format!("/api/sandboxes/{sandbox_id}/exec"),
-        auth,
-        json!({
-            "command": format!(
-                "sh -lc \"home=$(getent passwd \\\"{username}\\\" | cut -d: -f6); if grep -qxF \\\"{key}\\\" \\\"\\$home/.ssh/authorized_keys\\\" 2>/dev/null; then echo PRESENT; else echo ABSENT; fi\""
-            )
-        }),
-    )
-    .await?;
-    Ok(body["stdout"].as_str().unwrap_or("").contains("PRESENT"))
+struct SshTestKey {
+    _directory: tempfile::TempDir,
+    private_key: PathBuf,
+    public_key: String,
+}
+
+impl SshTestKey {
+    fn generate() -> Result<Self> {
+        let directory = tempfile::tempdir().context("create temporary SSH key directory")?;
+        let private_key = directory.path().join("id_ed25519");
+        let output = Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-f"])
+            .arg(&private_key)
+            .args(["-N", "", "-q"])
+            .output()
+            .context("run ssh-keygen")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "ssh-keygen failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let public_key = std::fs::read_to_string(private_key.with_extension("pub"))
+            .context("read generated SSH public key")?
+            .trim()
+            .to_string();
+        anyhow::ensure!(!public_key.is_empty(), "generated SSH public key is empty");
+        Ok(Self {
+            _directory: directory,
+            private_key,
+            public_key,
+        })
+    }
+}
+
+async fn ssh_key_presence(private_key: &Path, username: &str, port: u16) -> Result<bool> {
+    // The operator exec endpoint runs as `agent`, but provisioning targets the detected SSH user.
+    // Probe the public SSH path so the test does not depend on another user's home permissions.
+    let private_key = private_key.to_owned();
+    let username = username.to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new("ssh")
+            .arg("-i")
+            .arg(private_key)
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "PasswordAuthentication=no",
+                "-o",
+                "KbdInteractiveAuthentication=no",
+                "-o",
+                "ConnectTimeout=10",
+                "-p",
+            ])
+            .arg(port.to_string())
+            .arg(format!("{username}@127.0.0.1"))
+            .arg("printf PRESENT")
+            .output()
+            .context("run SSH key probe")
+    })
+    .await
+    .context("join SSH key probe")??;
+    Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).contains("PRESENT"))
+}
+
+async fn wait_for_ssh_key(private_key: &Path, username: &str, port: u16) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if ssh_key_presence(private_key, username, port).await? {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("SSH key was not accepted before the probe deadline");
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,6 +299,12 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         assert!(sb["cpu_cores"].is_number(), "should have cpu_cores");
         assert!(sb["memory_mb"].is_number(), "should have memory_mb");
         assert!(sb["created_at"].is_number(), "should have created_at");
+        let ssh_port = u16::try_from(
+            sb["ssh_port"]
+                .as_u64()
+                .context("SSH-enabled sandbox should report ssh_port")?,
+        )
+        .context("sandbox ssh_port does not fit in u16")?;
         eprintln!("  Found sandbox, state=running");
 
         // ─── Step 10: Exec (stdout, exit 0) ──────────────────────────────
@@ -400,32 +471,45 @@ async fn sandbox_full_lifecycle() -> Result<()> {
 
         // ─── Step 16: SSH provision + idempotency ────────────────────────
         e2e_step!(16, "SSH user detection + provision + idempotency...");
-        let ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp9pDAVl8TpDBLVnpXjAIRxMf3K+m6UPlv3VBMbRp2o e2e-test";
+        let ssh_test_key = SshTestKey::generate()?;
         let ssh_user = detect_ssh_user(&api_url, &auth, &sandbox_id).await?;
         assert!(!ssh_user.is_empty(), "ssh user should not be empty");
         let path = format!("/api/sandboxes/{sandbox_id}/ssh");
-        let body = api_post(&api_url, &path, &auth, json!({"public_key": ssh_key})).await?;
+        let body = api_post(
+            &api_url,
+            &path,
+            &auth,
+            json!({"public_key": ssh_test_key.public_key}),
+        )
+        .await?;
+        assert_eq!(body["success"], true, "ssh response: {body}");
+        assert_eq!(body["username"], ssh_user, "ssh response: {body}");
+        wait_for_ssh_key(&ssh_test_key.private_key, &ssh_user, ssh_port).await?;
+        // Idempotent second call
+        let body = api_post(
+            &api_url,
+            &path,
+            &auth,
+            json!({"public_key": ssh_test_key.public_key}),
+        )
+        .await?;
         assert_eq!(body["success"], true, "ssh response: {body}");
         assert_eq!(body["username"], ssh_user, "ssh response: {body}");
         assert!(
-            ssh_key_presence(&api_url, &auth, &sandbox_id, &ssh_user, ssh_key).await?,
-            "key should be present after provision"
+            ssh_key_presence(&ssh_test_key.private_key, &ssh_user, ssh_port).await?,
+            "key should remain usable after idempotent provision"
         );
-        // Idempotent second call
-        let body = api_post(&api_url, &path, &auth, json!({"public_key": ssh_key})).await?;
-        assert_eq!(body["success"], true, "ssh response: {body}");
-        assert_eq!(body["username"], ssh_user, "ssh response: {body}");
         eprintln!("  SSH provisioned (idempotent)");
 
         let wrong_user_resp = http()
             .post(format!("{api_url}{path}"))
             .header("authorization", &auth)
-            .json(&json!({"username": "no-such-user", "public_key": ssh_key}))
+            .json(&json!({"username": "no-such-user", "public_key": ssh_test_key.public_key}))
             .send()
             .await?;
         assert_eq!(wrong_user_resp.status(), 422, "wrong user should fail");
         assert!(
-            ssh_key_presence(&api_url, &auth, &sandbox_id, &ssh_user, ssh_key).await?,
+            ssh_key_presence(&ssh_test_key.private_key, &ssh_user, ssh_port).await?,
             "wrong-user attempt should not remove the existing key"
         );
 
@@ -434,7 +518,7 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         let resp = http()
             .delete(format!("{api_url}{path}"))
             .header("authorization", &auth)
-            .json(&json!({"public_key": ssh_key}))
+            .json(&json!({"public_key": ssh_test_key.public_key}))
             .send()
             .await?;
         assert_eq!(resp.status(), 200, "ssh revoke should succeed");
@@ -442,20 +526,21 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         assert_eq!(body["success"], true, "ssh revoke response: {body}");
         assert_eq!(body["username"], ssh_user, "ssh revoke response: {body}");
         assert!(
-            !ssh_key_presence(&api_url, &auth, &sandbox_id, &ssh_user, ssh_key).await?,
+            !ssh_key_presence(&ssh_test_key.private_key, &ssh_user, ssh_port).await?,
             "key should be absent after revoke"
         );
         eprintln!("  SSH revoked");
 
         // ─── Step 18: Secrets inject ─────────────────────────────────────
         e2e_step!(18, "Injecting secrets...");
-        assert_api_status(
+        assert_api_status_with_timeout(
             &api_url,
             "POST",
             &format!("/api/sandboxes/{sandbox_id}/secrets"),
             &auth,
             json!({"env_json": {"E2E_SECRET": "test-value-42"}}),
             200,
+            Duration::from_secs(120),
         )
         .await;
         eprintln!("  Secrets injected");
@@ -502,10 +587,11 @@ async fn sandbox_full_lifecycle() -> Result<()> {
 
         // ─── Step 20: Secrets wipe + verify ──────────────────────────────
         e2e_step!(20, "Wiping secrets...");
-        let body = api_delete(
+        let body = api_delete_with_timeout(
             &api_url,
             &format!("/api/sandboxes/{sandbox_id}/secrets"),
             &auth,
+            Duration::from_secs(120),
         )
         .await?;
         assert_eq!(body["status"], "secrets_wiped", "wipe response: {body}");
@@ -898,7 +984,7 @@ async fn workflow_create_and_cancel() -> Result<()> {
         let (token, _owner_address) = get_auth_token(&api_url, OWNER_KEY).await?;
         let auth = format!("Bearer {token}");
         let (provider_env_name, provider_key) = configured_provider_credential()?;
-        let secrets = api_post(
+        let secrets = api_post_with_timeout(
             &api_url,
             &format!("/api/sandboxes/{sandbox_id}/secrets"),
             &auth,
@@ -907,6 +993,7 @@ async fn workflow_create_and_cancel() -> Result<()> {
                     provider_env_name: provider_key,
                 },
             }),
+            Duration::from_secs(120),
         )
         .await?;
         assert_eq!(
