@@ -823,6 +823,8 @@ async fn sandbox_full_lifecycle() -> Result<()> {
 
         // ─── Step 29: Cross-owner isolation ──────────────────────────────
         e2e_step!(29, "Testing cross-owner tenant isolation...");
+        // Keep the preceding lifecycle writes from masking the authorization result with 429.
+        sandbox_runtime::rate_limit::write_limiter().reset();
         let non_owner_address = address_from_key(NON_OWNER_KEY);
         let (non_owner_token, addr) = get_auth_token(&api_url, NON_OWNER_KEY).await?;
         assert_eq!(
