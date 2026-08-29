@@ -111,7 +111,7 @@ async fn instance_full_lifecycle() -> Result<()> {
             agent_identifier: "default-agent".to_string(),
             env_json: "{}".to_string(),
             metadata_json: "{}".to_string(),
-            ssh_enabled: false,
+            ssh_enabled: true,
             ssh_public_key: String::new(),
             web_terminal_enabled: false,
             max_lifetime_seconds: 3600,
