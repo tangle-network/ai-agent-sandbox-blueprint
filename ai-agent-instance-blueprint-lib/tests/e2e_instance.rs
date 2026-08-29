@@ -529,17 +529,17 @@ async fn instance_full_lifecycle() -> Result<()> {
             .context("instance should still be in list")?;
         assert_eq!(sb["state"], "stopped");
 
-        // Exec on stopped instance → should fail (sidecar unreachable)
+        // Exec on stopped instance → should fail before reaching the sidecar
         assert_api_status(
             &api_url,
             "POST",
             "/api/sandbox/exec",
             &auth,
             json!({"command": "echo should-fail"}),
-            502,
+            409,
         )
         .await;
-        eprintln!("  Confirmed stopped, exec returns 502");
+        eprintln!("  Confirmed stopped, exec returns 409");
 
         // ─── Step 19: Stop idempotency ───────────────────────────────────
         e2e_step!(19, "Testing stop idempotency...");

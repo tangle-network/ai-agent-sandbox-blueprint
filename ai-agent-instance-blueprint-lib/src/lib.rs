@@ -31,7 +31,6 @@ use blueprint_sdk::Job;
 use blueprint_sdk::Router;
 use blueprint_sdk::alloy::sol;
 use blueprint_sdk::tangle::TangleLayer;
-use once_cell::sync::OnceCell;
 use serde_json::Value;
 
 pub use blueprint_sdk::tangle;
@@ -216,18 +215,11 @@ sol! {
 // Instance state — singleton sandbox for this service instance
 // ─────────────────────────────────────────────────────────────────────────────
 
-static INSTANCE_STORE: OnceCell<store::PersistentStore<SandboxRecord>> = OnceCell::new();
-
 const INSTANCE_KEY: &str = "instance";
 
 /// Access the instance's persistent sandbox record store.
 pub fn instance_store() -> error::Result<&'static store::PersistentStore<SandboxRecord>> {
-    INSTANCE_STORE
-        .get_or_try_init(|| {
-            let path = store::state_dir().join("instance.json");
-            store::PersistentStore::open(path)
-        })
-        .map_err(|err: SandboxError| err)
+    sandbox_runtime::runtime::instance_store()
 }
 
 /// Get the provisioned sandbox record for this instance, if any.
