@@ -229,7 +229,9 @@ install_hermes() {
   hermes_installer="$hermes_dir/install.sh"
   hermes_source="$hermes_dir/hermes-agent.tar.gz"
   hermes_install_dir='/usr/local/lib/hermes-agent'
-  download_verified "https://hermes-agent.nousresearch.com/install.sh" "$hermes_installer_sha256" "$hermes_installer"
+  download_verified \
+    "https://raw.githubusercontent.com/NousResearch/hermes-agent/$hermes_install_commit/scripts/install.sh" \
+    "$hermes_installer_sha256" "$hermes_installer"
   download_verified \
     "https://github.com/NousResearch/hermes-agent/archive/$hermes_install_commit.tar.gz" \
     "$hermes_source_archive_sha256" "$hermes_source"

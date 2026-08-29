@@ -48,7 +48,7 @@ test('Hermes is wired into the install, verification, image, and docs surfaces',
   const readme = fs.readFileSync(path.join(sidecarRoot, 'README.md'), 'utf8')
 
   assert.match(install, /install_hermes/)
-  assert.match(install, /hermes-agent\.nousresearch\.com\/install\.sh/)
+  assert.match(install, /raw\.githubusercontent\.com\/NousResearch\/hermes-agent\/\$hermes_install_commit\/scripts\/install\.sh/)
   assert.match(verify, /hermes/)
   assert.match(docker, /Hermes/)
   assert.match(docker, /FROM node@sha256:[0-9a-f]{64}/)
