@@ -292,7 +292,12 @@ jobs:
           SIDECAR_E2E: "1"
           SIDECAR_PUBLIC_HOST: "127.0.0.1"
           REQUEST_TIMEOUT_SECS: "60"
-        run: cargo nextest run --test-threads=1 -p ai-agent-sandbox-blueprint-lib --test e2e_operator_api --test anvil
+          # The runtime's canonical provider variable is ZAI_API_KEY. The
+          # organization secret retains the upstream provider name.
+          ZAI_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+        run: |
+          test -n "$ZAI_API_KEY"
+          cargo nextest run --test-threads=1 -p ai-agent-sandbox-blueprint-lib --test e2e_operator_api --test anvil
 
       - name: Run E2E tests (instance)
         if: steps.sidecar.outputs.available == 'true'
