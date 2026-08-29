@@ -280,11 +280,15 @@ jobs:
           echo "::endgroup::"
           if docker pull ghcr.io/tangle-network/blueprint-sidecar:all-harness; then
             docker tag ghcr.io/tangle-network/blueprint-sidecar:all-harness tangle-sidecar:local
-            echo "available=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::Sidecar image not available — E2E tests will be skipped"
-            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "GHCR stable image is unavailable; building the checked-out sidecar image"
+            docker build \
+              -f sidecar/Dockerfile.all-harness \
+              -t tangle-sidecar:local \
+              .
           fi
+          docker image inspect tangle-sidecar:local >/dev/null
+          echo "available=true" >> "$GITHUB_OUTPUT"
 
       - name: Run E2E tests (sandbox)
         if: steps.sidecar.outputs.available == 'true'
@@ -326,10 +330,6 @@ jobs:
           path: bench-results/lifecycle-real.json
           retention-days: 90
           if-no-files-found: ignore
-
-      - name: E2E skipped (no sidecar image)
-        if: steps.sidecar.outputs.available != 'true'
-        run: echo "E2E tests skipped — sidecar Docker image not available. Publish ghcr.io/tangle-network/blueprint-sidecar:all-harness to enable."
 
   # NOTE: the previous `firecracker-real-e2e` job exercised the host-agent
   # HTTP boundary that has been replaced by the in-process `microvm-runtime`

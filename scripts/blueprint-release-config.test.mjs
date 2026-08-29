@@ -255,12 +255,18 @@ test('release paths consume the registry and have no stale TEE variable gate', (
   assert.doesNotMatch(sourcePublisher, /declare -A BLUEPRINT_IDS/)
 })
 
-test('real lifecycle bench uses the image pulled by CI', () => {
+test('real lifecycle bench uses a verified local sidecar image', () => {
   const workflow = readFileSync(CI_WORKFLOW, 'utf8')
   assert.match(
     workflow,
     /docker tag ghcr\.io\/tangle-network\/blueprint-sidecar:all-harness tangle-sidecar:local/,
   )
+  assert.match(
+    workflow,
+    /docker build \\\n\s+-f sidecar\/Dockerfile\.all-harness \\\n\s+-t tangle-sidecar:local \\\n\s+\./,
+  )
+  assert.match(workflow, /docker image inspect tangle-sidecar:local/)
+  assert.doesNotMatch(workflow, /E2E skipped \(no sidecar image\)/)
   const lifecycleBench = workflow.match(
     /- name: Run lifecycle bench \(real sidecar\)[\s\S]*?(?=\n\s*- name: Upload lifecycle bench results)/,
   )?.[0]

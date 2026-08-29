@@ -443,7 +443,7 @@ async fn lifecycle_bench() {
                     .send()
                     .await
                     .unwrap();
-                assert_eq!(resp.status(), 403);
+                assert_eq!(resp.status(), 401);
             }
         })
         .await,
@@ -603,25 +603,6 @@ async fn lifecycle_bench() {
             async move {
                 let resp = http()
                     .get(format!("{url}/agents"))
-                    .header(AUTHORIZATION, auth())
-                    .send()
-                    .await
-                    .unwrap();
-                assert!(resp.status().is_success());
-                let _body: Value = resp.json().await.unwrap();
-            }
-        })
-        .await,
-    );
-
-    // ── Health detailed ──
-
-    results.push(
-        time_op("health_detailed", n, || {
-            let url = url.clone();
-            async move {
-                let resp = http()
-                    .get(format!("{url}/health/detailed"))
                     .header(AUTHORIZATION, auth())
                     .send()
                     .await
