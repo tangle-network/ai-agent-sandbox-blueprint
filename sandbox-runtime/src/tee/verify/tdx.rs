@@ -64,7 +64,7 @@ pub(crate) fn verify_tdx(evidence: &[u8], now_secs: u64) -> Result<VerifiedQuote
         .ok_or("verified quote is not a TDX TD report")?;
     Ok(VerifiedQuote {
         measurement: td.mr_td.to_vec(),
-        report_data: td.report_data,
+        report_data: Some(td.report_data),
     })
 }
 

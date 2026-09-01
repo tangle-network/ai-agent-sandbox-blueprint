@@ -499,6 +499,7 @@ mod e2e {
         verify_quote_signature(&tdx_report(), tdx_now())
             .expect("known-good quote verifies")
             .report_data
+            .expect("TDX quotes always carry 64-byte report data")
     }
 
     #[test]

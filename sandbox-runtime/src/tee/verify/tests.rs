@@ -302,9 +302,166 @@ mod cases {
         assert!(err.contains("CRL"), "reason should name the CRL: {err}");
     }
 
+    struct SyntheticNitroChain {
+        root_pem: String,
+        leaf_der: Vec<u8>,
+        signing_key: p384::ecdsa::SigningKey,
+    }
+
+    fn synthetic_nitro_chain() -> SyntheticNitroChain {
+        use p384::pkcs8::DecodePrivateKey;
+        use rcgen::{CertificateParams, IsCa, KeyPair, PKCS_ECDSA_P384_SHA384};
+
+        let root_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
+        let mut root_params = CertificateParams::new(vec!["nitro-test-root".into()]).unwrap();
+        root_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let root = root_params.self_signed(&root_key).unwrap();
+
+        let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
+        let leaf_params = CertificateParams::new(vec!["nitro-test-leaf".into()]).unwrap();
+        let leaf = leaf_params.signed_by(&leaf_key, &root, &root_key).unwrap();
+        let signing_key =
+            p384::ecdsa::SigningKey::from_pkcs8_der(leaf_key.serialized_der()).unwrap();
+
+        SyntheticNitroChain {
+            root_pem: root.pem(),
+            leaf_der: leaf.der().to_vec(),
+            signing_key,
+        }
+    }
+
+    fn synthetic_nitro_document(
+        leaf_der: &[u8],
+        nonce: Option<&[u8]>,
+        timestamp_ms: u64,
+    ) -> Vec<u8> {
+        use ciborium::value::Value as Cbor;
+
+        let pcrs = vec![
+            (Cbor::Integer(0.into()), Cbor::Bytes(vec![0xAB; 48])),
+            (Cbor::Integer(8.into()), Cbor::Bytes(vec![0x11; 48])),
+        ];
+        let mut fields = vec![
+            (Cbor::Text("module_id".into()), Cbor::Text("test".into())),
+            (Cbor::Text("digest".into()), Cbor::Text("SHA384".into())),
+            (
+                Cbor::Text("timestamp".into()),
+                Cbor::Integer(timestamp_ms.into()),
+            ),
+            (Cbor::Text("pcrs".into()), Cbor::Map(pcrs)),
+            (
+                Cbor::Text("certificate".into()),
+                Cbor::Bytes(leaf_der.to_vec()),
+            ),
+            (Cbor::Text("cabundle".into()), Cbor::Array(vec![])),
+        ];
+        if let Some(nonce) = nonce {
+            fields.push((Cbor::Text("nonce".into()), Cbor::Bytes(nonce.to_vec())));
+        }
+        let mut payload = Vec::new();
+        ciborium::ser::into_writer(&Cbor::Map(fields), &mut payload).unwrap();
+        payload
+    }
+
+    fn synthetic_nitro_cose(chain: &SyntheticNitroChain, payload: Vec<u8>) -> Vec<u8> {
+        use coset::{CborSerializable, CoseSign1Builder, HeaderBuilder, iana};
+        use p384::ecdsa::{Signature, signature::Signer};
+
+        let protected = HeaderBuilder::new()
+            .algorithm(iana::Algorithm::ES384)
+            .build();
+        CoseSign1Builder::new()
+            .protected(protected)
+            .payload(payload)
+            .create_signature(b"", |tbs| {
+                let signature: Signature = chain.signing_key.sign(tbs);
+                signature.to_vec()
+            })
+            .build()
+            .to_vec()
+            .unwrap()
+    }
+
+    fn synthetic_nitro_timestamp_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
     #[test]
-    fn nitro_is_honest_err() {
-        // No pinned AWS root + no real vector → never trusted.
+    fn nitro_document_verifies_and_preserves_raw_report_data() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+
+        let chain = synthetic_nitro_chain();
+        let nonce: [u8; 64] = std::array::from_fn(|index| index as u8);
+        let payload = synthetic_nitro_document(
+            &chain.leaf_der,
+            Some(&nonce),
+            synthetic_nitro_timestamp_ms(),
+        );
+        let cose = synthetic_nitro_cose(&chain, payload);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let facts = verify_nitro_with_verifier(&cose, &verifier)
+            .expect("valid signed Nitro document must verify");
+        assert_eq!(facts.measurement, vec![0xAB; 48]);
+        assert_eq!(facts.report_data, Some(nonce));
+    }
+
+    #[test]
+    fn nitro_tampered_signature_is_rejected() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+
+        let chain = synthetic_nitro_chain();
+        let payload = synthetic_nitro_document(
+            &chain.leaf_der,
+            Some(&[0xA5; 64]),
+            synthetic_nitro_timestamp_ms(),
+        );
+        let mut cose = synthetic_nitro_cose(&chain, payload);
+        let last = cose.len() - 1;
+        cose[last] ^= 0xFF;
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        assert!(
+            verify_nitro_with_verifier(&cose, &verifier).is_err(),
+            "tampering with the COSE signature must be rejected"
+        );
+    }
+
+    #[test]
+    fn nitro_missing_nonce_stays_unbound() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+
+        let chain = synthetic_nitro_chain();
+        let payload =
+            synthetic_nitro_document(&chain.leaf_der, None, synthetic_nitro_timestamp_ms());
+        let cose = synthetic_nitro_cose(&chain, payload);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let facts = verify_nitro_with_verifier(&cose, &verifier)
+            .expect("a valid unchallenged Nitro document must verify");
+        assert_eq!(facts.report_data, None);
+    }
+
+    #[test]
+    fn nitro_production_path_rejects_unpinned_root() {
+        let chain = synthetic_nitro_chain();
+        let payload = synthetic_nitro_document(
+            &chain.leaf_der,
+            Some(&[0xA5; 64]),
+            synthetic_nitro_timestamp_ms(),
+        );
+        let cose = synthetic_nitro_cose(&chain, payload);
+
+        // A test-only root override is required for synthetic material. The
+        // production helper always uses the pinned AWS Nitro Root-G1.
+        assert!(verify_nitro(&cose).is_err());
+    }
+
+    #[test]
+    fn nitro_malformed_evidence_is_rejected() {
         let report = AttestationReport {
             tee_type: TeeType::Nitro,
             evidence: vec![0xA1, 0x00],

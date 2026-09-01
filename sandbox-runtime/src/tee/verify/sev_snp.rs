@@ -115,7 +115,7 @@ pub(crate) fn verify_sev(evidence: &[u8], now_secs: u64) -> Result<VerifiedQuote
 
     Ok(VerifiedQuote {
         measurement: report.measurement.to_vec(),
-        report_data: report.report_data,
+        report_data: Some(report.report_data),
     })
 }
 

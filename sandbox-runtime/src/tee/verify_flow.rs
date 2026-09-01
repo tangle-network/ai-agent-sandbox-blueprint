@@ -62,10 +62,9 @@ pub(crate) fn verify_attestation_at(
     // no challenge there is nothing to bind, so this is vacuously satisfied —
     // but only counts toward trust once the signature itself verified.
     let report_data_matched = match (expected_report_data, signature_result.as_ref().ok()) {
-        (Some(expected), Some(facts)) => bool::from(subtle::ConstantTimeEq::ct_eq(
-            &facts.report_data[..],
-            &expected[..],
-        )),
+        (Some(expected), Some(facts)) => facts.report_data.as_ref().is_some_and(|actual| {
+            bool::from(subtle::ConstantTimeEq::ct_eq(&actual[..], &expected[..]))
+        }),
         (Some(_), None) => false,
         (None, _) => true,
     };
