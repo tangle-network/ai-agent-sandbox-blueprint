@@ -61,8 +61,8 @@ impl AttestationVerification {
 pub(crate) struct SignedQuoteFacts {
     /// Measurement extracted from inside the cryptographically verified quote.
     pub(crate) measurement: Vec<u8>,
-    /// 64-byte report data the hardware signed (caller nonce binding).
-    pub(crate) report_data: [u8; 64],
+    /// 64-byte report data the hardware signed, when the quote carries it.
+    pub(crate) report_data: Option<[u8; 64]>,
 }
 
 /// Verify a TEE quote's signature against the appropriate hardware root of
@@ -107,7 +107,7 @@ pub(crate) fn verify_quote_signature(
     ))
 }
 
-/// Operator-independent allowlist of expected enclave measurements, read from
+/// Allowlist of expected enclave measurements, read from
 /// `SANDBOX_TEE_EXPECTED_MEASUREMENTS` (comma/whitespace-separated hex).
 ///
 /// Measurement pinning only adds security when the expected value comes from a

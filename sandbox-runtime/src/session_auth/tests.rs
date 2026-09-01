@@ -223,6 +223,7 @@ fn hkdf_key_differs_from_raw_hash() {
     );
 }
 
+#[serial_test::serial]
 #[test]
 fn challenge_capacity_blocks_when_full() {
     let _guard = capacity_test_lock();
@@ -257,6 +258,7 @@ fn challenge_capacity_blocks_when_full() {
     );
 }
 
+#[serial_test::serial]
 #[test]
 fn gc_restores_challenge_capacity_after_expiry() {
     let _guard = capacity_test_lock();
@@ -286,6 +288,7 @@ fn gc_restores_challenge_capacity_after_expiry() {
     assert!(result.is_ok(), "should succeed after GC frees capacity");
 }
 
+#[serial_test::serial]
 #[test]
 fn session_capacity_blocks_when_full() {
     let _guard = capacity_test_lock();

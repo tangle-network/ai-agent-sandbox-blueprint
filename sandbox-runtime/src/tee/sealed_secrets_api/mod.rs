@@ -98,7 +98,7 @@ struct PublicKeyResponse {
 /// Returns `Ok(server_enforced)` when release may proceed, or an HTTP error
 /// response.
 ///
-/// `expected` is the operator-independent allowlist of known-good measurements,
+/// `expected` is the caller-provided allowlist of known-good measurements,
 /// snapshotted by the caller (from `expected_measurements_from_env()`) so the
 /// async gate never reads process env while a request is in flight.
 async fn enforce_release_gate(

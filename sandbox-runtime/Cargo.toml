@@ -10,6 +10,7 @@ license.workspace = true
 async-trait = "0.1"
 alloy = { version = "=1.8.3", default-features = false, features = ["sol-types"] }
 blueprint-sdk = { version = "=0.2.0-alpha.10", default-features = false, features = ["std", "tracing", "local-store"] }
+blueprint-tee = { version = "=0.2.0-alpha.7", default-features = false, features = ["std", "aws-nitro"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dashmap = "6"
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
@@ -35,6 +36,8 @@ gcp_auth = { version = "0.12", optional = true }
 #  - sev: AMD SEV-SNP attestation report + VCEK/VLEK chain to the built-in AMD
 #    ARK/ASK roots. `crypto_nossl` selects the pure-Rust (p384/x509-cert) path.
 #  - coset: COSE_Sign1 parsing for AWS Nitro attestation documents.
+#  - blueprint-tee: canonical AWS Nitro root, chain, signature, PCR, and
+#    freshness verification.
 dcap-qvl = { version = "=0.5.3", default-features = false, features = [
     "std",
     "rustcrypto",
@@ -64,6 +67,7 @@ der = { version = "=0.7.10", default-features = false, features = [
 ], optional = true }
 signature = { version = "=2.2.0", default-features = false, optional = true }
 coset = { version = "=0.4.2", optional = true }
+ciborium = { version = "0.2", optional = true }
 base64 = "0.22"
 anyhow = { version = "1", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -101,6 +105,8 @@ serial_test = "3"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 tower = { version = "0.5", features = ["util"] }
+p384 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+rcgen = { version = "0.13", features = ["pem"] }
 
 [[bench]]
 name = "session_auth_bench"
@@ -151,6 +157,7 @@ tee-azure = []
 # Cryptographic quote verification against hardware roots of trust (Intel
 # SGX/TDX DCAP, AMD SEV-SNP, AWS Nitro). Heavy crypto deps live ONLY here.
 tee-verify = [
+    "dep:blueprint-tee",
     "dep:dcap-qvl",
     "dep:sev",
     "dep:coset",
@@ -159,6 +166,7 @@ tee-verify = [
     "dep:spki",
     "dep:der",
     "dep:signature",
+    "dep:ciborium",
 ]
 tee-all = ["tee-phala", "tee-direct", "tee-aws-nitro", "tee-gcp", "tee-azure", "tee-verify"]
 # Testing feature: enables DirectTeeBackend without TEE device passthrough

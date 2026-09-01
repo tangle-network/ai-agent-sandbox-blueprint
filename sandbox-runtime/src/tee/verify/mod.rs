@@ -27,7 +27,8 @@
 //!   when a CRL is supplied in the evidence. The TDX arm always has CRLs in its
 //!   DCAP collateral, so a SEV report WITHOUT a bundled CRL is lower-assurance
 //!   than TDX on revocation — producers SHOULD always carry the KDS CRL.
-//! - **AWS Nitro:** honest `Err` — see [`verify_nitro`].
+//! - **AWS Nitro:** the pinned AWS Nitro Root-G1 and document verifier from
+//!   `blueprint-tee`, with raw nonce extraction for report-data binding.
 //!
 //! # Evidence binding (anti-forgery)
 //!
@@ -50,8 +51,9 @@ pub(crate) struct VerifiedQuote {
     /// Enclave/TD measurement as signed inside the quote (MRTD for TDX,
     /// LAUNCH_DIGEST for SEV-SNP).
     pub measurement: Vec<u8>,
-    /// The 64-byte report data the hardware signed (caller nonce binding).
-    pub report_data: [u8; 64],
+    /// The 64-byte report data the hardware signed, when the document carries
+    /// a nonce. AWS Nitro documents may omit this field.
+    pub report_data: Option<[u8; 64]>,
 }
 
 /// Verify a TEE quote's signature chain against the appropriate hardware root.
@@ -146,6 +148,9 @@ const TDX_TDREPORT_SIZE: usize = 1024;
 mod certs;
 mod nitro;
 mod sev_snp;
+
+#[cfg(test)]
+pub(crate) use nitro::verify_nitro_with_verifier;
 mod tdx;
 
 pub(crate) use certs::*;

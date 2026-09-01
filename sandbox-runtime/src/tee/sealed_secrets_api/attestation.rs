@@ -107,7 +107,7 @@ async fn tee_attestation_response(
         Ok(att) => {
             // Evaluate the honest trust state server-side. The expected type is
             // the backend's own TEE type; expected measurements come from the
-            // operator-independent allowlist; and when the caller supplied a
+            // configured measurement allowlist; and when the caller supplied a
             // nonce we bind it here (the report data the hardware signed must
             // carry it) rather than merely echoing it back.
             let verification = verify_attestation(

@@ -341,14 +341,10 @@ impl TeeBackend for NitroBackend {
     }
 
     fn supports_attestation_report_data(&self) -> bool {
-        // A nonce challenge only delivers replay protection if the signed
-        // report_data can actually be verified. `verify_nitro` cannot yet verify
-        // a Nitro COSE document (no pinned AWS Nitro root in this build), so
-        // advertising nonce support would over-promise a guarantee we cannot
-        // validate. Mirror DirectTeeBackend: restrict report-data support to
-        // remotely-verifiable backends. Flip to `true` when `verify_nitro` lands
-        // a pinned root + PCR/report_data verification.
-        false
+        // A nonce challenge only delivers replay protection when the signed
+        // Nitro document can be verified against AWS Root-G1. The verifier is
+        // optional, so a build without `tee-verify` must still fail closed.
+        cfg!(feature = "tee-verify")
     }
 
     async fn derive_public_key(&self, deployment_id: &str) -> Result<TeePublicKey> {
@@ -389,10 +385,10 @@ mod tests {
     }
 
     #[test]
-    fn nitro_does_not_advertise_unverifiable_nonce_support() {
-        // Until `verify_nitro` can verify a COSE document against a pinned AWS
-        // Nitro root, advertising nonce support would promise replay protection
-        // the server cannot validate. Must fail closed to `false`.
-        assert!(!test_backend().supports_attestation_report_data());
+    fn nitro_advertises_nonce_support_only_with_verifier() {
+        assert_eq!(
+            test_backend().supports_attestation_report_data(),
+            cfg!(feature = "tee-verify")
+        );
     }
 }

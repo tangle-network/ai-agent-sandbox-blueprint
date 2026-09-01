@@ -135,6 +135,9 @@ jobs:
       - name: TEE unit tests
         run: cargo nextest run -p sandbox-runtime --features tee-all,test-utils
 
+      - name: TEE verification tests
+        run: cargo nextest run -p sandbox-runtime --features tee-verify,test-utils
+
       - name: TEE instance lib tests
         run: cargo nextest run -p ai-agent-tee-instance-blueprint-lib
 

@@ -3417,6 +3417,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "blueprint-tee"
+version = "0.2.0-alpha.7"
+source = "git+https://github.com/tangle-network/blueprint.git?rev=5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c#5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c"
+dependencies = [
+ "aws-config",
+ "aws-sdk-ec2",
+ "base64 0.22.1",
+ "blueprint-core",
+ "blueprint-std",
+ "chacha20poly1305",
+ "ciborium",
+ "coset 0.3.8",
+ "document-features",
+ "futures",
+ "futures-core",
+ "hex",
+ "p384",
+ "pin-project-lite",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid 1.26.0",
+ "x25519-dalek",
+ "x509-parser 0.18.1",
+ "zeroize",
+]
+
+[[package]]
 name = "blueprint-testing-utils"
 version = "0.2.0-alpha.10"
 source = "git+https://github.com/tangle-network/blueprint.git?rev=5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c#5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c"
@@ -3977,6 +4010,16 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "coset"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4c8cc80f631f8307b887faca24dcc3abc427cd0367f6eb6188f6e8f5b7ad8fb"
+dependencies = [
+ "ciborium",
+ "ciborium-io",
+]
 
 [[package]]
 name = "coset"
@@ -9387,9 +9430,11 @@ dependencies = [
  "base64 0.22.1",
  "bench-harness",
  "blueprint-sdk",
+ "blueprint-tee",
  "chacha20poly1305",
  "chrono",
- "coset",
+ "ciborium",
+ "coset 0.4.2",
  "criterion",
  "dashmap",
  "dcap-qvl",
@@ -9405,9 +9450,11 @@ dependencies = [
  "microvm-runtime",
  "microvm-warm-pool",
  "once_cell",
+ "p384",
  "pasetors 0.6.8",
  "phala-tee-deploy-rs",
  "rand 0.8.8",
+ "rcgen 0.13.2",
  "reqwest 0.12.28",
  "rsa",
  "serde",

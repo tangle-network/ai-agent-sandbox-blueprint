@@ -1,7 +1,7 @@
 # TEE attestation test vectors
 
 Known-good hardware-attestation samples used by the positive verification tests
-in `src/tee/verify.rs`. Each was copied verbatim from the upstream crate that
+in `src/tee/verify/tests.rs`. Each was copied verbatim from the upstream crate that
 verifies it, so the positive tests exercise the exact same bytes the crate
 authors vouch for.
 
@@ -18,4 +18,8 @@ anchors the TDX chain is the one built into `dcap-qvl` (`QuoteVerifier::new_prod
 Neither root is checked into this repo — pinning lives in the audited crates.
 
 No genuine AWS Nitro attestation document vector is available from any vendored
-crate, so the Nitro arm is intentionally honest-`Err` (see `src/tee/verify.rs`).
+crate.
+Nitro positive and negative tests generate a synthetic certificate chain and
+delegate verification to the canonical `blueprint-tee` verifier with a test-only
+root override.
+The production path always uses the pinned AWS Nitro Root-G1.
