@@ -232,6 +232,9 @@ pub(crate) use sidecar_attest::*;
 pub use verification::*;
 pub use verify_flow::*;
 
+#[cfg(all(test, feature = "tee-verify"))]
+pub(crate) use verify::verify_nitro_with_verifier;
+
 #[cfg(any(test, feature = "test-utils"))]
 pub mod mock;
 

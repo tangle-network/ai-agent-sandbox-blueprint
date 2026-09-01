@@ -148,6 +148,9 @@ const TDX_TDREPORT_SIZE: usize = 1024;
 mod certs;
 mod nitro;
 mod sev_snp;
+
+#[cfg(test)]
+pub(crate) use nitro::verify_nitro_with_verifier;
 mod tdx;
 
 pub(crate) use certs::*;

@@ -18,7 +18,8 @@ TEE mode provides hardware-enforced isolation for sandbox workloads:
 > The evidence must still originate inside the corresponding confidential environment.
 >
 > The honest verification state is exposed through `sandbox_runtime::tee::verify_attestation`, which returns an `AttestationVerification { verdict, signature_verified, measurement_matched, structural_ok }`.
-> Measurement pinning is available through `SANDBOX_TEE_EXPECTED_MEASUREMENTS` (an operator-independent hexadecimal allowlist).
+> Measurement pinning is available through `SANDBOX_TEE_EXPECTED_MEASUREMENTS`.
+> The allowlist is trusted only when it comes from outside the operator, such as a verifying client or on-chain configuration.
 >
 > **Remaining work to make this a complete workload trust guarantee:** (1) publish the expected sidecar-image measurement on-chain and compare against it; (2) run verification client-side (WASM) so the verifying user never trusts operator-supplied JSON.
 

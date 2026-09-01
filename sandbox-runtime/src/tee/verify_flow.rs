@@ -40,8 +40,29 @@ pub(crate) fn verify_attestation_at(
     expected_report_data: Option<&[u8; 64]>,
     now_secs: u64,
 ) -> AttestationVerification {
+    evaluate_attestation_at(
+        report,
+        expected_type,
+        expected_measurements,
+        expected_report_data,
+        now_secs,
+        verify_quote_signature,
+    )
+}
+
+fn evaluate_attestation_at<F>(
+    report: &AttestationReport,
+    expected_type: &TeeType,
+    expected_measurements: &[Vec<u8>],
+    expected_report_data: Option<&[u8; 64]>,
+    now_secs: u64,
+    verify_signature: F,
+) -> AttestationVerification
+where
+    F: FnOnce(&AttestationReport, u64) -> Result<SignedQuoteFacts, String>,
+{
     let structural_ok = validate_attestation_report(report, expected_type).is_ok();
-    let signature_result = verify_quote_signature(report, now_secs);
+    let signature_result = verify_signature(report, now_secs);
     let signature_verified = signature_result.is_ok();
 
     // Bind the measurement to the value the HARDWARE signed inside the quote,
@@ -109,6 +130,37 @@ pub(crate) fn verify_attestation_at(
         report_data_matched,
         structural_ok,
     }
+}
+
+/// Run the complete trust decision with a test-only Nitro root override.
+///
+/// Production always calls [`verify_attestation_at`] and the pinned AWS root.
+/// This helper lets unit tests use generated certificates without weakening the
+/// production verifier or pretending that a test key is an AWS signing key.
+#[cfg(all(test, feature = "tee-verify"))]
+pub(crate) fn verify_attestation_at_with_nitro_verifier(
+    report: &AttestationReport,
+    expected_type: &TeeType,
+    expected_measurements: &[Vec<u8>],
+    expected_report_data: Option<&[u8; 64]>,
+    now_secs: u64,
+    verifier: &blueprint_tee::attestation::providers::aws_nitro::NitroVerifier,
+) -> AttestationVerification {
+    evaluate_attestation_at(
+        report,
+        expected_type,
+        expected_measurements,
+        expected_report_data,
+        now_secs,
+        |report, _now_secs| {
+            super::verify_nitro_with_verifier(&report.evidence, verifier).map(|quote| {
+                SignedQuoteFacts {
+                    measurement: quote.measurement,
+                    report_data: quote.report_data,
+                }
+            })
+        },
+    )
 }
 
 /// Poll a sidecar's `/health` endpoint until it responds successfully.

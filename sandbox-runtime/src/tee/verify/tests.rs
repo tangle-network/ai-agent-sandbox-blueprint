@@ -5,7 +5,7 @@ use super::*;
 #[cfg(test)]
 mod cases {
     use super::*;
-    use crate::tee::AttestationReport;
+    use crate::tee::{AttestationReport, AttestationVerdict};
 
     // ── Test vector loaders (see tests/tee_vectors/README.md for provenance) ──
 
@@ -410,6 +410,43 @@ mod cases {
     }
 
     #[test]
+    fn nitro_document_verifies_through_full_attestation_flow() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+
+        let chain = synthetic_nitro_chain();
+        let nonce: [u8; 64] = std::array::from_fn(|index| (index as u8).wrapping_add(1));
+        let now_secs = synthetic_nitro_timestamp_ms() / 1_000;
+        let cose = synthetic_nitro_cose(
+            &chain,
+            synthetic_nitro_document(&chain.leaf_der, Some(&nonce), now_secs * 1_000),
+        );
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+        let report = AttestationReport {
+            tee_type: TeeType::Nitro,
+            evidence: cose,
+            // The flow must use the measurement signed inside the document.
+            measurement: vec![0xCD; 48],
+            timestamp: now_secs,
+        };
+
+        let verification = crate::tee::verify_attestation_at_with_nitro_verifier(
+            &report,
+            &TeeType::Nitro,
+            &[vec![0xAB; 48]],
+            Some(&nonce),
+            now_secs,
+            &verifier,
+        );
+
+        assert_eq!(verification.verdict, AttestationVerdict::Verified);
+        assert!(verification.structural_ok);
+        assert!(verification.signature_verified);
+        assert!(verification.measurement_matched);
+        assert!(verification.report_data_matched);
+        assert!(verification.is_trusted());
+    }
+
+    #[test]
     fn nitro_tampered_signature_is_rejected() {
         use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
 
@@ -456,8 +493,30 @@ mod cases {
         let cose = synthetic_nitro_cose(&chain, payload);
 
         // A test-only root override is required for synthetic material. The
-        // production helper always uses the pinned AWS Nitro Root-G1.
-        assert!(verify_nitro(&cose).is_err());
+        // public trust decision always uses the pinned AWS Nitro Root-G1.
+        let now_secs = synthetic_nitro_timestamp_ms() / 1_000;
+        let report = AttestationReport {
+            tee_type: TeeType::Nitro,
+            evidence: cose,
+            measurement: vec![0xAB; 48],
+            timestamp: now_secs,
+        };
+        let verification = crate::tee::verify_attestation_at(
+            &report,
+            &TeeType::Nitro,
+            &[vec![0xAB; 48]],
+            None,
+            now_secs,
+        );
+
+        assert!(verification.structural_ok);
+        assert!(!verification.signature_verified);
+        assert!(!verification.measurement_matched);
+        assert!(!verification.is_trusted());
+        assert!(matches!(
+            verification.verdict,
+            AttestationVerdict::Unverified { .. }
+        ));
     }
 
     #[test]

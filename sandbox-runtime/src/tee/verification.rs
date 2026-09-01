@@ -107,7 +107,7 @@ pub(crate) fn verify_quote_signature(
     ))
 }
 
-/// Operator-independent allowlist of expected enclave measurements, read from
+/// Allowlist of expected enclave measurements, read from
 /// `SANDBOX_TEE_EXPECTED_MEASUREMENTS` (comma/whitespace-separated hex).
 ///
 /// Measurement pinning only adds security when the expected value comes from a

@@ -379,6 +379,23 @@ fn verify_attestation_structural_failure_is_unverified() {
     assert!(matches!(v.verdict, AttestationVerdict::Unverified { .. }));
 }
 
+#[cfg(not(feature = "tee-verify"))]
+#[test]
+fn nitro_attestation_stays_unverified_without_verifier_feature() {
+    let report = AttestationReport {
+        tee_type: TeeType::Nitro,
+        evidence: vec![0x01, 0x02, 0x03],
+        measurement: vec![0xAA; 48],
+        timestamp: crate::util::now_ts(),
+    };
+    let v = verify_attestation(&report, &TeeType::Nitro, &[vec![0xAA; 48]], None);
+    assert!(v.structural_ok);
+    assert!(!v.signature_verified);
+    assert!(!v.measurement_matched);
+    assert!(!v.is_trusted());
+    assert!(matches!(v.verdict, AttestationVerdict::Unverified { .. }));
+}
+
 #[test]
 fn expected_measurements_parses_hex_list() {
     unsafe {
