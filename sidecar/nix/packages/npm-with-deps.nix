@@ -122,7 +122,7 @@ in {
     npmPackage = "openclaw";
     entry = "openclaw.mjs";
     lockfileDir = ../npm-locks/openclaw;
-    npmDepsHash = "sha256-dbeZoIMx1nPDJ1uY/w6+Zjr4q+7/luNai+mSK9JF1YI=";
+    npmDepsHash = "sha256-iKFMyt8uchivDZn8pjbmUbnhsWecQJqakUpvUhkL41A=";
     src = openclawSource;
     installSourceTree = true;
     restorePackageJsonFrom = "package.published.json";
