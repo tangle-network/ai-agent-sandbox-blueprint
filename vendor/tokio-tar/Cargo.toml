@@ -1,0 +1,11 @@
+[package]
+name = "tokio-tar"
+version = "0.3.2"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Compatibility package backed by the maintained astral-tokio-tar implementation"
+repository = "https://github.com/astral-sh/tokio-tar"
+
+[dependencies]
+astral-tar = { package = "astral-tokio-tar", version = "0.7.0" }

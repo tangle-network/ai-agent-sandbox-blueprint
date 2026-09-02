@@ -88,29 +88,6 @@ pub(crate) async fn run_workspace_bootstrap(
     Ok(())
 }
 
-#[cfg(test)]
-mod workspace_bootstrap_tests {
-    use super::workspace_bootstrap_commands;
-
-    #[test]
-    fn commands_target_requested_workspace() {
-        let (root, agent) = workspace_bootstrap_commands("/home/agent/vault");
-        for command in [&root, &agent] {
-            assert!(command.contains("'/home/agent/vault'"));
-            assert!(command.contains("'/home/agent/vault/.opencode-home/.config'"));
-        }
-        assert!(!root.contains("chown -R agent:agent '/home/agent'"));
-    }
-
-    #[test]
-    fn commands_quote_workspace_components() {
-        let (root, agent) = workspace_bootstrap_commands("/home/agent/team's vault");
-        for command in [root, agent] {
-            assert!(command.contains("team'\"'\"'s vault"));
-        }
-    }
-}
-
 /// Docker-backed create: try the warm pool first, then cold.
 ///
 /// The warm claim only applies to a fresh create — both `token_override` and
@@ -464,4 +441,27 @@ pub(crate) async fn cold_create_sidecar_docker(
         cleanup_orphaned_container(&builder, &container_id).await;
     }
     finish.map(|record| (record, timings))
+}
+
+#[cfg(test)]
+mod workspace_bootstrap_tests {
+    use super::workspace_bootstrap_commands;
+
+    #[test]
+    fn commands_target_requested_workspace() {
+        let (root, agent) = workspace_bootstrap_commands("/home/agent/vault");
+        for command in [&root, &agent] {
+            assert!(command.contains("'/home/agent/vault'"));
+            assert!(command.contains("'/home/agent/vault/.opencode-home/.config'"));
+        }
+        assert!(!root.contains("chown -R agent:agent '/home/agent'"));
+    }
+
+    #[test]
+    fn commands_quote_workspace_components() {
+        let (root, agent) = workspace_bootstrap_commands("/home/agent/team's vault");
+        for command in [root, agent] {
+            assert!(command.contains("team'\"'\"'s vault"));
+        }
+    }
 }

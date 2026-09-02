@@ -121,5 +121,6 @@ It passes `--provider` when the request selects one and always passes `--yolo`
 because sidecar calls have no interactive approval channel.
 The install script uses Nous Research's official installer with setup,
 browser, computer-use, and bundled skills disabled for a headless image.
-The installer checksum, source archive checksum, and upstream commit are pinned in
+The installer checksum and upstream commit are pinned in
 `sidecar/scripts/install-harness.sh`.
+The build shallow-fetches only that commit and removes Git metadata before it creates the image layer.
