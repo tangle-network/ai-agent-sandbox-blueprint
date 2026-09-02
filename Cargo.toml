@@ -30,6 +30,15 @@ debug = 1  # line tables only for dependencies (not full DWARF)
 # workspace's `=0.2.0-alpha.10` pins resolve. Remove once blueprint-sdk 0.2.0-alpha.11
 # (with 0.19 bindings) is published to crates.io.
 [patch.crates-io]
+# testcontainers 0.23 still requests tokio-tar 0.3.1. Keep its API while
+# routing the implementation to the maintained astral-tokio-tar release.
+tokio-tar = { path = "vendor/tokio-tar" }
+# Keep the libp2p 0.56 API while moving mDNS off vulnerable hickory-proto 0.25.
+libp2p-mdns = { path = "vendor/libp2p-mdns" }
+# Keep the libp2p 0.56 API while moving DNS resolution to hickory 0.26.
+libp2p-dns = { path = "vendor/libp2p-dns" }
+# Use the maintained single-protocol yamux adapter instead of yamux 0.12.
+libp2p-yamux = { path = "vendor/libp2p-yamux" }
 microvm-runtime = { git = "https://github.com/tangle-network/microvm-runtime", rev = "611111ffe5696e3dd319924b52631349ea97c6ec" }
 blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
 blueprint-auth = { git = "https://github.com/tangle-network/blueprint.git", rev = "5a2dcbbdbf57a8dc1b2d210bdd6ff0d85361237c" }
