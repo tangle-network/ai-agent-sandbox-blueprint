@@ -28,7 +28,6 @@ prime_agent_package_sha256='bc5471f2a626d727b88a45eb745fff93b10c554a3c4fc5912f25
 prime_agent_package_url='https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.7.2/prime-agent-0.7.2.tgz'
 hermes_install_commit='8c8d55bd07575604a76f6df59bfbb42ceb6a71e6'
 hermes_installer_sha256='458ed1873bec1766ccd723b8a86338fbdf1caff5d43eae45065bc448cafa2dca'
-hermes_source_archive_sha256='69f7deec70680ccd6e9c7830acc0dadf6b7d195c63a544d671c02dad8a784a1c'
 amp_version='0.0.1786651704-g574433'
 amp_binary_sha256='4fb84e75ab79d947b32071b6eef57015fbd8e2ea3705f140a19974b728bed0a3'
 factory_droids_version='0.195.0'
@@ -212,6 +211,10 @@ install_hermes() {
     echo "bash is required to install hermes" >&2
     exit 1
   }
+  command -v git >/dev/null 2>&1 || {
+    echo "git is required to install hermes" >&2
+    exit 1
+  }
 
   # Hermes otherwise downloads Astral's floating uv installer. Seed its
   # managed path with the same verified uv artifact used by Prime and Kimi.
@@ -221,22 +224,31 @@ install_hermes() {
   cp "$(command -v uv)" "$hermes_home/bin/uv"
   chmod 0755 "$hermes_home/bin/uv"
 
-  # Use the official installer stages against an exact source archive. The
-  # installer's repository stage clones a large branch before applying the
-  # commit pin, which makes container builds slow and unbounded.
+  # Fetch one exact commit through Git's public smart protocol. GitHub's raw
+  # and archive hosts enforce a shared unauthenticated rate limit, so using
+  # either host makes otherwise reproducible image builds fail with HTTP 429.
+  # A depth-one partial fetch keeps the transfer bounded. The commit and the
+  # installer are both checked before any upstream code runs.
   hermes_install_env='NPM_CONFIG_IGNORE_SCRIPTS=true'
   hermes_dir="$(mktemp -d)"
-  hermes_installer="$hermes_dir/install.sh"
-  hermes_source="$hermes_dir/hermes-agent.tar.gz"
+  hermes_checkout="$hermes_dir/source"
   hermes_install_dir='/usr/local/lib/hermes-agent'
-  download_verified \
-    "https://raw.githubusercontent.com/NousResearch/hermes-agent/$hermes_install_commit/scripts/install.sh" \
-    "$hermes_installer_sha256" "$hermes_installer"
-  download_verified \
-    "https://github.com/NousResearch/hermes-agent/archive/$hermes_install_commit.tar.gz" \
-    "$hermes_source_archive_sha256" "$hermes_source"
-  mkdir -p "$hermes_install_dir"
-  tar -xzf "$hermes_source" -C "$hermes_install_dir" --strip-components=1
+  git init -q "$hermes_checkout"
+  git -C "$hermes_checkout" remote add origin https://github.com/NousResearch/hermes-agent.git
+  git -C "$hermes_checkout" -c protocol.version=2 fetch \
+    --depth=1 --filter=blob:none origin "$hermes_install_commit"
+  resolved_hermes_commit="$(git -C "$hermes_checkout" rev-parse FETCH_HEAD)"
+  [ "$resolved_hermes_commit" = "$hermes_install_commit" ] || {
+    echo "Hermes fetch resolved unexpected commit $resolved_hermes_commit" >&2
+    exit 1
+  }
+  git -C "$hermes_checkout" checkout -q --detach FETCH_HEAD
+  hermes_installer="$hermes_checkout/scripts/install.sh"
+  verify_sha256 "$hermes_installer_sha256" "$hermes_installer"
+  rm -rf "$hermes_checkout/.git" "$hermes_install_dir"
+  mkdir -p "$(dirname "$hermes_install_dir")"
+  mv "$hermes_checkout" "$hermes_install_dir"
+  hermes_installer="$hermes_install_dir/scripts/install.sh"
 
   for stage in venv path config; do
     if [ "$stage" = path ]; then
