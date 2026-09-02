@@ -1,62 +1,38 @@
 use super::*;
 
-/// Merged post-start workspace bootstrap, run as root in ONE exec round-trip.
-///
-/// Covers both ownership states the image can ship in:
-///  - root-owned `/home/agent` (repair path): root's own `mkdir` succeeds —
-///    it owns the tree, no `DAC_OVERRIDE` needed — and must run BEFORE the
-///    chown hands the tree to agent (after which `cap_drop=ALL` root can no
-///    longer write into it);
-///  - agent-owned `/home/agent` without the dirs (the canonical sidecar
-///    image, verified: `agent 755`, no `.opencode-home`): root's mkdir is
-///    denied, so drop to the agent user via `su` (the container keeps
-///    SETUID/SETGID; the image ships /usr/bin/su) and create them as the
-///    owner, matching the pre-merge dedicated agent exec.
-///
-/// The chown then runs unconditionally (`;` + `|| true`), exactly like the
-/// pre-merge dedicated exec. The trailing `test -d` makes the exit code
-/// report whether the dirs exist, so the caller knows to fall back to a
-/// separate agent-user exec (images with an agent-owned tree but no `su`).
-pub(crate) const WORKSPACE_BOOTSTRAP_ROOT_CMD: &str = "mkdir -p /home/agent/.opencode-home/.config 2>/dev/null \
-     || su agent -s /bin/sh -c 'mkdir -p /home/agent/.opencode-home/.config' 2>/dev/null; \
-     chown -R agent:agent /home/agent 2>/dev/null || true; \
-     test -d /home/agent/.opencode-home/.config";
+fn workspace_bootstrap_commands(workspace_root: &str) -> (String, String) {
+    let config_dir = format!("{workspace_root}/.opencode-home/.config");
+    let escaped_root = crate::util::shell_escape(workspace_root);
+    let escaped_config = crate::util::shell_escape(&config_dir);
+    let agent_mkdir = crate::util::shell_escape(&format!("mkdir -p {escaped_config}"));
+    let root = format!(
+        "mkdir -p {escaped_config} 2>/dev/null \
+         || su agent -s /bin/sh -c {agent_mkdir} 2>/dev/null; \
+         chown -R agent:agent {escaped_root} 2>/dev/null || true; \
+         test -d {escaped_config}"
+    );
+    let agent =
+        format!("mkdir -p {escaped_config} && test -w {escaped_root} && test -w {escaped_config}");
+    (root, agent)
+}
 
-/// Last-resort fallback when the merged exec cannot produce the dirs (an
-/// agent-owned `/home/agent` on an image without `su`): create them as the
-/// agent user through Docker's own exec-user mechanism, which needs nothing
-/// from the image — the pre-merge behavior, verbatim.
-pub(crate) const WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD: &str =
-    "mkdir -p /home/agent/.opencode-home/.config";
-
-/// Post-start workspace bootstrap, shared by the cold create path and the warm
-/// pool's seed.
+/// Create the requested workspace and prove the sandbox user can write it.
 ///
-/// Two jobs, historically two exec round-trips (each also rebuilding a Docker
-/// client — connect + ping — via `docker_exec_as_user`):
-///   1. as root:  chown -R agent:agent /home/agent — repair image builds that
-///      leave workspace dirs root-owned, so the sidecar's demoted (uid 1000)
-///      process doesn't crash with EACCES on mkdir .local;
-///   2. as agent: mkdir -p ~/.opencode-home/.config — pre-create dirs the
-///      sidecar's root process cannot create itself (cap_drop=ALL leaves root
-///      without DAC_OVERRIDE, so it cannot write into agent-owned directories).
-///
-/// Merged into ONE root exec on the already-connected client (see
-/// [`WORKSPACE_BOOTSTRAP_ROOT_CMD`] for why mkdir-then-chown covers the repair
-/// path). When its `test -d` verification fails — an image that ships an
-/// agent-owned /home/agent without the dirs — fall back to the pre-merge
-/// agent-user mkdir. Net round-trips: 1 on the repair path and on images with
-/// the dirs baked in; 2 otherwise. Failures stay warn-and-continue.
+/// The root exec repairs images that ship root-owned directories. If root
+/// cannot create inside an agent-owned home, Docker runs the same command as
+/// the agent user. A failed write check aborts sandbox creation.
 pub(crate) async fn run_workspace_bootstrap(
     exec_client: &docktopus::bollard::Docker,
     container_id: &str,
     sandbox_id: &str,
-) {
+    workspace_root: &str,
+) -> Result<()> {
+    let (root_command, agent_command) = workspace_bootstrap_commands(workspace_root);
     let bootstrap_verified = match docker_exec_as_user_with_client(
         exec_client,
         container_id,
         "root",
-        WORKSPACE_BOOTSTRAP_ROOT_CMD,
+        &root_command,
     )
     .await
     {
@@ -80,30 +56,57 @@ pub(crate) async fn run_workspace_bootstrap(
         }
     };
     if !bootstrap_verified {
-        match docker_exec_as_user_with_client(
-            exec_client,
-            container_id,
-            "agent",
-            WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD,
-        )
-        .await
-        {
-            Ok(r) if r.exit_code != 0 => {
-                tracing::warn!(
-                    sandbox_id,
-                    exit_code = r.exit_code,
-                    stderr = %r.stderr,
-                    "opencode-home pre-creation returned non-zero (continuing)"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    sandbox_id,
-                    error = %e,
-                    "opencode-home pre-creation failed (continuing)"
-                );
-            }
-            _ => {}
+        let result =
+            docker_exec_as_user_with_client(exec_client, container_id, "agent", &agent_command)
+                .await?;
+        if result.exit_code != 0 {
+            return Err(SandboxError::Docker(format!(
+                "workspace bootstrap failed for {sandbox_id} at {workspace_root}: {}",
+                result.stderr
+            )));
+        }
+        return Ok(());
+    }
+
+    let verification = docker_exec_as_user_with_client(
+        exec_client,
+        container_id,
+        "agent",
+        &format!(
+            "test -w {} && test -w {}",
+            crate::util::shell_escape(workspace_root),
+            crate::util::shell_escape(&format!("{workspace_root}/.opencode-home/.config"))
+        ),
+    )
+    .await?;
+    if verification.exit_code != 0 {
+        return Err(SandboxError::Docker(format!(
+            "workspace is not writable for {sandbox_id} at {workspace_root}: {}",
+            verification.stderr
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod workspace_bootstrap_tests {
+    use super::workspace_bootstrap_commands;
+
+    #[test]
+    fn commands_target_requested_workspace() {
+        let (root, agent) = workspace_bootstrap_commands("/home/agent/vault");
+        for command in [&root, &agent] {
+            assert!(command.contains("'/home/agent/vault'"));
+            assert!(command.contains("'/home/agent/vault/.opencode-home/.config'"));
+        }
+        assert!(!root.contains("chown -R agent:agent '/home/agent'"));
+    }
+
+    #[test]
+    fn commands_quote_workspace_components() {
+        let (root, agent) = workspace_bootstrap_commands("/home/agent/team's vault");
+        for command in [root, agent] {
+            assert!(command.contains("team'\"'\"'s vault"));
         }
     }
 }
@@ -292,7 +295,7 @@ pub(crate) async fn cold_create_sidecar_docker(
     let container_name = format!("sidecar-{sandbox_id}");
 
     let effective_env = merge_env_json(&request.env_json, &request.user_env_json);
-    let env_vars = build_env_vars(
+    let container_environment = build_container_environment(
         &effective_env,
         &token,
         config.container_port,
@@ -330,7 +333,7 @@ pub(crate) async fn cold_create_sidecar_docker(
 
     let mut container = Container::new(builder.client(), effective_image)
         .with_name(container_name)
-        .env(env_vars)
+        .env(container_environment.vars)
         .config_override(override_config);
 
     // Split Docker-side create from start so each hop is visible. On a
@@ -382,7 +385,13 @@ pub(crate) async fn cold_create_sidecar_docker(
         let stage = std::time::Instant::now();
         // Workspace bootstrap (chown + pre-create ~/.opencode-home) on the
         // already-connected client — see `run_workspace_bootstrap`.
-        run_workspace_bootstrap(&builder.client(), &container_id, &sandbox_id).await;
+        run_workspace_bootstrap(
+            &builder.client(),
+            &container_id,
+            &sandbox_id,
+            &container_environment.workspace_root,
+        )
+        .await?;
         timings.bootstrap_exec = Some(stage.elapsed());
 
         let now = crate::util::now_ts();

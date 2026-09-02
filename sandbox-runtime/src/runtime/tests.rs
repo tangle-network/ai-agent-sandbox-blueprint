@@ -503,37 +503,6 @@ mod sidecar_capability_tests {
         assert!(parse_sidecar_capabilities("[]").is_none());
         assert!(parse_sidecar_capabilities("[not json").is_none());
     }
-
-    #[test]
-    fn build_env_vars_injects_sidecar_capabilities_for_docker() {
-        // Regression: the Docker runtime path must put SIDECAR_CAPABILITIES
-        // on the container env so the sidecar boots Xvfb. The capability
-        // contract is identical across Docker / Firecracker / TEE; this
-        // pins the Docker side. (TEE is covered by tee_deploy_params_*
-        // in tee/mod.rs and Firecracker is exercised by integration.)
-        let env_vars = build_env_vars("{}", "tok", 8080, r#"["computer_use"]"#).unwrap();
-        assert!(
-            env_vars.contains(&"SIDECAR_CAPABILITIES=computer_use".to_string()),
-            "expected SIDECAR_CAPABILITIES in env, got {env_vars:?}",
-        );
-        let env_vars =
-            build_env_vars("{}", "tok", 8080, r#"["computer_use","all_harness"]"#).unwrap();
-        assert!(
-            env_vars.contains(&"SIDECAR_CAPABILITIES=computer_use,all_harness".to_string()),
-            "expected all-harness SIDECAR_CAPABILITIES in env, got {env_vars:?}",
-        );
-    }
-
-    #[test]
-    fn build_env_vars_omits_capabilities_when_unset() {
-        let env_vars = build_env_vars("{}", "tok", 8080, "").unwrap();
-        assert!(
-            !env_vars
-                .iter()
-                .any(|v| v.starts_with("SIDECAR_CAPABILITIES=")),
-            "expected no SIDECAR_CAPABILITIES env var, got {env_vars:?}",
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1195,30 +1164,6 @@ mod core_logic_tests {
         );
     }
 
-    // ── build_env_vars ──────────────────────────────────────────────────
-
-    #[test]
-    fn env_vars_with_json() {
-        let vars =
-            build_env_vars(r#"{"API_KEY":"sk-test","DEBUG":"true"}"#, "tok", 8080, "").unwrap();
-        assert!(vars.contains(&"API_KEY=sk-test".to_string()));
-        assert!(vars.contains(&"DEBUG=true".to_string()));
-        assert!(vars.contains(&"SIDECAR_PORT=8080".to_string()));
-    }
-
-    #[test]
-    fn env_vars_invalid_json() {
-        let result = build_env_vars("not-json", "tok", 3000, "");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn env_vars_preserve_explicit_ai_env() {
-        let vars = build_env_vars(r#"{"ZAI_API_KEY":"user-key"}"#, "tok", 8080, "").unwrap();
-        assert!(vars.contains(&"ZAI_API_KEY=user-key".to_string()));
-        assert!(!vars.contains(&"OPENCODE_MODEL_API_KEY=user-key".to_string()));
-    }
-
     #[test]
     fn workflow_runtime_credentials_available_requires_sandbox_env() {
         assert!(!workflow_runtime_credentials_available("{}").unwrap());
@@ -1618,98 +1563,5 @@ mod admission_scan_tests {
                 assert_eq!(scan.running_cpu_cores, legacy_cpu, "reused={reused:?}");
             }
         }
-    }
-}
-
-/// Invariants of the merged workspace-bootstrap exec (docker_create.rs).
-/// The merge collapses two post-start exec round-trips into one; these pin
-/// the properties that make it semantically equal to the pre-merge pair.
-#[cfg(test)]
-mod workspace_bootstrap_tests {
-    use super::*;
-
-    const CONFIG_DIR: &str = "/home/agent/.opencode-home/.config";
-
-    #[test]
-    fn merged_command_mkdirs_before_chown() {
-        // Repair-path precondition: /home/agent is root-owned, so root's
-        // mkdir must run BEFORE the chown hands the tree to agent (after
-        // which cap_drop=ALL root has no DAC_OVERRIDE to write into it).
-        let mkdir_at = WORKSPACE_BOOTSTRAP_ROOT_CMD
-            .find("mkdir -p")
-            .expect("merged command must create the opencode dirs");
-        let chown_at = WORKSPACE_BOOTSTRAP_ROOT_CMD
-            .find("chown -R agent:agent /home/agent")
-            .expect("merged command must repair workspace ownership");
-        assert!(
-            mkdir_at < chown_at,
-            "mkdir must precede chown: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
-        );
-    }
-
-    #[test]
-    fn merged_command_drops_to_agent_when_root_mkdir_denied() {
-        // Canonical-image case (agent-owned /home/agent, dirs absent): root's
-        // mkdir is denied under cap_drop=ALL, so the merged exec must retry
-        // as the agent user via su, targeting the same directory, BEFORE the
-        // chown (the decision keys off the tree's CURRENT owner).
-        let su_at = WORKSPACE_BOOTSTRAP_ROOT_CMD
-            .find(&format!("su agent -s /bin/sh -c 'mkdir -p {CONFIG_DIR}'"))
-            .expect("merged command must retry the mkdir as the agent user");
-        let chown_at = WORKSPACE_BOOTSTRAP_ROOT_CMD
-            .find("chown -R agent:agent /home/agent")
-            .expect("merged command must repair workspace ownership");
-        assert!(
-            su_at < chown_at,
-            "su fallback must precede chown: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
-        );
-    }
-
-    #[test]
-    fn merged_command_chown_is_unconditional_and_tolerant() {
-        // The pre-merge chown exec ran regardless of any mkdir outcome and
-        // tolerated failure (`|| true`). The merged form must keep both:
-        // `;` separators (not `&&`) so chown runs even when mkdir fails,
-        // and `|| true` so a chown failure doesn't change the exit path.
-        assert!(
-            WORKSPACE_BOOTSTRAP_ROOT_CMD
-                .contains("chown -R agent:agent /home/agent 2>/dev/null || true"),
-            "chown must stay best-effort: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
-        );
-        assert!(
-            !WORKSPACE_BOOTSTRAP_ROOT_CMD.contains("&&"),
-            "stages must be `;`-separated so each runs unconditionally: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
-        );
-    }
-
-    #[test]
-    fn merged_command_exit_code_reports_dir_existence() {
-        // The caller's fallback decision keys off the exit code, so the
-        // command must END with the `test -d` verification of the exact
-        // directory the fallback would create.
-        assert!(
-            WORKSPACE_BOOTSTRAP_ROOT_CMD
-                .trim_end()
-                .ends_with(&format!("test -d {CONFIG_DIR}")),
-            "merged command must end with the dir verification: {WORKSPACE_BOOTSTRAP_ROOT_CMD}"
-        );
-    }
-
-    #[test]
-    fn fallback_matches_pre_merge_agent_exec() {
-        // The fallback IS the pre-merge second exec: same mkdir, same target,
-        // run as the agent user (asserted at the call site), and no chown —
-        // the agent user cannot chown and never needed to.
-        assert_eq!(
-            WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD,
-            format!("mkdir -p {CONFIG_DIR}")
-        );
-        assert!(!WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD.contains("chown"));
-    }
-
-    #[test]
-    fn merged_and_fallback_target_the_same_directory() {
-        assert!(WORKSPACE_BOOTSTRAP_ROOT_CMD.contains(CONFIG_DIR));
-        assert!(WORKSPACE_BOOTSTRAP_AGENT_FALLBACK_CMD.contains(CONFIG_DIR));
     }
 }

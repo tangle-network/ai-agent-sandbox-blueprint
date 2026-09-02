@@ -23,10 +23,10 @@ impl DockerWarmHost for BollardDockerWarmHost {
         let config = SidecarRuntimeConfig::load();
         let builder = crate::runtime::docker_builder().await?;
 
-        // Env baked identically to the cold path (build_env_vars), carrying the
+        // Env baked identically to the cold path, carrying the
         // warm token — a random operator↔sidecar secret copied verbatim into
         // the store record at claim, so no post-create mutation is needed.
-        let env_vars = crate::runtime::build_env_vars(
+        let container_environment = crate::runtime::build_container_environment(
             &spec.base_env_json,
             &spec.token,
             config.container_port,
@@ -50,7 +50,7 @@ impl DockerWarmHost for BollardDockerWarmHost {
 
         let mut container = Container::new(builder.client(), spec.image.clone())
             .with_name(spec.name.clone())
-            .env(env_vars)
+            .env(container_environment.vars)
             .config_override(override_config);
 
         // Create + start — the ~700ms + ~200ms pre-paid off the request path.
@@ -70,8 +70,13 @@ impl DockerWarmHost for BollardDockerWarmHost {
         // not leak (it is not yet in the ready pool).
         let seeded = async {
             // Pre-pay the workspace bootstrap exec (chown + mkdir .opencode-home).
-            crate::runtime::run_workspace_bootstrap(&builder.client(), &container_id, &spec.name)
-                .await;
+            crate::runtime::run_workspace_bootstrap(
+                &builder.client(),
+                &container_id,
+                &spec.name,
+                &container_environment.workspace_root,
+            )
+            .await?;
 
             // Prove the pooled sidecar is live before it can ever be claimed.
             let (sidecar_url, _port, _ssh, _extra) =
