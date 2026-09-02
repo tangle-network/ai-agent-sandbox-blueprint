@@ -51,7 +51,7 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
 
     let ssh_enabled = record.ssh_port.is_some();
     let effective_env = record.effective_env_json();
-    let env_vars = build_env_vars(
+    let container_environment = build_container_environment(
         &effective_env,
         &record.token,
         config.container_port,
@@ -70,7 +70,7 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
     let container_name = format!("sidecar-{}-warm", record.id);
     let mut container = Container::new(builder.client(), image_id.to_string())
         .with_name(container_name)
-        .env(env_vars)
+        .env(container_environment.vars)
         .config_override(override_config);
 
     start_container_with_retry(&mut container).await?;
@@ -81,6 +81,14 @@ pub async fn create_from_snapshot_image(record: &SandboxRecord) -> Result<Sandbo
         .to_string();
 
     let finish = async {
+        run_workspace_bootstrap(
+            &builder.client(),
+            &container_id,
+            &record.id,
+            &container_environment.workspace_root,
+        )
+        .await?;
+
         let (sidecar_url, sidecar_port, ssh_port, extra_ports) = refresh_port_mapping_with_retry(
             "warm restore endpoint resolution",
             builder.client(),
@@ -149,7 +157,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
 
     let ssh_enabled = record.ssh_port.is_some();
     let effective_env = record.effective_env_json();
-    let env_vars = build_env_vars(
+    let container_environment = build_container_environment(
         &effective_env,
         &record.token,
         config.container_port,
@@ -168,7 +176,7 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
     let container_name = format!("sidecar-{}-cold", record.id);
     let mut container = Container::new(builder.client(), image.to_string())
         .with_name(container_name)
-        .env(env_vars)
+        .env(container_environment.vars)
         .config_override(override_config);
 
     start_container_with_retry(&mut container).await?;
@@ -179,6 +187,14 @@ pub async fn create_and_restore_from_s3(record: &SandboxRecord) -> Result<Sandbo
         .to_string();
 
     let finish = async {
+        run_workspace_bootstrap(
+            &builder.client(),
+            &container_id,
+            &record.id,
+            &container_environment.workspace_root,
+        )
+        .await?;
+
         let (sidecar_url, sidecar_port, ssh_port, extra_ports) = refresh_port_mapping_with_retry(
             "cold restore endpoint resolution",
             builder.client(),
