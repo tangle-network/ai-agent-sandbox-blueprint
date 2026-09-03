@@ -3,6 +3,13 @@
 # Install: git config core.hooksPath .githooks
 set -e
 TOOLCHAIN="${RUST_TOOLCHAIN:-1.91}"
+# Only Rust changes need fmt and clippy. An npm-only or docs-only commit
+# must not depend on the Rust workspace compiling on the committer's host.
+if ! git diff --cached --name-only | grep -qE '\.rs$|(^|/)Cargo\.(toml|lock)$|rust-toolchain'; then
+  echo "pre-commit: no Rust files staged; skipping fmt and clippy"
+  exit 0
+fi
+
 echo "pre-commit: checking rustfmt..."
 RUSTUP_TOOLCHAIN="$TOOLCHAIN" cargo fmt --all -- --check
 if [ $? -ne 0 ]; then
