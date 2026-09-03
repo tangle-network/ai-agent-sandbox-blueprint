@@ -53,10 +53,11 @@ ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa verify-only (RSA-PSS attestation sig verification); Marvin targets private-key decryption oracles — not applicable; no upstream fix" },
 
     # rustls-webpki name-constraints / CRL parser — pulled transitively
-    # via reqwest's TLS stack. Client-only TLS posture limits exposure.
-    { id = "RUSTSEC-2026-0098", reason = "client-only TLS; transitive via blueprint-sdk rustls" },
-    { id = "RUSTSEC-2026-0099", reason = "client-only TLS; transitive via blueprint-sdk rustls" },
-    { id = "RUSTSEC-2026-0104", reason = "client-only TLS; transitive via blueprint-sdk rustls" },
+    # via the patched 0.103.13 reqwest TLS stack. Client-only TLS posture
+    # limits exposure while the advisory remains open upstream.
+    { id = "RUSTSEC-2026-0098", reason = "client-only TLS; transitive via rustls-webpki 0.103.13" },
+    { id = "RUSTSEC-2026-0099", reason = "client-only TLS; transitive via rustls-webpki 0.103.13" },
+    { id = "RUSTSEC-2026-0104", reason = "client-only TLS; transitive via rustls-webpki 0.103.13" },
 
     # ── Unsound (RUSTSEC informational class) ───────────────────────────────
     # `rand` 0.9 unsoundness when a custom logger calls rand::rng().
@@ -65,7 +66,7 @@ ignore = [
 
     # ── Unmaintained (RUSTSEC informational class) ──────────────────────────
     # All of the below are deep transitive deps. Replacing them requires
-    # upstream PRs against blueprint-sdk / eigensdk. None expose runtime
+    # upstream PRs against blueprint-sdk. None expose runtime
     # call graph we exercise.
     { id = "RUSTSEC-2021-0141", reason = "dotenv unmaintained — dev-dep only; tests use it for fixture loading" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained — pervasive transitive in blueprint-sdk proc-macros; no exploitable runtime path" },
@@ -100,42 +101,6 @@ allow = [
 ]
 
 exceptions = []
-
-# Per-crate licence clarifications for crates whose Cargo.toml omits
-# `license` but ship a permissive LICENSE in their repo.
-[[licenses.clarify]]
-name = "ring"
-version = "0.16"
-expression = "ISC AND MIT AND OpenSSL"
-license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
-
-# eigensdk-rs and its sub-crates ship under BSD-3-Clause but omit the
-# `license` field upstream. Pulled in transitively via the blueprint
-# operator selection / restaking integration.
-[[licenses.clarify]]
-name = "eigensdk"
-expression = "BSD-3-Clause"
-license-files = []
-
-[[licenses.clarify]]
-name = "eigen-crypto-bls"
-expression = "BSD-3-Clause"
-license-files = []
-
-[[licenses.clarify]]
-name = "eigen-crypto-bn254"
-expression = "BSD-3-Clause"
-license-files = []
-
-[[licenses.clarify]]
-name = "eigen-signer"
-expression = "BSD-3-Clause"
-license-files = []
-
-[[licenses.clarify]]
-name = "eigen-utils"
-expression = "BSD-3-Clause"
-license-files = []
 
 # ── Bans (multi-version + wildcard hygiene) ─────────────────────────────────
 [bans]
