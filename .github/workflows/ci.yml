@@ -202,41 +202,20 @@ jobs:
         #   (RSA-PSS attestation signature verification in sandbox-runtime tee/verify.rs).
         #   The attack targets RSA private-key decryption oracles; this code holds no
         #   private key and never decrypts, so it does not apply. No upstream fix exists.
-        # RUSTSEC-2025-0009: ring 0.16.20 — transitive dep via blueprint-sdk, no fix available
         # RUSTSEC-2025-0055: tracing-subscriber — transitive dep via blueprint-sdk
         # RUSTSEC-2025-0111: tokio-tar — transitive dep, no fix available
         # Yanked crates (e.g. keccak 0.1.5) are warnings by default, not errors
-        # RUSTSEC-2026-0049: rustls-webpki — transitive dep via rustls 0.21
-        # RUSTSEC-2026-0104: rustls-webpki — transitive dep via rustls 0.21
         # RUSTSEC-2026-0258: h2 0.3.27 — transitive via reqwest 0.11 in
         #   phala-tee-deploy-rs. The patched release is h2 0.4.16, but reqwest
         #   0.11 cannot select that major version. The separate h2 0.4 path is
         #   pinned to 0.4.16 in Cargo.lock. Remove this ignore when the upstream
         #   TEE deploy client moves to reqwest 0.12 or publishes a fixed 0.3 line.
-        # RUSTSEC-2026-0119: hickory-proto 0.24.4 — transitive via libp2p-mdns 0.46
-        #   (pinned by blueprint-networking@alpha.15 in tangle-network/blueprint).
-        #   Exposure is local-network mDNS only; real fix requires upstream
-        #   libp2p bump. Re-evaluate when blueprint-networking ships libp2p ≥ 0.55.
-        # RUSTSEC-2026-0118: hickory-proto 0.25.x NSEC3 closest-encloser unbounded loop.
-        #   Pulled in transitively once the tnt-core 0.19 blueprint-sdk graph moved
-        #   hickory-proto 0.24.4 -> 0.25.2. Only patched in the 0.26.0-beta.1 pre-release,
-        #   which this repo does not (and should not) force across the SDK graph; the
-        #   affected code is a DNS resolver's NSEC3 validation path, not on the
-        #   blueprint operator/ABI path. Re-evaluate when the SDK graph ships
-        #   hickory-proto ≥ 0.26 stable.
         run: >
           cargo audit
           --ignore RUSTSEC-2023-0071
-          --ignore RUSTSEC-2025-0009
           --ignore RUSTSEC-2025-0055
           --ignore RUSTSEC-2025-0111
-          --ignore RUSTSEC-2026-0049
           --ignore RUSTSEC-2026-0258
-          --ignore RUSTSEC-2026-0098
-          --ignore RUSTSEC-2026-0099
-          --ignore RUSTSEC-2026-0104
-          --ignore RUSTSEC-2026-0118
-          --ignore RUSTSEC-2026-0119
 
   e2e:
     name: E2E tests

@@ -9,8 +9,8 @@ license.workspace = true
 [dependencies]
 async-trait = "0.1"
 alloy = { version = "=1.8.3", default-features = false, features = ["sol-types"] }
-blueprint-sdk = { version = "=0.2.0-alpha.10", default-features = false, features = ["std", "tracing", "local-store"] }
-blueprint-tee = { version = "=0.2.0-alpha.7", default-features = false, features = ["std", "aws-nitro"], optional = true }
+blueprint-sdk = { version = "=0.2.0-alpha.12", default-features = false, features = ["std", "tracing", "local-store"] }
+blueprint-tee = { version = "=0.2.0-alpha.8", default-features = false, features = ["std", "aws-nitro"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dashmap = "6"
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
@@ -24,7 +24,7 @@ rand = "0.8"
 
 # Cloud TEE backends (optional, gated by features)
 aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
-aws-sdk-ec2 = { version = "1", optional = true }
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
 gcp_auth = { version = "0.12", optional = true }
 
 # TEE quote/attestation verification against hardware roots of trust.
