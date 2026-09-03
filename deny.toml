@@ -52,13 +52,6 @@ ignore = [
     # apply. No fixed `rsa` release exists upstream.
     { id = "RUSTSEC-2023-0071", reason = "rsa verify-only (RSA-PSS attestation sig verification); Marvin targets private-key decryption oracles — not applicable; no upstream fix" },
 
-    # rustls-webpki name-constraints / CRL parser — pulled transitively
-    # via the patched 0.103.13 reqwest TLS stack. Client-only TLS posture
-    # limits exposure while the advisory remains open upstream.
-    { id = "RUSTSEC-2026-0098", reason = "client-only TLS; transitive via rustls-webpki 0.103.13" },
-    { id = "RUSTSEC-2026-0099", reason = "client-only TLS; transitive via rustls-webpki 0.103.13" },
-    { id = "RUSTSEC-2026-0104", reason = "client-only TLS; transitive via rustls-webpki 0.103.13" },
-
     # ── Unsound (RUSTSEC informational class) ───────────────────────────────
     # `rand` 0.9 unsoundness when a custom logger calls rand::rng().
     # We use rand only with explicit ChaCha20Rng / OsRng instances.
