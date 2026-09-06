@@ -309,9 +309,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: lifecycle-bench-${{ github.sha }}
-          path: bench-results/lifecycle-real.json
+          path: ai-agent-sandbox-blueprint-lib/bench-results/lifecycle-real.json
           retention-days: 90
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   # NOTE: the previous `firecracker-real-e2e` job exercised the host-agent
   # HTTP boundary that has been replaced by the in-process `microvm-runtime`
