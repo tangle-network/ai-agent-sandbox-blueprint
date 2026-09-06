@@ -1,38 +1,14 @@
-# Project Instructions
+# Agent UI
 
-## Mission
-`@tangle-network/agent-ui` is a shared package for agent-facing UX primitives and flows. Treat it as a reusable library, not an app.
+This is a reusable library for agent-facing interfaces, not a consuming application.
+Keep chat and session rendering, tool previews, sidecar authentication, and terminal helpers here.
+Chain, contract, and provisioning behavior belongs in the shared Blueprint UI package.
+Product routes, copy, and workflow logic belong in each application.
+Do not import consuming application source.
 
-## Scope
-Include:
-- Chat/session rendering and run timeline UX
-- Tool preview and markdown presentation components
-- Sidecar auth/session hooks and PTY terminal integration
-- Reusable agent-centric helpers/hooks for consuming apps
+Read [package.json](package.json) and the exported entrypoints before changing the public API.
+Keep exported types explicit and provide a migration when changing a public contract.
+Share code when consumers have the same behavior and ownership boundary; line count alone does not justify extraction.
+Keep runtime dependencies justified and framework dependencies shared where supported.
 
-Exclude:
-- Chain/contract/provisioning logic (`@tangle-network/blueprint-ui`)
-- Product-specific route orchestration, copy, and workflow logic (consumer app)
-- Direct imports from any consuming app source tree
-
-## Public API Discipline
-- `src/index.ts`, `src/primitives.ts`, and `src/terminal.ts` are the package contract.
-- Prefer additive API evolution; avoid breaking renames/removals without migration.
-- Keep types explicit and avoid `any` in exported surfaces.
-
-## Shared-Extraction Rule
-- If Sandbox and Arena share agent-facing code above roughly 20 lines, extract it here.
-- If duplication is chain/infra oriented, extract to `@tangle-network/blueprint-ui` instead.
-- Keep app-specific behavior in the app when reuse would require brittle abstractions.
-
-## Dependency Rules
-- Keep runtime dependencies lean and justified.
-- Use peer dependencies for framework/runtime packages where possible.
-- Avoid introducing app-specific assumptions into package internals.
-
-## Quality Gate
-Before merging:
-1. Confirm code belongs in package scope.
-2. Ensure exports are intentional and typed.
-3. Verify no app-specific assumptions leaked in.
-4. Validate consuming apps typecheck/build against the change.
+Before merging, verify intentional exports, package boundaries, and affected consumers' typechecks and builds.
