@@ -441,10 +441,26 @@ cast send "$SANDBOX_BSM" "onRegister(address,bytes)" "$OPERATOR2_ADDR" "0x" \
 
 cast rpc anvil_stopImpersonatingAccount "$TANGLE" --rpc-url "$RPC_URL" > /dev/null 2>&1
 
+# Only operator 1 runs a sandbox operator process here ([9/11] starts one binary with
+# operator 1's keystore). Operator 2 keeps its registration and approvals so service
+# requests still exercise two operators, but it must hold zero sandbox capacity:
+# selectByCapacity assigns CREATE jobs by capacity weight, and a CREATE assigned to an
+# operator that never runs is still executed and answered by operator 1, whose result
+# makes handleCreateResult revert OperatorMismatch. tnt-core swallows that hook
+# failure and still finalizes the job, so the sandbox is never routed on-chain and
+# every later DELETE for it reverts SandboxNotFound. The deployer is the blueprint
+# owner, which setOperatorCapacity requires.
+send_checked "setOperatorCapacity operator2=0" "$SANDBOX_BSM" "setOperatorCapacity(address,uint32)" "$OPERATOR2_ADDR" 0 \
+    --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY"
+
 OP1_CAP=$(cast call "$SANDBOX_BSM" "operatorMaxCapacity(address)(uint32)" "$OPERATOR1_ADDR" --rpc-url "$RPC_URL" 2>&1 | xargs)
 OP2_CAP=$(cast call "$SANDBOX_BSM" "operatorMaxCapacity(address)(uint32)" "$OPERATOR2_ADDR" --rpc-url "$RPC_URL" 2>&1 | xargs)
 echo "  Operator 1 capacity: $OP1_CAP"
 echo "  Operator 2 capacity: $OP2_CAP"
+if [[ "$OP2_CAP" != "0" ]]; then
+    echo "  ERROR: operator 2 still holds sandbox capacity ($OP2_CAP) but runs no sandbox operator; CREATE jobs assigned to it would never be routed"
+    exit 1
+fi
 
 # ── [7/11] Setup keystores ──────────────────────────────────────────
 echo "[7/11] Setting up operator keystores..."
