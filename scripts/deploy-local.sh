@@ -499,14 +499,25 @@ export PROTOCOL=tangle
 mkdir -p "$DATA_DIR" "$BLUEPRINT_STATE_DIR"
 
 # --test-mode skips BPM bridge requirement (no blueprint-manager in local dev)
-"$ROOT_DIR/target/release/ai-agent-sandbox-blueprint" run --test-mode &
+#
+# In standalone mode the sandbox operator binds OPERATOR_API_PORT + (service_id
+# % 1000) so co-located services never collide (ai-agent-sandbox-blueprint-bin
+# main.rs, preferred_port). OPERATOR_API_PORT is also the port registered
+# on-chain as OPERATOR1_RPC and probed below, so hand the binary the base that
+# lands on it. The instance operator uses its port verbatim and needs no offset.
+SANDBOX_OPERATOR_BIND_BASE=$((OPERATOR_API_PORT - SANDBOX_SERVICE_ID % 1000))
+OPERATOR_API_PORT="$SANDBOX_OPERATOR_BIND_BASE" \
+    "$ROOT_DIR/target/release/ai-agent-sandbox-blueprint" run --test-mode &
 OPERATOR_PID=$!
 
 # Wait for operator API to be ready (returns 401 without auth, which is fine)
 DEADLINE=$((SECONDS + 30))
 until curl -s -o /dev/null -w '%{http_code}' "http://localhost:$OPERATOR_API_PORT/api/sandboxes" 2>/dev/null | grep -q '401\|200'; do
     if [ $SECONDS -ge $DEADLINE ]; then
-        echo "  WARNING: Operator API not ready within 30s (may still be starting)"
+        echo "  WARNING: Operator API not ready within 30s on port $OPERATOR_API_PORT (may still be starting)"
+        if curl -s -o /dev/null -w '%{http_code}' "http://localhost:$SANDBOX_OPERATOR_BIND_BASE/api/sandboxes" 2>/dev/null | grep -q '401\|200'; then
+            echo "  ERROR: operator answers on port $SANDBOX_OPERATOR_BIND_BASE, not $OPERATOR_API_PORT: target/release predates the service-id port offset; rebuild it from this checkout"
+        fi
         break
     fi
     sleep 1
