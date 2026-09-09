@@ -248,8 +248,36 @@ done
 echo "  Operator 1: $OPERATOR1_ADDR → $OPERATOR1_RPC"
 echo "  Operator 2: $OPERATOR2_ADDR → $OPERATOR2_RPC"
 
+# tnt-core 0.19 ABI: approveService takes an ApprovalParams struct; empty commitments
+# are accepted when the request carries only the protocol-default TNT requirement.
+APPROVE_SIG='approveService((uint64,((uint8,address),uint16)[],uint256[4],uint256[2],(uint8,bytes32,bytes32,uint64)[]))'
+
+# cast send exits 0 for a transaction that mined with status 0, so a revert in any
+# step used to pass silently and surface later as "Could not find sandbox service".
+# Send, read the receipt, and fail on status != 1 with the simulated revert reason.
+send_checked() {
+    local label="$1"; shift
+    local out status
+    out=$(cast send "$@" --json 2>&1) || { echo "  ERROR: $label: cast send failed: $(echo "$out" | tail -1)"; exit 1; }
+    status=$(echo "$out" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || echo "")
+    if [[ "$status" != "0x1" && "$status" != "1" ]]; then
+        echo "  ERROR: $label: transaction reverted (status=$status)"
+        exit 1
+    fi
+}
+
+approve_request() {
+    local req_id="$1" key="$2" label="$3"
+    send_checked "$label" "$TANGLE" "$APPROVE_SIG" "($req_id,[],[0,0,0,0],[0,0],[])"         --gas-limit 10000000 --rpc-url "$RPC_URL" --private-key "$key"
+}
+
 # ── [4/11] Request services ──────────────────────────────────────────
 echo "[4/11] Requesting services..."
+# The instance manager stores the ProvisionRequest bytes in onRequest (~690k gas for
+# the default config); tnt-core 0.19 forwards only 500k to manager hooks and reports
+# the out-of-gas as ManagerRejected. Raise the per-hook budget (admin role, cap 8M).
+send_checked "setManagerHookGasLimit" "$TANGLE" "setManagerHookGasLimit(uint256)" 3000000 \
+    --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY"
 
 # Get the next request ID and current service count (state snapshot may already have entries)
 NEXT_REQ=$(cast call "$TANGLE" "serviceRequestCount()(uint64)" --rpc-url "$RPC_URL" 2>&1 | xargs)
@@ -340,30 +368,18 @@ fi
 echo "[5/11] Operators approving services..."
 
 # Approve sandbox service
-cast send "$TANGLE" "approveService(uint64,uint8)" "$SANDBOX_REQ_ID" 100 \
-    --gas-limit 10000000 \
-    --rpc-url "$RPC_URL" --private-key "$OPERATOR1_KEY" > /dev/null 2>&1
-cast send "$TANGLE" "approveService(uint64,uint8)" "$SANDBOX_REQ_ID" 100 \
-    --gas-limit 10000000 \
-    --rpc-url "$RPC_URL" --private-key "$OPERATOR2_KEY" > /dev/null 2>&1
+approve_request "$SANDBOX_REQ_ID" "$OPERATOR1_KEY" "approve SANDBOX_REQ_ID by OPERATOR1_KEY"
+approve_request "$SANDBOX_REQ_ID" "$OPERATOR2_KEY" "approve SANDBOX_REQ_ID by OPERATOR2_KEY"
 echo "  Sandbox service: both operators approved"
 
 # Approve instance service
-cast send "$TANGLE" "approveService(uint64,uint8)" "$INSTANCE_REQ_ID" 100 \
-    --gas-limit 10000000 \
-    --rpc-url "$RPC_URL" --private-key "$OPERATOR1_KEY" > /dev/null 2>&1
-cast send "$TANGLE" "approveService(uint64,uint8)" "$INSTANCE_REQ_ID" 100 \
-    --gas-limit 10000000 \
-    --rpc-url "$RPC_URL" --private-key "$OPERATOR2_KEY" > /dev/null 2>&1
+approve_request "$INSTANCE_REQ_ID" "$OPERATOR1_KEY" "approve INSTANCE_REQ_ID by OPERATOR1_KEY"
+approve_request "$INSTANCE_REQ_ID" "$OPERATOR2_KEY" "approve INSTANCE_REQ_ID by OPERATOR2_KEY"
 echo "  Instance service: both operators approved"
 
 if [[ -n "$TEE_INSTANCE_REQ_ID" ]]; then
-    cast send "$TANGLE" "approveService(uint64,uint8)" "$TEE_INSTANCE_REQ_ID" 100 \
-        --gas-limit 10000000 \
-        --rpc-url "$RPC_URL" --private-key "$OPERATOR1_KEY" > /dev/null 2>&1
-    cast send "$TANGLE" "approveService(uint64,uint8)" "$TEE_INSTANCE_REQ_ID" 100 \
-        --gas-limit 10000000 \
-        --rpc-url "$RPC_URL" --private-key "$OPERATOR2_KEY" > /dev/null 2>&1
+    approve_request "$TEE_INSTANCE_REQ_ID" "$OPERATOR1_KEY" "approve TEE_INSTANCE_REQ_ID by OPERATOR1_KEY"
+    approve_request "$TEE_INSTANCE_REQ_ID" "$OPERATOR2_KEY" "approve TEE_INSTANCE_REQ_ID by OPERATOR2_KEY"
     echo "  TEE instance service: both operators approved"
 fi
 
