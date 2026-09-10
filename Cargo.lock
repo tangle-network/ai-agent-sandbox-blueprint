@@ -2654,7 +2654,7 @@ dependencies = [
  "jsonwebtoken",
  "k256",
  "once_cell",
- "pasetors 0.7.8",
+ "pasetors",
  "pem",
  "prost 0.13.5",
  "protobuf-src",
@@ -7558,23 +7558,6 @@ dependencies = [
 
 [[package]]
 name = "pasetors"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b36d47c66f2230dd1b7143d9afb2b4891879020210eddf2ccb624e529b96dba"
-dependencies = [
- "ct-codecs",
- "ed25519-compact",
- "getrandom 0.2.17",
- "orion",
- "regex",
- "serde_json",
- "subtle",
- "time",
- "zeroize",
-]
-
-[[package]]
-name = "pasetors"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e838401fb2873bad417e6a03179014c748746f67311cb7317ab14fc0881fa9f0"
@@ -8994,7 +8977,7 @@ dependencies = [
  "microvm-warm-pool",
  "once_cell",
  "p384",
- "pasetors 0.6.8",
+ "pasetors",
  "phala-tee-deploy-rs",
  "rand 0.8.8",
  "rcgen 0.13.2",
@@ -9894,7 +9877,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

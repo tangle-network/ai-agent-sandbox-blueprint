@@ -86,7 +86,7 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 # Session auth (EIP-191 + PASETO v4)
 hkdf = "0.12"
 k256 = { version = "0.13", features = ["ecdsa"] }
-pasetors = "0.6"
+pasetors = "0.7"
 sha2 = "0.10"
 tiny-keccak = { version = "2", features = ["keccak"] }
 time = { version = "0.3", features = ["formatting", "parsing"] }
