@@ -62,7 +62,7 @@ rsa = { version = "=0.9.10", default-features = false, features = [
     "sha2",
 ], optional = true }
 spki = { version = "=0.7.3", default-features = false, optional = true }
-der = { version = "=0.7.10", default-features = false, features = [
+der = { version = "=0.8.2", default-features = false, features = [
     "alloc",
 ], optional = true }
 signature = { version = "=2.2.0", default-features = false, optional = true }
