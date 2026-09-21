@@ -210,6 +210,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloy"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9677ab3454c237abe6307805bea17a7912b3a516b606c7b4d3d948b9fede137"
+dependencies = [
+ "alloy-core",
+]
+
+[[package]]
 name = "alloy-chains"
 version = "0.2.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3208,7 +3217,7 @@ name = "blueprint-sdk"
 version = "0.2.0-alpha.12"
 source = "git+https://github.com/tangle-network/blueprint.git?rev=5405c0118f3b05e334076f708d1e884e72e62afd#5405c0118f3b05e334076f708d1e884e72e62afd"
 dependencies = [
- "alloy",
+ "alloy 1.8.3",
  "blueprint-auth",
  "blueprint-chain-setup",
  "blueprint-clients",
@@ -3271,7 +3280,7 @@ name = "blueprint-tangle-extra"
 version = "0.2.0-alpha.11"
 source = "git+https://github.com/tangle-network/blueprint.git?rev=5405c0118f3b05e334076f708d1e884e72e62afd#5405c0118f3b05e334076f708d1e884e72e62afd"
 dependencies = [
- "alloy",
+ "alloy 1.8.3",
  "alloy-primitives",
  "alloy-rpc-types",
  "alloy-sol-types",
@@ -3752,7 +3761,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4191,7 +4200,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5593,7 +5602,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -8139,7 +8148,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.3",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -8179,7 +8188,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -8964,7 +8973,7 @@ dependencies = [
 name = "sandbox-runtime"
 version = "0.1.0"
 dependencies = [
- "alloy",
+ "alloy 2.1.1",
  "anyhow",
  "async-trait",
  "aws-config",
@@ -10112,7 +10121,7 @@ version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "828c15d3fbb99ca2aab81dee20f26d0bf88f12c6c6d6368f466254997d7ff045"
 dependencies = [
- "alloy",
+ "alloy 1.8.3",
  "alloy-contract",
  "alloy-sol-types",
  "serde",
@@ -11000,7 +11009,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
