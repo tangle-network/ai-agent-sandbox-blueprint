@@ -7,6 +7,7 @@ const fs = require('fs')
 const path = require('path')
 const { agents, selectHarness, harnessCommand } = require('./harnesses')
 const { normalizeHarnessOutput } = require('./output-normalizer')
+const { runProcess: runHarnessProcess } = require('./run-process')
 const {
   openclawConcurrencyKey,
   runWithKeyedSerialization,
@@ -84,68 +85,17 @@ function parseEnv(raw) {
 
 function runProcess(command, args, options = {}) {
   const cwd = options.cwd && path.isAbsolute(options.cwd) ? options.cwd : workspaceRoot
-  const timeout = Number(options.timeout || 0)
-  const childEnv = {
+  const env = {
     ...process.env,
     HOME: process.env.AGENT_HOME || '/home/agent',
     ...parseEnv(options.env),
   }
-
-  return new Promise((resolve) => {
-    let stdout = ''
-    let stderr = ''
-    let timedOut = false
-    const child = spawn(command, args, {
-      cwd,
-      env: childEnv,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // detached: launch the harness as its own process-group leader. The
-      // harness (opencode) spawns tool subprocesses (bash, node, curl); when
-      // it tries to kill them on a tool timeout it must signal the whole
-      // group. Without its own group it signals across the session boundary
-      // and gets `kill EPERM` — which truncated the conversation-tick agent
-      // MID-EXECUTION (it narrated "Executing HYPE short" then died before
-      // submit-trade ran, so no trade landed). As a group leader it owns and
-      // can signal its children cleanly.
-      detached: true,
-      uid: process.getuid && process.getuid() === 0 ? childUid : undefined,
-      gid: process.getuid && process.getuid() === 0 ? childGid : undefined,
-    })
-
-    // Kill the whole process group (negative pid) so the harness AND every
-    // tool subprocess it spawned die together — a plain child.kill leaves
-    // grandchildren orphaned and can itself EPERM.
-    const killGroup = (signal) => {
-      try {
-        if (child.pid) process.kill(-child.pid, signal)
-      } catch {
-        try { child.kill(signal) } catch { /* already gone */ }
-      }
-    }
-    const timer = timeout > 0
-      ? setTimeout(() => {
-        timedOut = true
-        killGroup('SIGTERM')
-        setTimeout(() => killGroup('SIGKILL'), 2000).unref()
-      }, timeout)
-      : null
-
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
-    child.on('error', (err) => {
-      if (timer) clearTimeout(timer)
-      resolve({ exitCode: 127, stdout, stderr: stderr + err.message })
-    })
-    child.on('close', (code, signal) => {
-      if (timer) clearTimeout(timer)
-      resolve({
-        exitCode: timedOut ? 124 : (code ?? 1),
-        stdout,
-        stderr: timedOut ? `${stderr}\nprocess timed out`.trim() : stderr,
-        signal,
-      })
-    })
+  return runHarnessProcess(command, args, {
+    cwd,
+    env,
+    timeout: options.timeout,
+    uid: process.getuid && process.getuid() === 0 ? childUid : undefined,
+    gid: process.getuid && process.getuid() === 0 ? childGid : undefined,
   })
 }
 
