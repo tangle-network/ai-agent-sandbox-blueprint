@@ -7,8 +7,8 @@ authors vouch for.
 
 | file                         | source crate / path                                  | what it proves |
 |------------------------------|------------------------------------------------------|----------------|
-| `tdx_quote.bin`              | `dcap-qvl 0.5.2` `sample/tdx_quote`                   | a genuine Intel TDX DCAP quote |
-| `tdx_quote_collateral.json`  | `dcap-qvl 0.5.2` `sample/tdx_quote_collateral.json`  | matching Intel PCS collateral (TCB info, CRLs, QE identity) for the quote above |
+| `tdx_quote.bin`              | `dcap-qvl 0.5.3` `sample/tdx_quote`                   | a genuine Intel TDX DCAP quote |
+| `tdx_quote_collateral.json`  | `dcap-qvl 0.5.3` `sample/tdx_quote_collateral.json`  | matching Intel PCS collateral (TCB info, CRLs, QE identity) for the quote above |
 | `sev_vcek_milan.der`         | `sev 8.0.0` `tests/certs_data/vcek_milan.der`        | a genuine AMD Milan VCEK leaf certificate |
 | `sev_report_milan.hex`       | `sev 8.0.0` `tests/certs_data/report_milan.hex`      | a genuine AMD SEV-SNP attestation report signed by the VCEK above |
 

@@ -304,34 +304,59 @@ mod cases {
 
     struct SyntheticNitroChain {
         root_pem: String,
+        root_der: Vec<u8>,
+        intermediate_der: Vec<u8>,
         leaf_der: Vec<u8>,
         signing_key: p384::ecdsa::SigningKey,
     }
 
     fn synthetic_nitro_chain() -> SyntheticNitroChain {
+        synthetic_nitro_chain_with_leaf_key_usage(true)
+    }
+
+    fn synthetic_nitro_chain_with_leaf_key_usage(
+        include_digital_signature: bool,
+    ) -> SyntheticNitroChain {
         use p384::pkcs8::DecodePrivateKey;
-        use rcgen::{CertificateParams, IsCa, KeyPair, PKCS_ECDSA_P384_SHA384};
+        use rcgen::{CertificateParams, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P384_SHA384};
 
         let root_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         let mut root_params = CertificateParams::new(vec!["nitro-test-root".into()]).unwrap();
         root_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        root_params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
         let root = root_params.self_signed(&root_key).unwrap();
 
+        let intermediate_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
+        let mut intermediate_params =
+            CertificateParams::new(vec!["nitro-test-intermediate".into()]).unwrap();
+        intermediate_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        intermediate_params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+        let intermediate = intermediate_params
+            .signed_by(&intermediate_key, &root, &root_key)
+            .unwrap();
+
         let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
-        let leaf_params = CertificateParams::new(vec!["nitro-test-leaf".into()]).unwrap();
-        let leaf = leaf_params.signed_by(&leaf_key, &root, &root_key).unwrap();
+        let mut leaf_params = CertificateParams::new(vec!["nitro-test-leaf".into()]).unwrap();
+        if include_digital_signature {
+            leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        }
+        let leaf = leaf_params
+            .signed_by(&leaf_key, &intermediate, &intermediate_key)
+            .unwrap();
         let signing_key =
             p384::ecdsa::SigningKey::from_pkcs8_der(leaf_key.serialized_der()).unwrap();
 
         SyntheticNitroChain {
             root_pem: root.pem(),
+            root_der: root.der().to_vec(),
+            intermediate_der: intermediate.der().to_vec(),
             leaf_der: leaf.der().to_vec(),
             signing_key,
         }
     }
 
     fn synthetic_nitro_document(
-        leaf_der: &[u8],
+        chain: &SyntheticNitroChain,
         nonce: Option<&[u8]>,
         timestamp_ms: u64,
     ) -> Vec<u8> {
@@ -351,9 +376,15 @@ mod cases {
             (Cbor::Text("pcrs".into()), Cbor::Map(pcrs)),
             (
                 Cbor::Text("certificate".into()),
-                Cbor::Bytes(leaf_der.to_vec()),
+                Cbor::Bytes(chain.leaf_der.clone()),
             ),
-            (Cbor::Text("cabundle".into()), Cbor::Array(vec![])),
+            (
+                Cbor::Text("cabundle".into()),
+                Cbor::Array(vec![
+                    Cbor::Bytes(chain.root_der.clone()),
+                    Cbor::Bytes(chain.intermediate_der.clone()),
+                ]),
+            ),
         ];
         if let Some(nonce) = nonce {
             fields.push((Cbor::Text("nonce".into()), Cbor::Bytes(nonce.to_vec())));
@@ -364,12 +395,18 @@ mod cases {
     }
 
     fn synthetic_nitro_cose(chain: &SyntheticNitroChain, payload: Vec<u8>) -> Vec<u8> {
-        use coset::{CborSerializable, CoseSign1Builder, HeaderBuilder, iana};
+        synthetic_nitro_cose_with_algorithm(chain, payload, coset::iana::Algorithm::ES384)
+    }
+
+    fn synthetic_nitro_cose_with_algorithm(
+        chain: &SyntheticNitroChain,
+        payload: Vec<u8>,
+        algorithm: coset::iana::Algorithm,
+    ) -> Vec<u8> {
+        use coset::{CborSerializable, CoseSign1Builder, HeaderBuilder};
         use p384::ecdsa::{Signature, signature::Signer};
 
-        let protected = HeaderBuilder::new()
-            .algorithm(iana::Algorithm::ES384)
-            .build();
+        let protected = HeaderBuilder::new().algorithm(algorithm).build();
         CoseSign1Builder::new()
             .protected(protected)
             .payload(payload)
@@ -380,6 +417,25 @@ mod cases {
             .build()
             .to_vec()
             .unwrap()
+    }
+
+    fn replace_nitro_field(
+        payload: &[u8],
+        field: &str,
+        replacement: ciborium::value::Value,
+    ) -> Vec<u8> {
+        use ciborium::value::Value as Cbor;
+
+        let mut document: Cbor = ciborium::de::from_reader(payload).unwrap();
+        let map = document.as_map_mut().unwrap();
+        let (_, value) = map
+            .iter_mut()
+            .find(|(key, _)| key.as_text() == Some(field))
+            .expect("field exists in synthetic document");
+        *value = replacement;
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&document, &mut encoded).unwrap();
+        encoded
     }
 
     fn synthetic_nitro_timestamp_ms() -> u64 {
@@ -395,11 +451,8 @@ mod cases {
 
         let chain = synthetic_nitro_chain();
         let nonce: [u8; 64] = std::array::from_fn(|index| index as u8);
-        let payload = synthetic_nitro_document(
-            &chain.leaf_der,
-            Some(&nonce),
-            synthetic_nitro_timestamp_ms(),
-        );
+        let payload =
+            synthetic_nitro_document(&chain, Some(&nonce), synthetic_nitro_timestamp_ms());
         let cose = synthetic_nitro_cose(&chain, payload);
         let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
 
@@ -418,7 +471,7 @@ mod cases {
         let now_secs = synthetic_nitro_timestamp_ms() / 1_000;
         let cose = synthetic_nitro_cose(
             &chain,
-            synthetic_nitro_document(&chain.leaf_der, Some(&nonce), now_secs * 1_000),
+            synthetic_nitro_document(&chain, Some(&nonce), now_secs * 1_000),
         );
         let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
         let report = AttestationReport {
@@ -447,15 +500,201 @@ mod cases {
     }
 
     #[test]
+    fn nitro_wrong_nonce_is_rejected_by_full_attestation_flow() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+
+        let chain = synthetic_nitro_chain();
+        let signed_nonce = [0xA5; 64];
+        let expected_nonce = [0x5A; 64];
+        let now_secs = synthetic_nitro_timestamp_ms() / 1_000;
+        let report = AttestationReport {
+            tee_type: TeeType::Nitro,
+            evidence: synthetic_nitro_cose(
+                &chain,
+                synthetic_nitro_document(&chain, Some(&signed_nonce), now_secs * 1_000),
+            ),
+            measurement: vec![0xAB; 48],
+            timestamp: now_secs,
+        };
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let verification = crate::tee::verify_attestation_at_with_nitro_verifier(
+            &report,
+            &TeeType::Nitro,
+            &[vec![0xAB; 48]],
+            Some(&expected_nonce),
+            now_secs,
+            &verifier,
+        );
+
+        assert!(verification.signature_verified);
+        assert!(!verification.report_data_matched);
+        assert!(!verification.is_trusted());
+        assert!(matches!(
+            verification.verdict,
+            AttestationVerdict::Unverified { .. }
+        ));
+    }
+
+    #[test]
+    fn nitro_pcr_allowlist_mismatch_is_rejected_by_full_attestation_flow() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+
+        let chain = synthetic_nitro_chain();
+        let now_secs = synthetic_nitro_timestamp_ms() / 1_000;
+        let report = AttestationReport {
+            tee_type: TeeType::Nitro,
+            evidence: synthetic_nitro_cose(
+                &chain,
+                synthetic_nitro_document(&chain, None, now_secs * 1_000),
+            ),
+            measurement: vec![0xAB; 48],
+            timestamp: now_secs,
+        };
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let verification = crate::tee::verify_attestation_at_with_nitro_verifier(
+            &report,
+            &TeeType::Nitro,
+            &[vec![0xCD; 48]],
+            None,
+            now_secs,
+            &verifier,
+        );
+
+        assert!(verification.signature_verified);
+        assert!(!verification.measurement_matched);
+        assert_eq!(
+            verification.verdict,
+            AttestationVerdict::MeasurementMismatch
+        );
+        assert!(!verification.is_trusted());
+    }
+
+    #[test]
+    fn nitro_wrong_cose_algorithm_is_rejected_before_signature_verification() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+
+        let chain = synthetic_nitro_chain();
+        let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
+        let cose =
+            synthetic_nitro_cose_with_algorithm(&chain, payload, coset::iana::Algorithm::ES256);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let err = verify_nitro_with_verifier(&cose, &verifier).unwrap_err();
+        assert!(
+            err.contains("protected ES384"),
+            "reason should name alg: {err}"
+        );
+    }
+
+    #[test]
+    fn nitro_empty_cabundle_is_rejected_even_when_the_signature_is_valid() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+        use ciborium::value::Value as Cbor;
+
+        let chain = synthetic_nitro_chain();
+        let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
+        let payload = replace_nitro_field(&payload, "cabundle", Cbor::Array(Vec::new()));
+        let cose = synthetic_nitro_cose(&chain, payload);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let err = verify_nitro_with_verifier(&cose, &verifier).unwrap_err();
+        assert!(
+            err.contains("cabundle"),
+            "reason should name cabundle: {err}"
+        );
+    }
+
+    #[test]
+    fn nitro_cabundle_without_root_is_rejected() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+        use ciborium::value::Value as Cbor;
+
+        let chain = synthetic_nitro_chain();
+        let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
+        let payload = replace_nitro_field(
+            &payload,
+            "cabundle",
+            Cbor::Array(vec![Cbor::Bytes(chain.intermediate_der.clone())]),
+        );
+        let cose = synthetic_nitro_cose(&chain, payload);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let err = verify_nitro_with_verifier(&cose, &verifier).unwrap_err();
+        assert!(
+            err.contains("self-issued root") || err.contains("self-signed"),
+            "reason should identify missing root: {err}"
+        );
+    }
+
+    #[test]
+    fn nitro_non_ca_certificate_in_cabundle_is_rejected() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+        use ciborium::value::Value as Cbor;
+
+        let chain = synthetic_nitro_chain();
+        let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
+        let payload = replace_nitro_field(
+            &payload,
+            "cabundle",
+            Cbor::Array(vec![
+                Cbor::Bytes(chain.root_der.clone()),
+                Cbor::Bytes(chain.leaf_der.clone()),
+            ]),
+        );
+        let cose = synthetic_nitro_cose(&chain, payload);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let err = verify_nitro_with_verifier(&cose, &verifier).unwrap_err();
+        assert!(
+            err.contains("BasicConstraints") || err.contains("keyCertSign"),
+            "reason should identify non-CA certificate: {err}"
+        );
+    }
+
+    #[test]
+    fn nitro_invalid_pcr_shape_is_rejected_even_when_the_signature_is_valid() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+        use ciborium::value::Value as Cbor;
+
+        let chain = synthetic_nitro_chain();
+        let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
+        let payload = replace_nitro_field(
+            &payload,
+            "pcrs",
+            Cbor::Map(vec![(Cbor::Integer(0.into()), Cbor::Bytes(vec![0xAB; 47]))]),
+        );
+        let cose = synthetic_nitro_cose(&chain, payload);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let err = verify_nitro_with_verifier(&cose, &verifier).unwrap_err();
+        assert!(err.contains("PCR0"), "reason should name PCR0: {err}");
+    }
+
+    #[test]
+    fn nitro_leaf_without_digital_signature_usage_is_rejected() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+
+        let chain = synthetic_nitro_chain_with_leaf_key_usage(false);
+        let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
+        let cose = synthetic_nitro_cose(&chain, payload);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let err = verify_nitro_with_verifier(&cose, &verifier).unwrap_err();
+        assert!(
+            err.contains("digitalSignature"),
+            "reason should name leaf usage: {err}"
+        );
+    }
+
+    #[test]
     fn nitro_tampered_signature_is_rejected() {
         use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
 
         let chain = synthetic_nitro_chain();
-        let payload = synthetic_nitro_document(
-            &chain.leaf_der,
-            Some(&[0xA5; 64]),
-            synthetic_nitro_timestamp_ms(),
-        );
+        let payload =
+            synthetic_nitro_document(&chain, Some(&[0xA5; 64]), synthetic_nitro_timestamp_ms());
         let mut cose = synthetic_nitro_cose(&chain, payload);
         let last = cose.len() - 1;
         cose[last] ^= 0xFF;
@@ -472,8 +711,7 @@ mod cases {
         use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
 
         let chain = synthetic_nitro_chain();
-        let payload =
-            synthetic_nitro_document(&chain.leaf_der, None, synthetic_nitro_timestamp_ms());
+        let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
         let cose = synthetic_nitro_cose(&chain, payload);
         let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
 
@@ -485,11 +723,8 @@ mod cases {
     #[test]
     fn nitro_production_path_rejects_unpinned_root() {
         let chain = synthetic_nitro_chain();
-        let payload = synthetic_nitro_document(
-            &chain.leaf_der,
-            Some(&[0xA5; 64]),
-            synthetic_nitro_timestamp_ms(),
-        );
+        let payload =
+            synthetic_nitro_document(&chain, Some(&[0xA5; 64]), synthetic_nitro_timestamp_ms());
         let cose = synthetic_nitro_cose(&chain, payload);
 
         // A test-only root override is required for synthetic material. The
