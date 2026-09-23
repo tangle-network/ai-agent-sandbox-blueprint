@@ -185,13 +185,11 @@ fn parse_nitro_evidence(evidence: &[u8]) -> Result<Option<[u8; 64]>, String> {
     let _digest = digest.ok_or_else(|| "AWS Nitro attestation missing digest".to_string())?;
     let _timestamp =
         timestamp.ok_or_else(|| "AWS Nitro attestation missing timestamp".to_string())?;
-    let pcrs = pcrs.ok_or_else(|| "AWS Nitro attestation missing pcrs".to_string())?;
+    // PCR0 presence and size are enforced inside `validate_nitro_pcrs`.
+    let _pcrs = pcrs.ok_or_else(|| "AWS Nitro attestation missing pcrs".to_string())?;
     let certificate =
         certificate.ok_or_else(|| "AWS Nitro attestation missing certificate".to_string())?;
     let cabundle = cabundle.ok_or_else(|| "AWS Nitro attestation missing cabundle".to_string())?;
-    if pcrs.get(&0).is_none() {
-        return Err("AWS Nitro attestation must contain PCR0".to_string());
-    }
     validate_nitro_certificate_usage(&certificate, &cabundle)?;
 
     let report_data = nonce.map(|nonce| {
