@@ -15,8 +15,12 @@ use x509_cert::{
     ext::pkix::{BasicConstraints, KeyUsage},
 };
 
+// A genuine NSM document is a few KiB. This cap bounds bytes; nesting depth is
+// bounded by ciborium's default recursion limit in `from_reader`.
 const MAX_NITRO_PAYLOAD_BYTES: usize = 16 * 1024;
 const MAX_NITRO_CERT_BYTES: usize = 1024;
+// AWS allows a nonce of up to 512 bytes. The runtime's report-data contract is
+// 64 bytes, so a longer nonce is rejected rather than truncated.
 const MAX_NITRO_NONCE_BYTES: usize = 64;
 const COSE_ES384_SIGNATURE_BYTES: usize = 96;
 
@@ -159,19 +163,31 @@ fn parse_nitro_evidence(evidence: &[u8]) -> Result<Option<[u8; 64]>, String> {
                 }
                 cabundle = Some(bundle);
             }
+            // NSM serialises the three optional fields as CBOR null when the
+            // enclave did not supply them; null means absent, not malformed.
             "public_key" => {
-                require_bounded_bytes(value, "public_key", 1..=MAX_NITRO_CERT_BYTES)?;
+                if !value.is_null() {
+                    require_bounded_bytes(value, "public_key", 1..=MAX_NITRO_CERT_BYTES)?;
+                }
             }
             "user_data" => {
-                require_bounded_bytes(value, "user_data", 0..=512)?;
+                if !value.is_null() {
+                    require_bounded_bytes(value, "user_data", 0..=512)?;
+                }
             }
             "nonce" => {
-                nonce = Some(require_bounded_bytes(
-                    value,
-                    "nonce",
-                    0..=MAX_NITRO_NONCE_BYTES,
-                )?);
+                if !value.is_null() {
+                    nonce = Some(require_bounded_bytes(
+                        value,
+                        "nonce",
+                        0..=MAX_NITRO_NONCE_BYTES,
+                    )?);
+                }
             }
+            // The AWS attestation-document CDDL defines exactly these nine
+            // fields. A field AWS adds later fails verification until this
+            // allowlist is updated; that is deliberate and needs a coordinated
+            // change here rather than silent acceptance.
             other => {
                 return Err(format!(
                     "AWS Nitro attestation contains unsupported field {other:?}"
@@ -336,6 +352,9 @@ fn validate_nitro_certificate_usage(leaf_der: &[u8], cabundle: &[Vec<u8>]) -> Re
     Ok(())
 }
 
+/// Defence in depth over the upstream verifier's root check. AWS Nitro Root-G1
+/// is a P-384 key signed with ecdsa-with-SHA384; a rotated root on another
+/// algorithm fails here, closed, until this check is updated.
 fn verify_nitro_root_self_signature(root: &Certificate) -> Result<(), String> {
     use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 

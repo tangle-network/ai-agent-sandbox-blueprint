@@ -366,7 +366,7 @@ mod cases {
             (Cbor::Integer(0.into()), Cbor::Bytes(vec![0xAB; 48])),
             (Cbor::Integer(8.into()), Cbor::Bytes(vec![0x11; 48])),
         ];
-        let mut fields = vec![
+        let fields = vec![
             (Cbor::Text("module_id".into()), Cbor::Text("test".into())),
             (Cbor::Text("digest".into()), Cbor::Text("SHA384".into())),
             (
@@ -385,10 +385,14 @@ mod cases {
                     Cbor::Bytes(chain.intermediate_der.clone()),
                 ]),
             ),
+            // NSM emits every optional field, as CBOR null when unset.
+            (Cbor::Text("public_key".into()), Cbor::Null),
+            (Cbor::Text("user_data".into()), Cbor::Null),
+            (
+                Cbor::Text("nonce".into()),
+                nonce.map_or(Cbor::Null, |nonce| Cbor::Bytes(nonce.to_vec())),
+            ),
         ];
-        if let Some(nonce) = nonce {
-            fields.push((Cbor::Text("nonce".into()), Cbor::Bytes(nonce.to_vec())));
-        }
         let mut payload = Vec::new();
         ciborium::ser::into_writer(&Cbor::Map(fields), &mut payload).unwrap();
         payload
@@ -433,6 +437,19 @@ mod cases {
             .find(|(key, _)| key.as_text() == Some(field))
             .expect("field exists in synthetic document");
         *value = replacement;
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&document, &mut encoded).unwrap();
+        encoded
+    }
+
+    fn without_nitro_field(payload: &[u8], field: &str) -> Vec<u8> {
+        use ciborium::value::Value as Cbor;
+
+        let mut document: Cbor = ciborium::de::from_reader(payload).unwrap();
+        document
+            .as_map_mut()
+            .unwrap()
+            .retain(|(key, _)| key.as_text() != Some(field));
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&document, &mut encoded).unwrap();
         encoded
@@ -712,12 +729,60 @@ mod cases {
 
         let chain = synthetic_nitro_chain();
         let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
+        let payload = without_nitro_field(&payload, "nonce");
         let cose = synthetic_nitro_cose(&chain, payload);
         let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
 
         let facts = verify_nitro_with_verifier(&cose, &verifier)
             .expect("a valid unchallenged Nitro document must verify");
         assert_eq!(facts.report_data, None);
+    }
+
+    #[test]
+    fn nitro_null_optional_fields_are_accepted() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+        use ciborium::value::Value as Cbor;
+
+        // A genuine NSM document carries public_key, user_data and nonce as
+        // CBOR null when the enclave supplied none of them.
+        let chain = synthetic_nitro_chain();
+        let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
+        let document: Cbor = ciborium::de::from_reader(payload.as_slice()).unwrap();
+        let nulls = document
+            .as_map()
+            .unwrap()
+            .iter()
+            .filter(|(_, value)| value.is_null())
+            .count();
+        assert_eq!(
+            nulls, 3,
+            "synthetic document must mirror NSM's null optionals"
+        );
+        let cose = synthetic_nitro_cose(&chain, payload);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let facts = verify_nitro_with_verifier(&cose, &verifier)
+            .expect("null optional fields must not reject a genuine document");
+        assert_eq!(facts.measurement, vec![0xAB; 48]);
+        assert_eq!(facts.report_data, None);
+    }
+
+    #[test]
+    fn nitro_non_bytes_public_key_is_rejected() {
+        use blueprint_tee::attestation::providers::aws_nitro::NitroVerifier;
+        use ciborium::value::Value as Cbor;
+
+        let chain = synthetic_nitro_chain();
+        let payload = synthetic_nitro_document(&chain, None, synthetic_nitro_timestamp_ms());
+        let payload = replace_nitro_field(&payload, "public_key", Cbor::Text("pem".into()));
+        let cose = synthetic_nitro_cose(&chain, payload);
+        let verifier = NitroVerifier::new().with_root_cert_pem(chain.root_pem);
+
+        let err = verify_nitro_with_verifier(&cose, &verifier).unwrap_err();
+        assert!(
+            err.contains("public_key"),
+            "reason should name public_key: {err}"
+        );
     }
 
     #[test]
