@@ -9,11 +9,11 @@ license.workspace = true
 [dependencies]
 async-trait = "0.1"
 alloy = { version = "=1.8.3", default-features = false, features = ["sol-types"] }
-blueprint-sdk = { version = "=0.2.0-alpha.10", default-features = false, features = ["std", "tracing", "local-store"] }
-blueprint-tee = { version = "=0.2.0-alpha.7", default-features = false, features = ["std", "aws-nitro"], optional = true }
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-sdk", default-features = false, features = ["std", "tracing", "local-store"] }
+blueprint-tee = { git = "https://github.com/tangle-network/blueprint.git", rev = "54f06f2e8cc697435c862f9e24fcefe45aab3324", package = "blueprint-tee", default-features = false, features = ["std", "aws-nitro"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dashmap = "6"
-docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
+docktopus = { version = "0.5.0-alpha.2", features = ["deploy"] }
 hex = "0.4"
 microvm-runtime = { version = "0.4.0-alpha.3", features = ["firecracker"] }
 microvm-warm-pool = "0.1.0-alpha.2"
