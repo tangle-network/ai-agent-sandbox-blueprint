@@ -186,9 +186,9 @@ jobs:
   # transaction underpriced"). Each dispatch waits for the remote run to finish
   # before the next one starts.
   #
-  # The TEE instance blueprint is not confirmed deployed on Base Sepolia. Its
-  # publish is gated on the TEE_INSTANCE_BLUEPRINT_ID repo/org variable; absent
-  # that, only sandbox (10) + instance (11) publish.
+  # Base Sepolia registers the sandbox, instance, and TEE instance blueprints
+  # as IDs 10, 11, and 12 in tnt-core/deployments/base-sepolia/blueprints.tsv.
+  # Keep these IDs in source control so every release publishes all binaries.
   publish-onchain:
     needs: [release, manifest]
     runs-on: ubuntu-latest
@@ -196,7 +196,6 @@ jobs:
       - name: Trigger tnt-core binary publish (all blueprints, serialized)
         env:
           GH_TOKEN: ${{ secrets.TNT_CORE_PUBLISH_TOKEN }}
-          TEE_INSTANCE_BLUEPRINT_ID: ${{ vars.TEE_INSTANCE_BLUEPRINT_ID }}
         run: |
           set -euo pipefail
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
@@ -204,18 +203,12 @@ jobs:
           WORKFLOW=publish-blueprint-binary.yml
 
           # Blueprint ids: tnt-core deployments/base-sepolia/blueprints.tsv.
-          # sandbox=10, instance=11 (Tangle 0x8299d6 / chain 84532). The TEE
-          # instance id is only published when TEE_INSTANCE_BLUEPRINT_ID is set
-          # (it is not confirmed registered on this chain).
+          # sandbox=10, instance=11, and TEE instance=12 on chain 84532.
           PUBLISHES="
           ai-agent-sandbox-blueprint:10
           ai-agent-instance-blueprint:11
+          ai-agent-tee-instance-blueprint:12
           "
-          if [ -n "${TEE_INSTANCE_BLUEPRINT_ID:-}" ]; then
-            PUBLISHES="${PUBLISHES}
-          ai-agent-tee-instance-blueprint:${TEE_INSTANCE_BLUEPRINT_ID}
-          "
-          fi
 
           FAILED=0
           for entry in $PUBLISHES; do
