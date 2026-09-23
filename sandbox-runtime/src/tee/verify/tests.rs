@@ -366,7 +366,7 @@ mod cases {
             (Cbor::Integer(0.into()), Cbor::Bytes(vec![0xAB; 48])),
             (Cbor::Integer(8.into()), Cbor::Bytes(vec![0x11; 48])),
         ];
-        let mut fields = vec![
+        let fields = vec![
             (Cbor::Text("module_id".into()), Cbor::Text("test".into())),
             (Cbor::Text("digest".into()), Cbor::Text("SHA384".into())),
             (
