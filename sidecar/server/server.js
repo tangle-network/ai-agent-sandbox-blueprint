@@ -7,6 +7,7 @@ const fs = require('fs')
 const path = require('path')
 const { agents, selectHarness, harnessCommand } = require('./harnesses')
 const { normalizeHarnessOutput } = require('./output-normalizer')
+const { runProcess: runHarnessProcess } = require('./run-process')
 const {
   openclawConcurrencyKey,
   runWithKeyedSerialization,
@@ -84,49 +85,17 @@ function parseEnv(raw) {
 
 function runProcess(command, args, options = {}) {
   const cwd = options.cwd && path.isAbsolute(options.cwd) ? options.cwd : workspaceRoot
-  const timeout = Number(options.timeout || 0)
-  const childEnv = {
+  const env = {
     ...process.env,
     HOME: process.env.AGENT_HOME || '/home/agent',
     ...parseEnv(options.env),
   }
-
-  return new Promise((resolve) => {
-    let stdout = ''
-    let stderr = ''
-    let timedOut = false
-    const child = spawn(command, args, {
-      cwd,
-      env: childEnv,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      uid: process.getuid && process.getuid() === 0 ? childUid : undefined,
-      gid: process.getuid && process.getuid() === 0 ? childGid : undefined,
-    })
-
-    const timer = timeout > 0
-      ? setTimeout(() => {
-        timedOut = true
-        child.kill('SIGTERM')
-        setTimeout(() => child.kill('SIGKILL'), 2000).unref()
-      }, timeout)
-      : null
-
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
-    child.on('error', (err) => {
-      if (timer) clearTimeout(timer)
-      resolve({ exitCode: 127, stdout, stderr: stderr + err.message })
-    })
-    child.on('close', (code, signal) => {
-      if (timer) clearTimeout(timer)
-      resolve({
-        exitCode: timedOut ? 124 : (code ?? 1),
-        stdout,
-        stderr: timedOut ? `${stderr}\nprocess timed out`.trim() : stderr,
-        signal,
-      })
-    })
+  return runHarnessProcess(command, args, {
+    cwd,
+    env,
+    timeout: options.timeout,
+    uid: process.getuid && process.getuid() === 0 ? childUid : undefined,
+    gid: process.getuid && process.getuid() === 0 ? childGid : undefined,
   })
 }
 
