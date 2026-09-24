@@ -17,9 +17,10 @@ TEE mode provides hardware-enforced isolation for sandbox workloads:
 > Verification authenticates supplied evidence; it does not prove that the current host has TEE hardware.
 > The evidence must still originate inside the corresponding confidential environment.
 >
-> The honest verification state is exposed through `sandbox_runtime::tee::verify_attestation`, which returns an `AttestationVerification { verdict, signature_verified, measurement_matched, structural_ok }`.
-> Measurement pinning is available through `SANDBOX_TEE_EXPECTED_MEASUREMENTS`.
-> The allowlist is trusted only when it comes from outside the operator, such as a verifying client or on-chain configuration.
+> The honest verification state is exposed through `sandbox_runtime::tee::verify_attestation`, which returns an `AttestationVerification { verdict, signature_verified, measurement_matched, report_data_matched, structural_ok }`.
+> The operator configures server-side measurement pinning through `SANDBOX_TEE_EXPECTED_MEASUREMENTS`.
+> This server-side value is not independent trust; a client or on-chain verifier must obtain its expected measurement separately.
+> Trust-granting server routes fail closed when this allowlist is absent unless the operator explicitly selects client-side-only verification.
 >
 > **Remaining work to make this a complete workload trust guarantee:** (1) publish the expected sidecar-image measurement on-chain and compare against it; (2) run verification client-side (WASM) so the verifying user never trusts operator-supplied JSON.
 
@@ -302,8 +303,11 @@ The evidence format depends on the TEE type:
 - Reject nonce-bound direct TDX until DCAP quote support is implemented.
 
 **AWS Nitro:**
-- Parse the NSM attestation document (CBOR-encoded)
-- Verify PCR values against expected enclave image hash
+- Parse the signed NSM document as tagged or untagged COSE_Sign1.
+- Require protected ES384, the AWS document fields, valid field sizes, and a non-empty root-first CA bundle.
+- Verify the certificate chain against the pinned AWS Nitro Root-G1 and verify the COSE signature.
+- Require PCR0 in the signed document and compare it with an expected external measurement allowlist.
+- For a challenge, require the signed nonce to equal the expected 64-byte report data.
 
 **AMD SEV-SNP:**
 - Parse the ATTESTATION_REPORT
