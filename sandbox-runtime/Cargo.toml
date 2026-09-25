@@ -85,7 +85,7 @@ chacha20poly1305 = "0.10"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # Session auth (EIP-191 + PASETO v4)
-hkdf = "0.12"
+hkdf = "0.13"
 k256 = { version = "0.13", features = ["ecdsa"] }
 pasetors = "0.6"
 sha2 = "0.10"
