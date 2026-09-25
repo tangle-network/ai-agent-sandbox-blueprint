@@ -8997,7 +8997,7 @@ dependencies = [
  "pasetors 0.6.8",
  "phala-tee-deploy-rs",
  "rand 0.8.8",
- "rcgen 0.13.2",
+ "rcgen 0.14.8",
  "reqwest 0.12.28",
  "rsa",
  "serde",
