@@ -7,6 +7,9 @@ description.workspace = true
 license.workspace = true
 
 [dependencies]
+hex = "0.4"
+axum = "0.8"
+alloy-primitives = "1.6"
 sandbox-runtime = { path = "../sandbox-runtime" }
 blueprint-sdk = { version = "=0.2.0-alpha.12", default-features = false, features = ["std", "tracing", "macros", "tangle", "local-store"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -20,13 +23,11 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 anyhow = "1"
-axum = "0.8"
 sandbox-runtime = { path = "../sandbox-runtime", features = ["test-utils"] }
 blueprint-anvil-testing-utils = { version = "=0.2.0-alpha.12" }
 docktopus = { version = "0.4.0-alpha.3", features = ["deploy"] }
 futures = "0.3"
 futures-util = "0.3"
-hex = "0.4"
 k256 = { version = "0.13", features = ["ecdsa"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

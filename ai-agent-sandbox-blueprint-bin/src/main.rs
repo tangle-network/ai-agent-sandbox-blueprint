@@ -42,6 +42,60 @@ use bootstrap::*;
 use consumer::*;
 use workflow_status::*;
 
+/// Build the RFQ quote routes, or an empty router when quoting is not
+/// configured. Signed by the keystore's sole ECDSA key over the live chain.
+async fn build_quote_routes(
+    env: &BlueprintEnvironment,
+    tangle_client: &TangleClient,
+    service_id: u64,
+) -> HttpRouter {
+    use ai_agent_sandbox_blueprint_lib::operator_quote::{QuotePolicy, QuoteService};
+    use blueprint_sdk::alloy::providers::Provider;
+    use blueprint_sdk::tangle::job_quote::QuoteSigningDomain;
+
+    let keystore = match std::env::var("KEYSTORE_URI") {
+        Ok(uri) => {
+            match blueprint_sdk::keystore::Keystore::new(
+                blueprint_sdk::keystore::KeystoreConfig::new()
+                    .fs_root(uri.trim_start_matches("file://")),
+            ) {
+                Ok(k) => k,
+                Err(e) => {
+                    warn!("RFQ quotes disabled: keystore open failed: {e}");
+                    return HttpRouter::new();
+                }
+            }
+        }
+        Err(_) => env.keystore(),
+    };
+
+    let chain_id = match tangle_client.provider().get_chain_id().await {
+        Ok(id) => id,
+        Err(e) => {
+            warn!("RFQ quotes disabled: cannot read chain id: {e}");
+            return HttpRouter::new();
+        }
+    };
+    let domain = QuoteSigningDomain {
+        chain_id: chain_id as u64,
+        verifying_contract: tangle_client.tangle_address(),
+    };
+
+    match QuoteService::new(&keystore, domain, QuotePolicy::from_env(), service_id) {
+        Ok(service) => {
+            let operator = format!("{:?}", service.operator());
+            info!("RFQ quotes served on /api/quote (operator {operator}, chain {chain_id})");
+            ai_agent_sandbox_blueprint_lib::operator_quote::quote_router(std::sync::Arc::new(
+                service,
+            ))
+        }
+        Err(e) => {
+            warn!("RFQ quotes disabled: signer init failed: {e}");
+            HttpRouter::new()
+        }
+    }
+}
+
 #[tokio::main]
 #[allow(clippy::result_large_err)]
 async fn main() -> Result<(), blueprint_sdk::Error> {
@@ -282,9 +336,14 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     let api_shutdown = tokio::sync::watch::channel(());
     let api_shutdown_tx = api_shutdown.0;
     let api_handle = {
+        // RFQ quotes: sign with the keystore's sole ECDSA key (the operator
+        // identity) over the live chain's domain. Quote serving is best-effort
+        // at startup — a missing keystore or RPC must not take the operator
+        // down, it only leaves the /api/quote route unserved.
+        let quote_routes = build_quote_routes(&env, &tangle_client, service_id).await;
         let router = sandbox_runtime::operator_api::operator_api_router_with_tee_and_routes(
             tee_backend,
-            workflow_status_router(),
+            workflow_status_router().merge(quote_routes),
         );
         let addr = std::net::SocketAddr::from((bind_addr, api_port));
         info!("Starting operator API on {addr}");
