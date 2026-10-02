@@ -4,6 +4,7 @@
 //! used by this and other blueprints, see `sandbox-runtime`.
 
 pub mod jobs;
+pub mod operator_quote;
 pub mod workflows;
 
 // Re-export sandbox-runtime modules so existing consumers (job handlers,
