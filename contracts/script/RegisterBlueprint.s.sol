@@ -56,15 +56,15 @@ contract RegisterBlueprint is Script {
         // Cloud mode: capacity-weighted operator selection
         AgentSandboxBlueprint sandbox = sandboxBsm != address(0)
             ? AgentSandboxBlueprint(payable(sandboxBsm))
-            : new AgentSandboxBlueprint(restakingAddr, false, false);
+            : new AgentSandboxBlueprint(restakingAddr, false, false, address(0));
         // Instance mode: per-service singleton sandbox
         AgentSandboxBlueprint instance = instanceBsm != address(0)
             ? AgentSandboxBlueprint(payable(instanceBsm))
-            : new AgentSandboxBlueprint(address(0), true, false);
+            : new AgentSandboxBlueprint(address(0), true, false, address(0));
         // TEE instance mode: singleton with attestation enforcement
         AgentSandboxBlueprint teeInstance = teeBsm != address(0)
             ? AgentSandboxBlueprint(payable(teeBsm))
-            : new AgentSandboxBlueprint(address(0), true, true);
+            : new AgentSandboxBlueprint(address(0), true, true, address(0));
 
         // ── Register on Tangle ──────────────────────────────────────────
         uint64 sandboxId = tangle.createBlueprint(_buildSandboxDefinition(address(sandbox), compact));

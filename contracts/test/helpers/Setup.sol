@@ -73,7 +73,7 @@ contract BlueprintTestSetup is Test {
 
     function setUp() public virtual {
         mockDelegation = new MockMultiAssetDelegation();
-        blueprint = new AgentSandboxBlueprint(address(mockDelegation), false, false);
+        blueprint = new AgentSandboxBlueprint(address(mockDelegation), false, false, address(0));
         // Initialize blueprint via onBlueprintCreated
         blueprint.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
     }

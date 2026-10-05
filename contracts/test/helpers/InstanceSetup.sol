@@ -38,7 +38,7 @@ contract InstanceBlueprintTestSetup is Test {
     function setUp() public virtual {
         tangleMock = new MockTangleCoreInstance();
         tangleCore = address(tangleMock);
-        instance = new AgentSandboxBlueprint(address(0), true, false);
+        instance = new AgentSandboxBlueprint(address(0), true, false, address(0));
         instance.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
     }
 
@@ -154,7 +154,7 @@ contract TeeInstanceBlueprintTestSetup is Test {
     function setUp() public virtual {
         tangleMock = new MockTangleCoreInstance();
         tangleCore = address(tangleMock);
-        teeInstance = new AgentSandboxBlueprint(address(0), true, true);
+        teeInstance = new AgentSandboxBlueprint(address(0), true, true, address(0));
         teeInstance.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
     }
 

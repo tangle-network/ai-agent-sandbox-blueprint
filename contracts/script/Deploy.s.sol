@@ -27,7 +27,7 @@ contract DeployBlueprint is Script {
 
         vm.startBroadcast();
 
-        AgentSandboxBlueprint blueprint = new AgentSandboxBlueprint(restaking, isInstance, isTee);
+        AgentSandboxBlueprint blueprint = new AgentSandboxBlueprint(restaking, isInstance, isTee, address(0));
         console.log("AgentSandboxBlueprint deployed at:", address(blueprint));
         console.log("  instanceMode:", isInstance);
         console.log("  teeRequired:", isTee);

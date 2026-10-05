@@ -9,7 +9,7 @@ contract DeployInstanceBlueprint is Script {
     function run() external {
         vm.startBroadcast();
 
-        AgentSandboxBlueprint blueprint = new AgentSandboxBlueprint(address(0), true, false);
+        AgentSandboxBlueprint blueprint = new AgentSandboxBlueprint(address(0), true, false, address(0));
         console.log("AgentSandboxBlueprint (instance) deployed at:", address(blueprint));
 
         vm.stopBroadcast();

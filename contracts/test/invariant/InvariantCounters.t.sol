@@ -197,7 +197,7 @@ contract InvariantCountersTest is Test {
     function setUp() public {
         // Deploy mock delegation and blueprint in cloud mode
         mockDelegation = new MockMultiAssetDelegation();
-        blueprint = new AgentSandboxBlueprint(address(mockDelegation), false, false);
+        blueprint = new AgentSandboxBlueprint(address(mockDelegation), false, false, address(0));
         blueprint.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
 
         // Register all three operators with capacity 200 each

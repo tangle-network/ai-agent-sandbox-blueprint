@@ -114,7 +114,9 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // CONSTRUCTOR
     // ═══════════════════════════════════════════════════════════════════════════
 
-    constructor(address restakingAddress, bool _instanceMode, bool _teeRequired) {
+    constructor(address restakingAddress, bool _instanceMode, bool _teeRequired, address slashingVerifier)
+        ComputeProviderSlashing(slashingVerifier)
+    {
         if (restakingAddress != address(0)) {
             restaking = IMultiAssetDelegation(restakingAddress);
         }
@@ -326,6 +328,27 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     // ═══════════════════════════════════════════════════════════════════════════
     // JOB CALL HOOK — OPERATOR ASSIGNMENT & ROUTING
     // ═══════════════════════════════════════════════════════════════════════════
+
+    // ── tnt-core slashing hooks (delegate to ComputeProviderSlashing) ──
+    function querySlashingOrigin(uint64 serviceId) external view override returns (address) {
+        return _slashingOrigin(serviceId);
+    }
+
+    function getSlashingWindow(uint64 serviceId) external view override returns (bool useDefault, uint64 window) {
+        return _slashingWindow(serviceId);
+    }
+
+    function queryDisputeOrigin(uint64 serviceId) external view override returns (address) {
+        return _disputeOrigin(serviceId);
+    }
+
+    function onUnappliedSlash(uint64 serviceId, bytes calldata offender, uint8 slashPercent) external override {
+        _recordSlashProposed(serviceId, offender, slashPercent);
+    }
+
+    function onSlash(uint64 serviceId, bytes calldata offender, uint8 slashPercent) external override {
+        _recordSlashExecuted(serviceId, offender, slashPercent);
+    }
 
     function onJobCall(uint64 serviceId, uint8 job, uint64 jobCallId, bytes calldata inputs)
         external

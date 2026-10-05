@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "tnt-core/BlueprintServiceManagerBase.sol";
+import { ComputeProviderSlashing } from "tangle-slashing/ComputeProviderSlashing.sol";
 import "tnt-core/interfaces/IMultiAssetDelegation.sol";
 import "./libraries/OperatorSelectionLib.sol";
 
@@ -11,7 +12,7 @@ import "./libraries/OperatorSelectionLib.sol";
 ///         (`_selectOperators`, `_eligibleOperators`, the validation walk)
 ///         live in `OperatorSelectionLib` so the inheriting blueprint
 ///         contract stays under the EIP-170 24,576 B runtime cap.
-abstract contract OperatorSelectionBase is BlueprintServiceManagerBase {
+abstract contract OperatorSelectionBase is BlueprintServiceManagerBase, ComputeProviderSlashing {
     IMultiAssetDelegation public restaking;
 
     uint32 public minOperators;

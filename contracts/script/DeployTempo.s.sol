@@ -40,7 +40,7 @@ contract DeployTempo is Script {
 
         // Cloud mode: capacity-weighted operator selection. UNBOUND — the master
         // manager binds it below during createBlueprint.
-        AgentSandboxBlueprint sandbox = new AgentSandboxBlueprint(restakingAddr, false, false);
+        AgentSandboxBlueprint sandbox = new AgentSandboxBlueprint(restakingAddr, false, false, address(0));
 
         uint64 blueprintId = tangle.createBlueprint(_buildSandboxDefinition(address(sandbox), compact));
 

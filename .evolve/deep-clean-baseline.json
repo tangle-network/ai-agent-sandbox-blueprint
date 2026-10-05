@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-04-16T20:15:00Z",
+  "language": "rust",
+  "totalLines": 37146,
+  "clippyWarnings": 0,
+  "unusedWarnings": 0,
+  "debtMarkers": 0,
+  "unsafeBlocks": 30,
+  "unsafeBlocksTest": 18,
+  "unsafeBlocksProduction": 12,
+  "unwrapCallsNonTest": 613,
+  "allowAttributes": 10,
+  "uiTypeErrors": "N/A (react-router not installed locally)",
+  "notes": "The 4 'debt markers' are false positives (XXXXXX in mktemp patterns, not TODOs). The 30 unsafe blocks are mostly env::set_var in test code (18) + 6 in TEE attestation (libc ioctl, required) + 6 in test env setup. The 613 unwraps are dominated by operator_api.rs tests (345)."
+}

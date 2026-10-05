@@ -9,7 +9,7 @@ contract DeployTeeInstanceBlueprint is Script {
     function run() external {
         vm.startBroadcast();
 
-        AgentSandboxBlueprint blueprint = new AgentSandboxBlueprint(address(0), true, true);
+        AgentSandboxBlueprint blueprint = new AgentSandboxBlueprint(address(0), true, true, address(0));
         console.log("AgentSandboxBlueprint (TEE instance) deployed at:", address(blueprint));
 
         vm.stopBroadcast();
