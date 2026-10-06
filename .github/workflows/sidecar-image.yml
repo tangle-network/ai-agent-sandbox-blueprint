@@ -35,7 +35,7 @@ concurrency:
 jobs:
   dockerfile:
     name: Validate sidecar Dockerfile
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     steps:
       - uses: actions/checkout@v4
 
@@ -54,7 +54,7 @@ jobs:
 
   publish:
     name: Publish all-harness sidecar
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     if: github.event_name != 'pull_request' && github.repository == 'tangle-network/ai-agent-sandbox-blueprint'
     outputs:
       image: ${{ steps.tags.outputs.image }}
@@ -111,7 +111,7 @@ jobs:
 
   cleanup:
     name: Prune old sidecar image versions
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     needs: publish
     if: needs.publish.result == 'success'
     steps:
