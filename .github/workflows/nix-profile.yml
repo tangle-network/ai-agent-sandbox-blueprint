@@ -31,27 +31,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
-      # The default GitHub runner ships ~14 GB free out of ~30. The
-      # universal profile closure plus Rust target dirs occasionally
-      # tops that; prune known-unused preinstalled SDKs to free
-      # ~25 GB before Cachix populates /nix/store.
-      - name: Free disk space for Nix build
-        run: |
-          sudo rm -rf /usr/local/lib/android         # ~12 GB
-          sudo rm -rf /usr/share/dotnet              # ~2 GB
-          sudo rm -rf /usr/local/share/boost         # ~1 GB
-          sudo rm -rf /usr/share/swift               # ~2 GB
-          sudo rm -rf /usr/local/share/powershell    # ~1 GB
-          sudo rm -rf /opt/ghc                       # ~5 GB
-          sudo rm -rf /opt/hostedtoolcache/CodeQL    # ~5 GB
-          sudo apt-get -y clean
-          docker system prune -af || true
-          echo "::notice ::Free disk after prune: $(df -h / | tail -1 | awk '{print $4}')"
 
       - uses: cachix/install-nix-action@v31
         with:
