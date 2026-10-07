@@ -13,18 +13,18 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: npm-publish-${{ github.repository }}-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  # Self-hosted: typecheck, build, and decide whether this trigger publishes.
-  check:
+  publish:
     if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint'
-    runs-on: [self-hosted, ci-public]
-    outputs:
-      publish: ${{ steps.validate.outputs.publish }}
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ''
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -76,39 +76,6 @@ jobs:
           fi
 
           echo "version=${PKG_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "publish=true" >> "${GITHUB_OUTPUT}"
-
-  # GitHub-hosted only because npm accepts trusted-publishing OIDC tokens
-  # solely from GitHub-hosted runners. Runs only when `check` approved a publish.
-  publish:
-    needs: check
-    if: needs.check.outputs.publish == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      NODE_AUTH_TOKEN: ''
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build package
-        run: pnpm -C packages/agent-ui build
 
       - name: Publish package
         working-directory: packages/agent-ui
