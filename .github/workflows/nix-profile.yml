@@ -31,18 +31,31 @@ concurrency:
 
 jobs:
   build:
-    runs-on: [self-hosted, ci-public]
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      # The ci-public runners use the beelink's multi-user Nix daemon (flakes
-      # enabled, nixcache.tangle.tools substituter). install-nix-action would
-      # try a root install, which the runner user cannot and must not do.
-      - name: Use the host Nix daemon
+      # The default GitHub runner ships ~14 GB free out of ~30. The
+      # universal profile closure plus Rust target dirs occasionally
+      # tops that; prune known-unused preinstalled SDKs to free
+      # ~25 GB before Cachix populates /nix/store.
+      - name: Free disk space for Nix build
         run: |
-          echo /nix/var/nix/profiles/default/bin >> "$GITHUB_PATH"
-          /nix/var/nix/profiles/default/bin/nix --version
+          sudo rm -rf /usr/local/lib/android         # ~12 GB
+          sudo rm -rf /usr/share/dotnet              # ~2 GB
+          sudo rm -rf /usr/local/share/boost         # ~1 GB
+          sudo rm -rf /usr/share/swift               # ~2 GB
+          sudo rm -rf /usr/local/share/powershell    # ~1 GB
+          sudo rm -rf /opt/ghc                       # ~5 GB
+          sudo rm -rf /opt/hostedtoolcache/CodeQL    # ~5 GB
+          sudo apt-get -y clean
+          docker system prune -af || true
+          echo "::notice ::Free disk after prune: $(df -h / | tail -1 | awk '{print $4}')"
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
 
       - uses: cachix/cachix-action@v15
         with:
@@ -54,8 +67,8 @@ jobs:
 
       - name: Build universal profile
         run: |
-          nix build .#default --print-out-paths | tee "$RUNNER_TEMP/profile-path"
-          echo "PROFILE_PATH=$(cat "$RUNNER_TEMP/profile-path")" >> "$GITHUB_ENV"
+          nix build .#default --print-out-paths | tee /tmp/profile-path
+          echo "PROFILE_PATH=$(cat /tmp/profile-path)" >> "$GITHUB_ENV"
 
       - name: Build sub-profiles (rust, foundry)
         run: |
@@ -68,8 +81,8 @@ jobs:
       - name: Build sidecar harness profile
         run: |
           nix flake check ./sidecar/nix --print-build-logs
-          nix build ./sidecar/nix#harness-profile --print-out-paths | tee "$RUNNER_TEMP/harness-profile-path"
-          echo "HARNESS_PROFILE_PATH=$(cat "$RUNNER_TEMP/harness-profile-path")" >> "$GITHUB_ENV"
+          nix build ./sidecar/nix#harness-profile --print-out-paths | tee /tmp/harness-profile-path
+          echo "HARNESS_PROFILE_PATH=$(cat /tmp/harness-profile-path)" >> "$GITHUB_ENV"
 
       - name: Profile info
         run: |
@@ -78,6 +91,9 @@ jobs:
           find "${{ env.PROFILE_PATH }}/bin" -mindepth 1 -maxdepth 1 | wc -l | xargs -I{} echo "Binaries: {}"
           find "${{ env.HARNESS_PROFILE_PATH }}/bin" -mindepth 1 -maxdepth 1 | wc -l | xargs -I{} echo "Harness binaries: {}"
           nix path-info -r "${{ env.PROFILE_PATH }}" | wc -l | xargs -I{} echo "Store paths: {}"
+
+      - name: Optimize store (hard-link dedup)
+        run: nix-store --optimise
 
       - name: Push to Cachix
         if: github.event_name == 'push' && env.CACHIX_AUTH_TOKEN != ''
