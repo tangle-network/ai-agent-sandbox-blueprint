@@ -4935,3 +4935,6 @@ fn test_build_agent_payload_context_json_without_max_turns_override() {
     assert_eq!(backend.get("type").and_then(|v| v.as_str()), Some("gemini"));
     assert_eq!(backend.get("model").and_then(|v| v.as_str()), Some("gpt-4"));
 }
+
+#[path = "credentials_tests.rs"]
+mod credentials_tests;
