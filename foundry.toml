@@ -23,5 +23,6 @@ remappings_version = false
 [dependencies]
 tnt-core = "0.19.0"
 forge-std = "1.9.6"
+tangle-slashing = { version = "0.0.0-906b811", git = "https://github.com/tangle-network/tangle-slashing.git", rev = "906b811adfa1bbf53c5c7f7adf3f4bc2a4a119ec" }
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
