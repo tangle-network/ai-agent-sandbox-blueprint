@@ -70,8 +70,5 @@ async fn credentials_require_current_owner_and_are_never_cached() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
     assert_eq!(body["token"], "replacement-token");
-    assert_eq!(
-        body["sidecar_url"],
-        "http://localhost:10000"
-    );
+    assert_eq!(body["sidecar_url"], "http://localhost:10000");
 }
