@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import "forge-std/Test.sol";
 import "../../src/AgentSandboxBlueprint.sol";
 import "../helpers/Setup.sol";
+import "../../src/libraries/SandboxTypes.sol";
 
 /// @title SandboxHandler
 /// @dev Handler contract that the invariant fuzzer calls. Wraps blueprint
@@ -95,7 +96,7 @@ contract SandboxHandler is Test {
             callId,
             operator,
             keccak256(bytes("")), // inputsHash (empty for create)
-            abi.encode(sandboxId, "{}") // outputs: (string sandboxId, string json)
+            abi.encode(SandboxTypes.SandboxCreateOutput({sandboxId: sandboxId, json: "{}"}))
         );
 
         // Update shadow state
@@ -121,7 +122,8 @@ contract SandboxHandler is Test {
         // onJobCall caches the raw delete inputs (tnt-core 0.19); onJobResult
         // then receives only the inputsHash and consumes the cached entry.
         vm.prank(tangleCore);
-        blueprint.onJobCall(1, 1, callId, abi.encode(sandboxId)); // JOB_SANDBOX_DELETE = 1
+        bytes memory inputs = abi.encode(SandboxTypes.SandboxIdRequest({sandbox_id: sandboxId}));
+        blueprint.onJobCall(1, 1, callId, inputs); // JOB_SANDBOX_DELETE = 1
 
         // onJobResult for delete — inputsHash binds the cached sandboxId, outputs carry JSON
         vm.prank(tangleCore);
@@ -130,7 +132,7 @@ contract SandboxHandler is Test {
             1, // JOB_SANDBOX_DELETE
             callId,
             operator,
-            keccak256(abi.encode(sandboxId)), // inputsHash: keccak256((string sandboxId))
+            keccak256(inputs), // bind the same tuple-wrapped request
             abi.encode("{}") // outputs: (string json)
         );
 
@@ -187,7 +189,7 @@ contract InvariantCountersTest is Test {
 
     address public tangleCore = address(0x7A);
     address public blueprintOwner = address(0xBB);
-    uint64 public testBlueprintId = 42;
+    uint64 internal constant TEST_BLUEPRINT_ID = 42;
 
     // Three operators with generous capacity
     address public operator1 = address(0x1001);
@@ -198,7 +200,7 @@ contract InvariantCountersTest is Test {
         // Deploy mock delegation and blueprint in cloud mode
         mockDelegation = new MockMultiAssetDelegation();
         blueprint = new AgentSandboxBlueprint(address(mockDelegation), false, false, address(0));
-        blueprint.onBlueprintCreated(testBlueprintId, blueprintOwner, tangleCore);
+        blueprint.onBlueprintCreated(TEST_BLUEPRINT_ID, blueprintOwner, tangleCore);
 
         // Register all three operators with capacity 200 each
         address[] memory ops = new address[](3);
@@ -207,13 +209,22 @@ contract InvariantCountersTest is Test {
         ops[2] = operator3;
 
         for (uint256 i = 0; i < ops.length; i++) {
-            mockDelegation.addOperator(ops[i], testBlueprintId);
+            mockDelegation.addOperator(ops[i], TEST_BLUEPRINT_ID);
             vm.prank(tangleCore);
             blueprint.onRegister(ops[i], abi.encode(uint32(200)));
         }
 
         // Deploy handler and target it for fuzzing
         handler = new SandboxHandler(blueprint, mockDelegation, tangleCore, ops);
+
+        // Fail setup on ABI drift instead of allowing every fuzzed create to
+        // revert while zero-valued counters make all invariants look green.
+        handler.createSandbox(0);
+        assertEq(blueprint.totalActiveSandboxes(), 1, "setup create must succeed");
+        assertEq(handler.activeSandboxCount(), 1, "setup shadow create must succeed");
+        handler.deleteSandbox(0);
+        assertEq(blueprint.totalActiveSandboxes(), 0, "setup delete must succeed");
+        assertEq(handler.activeSandboxCount(), 0, "setup shadow delete must succeed");
 
         // Focus the fuzzer solely on the handler
         targetContract(address(handler));
