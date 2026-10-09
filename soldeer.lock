@@ -6,6 +6,12 @@ checksum = "55f341818321b3f925161a72fd0dcd62e4a0a4b66785a7a932bf2bfaf96fb9d1"
 integrity = "e9ecdc364d152157431e5df5aa041ffddbe9bb1c1ad81634b1e72df9e23814e8"
 
 [[dependencies]]
+name = "tangle-slashing"
+version = "0.0.0-906b811"
+git = "https://github.com/tangle-network/tangle-slashing.git"
+rev = "906b811adfa1bbf53c5c7f7adf3f4bc2a4a119ec"
+
+[[dependencies]]
 name = "tnt-core"
 version = "0.19.0"
 url = "https://soldeer-revisions.s3.amazonaws.com/tnt-core/0_19_0_09-07-2026_14:56:15_tnt-core-019.zip"

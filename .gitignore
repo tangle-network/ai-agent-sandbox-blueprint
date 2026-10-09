@@ -69,4 +69,3 @@ packages/*/dist/
 # AI
 .agent-memory
 agent-results
-dependencies/tangle-slashing/
