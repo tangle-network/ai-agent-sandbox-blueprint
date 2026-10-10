@@ -318,13 +318,16 @@ mod cases {
         include_digital_signature: bool,
     ) -> SyntheticNitroChain {
         use p384::pkcs8::DecodePrivateKey;
-        use rcgen::{CertificateParams, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P384_SHA384};
+        use rcgen::{
+            CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P384_SHA384,
+        };
 
         let root_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         let mut root_params = CertificateParams::new(vec!["nitro-test-root".into()]).unwrap();
         root_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         root_params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
         let root = root_params.self_signed(&root_key).unwrap();
+        let root_issuer = Issuer::from_params(&root_params, &root_key);
 
         let intermediate_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         let mut intermediate_params =
@@ -332,8 +335,10 @@ mod cases {
         intermediate_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         intermediate_params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
         let intermediate = intermediate_params
-            .signed_by(&intermediate_key, &root, &root_key)
+            .signed_by(&intermediate_key, &root_issuer)
             .unwrap();
+
+        let intermediate_issuer = Issuer::from_params(&intermediate_params, &intermediate_key);
 
         let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         let mut leaf_params = CertificateParams::new(vec!["nitro-test-leaf".into()]).unwrap();
@@ -341,7 +346,7 @@ mod cases {
             leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         }
         let leaf = leaf_params
-            .signed_by(&leaf_key, &intermediate, &intermediate_key)
+            .signed_by(&leaf_key, &intermediate_issuer)
             .unwrap();
         let signing_key =
             p384::ecdsa::SigningKey::from_pkcs8_der(leaf_key.serialized_der()).unwrap();
