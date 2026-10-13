@@ -1101,7 +1101,7 @@ async fn test_health_endpoint() {
 
 #[serial_test::serial]
 #[tokio::test]
-async fn test_capabilities_endpoint_includes_all_harness_runtime() {
+async fn test_capabilities_endpoint_matches_manifest_without_retired_forge() {
     let response = app()
         .oneshot(
             Request::builder()
@@ -1131,7 +1131,6 @@ async fn test_capabilities_endpoint_includes_all_harness_runtime() {
         "amp",
         "factory-droids",
         "pi",
-        "forge",
         "openclaw",
         "qwen",
         "copilot",
@@ -1141,6 +1140,10 @@ async fn test_capabilities_endpoint_includes_all_harness_runtime() {
             "missing harness {id}: {json}",
         );
     }
+    assert!(
+        harnesses.iter().all(|h| h["id"] != "forge"),
+        "retired ForgeCode harness is advertised: {json}",
+    );
 
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
         "../../../sidecar/server/harness-manifest.json"

@@ -16,7 +16,6 @@ HTTP contract plus the harness toolchain in one reviewable, version-pinned place
 - AMP
 - Factory Droids
 - Pi
-- ForgeCode
 - OpenClaw
 - Qwen Code
 - GitHub Copilot CLI
@@ -84,7 +83,7 @@ Build the same profile for a `/nix/profile` mount:
 nix build ./sidecar/nix#harness-profile
 ```
 
-The flake packages all 14 CLIs in the Nix store.
+The flake packages all 13 CLIs in the Nix store.
 Its lock file pins Nixpkgs, Hermes, Kimi, and every transitive package source.
 Byte-exact native CLIs run through the pinned Nix glibc without modifying their embedded bundles.
 
@@ -101,7 +100,6 @@ Auth/config remains provider-specific and lives in the normal CLI directories:
 - `/home/agent/.hermes` for Hermes state and credentials
 - `/home/agent/.config/amp`
 - `/home/agent/.factory`
-- `/home/agent/.forge`
 - `/home/agent/.openclaw`
 - `/home/agent/.pi`
 - `/home/agent/.qwen`

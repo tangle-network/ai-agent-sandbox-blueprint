@@ -182,24 +182,4 @@ in {
       platforms = [ "x86_64-linux" ];
     };
   };
-
-  forge = pkgs.stdenvNoCC.mkDerivation {
-    pname = "forgecode";
-    version = "2.13.21";
-    src = pkgs.fetchurl {
-      url = "https://github.com/tailcallhq/forgecode/releases/download/v2.13.21/forge-x86_64-unknown-linux-musl";
-      hash = "sha256-SubYbN0AHmSeG0NdmSQ9cknRaeMLJFKeNQ+d/seY8po=";
-    };
-    dontUnpack = true;
-    dontPatchELF = true;
-    dontStrip = true;
-    installPhase = ''
-      install -Dm755 "$src" "$out/bin/forgecode"
-    '';
-    meta = {
-      mainProgram = "forgecode";
-      license = lib.licenses.asl20;
-      platforms = [ "x86_64-linux" ];
-    };
-  };
 }
