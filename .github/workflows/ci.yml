@@ -63,7 +63,7 @@ jobs:
         run: forge --version
 
       - name: Install Solidity Dependencies
-        run: forge soldeer update -d
+        run: forge soldeer install
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -74,7 +74,7 @@ jobs:
           cache-on-failure: "true"
 
       - name: Forge build
-        run: forge update && forge build
+        run: forge build
 
       - uses: taiki-e/github-actions/free-device-space@main
 
@@ -110,7 +110,7 @@ jobs:
         run: forge --version
 
       - name: Install Solidity Dependencies
-        run: forge soldeer update -d
+        run: forge soldeer install
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -125,7 +125,7 @@ jobs:
           tool: nextest
 
       - name: Forge build
-        run: forge update && forge build
+        run: forge build
 
       - uses: taiki-e/github-actions/free-device-space@main
 
@@ -184,7 +184,7 @@ jobs:
         with:
           version: v1.5.1
       - name: Install Solidity Dependencies
-        run: forge soldeer update -d
+        run: forge soldeer install
       - name: Build
         run: forge build
       - name: Test
@@ -234,10 +234,10 @@ jobs:
           version: v1.5.1
 
       - name: Install Solidity Dependencies
-        run: forge soldeer update -d
+        run: forge soldeer install
 
       - name: Forge build
-        run: forge update && forge build
+        run: forge build
 
       - uses: dtolnay/rust-toolchain@nightly
 
@@ -421,10 +421,10 @@ jobs:
           version: v1.5.1
 
       - name: Install Solidity Dependencies
-        run: forge soldeer update -d
+        run: forge soldeer install
 
       - name: Forge build
-        run: forge update && forge build
+        run: forge build
 
       - uses: dtolnay/rust-toolchain@stable
 
