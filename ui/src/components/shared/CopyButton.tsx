@@ -1,5 +1,4 @@
-import { useState, useCallback } from 'react';
-import { cn } from '@tangle-network/blueprint-ui';
+import { CopyButton as SharedCopyButton } from '@tangle-network/ui/markdown';
 
 interface CopyButtonProps {
   value: string;
@@ -7,42 +6,11 @@ interface CopyButtonProps {
 }
 
 export function CopyButton({ value, className }: CopyButtonProps) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // fallback
-      const el = document.createElement('textarea');
-      el.value = value;
-      document.body.appendChild(el);
-      el.select();
-      document.execCommand('copy');
-      document.body.removeChild(el);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }
-  }, [value]);
-
   return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className={cn(
-        'shrink-0 p-0.5 rounded transition-colors',
-        copied
-          ? 'text-teal-400'
-          : 'text-cloud-elements-textTertiary hover:text-cloud-elements-textSecondary',
-        className,
-      )}
-      title={copied ? 'Copied!' : 'Copy to clipboard'}
-    >
-      <div className={cn('text-xs', copied ? 'i-ph:check-bold' : 'i-ph:copy')} />
-    </button>
+    <SharedCopyButton
+      text={value}
+      className={className}
+      onClick={(event) => event.stopPropagation()}
+    />
   );
 }

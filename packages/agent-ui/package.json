@@ -40,15 +40,17 @@
   "peerDependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "@nanostores/react": "^0.7.0",
-    "nanostores": "^0.10.0",
+    "@nanostores/react": ">=0.8.4 <1",
+    "nanostores": ">=0.11.3 <1",
     "@radix-ui/react-collapsible": "^1.1.0",
     "framer-motion": "^12.0.0",
     "@tanstack/react-query": "^5.0.0",
     "@xterm/xterm": "^6.0.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
-    "wagmi": "^3.0.0"
+    "wagmi": "^3.0.0",
+    "@tangle-network/ui": "^11.39.0",
+    "@tangle-network/brand": "^1.25.1"
   },
   "peerDependenciesMeta": {
     "@tanstack/react-query": {
@@ -85,14 +87,16 @@
     "@xterm/addon-web-links": "^0.12.0",
     "wagmi": "^3.3.2",
     "framer-motion": "^12.23.26",
-    "nanostores": "^0.10.3",
-    "@nanostores/react": "^0.7.2",
+    "nanostores": "0.11.3",
+    "@nanostores/react": "0.8.4",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "typescript": "^5.5.2",
     "unocss": "^66.5.10",
     "vite": "7.3.5",
     "vite-plugin-dts": "^4.5.0",
-    "@vitejs/plugin-react": "^4.5.2"
+    "@vitejs/plugin-react": "^4.5.2",
+    "@tangle-network/ui": "11.39.0",
+    "@tangle-network/brand": "1.25.1"
   }
 }

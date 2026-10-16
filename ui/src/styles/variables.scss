@@ -1,233 +1,64 @@
-/*
- * TANGLE CLOUD — CSS Variables
- * Infrastructure-grade dark-first design.
- */
-
-/* Dark Theme (Default) */
+/* Product vocabulary aliases; Brand owns theme values and semantic roles. */
 :root,
-:root[data-theme='dark'] {
-  /* Borders/dividers were 0.06 (≈invisible) — surfaces had no separation on
-     the near-black base ("dark on dark"). Lift to a readable contrast and widen
-     the depth ramp so cards/sections clearly sit above the page. */
-  --cloud-elements-borderColor: rgba(240, 240, 245, 0.14);
-  --cloud-elements-borderColorActive: theme('colors.violet.400');
-
-  --cloud-elements-bg-depth-1: #0A0A0F;
-  --cloud-elements-bg-depth-2: #16161F;
-  --cloud-elements-bg-depth-3: #20202C;
-  --cloud-elements-bg-depth-4: #2B2B3A;
-
-  --cloud-elements-textPrimary: #F0F0F5;
-  --cloud-elements-textSecondary: #8A8A9E;
-  --cloud-elements-textTertiary: #5A5A6E;
-
-  --cloud-elements-button-primary-background: rgba(142, 89, 255, 0.14);
-  --cloud-elements-button-primary-backgroundHover: rgba(142, 89, 255, 0.24);
-  --cloud-elements-button-primary-text: #A87BFF;
-
-  --cloud-elements-button-secondary-background: rgba(240, 240, 245, 0.06);
-  --cloud-elements-button-secondary-backgroundHover: rgba(240, 240, 245, 0.10);
-  --cloud-elements-button-secondary-text: #F0F0F5;
-
-  --cloud-elements-button-danger-background: rgba(255, 59, 92, 0.12);
-  --cloud-elements-button-danger-backgroundHover: rgba(255, 59, 92, 0.20);
-  --cloud-elements-button-danger-text: #FF3B5C;
-
-  --cloud-elements-icon-success: #38B2AC;
-  --cloud-elements-icon-error: #FF4D6A;
-  --cloud-elements-icon-warning: #FFB800;
-  --cloud-elements-icon-primary: #F0F0F5;
-  --cloud-elements-icon-secondary: #5A5A6E;
-
-  --cloud-elements-dividerColor: rgba(240, 240, 245, 0.10);
-  --cloud-elements-item-backgroundHover: rgba(240, 240, 245, 0.05);
-  --cloud-elements-item-backgroundActive: rgba(240, 240, 245, 0.09);
-  --cloud-elements-focus: #8E59FF;
-
-  /* Status colors */
-  --status-running: #38B2AC;
-  --status-creating: #8E59FF;
-  --status-stopped: #FFB800;
-  --status-warm: #FF8A4C;
-  --status-cold: #4AABFF;
-  --status-error: #FF3B5C;
-  --status-deleted: #5A5A6E;
-
-  /* shadcn/ui CSS Variables */
-  --background: 240 30% 4%;
-  --foreground: 240 10% 95%;
-  --card: 240 25% 7%;
-  --card-foreground: 240 10% 95%;
-  --popover: 240 25% 7%;
-  --popover-foreground: 240 10% 95%;
-  --primary: 263 100% 68%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 240 15% 14%;
-  --secondary-foreground: 240 10% 95%;
-  --muted: 240 15% 14%;
-  --muted-foreground: 240 10% 55%;
-  --accent: 240 15% 14%;
-  --accent-foreground: 240 10% 95%;
-  --destructive: 348 100% 61%;
-  --destructive-foreground: 0 0% 100%;
-  --border: 240 10% 16%;
-  --input: 240 10% 16%;
-  --ring: 263 100% 68%;
-  --radius: 0.625rem;
-
-  /* Glass morphism tokens — the actual card surface (.glass-card reads these).
-     Lift the surface clearly above the #0A0A0F page (was rgba(18,18,26,.60)
-     ≈ #0E0E14, indistinguishable from the page → "dark on dark"). Mirror the
-     light theme, where cards sit a full step above the base. */
-  --glass-bg: rgba(32, 32, 46, 0.72);
-  --glass-bg-strong: rgba(40, 40, 56, 0.86);
-  --glass-border: rgba(240, 240, 245, 0.12);
-  --glass-border-hover: rgba(240, 240, 245, 0.20);
-  --glass-blur: 16px;
-
-  /* Gradient mesh */
-  --mesh-teal: rgba(56, 178, 172, 0.04);
-  --mesh-violet: rgba(139, 92, 246, 0.04);
-  --mesh-blue: rgba(0, 180, 255, 0.03);
-
-  /* Sandbox console tokens */
-  --sandbox-console-bg: #070a12;
-  --sandbox-console-rail: #0a0f19;
-  --sandbox-console-surface: #101827;
-  --sandbox-console-panel: #151d2d;
-  --sandbox-console-panel-strong: #202b43;
-  --sandbox-console-hover: rgba(221, 226, 255, 0.09);
-  --sandbox-console-control: #202b43;
-  --sandbox-console-control-hover: #111827;
-  --sandbox-console-control-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.065), inset 0 -1px 0 rgba(0, 0, 0, 0.24);
-  --sandbox-console-control-shadow-hover: inset 0 2px 16px rgba(0, 0, 0, 0.34), inset 3px 0 0 rgba(168, 123, 255, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.045);
-  --sandbox-console-control-shadow-focus: 0 0 0 3px rgba(168, 123, 255, 0.16), inset 0 2px 16px rgba(0, 0, 0, 0.26), inset 3px 0 0 rgba(168, 123, 255, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --sandbox-console-menu: #273550;
-  --sandbox-console-menu-strong: #172236;
-  --sandbox-console-menu-border: rgba(168, 123, 255, 0.56);
-  --sandbox-console-menu-shadow: 0 28px 90px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(168, 123, 255, 0.14);
-  --sandbox-console-border: rgba(221, 226, 255, 0.16);
-  --sandbox-console-border-hover: rgba(168, 123, 255, 0.48);
-  --sandbox-console-text: #f3f5ff;
-  --sandbox-console-secondary: #c8ccdc;
-  --sandbox-console-muted: #8d94aa;
-  --sandbox-console-subtle: #626a80;
-  --sandbox-console-brand: #a87bff;
-  --sandbox-console-brand-soft: rgba(142, 89, 255, 0.18);
-  --sandbox-console-brand-border: rgba(168, 123, 255, 0.42);
-  --sandbox-console-success: #38b2ac;
-  --sandbox-console-success-soft: rgba(56, 178, 172, 0.12);
-  --sandbox-console-success-border: rgba(56, 178, 172, 0.28);
-  --sandbox-console-warning: #f2c066;
-  --sandbox-console-danger: #ff5d6c;
-  --sandbox-console-shadow-lg: 0 22px 80px rgba(0, 0, 0, 0.34);
-}
-
-/* Light Theme */
-:root[data-theme='light'] {
-  --cloud-elements-borderColor: rgba(10, 10, 15, 0.10);
-  --cloud-elements-borderColorActive: #7C3AED;
-
-  --cloud-elements-bg-depth-1: #F8F8FC;
-  --cloud-elements-bg-depth-2: #EEEFF5;
-  --cloud-elements-bg-depth-3: #E2E3EB;
-  --cloud-elements-bg-depth-4: #D4D5DF;
-
-  --cloud-elements-textPrimary: #0E0E16;
-  --cloud-elements-textSecondary: #44445A;
-  --cloud-elements-textTertiary: #6B6B82;
-
-  --cloud-elements-button-primary-background: rgba(124, 58, 237, 0.10);
-  --cloud-elements-button-primary-backgroundHover: rgba(124, 58, 237, 0.18);
-  --cloud-elements-button-primary-text: #6D28D9;
-
-  --cloud-elements-button-secondary-background: rgba(10, 10, 15, 0.06);
-  --cloud-elements-button-secondary-backgroundHover: rgba(10, 10, 15, 0.10);
-  --cloud-elements-button-secondary-text: #0E0E16;
-
-  --cloud-elements-button-danger-background: rgba(200, 30, 52, 0.08);
-  --cloud-elements-button-danger-backgroundHover: rgba(200, 30, 52, 0.14);
-  --cloud-elements-button-danger-text: #A01628;
-
-  --cloud-elements-icon-success: #2C7A7B;
-  --cloud-elements-icon-error: #C81E34;
-  --cloud-elements-icon-warning: #B88000;
-  --cloud-elements-icon-primary: #0E0E16;
-  --cloud-elements-icon-secondary: #6B6B82;
-
-  --cloud-elements-dividerColor: rgba(10, 10, 15, 0.08);
-  --cloud-elements-item-backgroundHover: rgba(10, 10, 15, 0.04);
-  --cloud-elements-item-backgroundActive: rgba(10, 10, 15, 0.07);
-  --cloud-elements-focus: #7C3AED;
-
-  --status-running: #2C7A7B;
-  --status-creating: #7C3AED;
-  --status-stopped: #B88000;
-  --status-warm: #C06628;
-  --status-cold: #006B99;
-  --status-error: #C81E34;
-  --status-deleted: #6B6B82;
-
-  --background: 240 20% 97%;
-  --foreground: 240 30% 5%;
-  --card: 0 0% 100%;
-  --card-foreground: 240 30% 5%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 240 30% 5%;
-  --primary: 263 84% 52%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 240 10% 92%;
-  --secondary-foreground: 240 30% 5%;
-  --muted: 240 10% 92%;
-  --muted-foreground: 240 10% 35%;
-  --accent: 240 10% 92%;
-  --accent-foreground: 240 30% 5%;
-  --destructive: 348 85% 42%;
-  --destructive-foreground: 0 0% 100%;
-  --border: 240 10% 88%;
-  --input: 240 10% 88%;
-  --ring: 263 100% 68%;
-
-  --glass-bg: rgba(255, 255, 255, 0.75);
-  --glass-bg-strong: rgba(255, 255, 255, 0.90);
-  --glass-border: rgba(10, 10, 15, 0.08);
-  --glass-border-hover: rgba(10, 10, 15, 0.15);
-  --glass-blur: 16px;
-
-  --mesh-teal: rgba(44, 122, 123, 0.03);
-  --mesh-violet: rgba(100, 60, 200, 0.03);
-  --mesh-blue: rgba(0, 100, 180, 0.02);
-
-  --sandbox-console-bg: #f3f6fc;
-  --sandbox-console-rail: #fbfcff;
-  --sandbox-console-surface: #e9eef8;
-  --sandbox-console-panel: #fbfcff;
-  --sandbox-console-panel-strong: #dfe6f5;
-  --sandbox-console-hover: rgba(82, 54, 142, 0.07);
-  --sandbox-console-control: #dfe6f5;
-  --sandbox-console-control-hover: #d1d9eb;
-  --sandbox-console-control-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), inset 0 -1px 0 rgba(20, 24, 38, 0.11);
-  --sandbox-console-control-shadow-hover: inset 0 2px 14px rgba(20, 24, 38, 0.13), inset 3px 0 0 rgba(124, 58, 237, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  --sandbox-console-control-shadow-focus: 0 0 0 3px rgba(124, 58, 237, 0.14), inset 0 2px 14px rgba(20, 24, 38, 0.12), inset 3px 0 0 rgba(124, 58, 237, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.78);
-  --sandbox-console-menu: #ffffff;
-  --sandbox-console-menu-strong: #edf2ff;
-  --sandbox-console-menu-border: rgba(124, 58, 237, 0.42);
-  --sandbox-console-menu-shadow: 0 28px 80px rgba(35, 42, 68, 0.24), 0 0 0 1px rgba(124, 58, 237, 0.14);
-  --sandbox-console-border: rgba(20, 24, 38, 0.15);
-  --sandbox-console-border-hover: rgba(124, 58, 237, 0.44);
-  --sandbox-console-text: #101421;
-  --sandbox-console-secondary: #34394c;
-  --sandbox-console-muted: #626a80;
-  --sandbox-console-subtle: #858da3;
-  --sandbox-console-brand: #6d28d9;
-  --sandbox-console-brand-soft: rgba(124, 58, 237, 0.10);
-  --sandbox-console-brand-border: rgba(124, 58, 237, 0.28);
-  --sandbox-console-success: #2c7a7b;
-  --sandbox-console-success-soft: rgba(44, 122, 123, 0.10);
-  --sandbox-console-success-border: rgba(44, 122, 123, 0.24);
-  --sandbox-console-warning: #9a6700;
-  --sandbox-console-danger: #c81e34;
-  --sandbox-console-shadow-lg: 0 22px 70px rgba(20, 24, 38, 0.16);
+[data-theme='dark'],
+[data-theme='light'] {
+  --cloud-elements-borderColor: var(--border-default);
+  --cloud-elements-borderColorActive: var(--border-accent);
+  --cloud-elements-textPrimary: var(--text-primary);
+  --cloud-elements-textSecondary: var(--text-secondary);
+  --cloud-elements-textTertiary: var(--text-muted);
+  --cloud-elements-button-primary-background: var(--surface-violet-bg);
+  --cloud-elements-button-primary-backgroundHover: var(--accent-surface-strong);
+  --cloud-elements-button-primary-text: var(--surface-violet-text);
+  --cloud-elements-button-secondary-background: var(--bg-card);
+  --cloud-elements-button-secondary-backgroundHover: var(--bg-hover);
+  --cloud-elements-button-secondary-text: var(--text-primary);
+  --cloud-elements-button-danger-background: var(--surface-danger-bg);
+  --cloud-elements-button-danger-backgroundHover: var(--surface-danger-border);
+  --cloud-elements-button-danger-text: var(--surface-danger-text);
+  --cloud-elements-icon-success: var(--surface-success-text);
+  --cloud-elements-icon-error: var(--surface-danger-text);
+  --cloud-elements-icon-warning: var(--surface-warning-text);
+  --cloud-elements-icon-primary: var(--text-primary);
+  --cloud-elements-icon-secondary: var(--text-muted);
+  --cloud-elements-dividerColor: var(--border-subtle);
+  --cloud-elements-item-backgroundHover: var(--bg-hover);
+  --cloud-elements-item-backgroundActive: var(--bg-selection);
+  --cloud-elements-focus: var(--border-accent);
+  --cloud-elements-bg-depth-1: var(--depth-1);
+  --cloud-elements-bg-depth-2: var(--depth-2);
+  --cloud-elements-bg-depth-3: var(--depth-3);
+  --cloud-elements-bg-depth-4: var(--depth-4);
+  --sandbox-console-bg: var(--bg-root);
+  --sandbox-console-rail: var(--depth-1);
+  --sandbox-console-surface: var(--depth-2);
+  --sandbox-console-panel: var(--depth-2);
+  --sandbox-console-panel-strong: var(--depth-3);
+  --sandbox-console-hover: var(--bg-hover);
+  --sandbox-console-control: var(--bg-elevated);
+  --sandbox-console-control-hover: var(--bg-hover);
+  --sandbox-console-control-shadow: var(--shadow-card);
+  --sandbox-console-control-shadow-hover: var(--shadow-well);
+  --sandbox-console-control-shadow-focus: var(--shadow-accent);
+  --sandbox-console-menu: var(--depth-3);
+  --sandbox-console-menu-strong: var(--depth-4);
+  --sandbox-console-menu-border: var(--border-accent);
+  --sandbox-console-menu-shadow: var(--shadow-dropdown);
+  --sandbox-console-border: var(--border-default);
+  --sandbox-console-border-hover: var(--border-hover);
+  --sandbox-console-text: var(--text-primary);
+  --sandbox-console-secondary: var(--text-secondary);
+  --sandbox-console-muted: var(--text-muted);
+  --sandbox-console-subtle: var(--text-dim);
+  --sandbox-console-brand: var(--surface-violet-text);
+  --sandbox-console-brand-soft: var(--surface-violet-bg);
+  --sandbox-console-brand-border: var(--surface-violet-border);
+  --sandbox-console-success: var(--surface-success-text);
+  --sandbox-console-success-soft: var(--surface-success-bg);
+  --sandbox-console-success-border: var(--surface-success-border);
+  --sandbox-console-warning: var(--surface-warning-text);
+  --sandbox-console-danger: var(--surface-danger-text);
+  --sandbox-console-shadow-lg: var(--shadow-overlay);
 }
 
 :root {
@@ -240,7 +71,7 @@
   }
 }
 
-/* Focus Indicators */
+/* Existing product focus geometry consumes the shared focus color. */
 *:focus-visible {
   outline: 2px solid var(--cloud-elements-focus);
   outline-offset: 2px;
@@ -248,12 +79,12 @@
 }
 
 button:focus-visible,
-[role="button"]:focus-visible,
+[role='button']:focus-visible,
 a:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid var(--cloud-elements-focus);
   outline-offset: 2px;
-  box-shadow: 0 0 0 4px rgba(142, 89, 255, 0.15);
+  box-shadow: 0 0 0 4px var(--focus-halo);
 }
 
 input:focus-visible,

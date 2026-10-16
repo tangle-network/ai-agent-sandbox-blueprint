@@ -21,9 +21,11 @@ export default defineConfig({
         terminal: resolve(__dirname, 'src/terminal.ts'),
       },
       formats: ['es'],
+      cssFileName: 'style',
     },
     rollupOptions: {
       external: [
+        '@tangle-network/ui/markdown',
         'react',
         'react-dom',
         'react/jsx-runtime',

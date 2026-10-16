@@ -3,6 +3,10 @@
 // its own module to run before wallet libraries evaluate.
 import './polyfills';
 
+import '@tangle-network/brand/styles/tokens.css';
+import '@tangle-network/brand/styles/named-themes.css';
+import '@tangle-network/brand/styles/presentation.css';
+import '@tangle-network/ui/styles/presentation.css';
 import 'virtual:uno.css';
 import './styles/global.scss';
 import '~/lib/blueprints'; // side-effect: register all blueprints

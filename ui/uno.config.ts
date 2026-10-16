@@ -7,6 +7,8 @@ import { presetAnimations } from 'unocss-preset-animations';
 import { presetWind4 } from 'unocss/preset-wind4';
 
 const cjsRequire = createRequire(import.meta.url);
+const sharedUiSrcGlob = path.resolve(path.dirname(cjsRequire.resolve('@tangle-network/ui/styles/presentation.css')), '../..', 'src/**/*.{ts,tsx}').replaceAll(path.sep, '/');
+
 const blueprintUiSrcGlob = `${path
   .dirname(cjsRequire.resolve('@tangle-network/blueprint-ui/preset'))
   .replaceAll(path.sep, '/')}/**/*.{jsx,tsx}`;
@@ -165,6 +167,7 @@ const SHADCN_COLORS = {
 
 export default defineConfig({
   content: {
+    filesystem: [sharedUiSrcGlob],
     pipeline: {
       // Keep extraction focused on renderable component files. Scanning tests and
       // plain TS sources can produce bogus utilities from regular code tokens.
