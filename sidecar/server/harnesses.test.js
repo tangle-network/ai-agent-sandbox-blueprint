@@ -89,9 +89,9 @@ test('Z.AI credentials select the OpenCode harness', () => {
   ], { ZAI_API_KEY: 'test-key' }), 'opencode')
 })
 
-test('manifest has one entry for each supported CLI', () => {
+test('manifest identifiers are unique and exclude the retired Forge CLI', () => {
   const identifiers = manifest.map((agent) => agent.identifier)
-  assert.equal(manifest.length, 14)
+  assert.ok(!identifiers.includes('forge'))
   assert.equal(new Set(identifiers).size, identifiers.length)
 })
 

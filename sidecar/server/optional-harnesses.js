@@ -56,15 +56,6 @@ function optionalHarnessCommand(harness, payload) {
         env,
         timeout,
       }
-    case 'forge':
-      if (provider) env.FORGE_SESSION__PROVIDER_ID = provider
-      if (model) env.FORGE_SESSION__MODEL_ID = model
-      return {
-        command: 'forgecode',
-        args: ['-C', workspaceFor(payload), '-p', message],
-        env,
-        timeout,
-      }
     case 'openclaw':
       // OpenClaw rejects an unscoped local turn. Select a configured agent and
       // isolate the request with a stable session id so retries are replayable.

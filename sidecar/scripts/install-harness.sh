@@ -32,14 +32,12 @@ amp_version='0.0.1786651704-g574433'
 amp_binary_sha256='4fb84e75ab79d947b32071b6eef57015fbd8e2ea3705f140a19974b728bed0a3'
 factory_droids_version='0.195.0'
 factory_droids_binary_sha256='6dfe34f7bc430784c4832b4768454c8add4bec97b4d42a66f3c9cef9bfb058e3'
-forge_version='2.13.21'
-forge_binary_sha256='4ae6d86cdd001e649e1b435d99243d7249d169e30b24529e350f9dfec798f29a'
 opencode_version='1.18.18'
 opencode_archive_sha256='0cddc222418b8553669905a8980c0cda7088f00da24d83d6ac76b01c9fdb2aaf'
 uv_version='0.12.4'
 uv_archive_sha256='c8c60f47e6f88d18dbf6f33d7279fb1fbf7ae76631768152cf5578c3d65729b4'
 if [ -z "$harness" ]; then
-  echo "usage: sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|hermes|amp|factory-droids|pi|forge|openclaw|qwen|copilot|all>" >&2
+  echo "usage: sidecar/scripts/install-harness.sh <claude|codex|opencode|kimi|gemini|prime|hermes|amp|factory-droids|pi|openclaw|qwen|copilot|all>" >&2
   exit 2
 fi
 
@@ -314,18 +312,6 @@ install_pi() {
   install_npm_package '@earendil-works/pi-coding-agent' "$pi_version" "$pi_integrity"
 }
 
-install_forge() {
-  ensure_curl forge
-  forge_dir="$(mktemp -d)"
-  forge_binary="$forge_dir/forgecode"
-  download_verified \
-    "https://github.com/tailcallhq/forgecode/releases/download/v$forge_version/forge-x86_64-unknown-linux-musl" \
-    "$forge_binary_sha256" "$forge_binary"
-  chmod 0755 "$forge_binary"
-  copy_user_binary "$forge_binary" forgecode
-  rm -rf "$forge_dir"
-}
-
 install_openclaw() {
   ensure_npm openclaw
   install_npm_package openclaw "$openclaw_version" "$openclaw_integrity"
@@ -353,7 +339,6 @@ install_one() {
     amp) install_amp ;;
     factory-droids) install_factory_droids ;;
     pi) install_pi ;;
-    forge) install_forge ;;
     openclaw) install_openclaw ;;
     qwen) install_qwen ;;
     copilot) install_copilot ;;
@@ -362,7 +347,7 @@ install_one() {
 }
 
 if [ "$harness" = "all" ]; then
-  for name in claude codex opencode kimi gemini prime hermes amp factory-droids pi forge openclaw qwen copilot; do
+  for name in claude codex opencode kimi gemini prime hermes amp factory-droids pi openclaw qwen copilot; do
     echo "==> installing $name"
     install_one "$name"
   done

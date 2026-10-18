@@ -70,13 +70,6 @@
     "command": "pi"
   },
   {
-    "identifier": "forge",
-    "capabilityId": "forge",
-    "displayName": "ForgeCode",
-    "description": "Runs ForgeCode in one-shot prompt mode.",
-    "command": "forgecode"
-  },
-  {
     "identifier": "openclaw",
     "capabilityId": "openclaw",
     "displayName": "OpenClaw",
