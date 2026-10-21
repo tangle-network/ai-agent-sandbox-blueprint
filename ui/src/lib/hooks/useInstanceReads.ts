@@ -5,7 +5,7 @@ import {
   publicClient,
   selectedChainIdStore,
 } from '@tangle-network/blueprint-ui';
-import { agentInstanceBlueprintAbi } from '~/lib/contracts/abi';
+import { agentSandboxBlueprintAbi } from '~/lib/contracts/abi';
 import { isContractDeployed, type SandboxAddresses } from '~/lib/contracts/chains';
 import type { Abi, Address, ContractFunctionName } from 'viem';
 
@@ -14,7 +14,7 @@ type BlueprintType = 'instance' | 'tee-instance';
 // Function-name union derived from the ABI. Compile-time check that
 // `functionName` passed in is actually a view/pure function on this
 // contract — replaces the previous `functionName as any` cast.
-type InstanceReadFn = ContractFunctionName<typeof agentInstanceBlueprintAbi, 'view' | 'pure'>;
+type InstanceReadFn = ContractFunctionName<typeof agentSandboxBlueprintAbi, 'view' | 'pure'>;
 
 function useInstanceReadDeps(blueprintType: BlueprintType) {
   const chainId = useStore(selectedChainIdStore);
@@ -55,7 +55,7 @@ function useInstanceContractRead<TData>({
         // the ABI to `Abi`. `args` is runtime-typed; the caller's `TData`
         // generic carries the actual return shape.
         address,
-        abi: agentInstanceBlueprintAbi as Abi,
+        abi: agentSandboxBlueprintAbi as Abi,
         functionName,
         args,
       }) as Promise<TData>,

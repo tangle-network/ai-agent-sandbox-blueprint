@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWatchContractEvent } from 'wagmi';
-import { agentInstanceBlueprintAbi } from '~/lib/contracts/abi';
+import { agentSandboxBlueprintAbi } from '~/lib/contracts/abi';
 import { getAddresses } from '@tangle-network/blueprint-ui';
 import type { SandboxAddresses } from '~/lib/contracts/chains';
 
@@ -56,7 +56,7 @@ export function useInstanceProvisionWatcher(
 
   useWatchContractEvent({
     address,
-    abi: agentInstanceBlueprintAbi,
+    abi: agentSandboxBlueprintAbi,
     eventName: 'OperatorProvisioned',
     enabled: enabled && serviceId != null && !resultRef.current,
     onLogs,
