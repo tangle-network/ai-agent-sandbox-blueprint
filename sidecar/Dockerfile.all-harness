@@ -48,7 +48,7 @@ RUN apt-get update \
   && if ! id sidecar >/dev/null 2>&1; then useradd --uid 1001 --gid sidecar --create-home --shell /bin/bash sidecar; fi \
   && mkdir -p /home/agent/.config/amp /home/agent/.cache /home/agent/.claude \
     /home/agent/.codex /home/agent/.config/kimi /home/agent/.config/opencode \
-    /home/agent/.copilot /home/agent/.factory /home/agent/.forge \
+    /home/agent/.copilot /home/agent/.factory \
     /home/agent/.gemini /home/agent/.kimi /home/agent/.opencode \
     /home/agent/.hermes /home/agent/.prime/agent \
     /home/agent/.openclaw /home/agent/.pi /home/agent/.qwen \
@@ -85,7 +85,6 @@ VOLUME /home/agent/.config/amp
 VOLUME /home/agent/.prime
 VOLUME /home/agent/.hermes
 VOLUME /home/agent/.factory
-VOLUME /home/agent/.forge
 VOLUME /home/agent/.openclaw
 VOLUME /home/agent/.pi
 VOLUME /home/agent/.qwen

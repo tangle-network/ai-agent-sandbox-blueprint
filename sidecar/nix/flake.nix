@@ -35,7 +35,6 @@
         binaries.amp
         binaries.factory
         npm.pi
-        binaries.forge
         npm.openclaw
         binaries.qwen
         binaries.copilot
@@ -69,7 +68,6 @@
         amp = binaries.amp;
         factory-droids = binaries.factory;
         pi = npm.pi;
-        forge = binaries.forge;
         openclaw = npm.openclaw;
         qwen = binaries.qwen;
         copilot = binaries.copilot;
@@ -101,7 +99,6 @@
         check_version amp '0.0.1786651704-g574433'
         check_version droid '0.195.0'
         check_version pi '0.84.1'
-        check_version forgecode 'forge 2.13.21'
         check_version openclaw 'OpenClaw 2026.7.1-2'
         check_version qwen '0.21.11'
         check_version copilot 'GitHub Copilot CLI 1.0.79'
@@ -111,7 +108,7 @@
       devShells.${system}.default = pkgs.mkShell {
         packages = [ profile ];
         shellHook = ''
-          echo "blueprint sidecar profile: 14 agent CLIs"
+          echo "blueprint sidecar profile: 13 agent CLIs"
         '';
       };
     };

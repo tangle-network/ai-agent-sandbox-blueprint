@@ -260,7 +260,7 @@ pub(crate) fn runtime_capabilities_response() -> RuntimeCapabilitiesResponse {
             RuntimeCapabilityDescriptor {
                 id: "all_harness",
                 label: "All Harness Runtime",
-                description: "Enable 14 supported agent CLIs in one sandbox image.",
+                description: "Enable 13 supported agent CLIs in one sandbox image.",
             },
         ],
         harnesses: vec![
@@ -274,7 +274,6 @@ pub(crate) fn runtime_capabilities_response() -> RuntimeCapabilitiesResponse {
             harness_capability("amp", "AMP", false, false, false),
             harness_capability("factory-droids", "Factory Droids", false, false, false),
             harness_capability("pi", "Pi", false, false, false),
-            harness_capability("forge", "ForgeCode", false, false, false),
             harness_capability("openclaw", "OpenClaw", false, false, false),
             harness_capability("qwen", "Qwen Code", false, false, false),
             harness_capability("copilot", "GitHub Copilot CLI", false, false, false),

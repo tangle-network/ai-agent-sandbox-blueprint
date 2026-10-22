@@ -43,7 +43,6 @@ test('install, verification, and documentation name every optional harness', () 
     amp: 'amp',
     'factory-droids': 'droid',
     pi: 'pi',
-    forge: 'forgecode',
     openclaw: 'openclaw',
     qwen: 'qwen',
     copilot: 'copilot',
@@ -109,18 +108,6 @@ test('Pi uses documented print JSON mode without creating a session', () => {
   ])
 })
 
-test('Forge uses documented prompt mode and isolated directory', () => {
-  const spec = optionalHarnessCommand('forge', payload)
-  assert.deepEqual(spec.args, [
-    '-C',
-    '/home/agent/workspace',
-    '-p',
-    'inspect the repository',
-  ])
-  assert.equal(spec.env.FORGE_SESSION__PROVIDER_ID, 'openai')
-  assert.equal(spec.env.FORGE_SESSION__MODEL_ID, 'test-model')
-})
-
 test('OpenClaw uses local JSON agent mode', () => {
   const spec = optionalHarnessCommand('openclaw', payload)
   assert.deepEqual(spec.args, [
@@ -168,7 +155,7 @@ test('Copilot uses documented silent non-interactive mode', () => {
 
 test('message text remains an argv value, never shell source', () => {
   const message = '$(touch /tmp/pwned); `id`; && exit 9'
-  const spec = optionalHarnessCommand('forge', { message })
+  const spec = optionalHarnessCommand('qwen', { message })
   assert.equal(spec.args.at(-1), message)
   assert.notEqual(spec.command, '/bin/sh')
 })
