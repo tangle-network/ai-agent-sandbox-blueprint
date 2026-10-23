@@ -48,14 +48,17 @@ jobs:
         run: |
           nix_bin=/nix/var/nix/profiles/default/bin
           test -x "$nix_bin/nix"
-          # cachix-action installs its CLI into this runner user's Nix profile.
-          printf '%s\n' "$nix_bin" "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+          # The runner prepends GITHUB_PATH entries in reverse order: keep verified Nix first.
+          printf '%s\n' "$HOME/.nix-profile/bin" "$nix_bin" >> "$GITHUB_PATH"
           "$nix_bin/nix" --version
 
       - uses: cachix/cachix-action@v15
+        if: env.CACHIX_AUTH_TOKEN != ''
+        env:
+          CACHIX_AUTH_TOKEN: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
         with:
           name: tangle-sandbox
-          authToken: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
 
       - name: Build universal profile
         run: |
