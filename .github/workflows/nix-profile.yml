@@ -33,8 +33,8 @@ jobs:
   build:
     runs-on:
       # The credential group admits this file only at refs/heads/main.
-      group: ${{ github.event_name == 'pull_request' && 'public-beelink' || 'public-app-production' }}
-      labels: ${{ github.event_name == 'pull_request' && 'ci-public' || 'ci-deploy' }}
+      group: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && 'public-app-production' || 'public-beelink' }}
+      labels: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && 'ci-deploy' || 'ci-public' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
       - uses: cachix/cachix-action@v15
         with:
           name: tangle-sandbox
-          authToken: ${{ github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
+          authToken: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
 
       - name: Build universal profile
         run: |
@@ -86,4 +86,4 @@ jobs:
             | sort -u \
             | cachix push tangle-sandbox
         env:
-          CACHIX_AUTH_TOKEN: ${{ github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
+          CACHIX_AUTH_TOKEN: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
