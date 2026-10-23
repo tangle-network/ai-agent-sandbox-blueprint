@@ -91,10 +91,9 @@
         };
         devShells.sidecar-harness = import ./sidecar/nix/harness-profile.nix { inherit pkgs; };
 
-        # ── Cacheable toolchain profiles (Cachix targets) ──────────────────
-        # `packages.universal` is the kitchen-sink closure CI pushes to
-        # Cachix. Sub-profiles let downstream jobs pull a narrower
-        # closure for faster cold starts on single-language paths.
+        # ── Cacheable toolchain profiles ──────────────────────────────────
+        # `packages.universal` contains every category. Sub-profiles let
+        # consumers select a narrower closure for single-language paths.
         packages.default       = mkProfile "universal" allPkgs;
         packages.universal     = mkProfile "universal" allPkgs;
         packages.rust          = mkProfile "rust" (systemDeps ++ coreCLIs ++ rustDeps);

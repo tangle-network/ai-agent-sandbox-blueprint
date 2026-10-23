@@ -1,11 +1,8 @@
 name: Build Nix Profile
 
-# Builds the cacheable toolchain profile defined in flake.nix and pushes
-# its closure to the shared `tangle-sandbox` Cachix cache. Downstream CI
-# jobs (ci.yml, foundry.yml, …) pull the same closure via cachix-action
-# so cold runs don't re-download/compile the Rust toolchain, Foundry,
-# clang, openssl, mold, etc. on every push.
-#
+# Verifies the cacheable toolchain profiles in flake.nix and sidecar/nix.
+# The provisioned Nix daemon reuses its content-addressed store and configured
+# read-only substituters. This qualification job publishes no cache artifacts.
 
 on:
   push:
@@ -34,10 +31,7 @@ permissions:
 
 jobs:
   build:
-    runs-on:
-      # The credential group admits this file only at refs/heads/main.
-      group: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && 'public-app-production' || 'public-beelink' }}
-      labels: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && 'ci-deploy' || 'ci-public' }}
+    runs-on: [self-hosted, ci-public]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -48,22 +42,13 @@ jobs:
         run: |
           nix_bin=/nix/var/nix/profiles/default/bin
           test -x "$nix_bin/nix"
-          # The runner prepends GITHUB_PATH entries in reverse order: keep verified Nix first.
-          printf '%s\n' "$HOME/.nix-profile/bin" "$nix_bin" >> "$GITHUB_PATH"
+          printf '%s\n' "$nix_bin" >> "$GITHUB_PATH"
           "$nix_bin/nix" --version
-
-      - uses: cachix/cachix-action@v15
-        if: env.CACHIX_AUTH_TOKEN != ''
-        env:
-          CACHIX_AUTH_TOKEN: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
-        with:
-          name: tangle-sandbox
-          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
 
       - name: Build universal profile
         run: |
-          nix build .#default --print-out-paths | tee /tmp/profile-path
-          echo "PROFILE_PATH=$(cat /tmp/profile-path)" >> "$GITHUB_ENV"
+          nix build .#default --print-out-paths | tee "$RUNNER_TEMP/profile-path"
+          echo "PROFILE_PATH=$(cat "$RUNNER_TEMP/profile-path")" >> "$GITHUB_ENV"
 
       - name: Build sub-profiles (rust, foundry)
         run: |
@@ -76,8 +61,8 @@ jobs:
       - name: Build sidecar harness profile
         run: |
           nix flake check ./sidecar/nix --print-build-logs
-          nix build ./sidecar/nix#harness-profile --print-out-paths | tee /tmp/harness-profile-path
-          echo "HARNESS_PROFILE_PATH=$(cat /tmp/harness-profile-path)" >> "$GITHUB_ENV"
+          nix build ./sidecar/nix#harness-profile --print-out-paths | tee "$RUNNER_TEMP/harness-profile-path"
+          echo "HARNESS_PROFILE_PATH=$(cat "$RUNNER_TEMP/harness-profile-path")" >> "$GITHUB_ENV"
 
       - name: Profile info
         run: |
@@ -89,14 +74,3 @@ jobs:
 
       - name: Optimize store (hard-link dedup)
         run: nix-store --optimise
-
-      - name: Push to Cachix
-        if: github.event_name == 'push' && env.CACHIX_AUTH_TOKEN != ''
-        run: |
-          nix path-info --recursive \
-            "${{ env.PROFILE_PATH }}" \
-            "${{ env.HARNESS_PROFILE_PATH }}" \
-            | sort -u \
-            | cachix push tangle-sandbox
-        env:
-          CACHIX_AUTH_TOKEN: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
