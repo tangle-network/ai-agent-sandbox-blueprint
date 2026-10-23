@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/release-binaries.yml@main
+    uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/release-binaries.yml@0cb5f3cf0ff40f697a57de6863607e7ec1b40c43
     permissions:
       contents: write
     with:
@@ -20,7 +20,7 @@ jobs:
 
   publish-onchain:
     needs: release
-    uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/publish-onchain.yml@main
+    uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/publish-onchain.yml@0cb5f3cf0ff40f697a57de6863607e7ec1b40c43
     permissions:
       contents: read
     with:
