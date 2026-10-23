@@ -29,6 +29,9 @@ concurrency:
   group: nix-profile-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on:
@@ -38,6 +41,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Verify the provisioned Nix toolchain
         run: nix --version
