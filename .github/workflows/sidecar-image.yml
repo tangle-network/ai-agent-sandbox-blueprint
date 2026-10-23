@@ -53,7 +53,7 @@ jobs:
 
   publish:
     if: github.event_name != 'pull_request' && github.repository == 'tangle-network/ai-agent-sandbox-blueprint'
-    uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/publish-sidecar.yml@main
+    uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/publish-sidecar.yml@0cb5f3cf0ff40f697a57de6863607e7ec1b40c43
     permissions:
       contents: read
       packages: write

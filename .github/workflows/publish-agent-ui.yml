@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   prepare:
-    uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/qualify-agent-ui.yml@main
+    uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/qualify-agent-ui.yml@0cb5f3cf0ff40f697a57de6863607e7ec1b40c43
     permissions:
       contents: read
     with:
