@@ -13,16 +13,15 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: npm-publish-${{ github.repository }}-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  publish:
+  prepare:
     if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     env:
       NODE_AUTH_TOKEN: ''
     steps:
@@ -51,13 +50,15 @@ jobs:
 
       - name: Validate publish target
         id: validate
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
         run: |
           PKG_NAME="@tangle-network/agent-ui"
           PKG_VERSION="$(node -p "require('./packages/agent-ui/package.json').version")"
           EXPECTED_VERSION=""
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            EXPECTED_VERSION="${{ github.event.inputs.version }}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            EXPECTED_VERSION="$REQUESTED_VERSION"
           elif [ "${GITHUB_REF_TYPE}" = "tag" ] && [[ "${GITHUB_REF_NAME}" == agent-ui-v* ]]; then
             EXPECTED_VERSION="${GITHUB_REF_NAME#agent-ui-v}"
           else
@@ -70,13 +71,50 @@ jobs:
             exit 1
           fi
 
-          if npm view "${PKG_NAME}@${PKG_VERSION}" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
-            echo "${PKG_NAME}@${PKG_VERSION} is already published."
-            exit 1
-          fi
+          PKG_NAME="$PKG_NAME" PKG_VERSION="$PKG_VERSION" node --input-type=module <<'NODE'
+          const { PKG_NAME: name, PKG_VERSION: version } = process.env;
+          const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`, { signal: AbortSignal.timeout(15000) });
+          if (response.status !== 404) {
+            if (response.ok) throw new Error(`${name}@${version} is already published`);
+            throw new Error(`Registry lookup failed: HTTP ${response.status}`);
+          }
+          NODE
 
           echo "version=${PKG_VERSION}" >> "${GITHUB_OUTPUT}"
 
-      - name: Publish package
-        working-directory: packages/agent-ui
-        run: npm publish --access public --provenance
+      - name: Pack the qualified package
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          npm pack ./packages/agent-ui --ignore-scripts --pack-destination "$RUNNER_TEMP/release"
+          mv "$RUNNER_TEMP/release/"*.tgz "$RUNNER_TEMP/release/package.tgz"
+          (cd "$RUNNER_TEMP/release" && sha256sum package.tgz > SHA256SUMS)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: agent-ui-release
+          path: ${{ runner.temp }}/release
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: prepare
+    # npm trusted publishing requires a GitHub-hosted runner.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          # Node 24 includes npm with trusted publishing support.
+          node-version: '24'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: agent-ui-release
+          path: ${{ runner.temp }}/release
+      - name: Publish qualified package
+        env:
+          NODE_AUTH_TOKEN: ''
+        run: |
+          cd "$RUNNER_TEMP/release"
+          sha256sum --check SHA256SUMS
+          npm publish package.tgz --access public --provenance --ignore-scripts
