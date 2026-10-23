@@ -11,6 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
   fmt:
     name: Rustfmt
@@ -217,11 +220,22 @@ jobs:
 
   e2e:
     name: E2E tests
-    runs-on: [self-hosted, ci-public]
+    # Credentials are supplied only to the isolated trusted-main full fan.
+    runs-on:
+      group: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && 'public-app-production' || 'public-beelink' }}
+      labels: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && 'ci-deploy' || 'ci-public' }}
     timeout-minutes: 60
     needs: [test]
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify trusted main source
+        if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
 
       - name: Install protoc
         run: protoc --version
@@ -270,14 +284,15 @@ jobs:
           echo "available=true" >> "$GITHUB_OUTPUT"
 
       - name: Run E2E tests (sandbox)
-        if: steps.sidecar.outputs.available == 'true'
+        # Real-provider checks run after merge; PRs retain the instance/lifecycle fan.
+        if: steps.sidecar.outputs.available == 'true' && github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
         env:
           SIDECAR_E2E: "1"
           SIDECAR_PUBLIC_HOST: "127.0.0.1"
           REQUEST_TIMEOUT_SECS: "60"
           # The runtime's canonical provider variable is ZAI_API_KEY. The
           # organization secret retains the upstream provider name.
-          ZAI_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          ZAI_API_KEY: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && secrets.ZHIPU_API_KEY || '' }}
         run: |
           test -n "$ZAI_API_KEY"
           cargo nextest run --test-threads=1 -p ai-agent-sandbox-blueprint-lib --test e2e_operator_api --test anvil
@@ -404,10 +419,21 @@ jobs:
 
   coverage:
     name: Code coverage
-    runs-on: [self-hosted, ci-public]
+    # Credentials are supplied only to the isolated trusted-main full fan.
+    runs-on:
+      group: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && 'public-app-production' || 'public-beelink' }}
+      labels: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && 'ci-deploy' || 'ci-public' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify trusted main source
+        if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
 
       - name: Install protoc
         run: protoc --version
@@ -446,4 +472,4 @@ jobs:
         with:
           file: cobertura.xml
         env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          CODECOV_TOKEN: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && secrets.CODECOV_TOKEN || '' }}
