@@ -1,0 +1,126 @@
+name: Publish blueprint binaries onchain
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+    secrets:
+      TNT_CORE_PUBLISH_TOKEN:
+        required: true
+permissions:
+  contents: read
+jobs:
+  publish-onchain:
+    if: >-
+      github.repository == 'tangle-network/ai-agent-sandbox-blueprint' &&
+      github.event_name != 'pull_request' &&
+      (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on:
+      group: public-app-production
+      labels: [self-hosted, ci-deploy]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - name: Require a merged release tag
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1
+      - name: Validate release registry
+        run: |
+          set -euo pipefail
+          RPC_URL=https://sepolia.base.org
+          curl --fail --silent --show-error --retry 3 \
+            --output /tmp/tnt-core-blueprints.tsv \
+            https://raw.githubusercontent.com/tangle-network/tnt-core/main/deployments/base-sepolia/blueprints.tsv
+          node scripts/blueprint-release-config.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --registration-file /tmp/tnt-core-blueprints.tsv \
+            --deployment-manifest deploy/manifests/base-sepolia/tnt-core.latest.json \
+            --format details > /tmp/blueprint-release-details
+          TANGLE_CORE="$(node scripts/blueprint-release-config.mjs \
+            --deployment-manifest deploy/manifests/base-sepolia/tnt-core.latest.json \
+            --format tangle-core)"
+          CHAIN_ID="$(node scripts/blueprint-release-config.mjs \
+            --deployment-manifest deploy/manifests/base-sepolia/tnt-core.latest.json \
+            --format chain-id)"
+          scripts/verify-blueprint-release-registry.sh \
+            "$RPC_URL" "$TANGLE_CORE" "$CHAIN_ID" /tmp/blueprint-release-details
+      - name: Trigger tnt-core binary publish (all blueprints, serialized)
+        env:
+          GH_TOKEN: ${{ secrets.TNT_CORE_PUBLISH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9A-Za-z._-]+$ ]] || {
+            echo "::error::invalid release tag: $RELEASE_TAG"
+            exit 1
+          }
+          TAG="$RELEASE_TAG"
+          REPO=tangle-network/tnt-core
+          WORKFLOW=publish-blueprint-binary.yml
+
+          FAILED=0
+          while IFS=: read -r BIN ID _; do
+            [ -n "$BIN" ] || continue
+            SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            KNOWN_RUN_IDS="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" \
+              --limit 50 --json databaseId --jq '.[].databaseId')"
+            echo "::group::publish $BIN -> blueprint $ID"
+            gh workflow run "$WORKFLOW" \
+              --repo "$REPO" \
+              --ref main \
+              -f blueprint_repo=tangle-network/ai-agent-sandbox-blueprint \
+              -f tag="$TAG" \
+              -f blueprint_id="$ID" \
+              -f binary_name="$BIN" \
+              -f network=base-sepolia \
+              -f target=x86_64-unknown-linux-gnu \
+              -f manifest=false \
+              -f set_active=true \
+              -f update_sources_version="$TAG"
+
+            # Resolve exactly one run that appeared after dispatch, then block
+            # until it finishes so the next dispatch never races the owner key's
+            # nonce. Fail closed if concurrent runs make the result ambiguous.
+            RUN_ID=""
+            for _ in $(seq 1 24); do
+              sleep 5
+              mapfile -t CANDIDATE_RUN_IDS < <(
+                gh run list --repo "$REPO" --workflow "$WORKFLOW" \
+                  --created ">$SINCE" --limit 50 --json databaseId \
+                  --jq '.[].databaseId'
+              )
+              FRESH_RUN_IDS=()
+              for CANDIDATE_RUN_ID in "${CANDIDATE_RUN_IDS[@]}"; do
+                if ! grep -Fqx "$CANDIDATE_RUN_ID" <<< "$KNOWN_RUN_IDS"; then
+                  FRESH_RUN_IDS+=("$CANDIDATE_RUN_ID")
+                fi
+              done
+              if [ "${#FRESH_RUN_IDS[@]}" -eq 1 ]; then
+                RUN_ID="${FRESH_RUN_IDS[0]}"
+                break
+              fi
+              if [ "${#FRESH_RUN_IDS[@]}" -gt 1 ]; then
+                echo "::error::multiple new tnt-core runs found for $BIN; refusing to watch an ambiguous run"
+                exit 1
+              fi
+            done
+            test -n "$RUN_ID" || { echo "::error::dispatched run for $BIN not found"; exit 1; }
+
+            if timeout 1800 gh run watch "$RUN_ID" --repo "$REPO" --exit-status; then
+              echo "published $BIN@$TAG -> blueprint $ID (run $RUN_ID)"
+            else
+              echo "::error::on-chain publish failed for $BIN (run $RUN_ID)"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          done < /tmp/blueprint-release-details
+          exit "$FAILED"

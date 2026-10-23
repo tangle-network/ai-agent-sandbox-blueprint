@@ -14,7 +14,7 @@ concurrency:
 jobs:
   fmt:
     name: Rustfmt
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -34,7 +34,7 @@ jobs:
         run: node --test scripts/blueprint-release-config.test.mjs
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: protoc --version
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -46,13 +46,13 @@ jobs:
   lint:
     timeout-minutes: 120
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     steps:
       - name: checkout code
         uses: actions/checkout@v7
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: protoc --version
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -76,7 +76,6 @@ jobs:
       - name: Forge build
         run: forge build
 
-      - uses: taiki-e/github-actions/free-device-space@main
 
       - name: Run Clippy
         run: cargo clippy --tests --examples -- -D warnings
@@ -93,13 +92,13 @@ jobs:
   test:
     timeout-minutes: 90
     name: Unit tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     steps:
       - name: checkout code
         uses: actions/checkout@v7
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: protoc --version
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -127,7 +126,6 @@ jobs:
       - name: Forge build
         run: forge build
 
-      - uses: taiki-e/github-actions/free-device-space@main
 
       - name: tests
         run: cargo nextest run
@@ -146,7 +144,7 @@ jobs:
 
   ui:
     name: UI build & typecheck
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     steps:
       - uses: actions/checkout@v7
 
@@ -177,7 +175,7 @@ jobs:
 
   contracts:
     name: Solidity tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     steps:
       - uses: actions/checkout@v7
       - uses: foundry-rs/foundry-toolchain@v1
@@ -192,7 +190,7 @@ jobs:
 
   security:
     name: Security audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -219,14 +217,14 @@ jobs:
 
   e2e:
     name: E2E tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     timeout-minutes: 60
     needs: [test]
     steps:
       - uses: actions/checkout@v7
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: protoc --version
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -252,7 +250,6 @@ jobs:
       - name: Fetch TNT core artifacts
         run: scripts/fetch-localtestnet-fixtures.sh
 
-      - uses: taiki-e/github-actions/free-device-space@main
 
       - name: Pull sidecar image
         id: sidecar
@@ -310,7 +307,7 @@ jobs:
         with:
           name: lifecycle-bench-${{ github.sha }}
           path: ai-agent-sandbox-blueprint-lib/bench-results/lifecycle-real.json
-          retention-days: 90
+          retention-days: 1
           if-no-files-found: error
 
   # NOTE: the previous `firecracker-real-e2e` job exercised the host-agent
@@ -324,7 +321,7 @@ jobs:
 
   bench:
     name: Benchmarks (regression gate)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     timeout-minutes: 30
     # Run on PRs to detect regressions, and on main to refresh the baseline.
     steps:
@@ -333,7 +330,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: protoc --version
 
       - uses: dtolnay/rust-toolchain@nightly
 
@@ -342,7 +339,6 @@ jobs:
           cache-on-failure: "true"
           shared-key: bench
 
-      - uses: taiki-e/github-actions/free-device-space@main
 
       - name: Build bench harness
         run: cargo build -p bench-harness --release
@@ -388,7 +384,7 @@ jobs:
         with:
           name: bench-results-${{ github.sha }}
           path: bench-results/
-          retention-days: 90
+          retention-days: 1
 
       - name: Upload as new baseline (main branch only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -396,6 +392,7 @@ jobs:
         with:
           name: bench-baseline
           path: bench-results/latest.json
+          # PR comparisons consume the last successful main run, including after idle periods.
           retention-days: 90
 
       - name: Add comparison to PR summary
@@ -407,13 +404,13 @@ jobs:
 
   coverage:
     name: Code coverage
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: protoc --version
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -434,7 +431,6 @@ jobs:
 
       - uses: taiki-e/install-action@cargo-tarpaulin
 
-      - uses: taiki-e/github-actions/free-device-space@main
 
       - name: Run coverage
         run: >
