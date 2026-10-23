@@ -20,80 +20,11 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint'
-    runs-on: [self-hosted, ci-public]
-    env:
-      NODE_AUTH_TOKEN: ''
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck package
-        run: pnpm -C packages/agent-ui typecheck
-
-      - name: Build package
-        run: pnpm -C packages/agent-ui build
-
-      - name: Validate publish target
-        id: validate
-        env:
-          REQUESTED_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          PKG_NAME="@tangle-network/agent-ui"
-          PKG_VERSION="$(node -p "require('./packages/agent-ui/package.json').version")"
-          EXPECTED_VERSION=""
-
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            EXPECTED_VERSION="$REQUESTED_VERSION"
-          elif [ "${GITHUB_REF_TYPE}" = "tag" ] && [[ "${GITHUB_REF_NAME}" == agent-ui-v* ]]; then
-            EXPECTED_VERSION="${GITHUB_REF_NAME#agent-ui-v}"
-          else
-            echo "Unsupported trigger or tag format."
-            exit 1
-          fi
-
-          if [ "${EXPECTED_VERSION}" != "${PKG_VERSION}" ]; then
-            echo "Version mismatch: expected ${EXPECTED_VERSION}, package.json has ${PKG_VERSION}"
-            exit 1
-          fi
-
-          PKG_NAME="$PKG_NAME" PKG_VERSION="$PKG_VERSION" node --input-type=module <<'NODE'
-          const { PKG_NAME: name, PKG_VERSION: version } = process.env;
-          const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`, { signal: AbortSignal.timeout(15000) });
-          if (response.status !== 404) {
-            if (response.ok) throw new Error(`${name}@${version} is already published`);
-            throw new Error(`Registry lookup failed: HTTP ${response.status}`);
-          }
-          NODE
-
-          echo "version=${PKG_VERSION}" >> "${GITHUB_OUTPUT}"
-
-      - name: Pack the qualified package
-        run: |
-          mkdir -p "$RUNNER_TEMP/release"
-          npm pack ./packages/agent-ui --ignore-scripts --pack-destination "$RUNNER_TEMP/release"
-          mv "$RUNNER_TEMP/release/"*.tgz "$RUNNER_TEMP/release/package.tgz"
-          (cd "$RUNNER_TEMP/release" && sha256sum package.tgz > SHA256SUMS)
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: agent-ui-release
-          path: ${{ runner.temp }}/release
-          retention-days: 1
-          if-no-files-found: error
+    uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/qualify-agent-ui.yml@main
+    permissions:
+      contents: read
+    with:
+      version: ${{ inputs.version }}
 
   publish:
     needs: prepare
