@@ -419,15 +419,16 @@ jobs:
 
   coverage:
     name: Code coverage
-    # Credentials are supplied only to the isolated trusted-main full fan.
-    runs-on:
-      group: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && 'public-app-production' || 'public-beelink' }}
-      labels: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && 'ci-deploy' || 'ci-public' }}
+    # Keep long coverage compute on CI capacity; only its short upload is trusted.
+    runs-on: [self-hosted, ci-public]
     timeout-minutes: 90
+    outputs:
+      report-artifact-id: ${{ steps.coverage-report.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify trusted main source
         if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
@@ -466,10 +467,42 @@ jobs:
           --exclude ai-agent-instance-blueprint-bin
           --exclude ai-agent-tee-instance-blueprint-bin
 
+      - name: Retain the coverage report
+        if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+        id: coverage-report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: cobertura.xml
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage-upload:
+    name: Upload coverage report
+    needs: coverage
+    if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    runs-on:
+      group: public-app-production
+      labels: [self-hosted, ci-deploy]
+    timeout-minutes: 5
+    steps:
+      - name: Download this run's coverage report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.coverage.outputs.report-artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/coverage-report
       - name: Upload coverage
         uses: codecov/codecov-action@v7
         if: env.CODECOV_TOKEN != ''
         with:
-          file: cobertura.xml
+          files: ${{ runner.temp }}/coverage-report/cobertura.xml
+          working-directory: ${{ runner.temp }}/coverage-report
+          disable_search: true
+          disable_file_fixes: true
+          disable_safe_directory: true
+          override_commit: ${{ github.sha }}
+          override_branch: ${{ github.ref_name }}
+          slug: ${{ github.repository }}
         env:
           CODECOV_TOKEN: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && secrets.CODECOV_TOKEN || '' }}
