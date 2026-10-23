@@ -419,15 +419,14 @@ jobs:
 
   coverage:
     name: Code coverage
-    # Credentials are supplied only to the isolated trusted-main full fan.
-    runs-on:
-      group: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && 'public-app-production' || 'public-beelink' }}
-      labels: ${{ github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && 'ci-deploy' || 'ci-public' }}
+    # Coverage compute uses CI capacity; the report token stays main-only below.
+    runs-on: [self-hosted, ci-public]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify trusted main source
         if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
