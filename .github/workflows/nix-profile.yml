@@ -45,7 +45,11 @@ jobs:
           persist-credentials: false
 
       - name: Verify the provisioned Nix toolchain
-        run: nix --version
+        run: |
+          nix_bin=/nix/var/nix/profiles/default/bin
+          test -x "$nix_bin/nix"
+          printf '%s\n' "$nix_bin" >> "$GITHUB_PATH"
+          "$nix_bin/nix" --version
 
       - uses: cachix/cachix-action@v15
         with:
