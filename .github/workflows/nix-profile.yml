@@ -48,7 +48,8 @@ jobs:
         run: |
           nix_bin=/nix/var/nix/profiles/default/bin
           test -x "$nix_bin/nix"
-          printf '%s\n' "$nix_bin" >> "$GITHUB_PATH"
+          # cachix-action installs its CLI into this runner user's Nix profile.
+          printf '%s\n' "$nix_bin" "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
           "$nix_bin/nix" --version
 
       - uses: cachix/cachix-action@v15
