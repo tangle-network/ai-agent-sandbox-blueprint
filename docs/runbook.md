@@ -388,3 +388,11 @@ makes stored sandbox secrets unreadable.
 - **Contract surface**: `docs/CONTRACTS.md`
 - **Benchmarks**: `docs/BENCHMARKS.md`
 - **Local ops memory**: `CLAUDE.md` (regression gate + invariants)
+
+## Sandbox credential delivery
+
+New secure create results contain `credentialsDelivery: "operator-api-v1"` and
+no bearer token. Obtain credentials from the owner-authenticated operator API;
+refresh after recreation/resume. Follow [the coordinated migration and rollback
+runbook](CREDENTIALS-OFF-CHAIN.md) before releasing this change. Older credentials
+already present in chain history are still exposed until separately rotated.

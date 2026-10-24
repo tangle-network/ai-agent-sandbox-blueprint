@@ -80,6 +80,7 @@ mod auth;
 mod chat;
 mod chat_handlers;
 mod chat_stream;
+mod credentials;
 mod errors;
 mod health;
 mod lifecycle;
@@ -101,6 +102,7 @@ pub(crate) use auth::*;
 pub(crate) use chat::*;
 pub(crate) use chat_handlers::*;
 pub(crate) use chat_stream::*;
+pub(crate) use credentials::*;
 pub(crate) use errors::*;
 pub(crate) use health::*;
 pub(crate) use lifecycle::*;
@@ -157,6 +159,10 @@ pub fn operator_api_router_with_tee_and_routes(
     // Read endpoints: 120 req/min per IP
     let read_routes = Router::new()
         .route("/api/sandboxes", get(list_sandboxes))
+        .route(
+            "/api/sandboxes/{sandbox_id}/credentials",
+            get(sandbox_credentials_handler),
+        )
         .route(
             "/api/sandboxes/{sandbox_id}/ports",
             get(sandbox_ports_handler),

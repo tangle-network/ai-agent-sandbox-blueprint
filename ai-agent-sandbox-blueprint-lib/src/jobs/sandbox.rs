@@ -118,14 +118,12 @@ pub async fn sandbox_create(
             String::new()
         };
 
-    let response = json!({
-        "sandboxId": record.id,
-        "sidecarUrl": record.sidecar_url,
-        "token": record.token,
-        "sshPort": record.ssh_port,
-        "teeAttestationJson": tee_attestation_json,
-        "teePublicKeyJson": tee_public_key_json,
-    });
+    // This JSON is submitted on-chain. Credentials are delivered only through
+    // the owner-authenticated operator API, never through a public result.
+    let mut response =
+        super::public_result::sandbox_created(&record.id, &record.sidecar_url, record.ssh_port);
+    response["teeAttestationJson"] = json!(tee_attestation_json);
+    response["teePublicKeyJson"] = json!(tee_public_key_json);
 
     Ok(TangleResult(SandboxCreateOutput {
         sandboxId: record.id.clone(),

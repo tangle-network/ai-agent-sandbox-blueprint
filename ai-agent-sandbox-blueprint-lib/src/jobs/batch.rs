@@ -42,12 +42,11 @@ pub async fn batch_create(
     let mut sandboxes_out = Vec::with_capacity(request.count as usize);
     for _ in 0..request.count {
         let (record, _) = create_sidecar(&params, tee).await?;
-        sandboxes_out.push(json!({
-            "sandboxId": record.id,
-            "sidecarUrl": record.sidecar_url,
-            "token": record.token,
-            "sshPort": record.ssh_port,
-        }));
+        sandboxes_out.push(super::public_result::sandbox_created(
+            &record.id,
+            &record.sidecar_url,
+            record.ssh_port,
+        ));
     }
 
     let response = json!({

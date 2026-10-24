@@ -1,5 +1,6 @@
 pub mod batch;
 pub mod exec;
+mod public_result;
 pub mod sandbox;
 pub mod ssh;
 pub mod workflow;

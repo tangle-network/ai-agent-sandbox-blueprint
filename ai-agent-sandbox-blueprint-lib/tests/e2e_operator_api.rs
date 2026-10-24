@@ -220,6 +220,11 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             .context("failed to ABI-decode SandboxCreateOutput from on-chain result")?;
         let create_json: Value = serde_json::from_str(&create_receipt.json)
             .context("create result JSON is malformed")?;
+        assert!(
+            create_json.get("token").is_none(),
+            "bearer must not be on-chain"
+        );
+        assert_eq!(create_json["credentialsDelivery"], "operator-api-v1");
         let sandbox_id = create_receipt.sandboxId.clone();
         let initial_sidecar_url = create_json["sidecarUrl"]
             .as_str()
@@ -253,6 +258,27 @@ async fn sandbox_full_lifecycle() -> Result<()> {
         );
         let auth = format!("Bearer {token}");
         eprintln!("  Authenticated as {authed_address}");
+
+        let credentials = api_get(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/credentials"),
+            &auth,
+        )
+        .await?;
+        assert_eq!(credentials["sandbox_id"], sandbox_id);
+        assert_eq!(credentials["sidecar_url"], initial_sidecar_url);
+        let sidecar_token = credentials["token"]
+            .as_str()
+            .context("missing credential")?;
+        assert!(!sidecar_token.is_empty());
+        assert!(!create_receipt.json.contains(sidecar_token));
+        let direct = http()
+            .post(format!("{initial_sidecar_url}/terminals/commands"))
+            .bearer_auth(sidecar_token)
+            .json(&json!({"command": "true"}))
+            .send()
+            .await?;
+        assert!(direct.status().is_success(), "retrieved credential must work");
 
         // ─── Step 6: Health endpoint (unauthenticated) ───────────────────
         e2e_step!(6, "Testing health endpoint...");
@@ -711,6 +737,13 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             );
         }
         wait_for_sidecar(&resumed_url).await?;
+        let resumed_credentials = api_get(
+            &api_url,
+            &format!("/api/sandboxes/{sandbox_id}/credentials"),
+            &auth,
+        )
+        .await?;
+        assert_eq!(resumed_credentials["sidecar_url"], resumed_url);
 
         let body = api_post(
             &api_url,
@@ -833,6 +866,12 @@ async fn sandbox_full_lifecycle() -> Result<()> {
             "non-owner auth should return their own address"
         );
         let non_owner_auth = format!("Bearer {non_owner_token}");
+        let denied = http()
+            .get(format!("{api_url}/api/sandboxes/{sandbox_id}/credentials"))
+            .header("authorization", &non_owner_auth)
+            .send()
+            .await?;
+        assert_eq!(denied.status(), 403, "other owner cannot retrieve credentials");
 
         // Non-owner should see empty sandbox list (filtered by owner)
         let body = api_get(&api_url, "/api/sandboxes", &non_owner_auth).await?;

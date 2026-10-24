@@ -1,103 +1,111 @@
-# Credentials Delivery Off-Chain — Design
+# Off-chain sandbox credentials (issue #175)
 
-Status: proposed
-Author: audit follow-up to the agent-dev-container Tangle integration review
-Tracking: companion issue `#credentials-off-chain`
+Status: coordinated migration draft; **not safe to deploy until consumer gates below pass**.
 
-## Problem
+## Contract
 
-`sandbox_create` returns the sidecar bearer token (and the sidecar URL) inside
-`SandboxCreateOutput.json`. That result is submitted on-chain via
-`submitJobResult`, so **the token and URL are permanently public** in the
-`JobResultSubmitted` event for anyone scanning the chain. The token is a raw
-bearer credential to the sandbox's HTTP API. Network isolation of sidecars is
-currently the only mitigation, and it is undocumented.
+`GET /api/sandboxes/{sandbox_id}/credentials` uses the existing EIP-191/PASETO
+`SessionAuth` extractor and `require_sandbox_owner` through `resolve_sandbox`.
+It returns `{ "sandbox_id": "...", "sidecar_url": "...", "token": "..." }`.
+Missing/invalid sessions receive 401; a different owner or ownerless record
+receives 403; a missing record receives 404. The router adds `Cache-Control:
+no-store` to success and failure responses. Only use a trusted operator's HTTPS
+origin in production; do not derive a credential destination from untrusted
+job-result JSON. Do not log response bodies, send credentials on redirects,
+or persist them in public caches.
 
-The same applies, structurally, to anything else future jobs return in results.
+The endpoint reads the current record each time. Fetch again after resume,
+secret injection/recreation, or reconnect instead of relying on an old URL/token.
+An endpoint response does not itself guarantee a stopped sandbox is running.
 
-## Constraints
+Single-create and batch-create result JSON use a shared public-field allowlist:
+`sandboxId`, `sidecarUrl`, `sshPort`, and `credentialsDelivery: "operator-api-v1"`.
+Single create additionally preserves public TEE attestation/key fields. There is
+no bearer field, no insecure legacy switch, and no new authentication mechanism.
+URLs remain public metadata (also present in existing progress and provision
+surfaces); they are not credentials.
 
-- `TangleResult<T>` uses `SolValue::abi_encode`; the operator submits whatever
-  the job returns. Changing what `sandbox_create` returns changes the wire
-  format consumed by the orchestrator driver, the TS SDK, and the Python SDK —
-  all three pin the current encoding byte-exactly in fixture tests
-  (agent-dev-container #8752), by design.
-- Four implementations must move in one coordinated change; the drift guard
-  makes silent partial adoption impossible, which is good.
-- Existing in-flight sandboxes created under the old format must stay usable
-  through a transition window.
+The Solidity request shape and tuple-wrapped `(string sandboxId, string json)`
+result shape are unchanged. JSON consumers still require a migration: ABI
+compatibility is not behavioral compatibility. The public marker is descriptive,
+not permission to trust a URL. The shared fixture is
+`ai-agent-sandbox-blueprint-lib/tests/fixtures/create-result-operator-api-v1.json`.
+It pins the secure JSON shape and byte-exact outer ABI for Rust, viem, and
+Python eth-abi consumer tests.
 
-## Non-goal
+## Source audit and consumer blockers
 
-Encrypting results to the caller (ECIES to the job caller's Ethereum key via
-ECDH). It works, but it changes the result format for every consumer, requires
-key-management decisions (which caller key? browser wallets?), and still leaves
-ciphertext on-chain for replay analysis. The operator API already has the
-right primitive: **proof of being the caller**.
+Audit baseline: blueprint `762ef4f`; ADC default branch source read 2026-10-09
+(GitHub search snapshot `dc426c205ab6492da264d0d6e40edb1b80c62bd4`).
 
-## Design
+- `sandbox_create` is the registered create job. `batch_create` is currently
+  unregistered but also returned a token; both now use the same projection.
+- Sandbox stop/resume/delete return identifiers and booleans, no credentials.
+  Operational jobs are not registered in the current router. Any future job
+  registration must review arbitrary stdout/task output for secret disclosure.
+- Instance/TEE instance `ProvisionOutput` and `reportProvisioned` carry public
+  ID/URL/port/attestation fields, not the record token. Runtime-to-provider
+  records and authenticated sidecar calls still require the private token.
+- ADC `apps/orchestrator/src/driver/tangle/index.ts` create validates a token
+  from the public result. `client.ts::hydrateFromChain` silently skips results
+  without tokens; advancing the hydration cursor would permanently lose these
+  entries. Both paths must retrieve credentials off-chain and retain pending
+  sandbox/call/operator IDs on transient API failures. Do not resubmit a paid
+  create when credential retrieval fails.
+- ADC TS SDK `products/sandbox/sdk/src/tangle/client.ts` rejects create results
+  with recognized URL but no token; its normalizer also misses `sidecarUrl`,
+  allowing an unusable running entry instead. Fix URL normalization and reuse
+  `getOperatorSession`/`withOperatorSession` for
+  credentials before publishing a runnable entry; validate returned sandbox ID,
+  URL and nonempty token. Reconnect/get must do the same.
+- ADC Python SDK `products/sandbox/sdk-python/src/tangle_sandbox/tangle/client.py`
+  also reads credentials from results. Its current decoder additionally assumes
+  flat positional fields even though the ABI is tuple-wrapped, and its URL
+  normalizer misses `sidecarUrl`. Repair those together using this fixture and
+  reuse `_get_operator_session`; do not add another auth stack.
+- The orchestrator has no matching session helper in its Tangle directory in
+  the inspected source. Reuse the SDK's exported `OperatorSession` with the
+  transaction caller's signing account, scoped to the verified responding
+  operator's configured API origin. Check multi-operator placement explicitly.
+- This repository's UI uses authenticated operator proxy/list APIs, does not
+  extract a sidecar token from create JSON, and keeps public sidecar URLs.
 
-The operator API already authenticates "I am the on-chain creator of sandbox X"
-via EIP-191 challenge sessions (`session_auth`), and `require_sandbox_owner`
-binds every sandbox-scoped route to that address. Use it.
+## Safe rollout and rollback
 
-### 1. New operator endpoint (additive, no wire change)
+1. Ship the **additive endpoint commit alone** first. This does not remediate
+   public legacy tokens; do not close #175 or call this a complete security fix.
+2. Migrate orchestrator create, chain hydration, TS SDK create/reconnect, and
+   Python SDK with the fixture. Authenticate/preflight the configured operator
+   API before a paid create. If unavailable, fail before submission. After a
+   committed create, retain sandbox/call/operator IDs and retry only retrieval.
+3. Verify 401 refresh-once, 403 no fallback, missing endpoint, wrong returned ID,
+   multi-operator routing, token-free result, successful sidecar use, restart
+   hydration, and post-resume/recreation retrieval. Missing operator API must
+   yield explicit configuration refusal, never fall back to public credentials.
+4. Release the redaction commit only after all supported consumers pass. Legacy
+   clients must upgrade or be explicitly refused before paid creation. Binary
+   release is tag/manual in `.github/workflows/release.yml`; merging these Rust
+   and docs paths does not trigger the UI/image path-filtered deploy workflows.
+   External operators that build from main are not covered by those workflows.
+5. Verify a newly submitted public result contains no bearer on the deployed
+   candidate, and the authenticated owner can use the retrieved credential.
+   This requires separately authorized integration/deployment access.
 
-```
-GET /api/sandboxes/{sandbox_id}/credentials
-Authorization: Bearer <EIP-191 session signed by the job caller>
-```
+Do not roll back to a credential-publishing binary. If migration fails, stop
+new provisioning and repair/revert consumers while retaining the secure result
+contract. Tokens already recorded on-chain cannot be erased. Existing tokens
+need a separately authorized rotation/reprovisioning and network-isolation
+plan; this source change neither rotates credentials nor changes live operators.
 
-Returns `{ sandbox_id, sidecar_url, token }` after
-`require_sandbox_owner(sandbox_id, session.address)`.
+## Verification gates
 
-This endpoint can ship independently and immediately: no struct change, no
-migration. Clients that want off-chain credentials today can call it after
-create and ignore the (still-public) on-chain token.
+- `cargo test -p sandbox-runtime credentials_require_current_owner_and_are_never_cached`
+- `cargo test -p ai-agent-sandbox-blueprint-lib public_create_contract_matches_shared_fixture`
+- `cargo fmt -- --check` and maintained workspace clippy/unit suites
+- `SIDECAR_E2E=1 cargo test -p ai-agent-sandbox-blueprint-lib --test e2e_operator_api -- --test-threads=1`
+- ADC byte-exact fixture tests in driver, TS SDK and Python SDK, plus real driver
+  create/restart/reconnect/resume and negative ownership integration
 
-### 2. Opt-in on-chain redaction (wire change, coordinated)
-
-Add a field to `SandboxCreateRequest`:
-
-```solidity
-/// 0 = legacy (token in result, default), 1 = redacted (result omits
-/// sidecar_url/token; caller fetches via /credentials)
-uint8 credentials_delivery;
-```
-
-- `0` (default): current behavior — full backward compatibility, existing
-  clients unaffected.
-- `1`: `sandbox_create` returns `json` **without** `token`/`sidecarUrl`
-  (sandboxId and everything else unchanged), and the record stores the
-  delivery mode. `GET /credentials` is then the only way to obtain the bearer.
-- Because result arity does not change (same struct shape — the JSON string
-  simply omits fields), **only the request struct arity changes**, so the
-  fixture regeneration is one round across the four implementations, exactly
-  the process #8752 built.
-
-### 3. Client migration
-
-1. Orchestrator driver: set `credentials_delivery = 1` when
-   `operatorApiUrl` is configured; fetch credentials via the session it
-   already needs for 2-phase secrets (#8759).
-2. TS/Python SDKs: same, behind explicit opt-in
-   (`credentialsDelivery: "operator-api"`).
-3. After a burn-in window, flip the operator default to redacted for new
-   creates and document legacy mode as deprecated.
-
-### 4. Residual exposure and mitigations
-
-- `env_json`/`metadata_json` remain public on-chain by design
-  (non-secret data); secrets already have the off-chain 2-phase path (#8759).
-- The redacted result still reveals the sandbox exists and its ID; acceptable.
-- Rotate sidecar tokens on owner-request (`POST /credentials/rotate`) as a
-  follow-up if token theft from the legacy window is a concern.
-
-## Rollout checklist
-
-- [ ] Operator: `GET /api/sandboxes/{id}/credentials` (+ tests)
-- [ ] Blueprint: `credentials_delivery` field + redaction branch (+ tests)
-- [ ] Fixtures regenerated from `sol!` structs; driver/TS/Python updated in one
-      agent-dev-container PR (drift tests force this)
-- [ ] Live end-to-end: create with delivery=1 → fetch credentials → use sandbox
-- [ ] Runbook updated (docs/runbook.md) with the new flow and deprecation note
+A fixture decoder check alone is not a runtime security test. CI must execute
+rather than skip the Docker/Anvil/sidecar tests; issue #150's TNT fixture
+compatibility must be verified in the integration environment.
