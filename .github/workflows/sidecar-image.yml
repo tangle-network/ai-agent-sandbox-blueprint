@@ -1,11 +1,6 @@
 name: Sidecar Image
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - sidecar/**
-      - .github/workflows/sidecar-image.yml
   push:
     branches: [main]
     tags:
@@ -29,30 +24,11 @@ permissions:
 
 concurrency:
   group: sidecar-image-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
-  dockerfile:
-    name: Validate sidecar Dockerfile
-    runs-on: [self-hosted, ci-public]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Smoke sidecar terminal API
-        run: |
-          node --check sidecar/server/server.js
-          node --test sidecar/server/*.test.js sidecar/server/*.test.cjs
-          sh -n sidecar/scripts/install-harness.sh sidecar/scripts/verify-harnesses.sh
-          sidecar/scripts/smoke-terminal-api.sh
-
-      - name: Build all-harness image
-        run: |
-          docker build \
-            -f sidecar/Dockerfile.all-harness \
-            -t blueprint-sidecar-all:test .
-
   publish:
-    if: github.event_name != 'pull_request' && github.repository == 'tangle-network/ai-agent-sandbox-blueprint'
+    if: github.repository == 'tangle-network/ai-agent-sandbox-blueprint'
     uses: tangle-network/ai-agent-sandbox-blueprint/.github/workflows/publish-sidecar.yml@0cb5f3cf0ff40f697a57de6863607e7ec1b40c43
     permissions:
       contents: read

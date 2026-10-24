@@ -280,6 +280,8 @@ via `SANDBOX_FIRECRACKER_DEFAULT_STACK`.
 
 ## Development
 
+Local merge gate (locked dependencies, Rust typechecking, and the touched integration target): `beelink-gate auto https://github.com/tangle-network/ai-agent-sandbox-blueprint.git <full-sha> -- bash -lc 'cargo fetch --locked && cargo check --frozen --workspace && cargo test --frozen -p sandbox-runtime --features test-utils --test <touched-integration-target>'`.
+
 ```sh
 # Build
 cargo build --workspace

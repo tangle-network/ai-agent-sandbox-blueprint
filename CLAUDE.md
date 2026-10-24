@@ -32,7 +32,7 @@ Use canonical ingress authentication keys from `sandbox-runtime`; scope necessar
 
 ## Verification and structure
 
-Use [.github/workflows/ci.yml](.github/workflows/ci.yml) for the maintained runtime, UI, and real-sidecar checks.
+Use the local Beelink gate in [README.md](README.md#development) for runtime typechecking and touched integration targets; use the UI package scripts when changing the UI.
 Run the relevant real-sidecar suites for lifecycle or API changes and disclose unavailable prerequisites.
 Check output and effects, not only process exit codes.
 
