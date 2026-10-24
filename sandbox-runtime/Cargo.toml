@@ -106,7 +106,7 @@ serial_test = "3"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 tower = { version = "0.5", features = ["util"] }
-rcgen = { version = "0.13", features = ["pem"] }
+rcgen = { version = "0.14", features = ["pem"] }
 # Tests derive the synthetic Nitro signing key through pkcs8; the library dep
 # above deliberately enables only `ecdsa`.
 p384 = { version = "=0.13.1", features = ["ecdsa", "pkcs8"] }
