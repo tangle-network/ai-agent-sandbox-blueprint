@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 async-trait = "0.1"
-alloy = { version = "=1.8.3", default-features = false, features = ["sol-types"] }
+alloy = { version = "=2.1.1", default-features = false, features = ["sol-types"] }
 blueprint-sdk = { version = "=0.2.0-alpha.12", default-features = false, features = ["std", "tracing", "local-store"] }
 blueprint-tee = { version = "=0.2.0-alpha.8", default-features = false, features = ["std", "aws-nitro"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

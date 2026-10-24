@@ -211,6 +211,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloy"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9677ab3454c237abe6307805bea17a7912b3a516b606c7b4d3d948b9fede137"
+dependencies = [
+ "alloy-core",
+]
+
+[[package]]
 name = "alloy-chains"
 version = "0.2.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3209,7 +3218,7 @@ name = "blueprint-sdk"
 version = "0.2.0-alpha.12"
 source = "git+https://github.com/tangle-network/blueprint.git?rev=a9a524cfecbd9791e85733cda7da666039e4ecea#a9a524cfecbd9791e85733cda7da666039e4ecea"
 dependencies = [
- "alloy",
+ "alloy 1.8.3",
  "blueprint-auth",
  "blueprint-chain-setup",
  "blueprint-clients",
@@ -3272,7 +3281,7 @@ name = "blueprint-tangle-extra"
 version = "0.2.0-alpha.11"
 source = "git+https://github.com/tangle-network/blueprint.git?rev=a9a524cfecbd9791e85733cda7da666039e4ecea#a9a524cfecbd9791e85733cda7da666039e4ecea"
 dependencies = [
- "alloy",
+ "alloy 1.8.3",
  "alloy-primitives",
  "alloy-rpc-types",
  "alloy-sol-types",
@@ -8957,7 +8966,7 @@ dependencies = [
 name = "sandbox-runtime"
 version = "0.1.0"
 dependencies = [
- "alloy",
+ "alloy 2.1.1",
  "anyhow",
  "async-trait",
  "aws-config",
@@ -10105,7 +10114,7 @@ version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "828c15d3fbb99ca2aab81dee20f26d0bf88f12c6c6d6368f466254997d7ff045"
 dependencies = [
- "alloy",
+ "alloy 1.8.3",
  "alloy-contract",
  "alloy-sol-types",
  "serde",
