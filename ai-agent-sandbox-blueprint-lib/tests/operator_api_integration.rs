@@ -470,7 +470,8 @@ async fn full_operator_api_lifecycle() {
         .unwrap();
     assert!(resp.status().is_success(), "exec status: {}", resp.status());
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["success"], true);
+    // The sidecar answers {"result":{"exitCode","stdout","stderr"}}; it has no "success" field.
+    assert_eq!(body["result"]["exitCode"], 0, "exec body: {body}");
     let stdout = body["result"]["stdout"].as_str().unwrap_or("");
     assert!(
         stdout.contains("operator-api-test-ok"),
