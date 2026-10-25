@@ -33,8 +33,29 @@ use sandbox_runtime::session_auth;
 // ---------------------------------------------------------------------------
 
 const AUTH_TOKEN: &str = "test-operator-api-token-3b8c7d";
-const CONTAINER_NAME: &str = "test-operator-api-sidecar";
 const CONTAINER_PORT: u16 = 8080;
+/// Label every sidecar this test creates, so cleanup and audits can prove ownership.
+const OWNER_LABEL: &str = "blueprint.test.owner";
+const OWNER_VALUE: &str = "operator_api_integration";
+const RUN_LABEL: &str = "blueprint.test.run";
+
+/// One id per test process. `SIDECAR_TEST_RUN_ID` lets a gate bind the containers to its own run;
+/// otherwise a random id keeps concurrent runs on a shared Docker daemon apart.
+fn run_id() -> &'static str {
+    static RUN_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    RUN_ID.get_or_init(|| {
+        std::env::var("SIDECAR_TEST_RUN_ID")
+            .ok()
+            .filter(|id| {
+                !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            })
+            .unwrap_or_else(|| format!("{:016x}", rand::random::<u64>()))
+    })
+}
+
+fn container_name() -> String {
+    format!("test-operator-api-sidecar-{}", run_id())
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,7 +78,6 @@ macro_rules! skip_unless_real {
 
 struct TestSidecar {
     url: String,
-    #[allow(dead_code)]
     container_id: String,
 }
 
@@ -95,23 +115,13 @@ async fn ensure_sidecar() -> &'static TestSidecar {
 
             let builder = docker_builder().await;
 
-            // Clean up leftover container from a previous crashed run.
-            let _ = builder
-                .client()
-                .remove_container(
-                    CONTAINER_NAME,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        ..Default::default()
-                    }),
-                )
-                .await;
-
+            // Never remove a container by name: on a shared daemon that name may belong to another
+            // run. This run creates a uniquely named, labelled container and removes only its ID.
             let mut port_bindings = PortMap::new();
             port_bindings.insert(
                 format!("{CONTAINER_PORT}/tcp"),
                 Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
+                    host_ip: Some("127.0.0.1".to_string()),
                     host_port: None,
                 }]),
             );
@@ -126,8 +136,14 @@ async fn ensure_sidecar() -> &'static TestSidecar {
                 "PORT_WATCHER_ENABLED=false".to_string(),
             ];
 
+            let labels = HashMap::from([
+                (OWNER_LABEL.to_string(), OWNER_VALUE.to_string()),
+                (RUN_LABEL.to_string(), run_id().to_string()),
+            ]);
+
             let override_config = BollardConfig {
                 exposed_ports: Some(exposed_ports),
+                labels: Some(labels),
                 host_config: Some(HostConfig {
                     port_bindings: Some(port_bindings),
                     ..Default::default()
@@ -136,7 +152,7 @@ async fn ensure_sidecar() -> &'static TestSidecar {
             };
 
             let mut container = Container::new(builder.client(), image.clone())
-                .with_name(CONTAINER_NAME.to_string())
+                .with_name(container_name())
                 .env(env_vars)
                 .config_override(override_config);
 
@@ -149,6 +165,11 @@ async fn ensure_sidecar() -> &'static TestSidecar {
                 .id()
                 .expect("Container has no ID after start")
                 .to_string();
+            eprintln!(
+                "SIDECAR_CREATED id={container_id} name={} image={image} run={}",
+                container_name(),
+                run_id()
+            );
 
             let inspect = builder
                 .client()
@@ -263,22 +284,6 @@ async fn full_operator_api_lifecycle() {
 
     let sidecar = ensure_sidecar().await;
     let api = ensure_operator_api().await;
-
-    // -----------------------------------------------------------------------
-    // Step 1: Verify sandboxes list is initially empty (fresh state dir).
-    // -----------------------------------------------------------------------
-    let resp = http()
-        .get(format!("{}/api/sandboxes", api.url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert!(
-        body["sandboxes"].as_array().unwrap().is_empty(),
-        "Sandboxes should be empty initially: {body}"
-    );
-    eprintln!("Step 1 OK: sandbox list is empty");
 
     // -----------------------------------------------------------------------
     // Step 2: Start and track provision progress.
@@ -435,6 +440,23 @@ async fn full_operator_api_lifecycle() {
     assert_eq!(extracted.address, expected_address);
     eprintln!("Step 3e OK: extract_session_from_headers works");
 
+    // 3f: The sandbox list needs a session (SessionAuth rejects a request without
+    // one), so it is checked here with the token from 3c: the fresh state dir holds
+    // no sandboxes for this address.
+    let resp = http()
+        .get(format!("{}/api/sandboxes", api.url))
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["sandboxes"].as_array().unwrap().is_empty(),
+        "Sandboxes should be empty initially: {body}"
+    );
+    eprintln!("Step 3f OK: authenticated sandbox list is empty");
+
     // -----------------------------------------------------------------------
     // Step 4: Execute a command on the real sidecar.
     // -----------------------------------------------------------------------
@@ -448,7 +470,8 @@ async fn full_operator_api_lifecycle() {
         .unwrap();
     assert!(resp.status().is_success(), "exec status: {}", resp.status());
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["success"], true);
+    // The sidecar answers {"result":{"exitCode","stdout","stderr"}}; it has no "success" field.
+    assert_eq!(body["result"]["exitCode"], 0, "exec body: {body}");
     let stdout = body["result"]["stdout"].as_str().unwrap_or("");
     assert!(
         stdout.contains("operator-api-test-ok"),
@@ -602,17 +625,26 @@ async fn zz_cleanup_container() {
     if !should_run() {
         return;
     }
-
+    // Remove only the container this process created, by its exact ID.
+    let Some(sidecar) = SIDECAR.get() else {
+        return;
+    };
     let builder = docker_builder().await;
-    let _ = builder
+    builder
         .client()
         .remove_container(
-            CONTAINER_NAME,
+            &sidecar.container_id,
             Some(RemoveContainerOptions {
                 force: true,
                 ..Default::default()
             }),
         )
-        .await;
-    eprintln!("Cleaned up container: {CONTAINER_NAME}");
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to remove owned sidecar {}: {e}",
+                sidecar.container_id
+            )
+        });
+    eprintln!("SIDECAR_REMOVED id={}", sidecar.container_id);
 }
