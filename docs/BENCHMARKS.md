@@ -80,17 +80,9 @@ Exits 0 on success, 1 on regression, 2 on error.
 - `REGRESSED (both)`  — both thresholds exceeded
 - `noisy (under-CI)`  — large change but CI bounds overlap; not flagged
 
-## CI integration
+## Local regression checks
 
-The `bench` job in `.github/workflows/ci.yml` runs on every PR:
-
-1. Runs the full bench suite in `--quick` mode.
-2. Aggregates into a run manifest.
-3. Downloads the main-branch baseline (if present) from workflow artifacts.
-4. Compares and fails the job on regressions.
-5. Uploads the current run as a `bench-results-<run-id>` artifact.
-
-On main, the latest run becomes the new baseline for future PRs.
+Run `scripts/run-benches.sh --quick` on a Beelink for changes that affect runtime performance, then compare its retained manifest with an explicitly selected baseline using `bench-harness compare` above. Keep both manifests with their source revisions and host metadata; no PR workflow chooses or replaces the baseline.
 
 ## Methodology
 
