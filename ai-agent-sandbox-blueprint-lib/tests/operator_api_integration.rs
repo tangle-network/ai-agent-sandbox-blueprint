@@ -286,22 +286,6 @@ async fn full_operator_api_lifecycle() {
     let api = ensure_operator_api().await;
 
     // -----------------------------------------------------------------------
-    // Step 1: Verify sandboxes list is initially empty (fresh state dir).
-    // -----------------------------------------------------------------------
-    let resp = http()
-        .get(format!("{}/api/sandboxes", api.url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert!(
-        body["sandboxes"].as_array().unwrap().is_empty(),
-        "Sandboxes should be empty initially: {body}"
-    );
-    eprintln!("Step 1 OK: sandbox list is empty");
-
-    // -----------------------------------------------------------------------
     // Step 2: Start and track provision progress.
     // -----------------------------------------------------------------------
     let call_id: u64 = 12345;
@@ -455,6 +439,23 @@ async fn full_operator_api_lifecycle() {
     let extracted = sandbox_runtime::operator_api::extract_session_from_headers(&headers).unwrap();
     assert_eq!(extracted.address, expected_address);
     eprintln!("Step 3e OK: extract_session_from_headers works");
+
+    // 3f: The sandbox list needs a session (SessionAuth rejects a request without
+    // one), so it is checked here with the token from 3c: the fresh state dir holds
+    // no sandboxes for this address.
+    let resp = http()
+        .get(format!("{}/api/sandboxes", api.url))
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["sandboxes"].as_array().unwrap().is_empty(),
+        "Sandboxes should be empty initially: {body}"
+    );
+    eprintln!("Step 3f OK: authenticated sandbox list is empty");
 
     // -----------------------------------------------------------------------
     // Step 4: Execute a command on the real sidecar.
