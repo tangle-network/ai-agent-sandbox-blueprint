@@ -51,7 +51,7 @@ sev = { version = "=8.0.0", default-features = false, features = [
 # `crypto_nossl` path verifies cert signatures but not notBefore/notAfter and
 # consults no CRL, so we check expiry ourselves. Pinned to the version `sev`
 # already pulls transitively.
-x509-cert = { version = "=0.2.5", default-features = false, optional = true }
+x509-cert = { version = "=0.3.0", default-features = false, optional = true }
 # AMD KDS CRL revocation check for the SEV-SNP chain. The `sev` crate verifies
 # the VCEK→ASK→ARK signatures but consults no CRL, so a revoked-but-in-window
 # VEK would otherwise pass. We verify the operator-supplied KDS CRL's RSA-PSS
