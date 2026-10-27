@@ -70,7 +70,7 @@ pub(crate) fn check_crl_revocation(
     let ask_spki = ask.tbs_certificate.subject_public_key_info.owned_to_ref();
     let ask_rsa = rsa::RsaPublicKey::try_from(ask_spki)
         .map_err(|e| format!("invalid ASK RSA public key: {e:?}"))?;
-    let verifying_key = rsa::pss::VerifyingKey::<sha2::Sha384>::new(ask_rsa);
+    let verifying_key = rsa::pss::VerifyingKey::<rsa::sha2::Sha384>::new(ask_rsa);
 
     let tbs = crl
         .tbs_cert_list
