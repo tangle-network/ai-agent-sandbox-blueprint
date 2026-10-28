@@ -95,7 +95,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 # Operator API
 axum = "0.8"
 tower = { version = "0.5", features = ["limit"] }
-tower-http = { version = "0.6", features = ["cors", "timeout", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "timeout", "trace"] }
 
 [dev-dependencies]
 bench-harness = { path = "../bench-harness" }
