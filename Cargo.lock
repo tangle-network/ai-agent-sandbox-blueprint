@@ -136,7 +136,7 @@ dependencies = [
  "hex",
  "k256",
  "once_cell",
- "rand 0.8.8",
+ "rand 0.10.2",
  "reqwest 0.12.28",
  "sandbox-runtime",
  "serde",
@@ -4233,7 +4233,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -9212,7 +9212,7 @@ dependencies = [
  "p384 0.14.0",
  "pasetors",
  "phala-tee-deploy-rs",
- "rand 0.8.8",
+ "rand 0.10.2",
  "rcgen 0.14.8",
  "reqwest 0.12.28",
  "rsa",
