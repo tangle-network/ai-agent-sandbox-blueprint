@@ -5,51 +5,66 @@ import "forge-std/Script.sol";
 import "tnt-core/libraries/Types.sol";
 import "../src/AgentSandboxBlueprint.sol";
 
-/// @notice Minimal interface for Tangle contract blueprint registration.
+interface IERC20Decimals {
+    function decimals() external view returns (uint8);
+}
+
+/// @notice Tempo Moderato diamond. Prices are configuration on this contract.
+///         A new diamond is not required to change a rate.
 interface ITangle {
     function createBlueprint(Types.BlueprintDefinition calldata def) external returns (uint64);
     function blueprintCount() external view returns (uint64);
+    function setBlueprintSettlementAsset(uint64 blueprintId, address asset) external;
+    function setJobEventRates(uint64 blueprintId, uint8[] calldata jobIndexes, uint256[] calldata rates) external;
+    function getBlueprintSettlementAsset(uint64 blueprintId) external view returns (address);
+    function getJobEventRate(uint64 blueprintId, uint8 jobIndex) external view returns (uint256);
 }
 
-/// @title DeployTempo
-/// @notice Deploys ONE fresh cloud-mode `AgentSandboxBlueprint` (compiled against
-///         tnt-core 0.19 — onJobResult selector 0xe649fc03) UNBOUND and registers
-///         exactly one sandbox blueprint on the live Tempo Tangle. The manager
-///         binds to this blueprint during `createBlueprint`; do NOT pre-call
-///         onBlueprintCreated (it reverts AlreadyInitialized).
-///
-/// Deploy (Tempo, 30M per-tx gas cap):
-///   PRIVATE_KEY=<deployer> TANGLE_CORE=0xff137b9c879c47c28ce389e84501925438ab4cda \
-///   RESTAKING=0x9484d07899b98384f1d66bd5b2659f3ed346f89e \
-///   forge script contracts/script/DeployTempo.s.sol:DeployTempo \
-///     --rpc-url https://rpc.moderato.tempo.xyz --broadcast --slow \
-///     --gas-estimate-multiplier 110 --skip test
+/// @notice Deploys one unbound cloud manager and registers it on Tempo Moderato.
+///         eventRate is the 1× base (`defaultBaseForDecimals`, pathUSD = 1000).
+///         Not a diamond redeploy and not mainnet. BASE_RATE overrides the base.
 contract DeployTempo is Script {
+    address constant PATH_USD = 0x20C0000000000000000000000000000000000000;
+
     function run() external {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address tangleAddr = vm.envAddress("TANGLE_CORE");
         address restakingAddr = vm.envAddress("RESTAKING");
-        // Trim the on-chain-stored definition to fit the Tempo 30M per-tx cap.
+        address paymentToken = vm.envOr("PAYMENT_TOKEN", PATH_USD);
+        // Trim stored strings to fit the Tempo 30M per-tx cap. Job names and
+        // indexes 0–4 stay, so the driver's create/delete contract is unchanged.
         bool compact = vm.envOr("COMPACT_DEFINITION", true);
 
+        uint8 decimals = IERC20Decimals(paymentToken).decimals();
         ITangle tangle = ITangle(tangleAddr);
         uint64 countBefore = tangle.blueprintCount();
         console.log("blueprintCount BEFORE:", countBefore);
+        console.log("payment decimals:", decimals);
 
         vm.startBroadcast(deployerKey);
 
         // Cloud mode: capacity-weighted operator selection. UNBOUND — the master
-        // manager binds it below during createBlueprint.
+        // manager binds it during createBlueprint.
         AgentSandboxBlueprint sandbox = new AgentSandboxBlueprint(restakingAddr, false, false, address(0));
+        uint256 base = vm.envOr("BASE_RATE", sandbox.defaultBaseForDecimals(decimals));
+        uint256 maxBase = sandbox.maxBaseForDecimals(decimals);
+        require(base > 0 && base <= maxBase, "BASE_RATE out of range for settlement decimals");
 
-        uint64 blueprintId = tangle.createBlueprint(_buildSandboxDefinition(address(sandbox), compact));
+        uint64 blueprintId = tangle.createBlueprint(_buildSandboxDefinition(address(sandbox), compact, base));
+        tangle.setBlueprintSettlementAsset(blueprintId, paymentToken);
+        (uint8[] memory jobIndexes, uint256[] memory rates) = sandbox.getDefaultJobRates(base);
+        tangle.setJobEventRates(blueprintId, jobIndexes, rates);
 
         vm.stopBroadcast();
 
         console.log("DEPLOY_SANDBOX_BSM=%s", vm.toString(address(sandbox)));
         console.log("DEPLOY_SANDBOX_BLUEPRINT_ID=%s", vm.toString(blueprintId));
+        console.log("base (token units):", base);
         console.log("blueprintCount AFTER:", tangle.blueprintCount());
         require(blueprintId == countBefore, "unexpected blueprint id");
+        require(tangle.getBlueprintSettlementAsset(blueprintId) == paymentToken, "settlement asset was not pinned");
+        require(tangle.getJobEventRate(blueprintId, 0) == base * 50, "sandbox_create rate");
+        require(tangle.getJobEventRate(blueprintId, 1) == base, "sandbox_delete rate");
     }
 
     function _buildCloudJobs() internal pure returns (Types.JobDefinition[] memory jobs) {
@@ -61,13 +76,16 @@ contract DeployTempo is Script {
         jobs[4] = Types.JobDefinition("workflow_cancel", "Cancel an active workflow", "", "", "");
     }
 
-    /// @dev Gas-lean job set: the two lifecycle jobs the driver submits (indices
-    /// 0/1, sandbox_create/delete) with empty descriptions. Preserves the
-    /// driver's job-index contract while shrinking the stored definition.
+    /// @dev Gas-lean job set: all five settled jobs, empty descriptions.
+    ///      Indexes match getDefaultJobRates. Dropping 2–4 is what left those
+    ///      jobs on the eventRate fallback.
     function _compactJobs() internal pure returns (Types.JobDefinition[] memory jobs) {
-        jobs = new Types.JobDefinition[](2);
+        jobs = new Types.JobDefinition[](5);
         jobs[0] = Types.JobDefinition("sandbox_create", "", "", "", "");
         jobs[1] = Types.JobDefinition("sandbox_delete", "", "", "", "");
+        jobs[2] = Types.JobDefinition("workflow_create", "", "", "", "");
+        jobs[3] = Types.JobDefinition("workflow_trigger", "", "", "", "");
+        jobs[4] = Types.JobDefinition("workflow_cancel", "", "", "", "");
     }
 
     function _compactMetadata(string memory name) internal pure returns (Types.BlueprintMetadata memory) {
@@ -96,7 +114,7 @@ contract DeployTempo is Script {
         });
     }
 
-    function _buildSandboxDefinition(address manager, bool compact)
+    function _buildSandboxDefinition(address manager, bool compact, uint256 eventRate)
         internal
         pure
         returns (Types.BlueprintDefinition memory def)
@@ -115,7 +133,7 @@ contract DeployTempo is Script {
             maxOperators: 100,
             subscriptionRate: 0,
             subscriptionInterval: 0,
-            eventRate: 1e15 // 0.001 TNT base rate; per-job PathUSD rates set post-registration
+            eventRate: eventRate // 1x base, in the settlement token's decimals
         });
 
         def.metadata = compact

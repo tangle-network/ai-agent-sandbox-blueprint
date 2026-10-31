@@ -1,30 +1,11 @@
-//! Operator-side RFQ quotes: the pricing surface of tnt-core's `JobsRFQ`.
+//! Signed RFQ quotes for `submitJobFromQuote`.
 //!
-//! `GET /api/quote` lets a caller ask this operator "what would you charge to
-//! run job `job_index` with these inputs for me?" and receive an EIP-712-signed
-//! [`JobQuoteDetails`] redeemable on-chain via `submitJobFromQuote`. The
-//! signature comes from the SDK's [`JobQuoteSigner`] (blueprint-sdk
-//! `tangle-extra`), so on-chain verification is guaranteed to match — this
-//! module owns pricing policy, never cryptography.
-//!
-//! Pricing is a composable policy, not a constant:
-//!
-//! ```text
-//! price = base × tee_multiplier × utilization_multiplier
-//! ```
-//!
-//! - `base` — the operator's floor price for the job (`SANDBOX_QUOTE_BASE_PRICE_WEI`).
-//! - `tee_multiplier` — premium when the request demands a TEE
-//!   (`SANDBOX_QUOTE_TEE_MULTIPLIER_BPS`, default 15000 = 1.5×).
-//! - `utilization_multiplier` — the liquid part: interpolated between
-//!   `SANDBOX_QUOTE_IDLE_MULTIPLIER_BPS` (default 8000 = 0.8×, idle compute
-//!   sells at a discount) and `SANDBOX_QUOTE_FULL_MULTIPLIER_BPS` (default
-//!   15000) by the operator's live utilization. An idle operator
-//!   automatically underbids a busy one.
-//!
-//! Quotes are bound to the exact caller (`requester`) and inputs
-//! (`keccak256(inputs)`) — tnt-core rejects a mismatch on redemption — and
-//! expire after `SANDBOX_QUOTE_TTL_SECS` (default 120s) so prices track load.
+//! `price = base × job_multiplier × tee_bps × utilization_bps`.
+//! Job multipliers match the manager: 50, 1, 2, 5, 1, then 0.
+//! Default base is 1000 (0.001 pathUSD). An 18-decimal token sets
+//! `SANDBOX_QUOTE_BASE_PRICE_WEI=1000000000000000`. This is the RFQ gross;
+//! PaymentSplit still applies. `config/job_pricing.toml` is not a price.
+//! TEE default 15000 bps, idle 8000, full 15000. TTL default 120s.
 
 use std::sync::Arc;
 
@@ -34,10 +15,10 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
-use blueprint_sdk::crypto::BytesEncoding;
 use blueprint_sdk::crypto::k256::K256Ecdsa;
-use blueprint_sdk::keystore::Keystore;
+use blueprint_sdk::crypto::BytesEncoding;
 use blueprint_sdk::keystore::backends::Backend;
+use blueprint_sdk::keystore::Keystore;
 use blueprint_sdk::tangle::job_quote::{JobQuoteDetails, JobQuoteSigner, QuoteSigningDomain};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -47,22 +28,17 @@ use crate::runtime;
 /// Quote-serving state: one signer (the operator key) plus the pricing policy.
 pub struct QuoteService {
     signer: Mutex<JobQuoteSigner>,
+    operator_address: Address, // cached: blocking_lock().operator() panics on the async runtime
     policy: QuotePolicy,
     service_id: u64,
 }
 
-/// Env-driven pricing policy. Every knob is a multiply, so defaults compose
-/// sanely and an operator can pin any of them to 10000 (1.0×) to disable it.
 #[derive(Debug, Clone)]
 pub struct QuotePolicy {
-    /// Floor price for a sandbox job, in the chain's native unit's smallest
-    /// denomination (wei). Default: 0.001 native.
+    /// 1× floor in the settlement token's smallest unit. Default 1000.
     pub base_price_wei: U256,
-    /// Multiplier in basis points applied to TEE-demanding requests.
     pub tee_multiplier_bps: u64,
-    /// Multiplier at 0% utilization — idle compute sells below floor.
     pub idle_multiplier_bps: u64,
-    /// Multiplier at 100% utilization.
     pub full_multiplier_bps: u64,
     /// Seconds until a quote expires. Short by default: prices track load.
     pub ttl_secs: u64,
@@ -71,7 +47,7 @@ pub struct QuotePolicy {
 impl Default for QuotePolicy {
     fn default() -> Self {
         Self {
-            base_price_wei: U256::from(1_000_000_000_000_000u64), // 0.001 native
+            base_price_wei: U256::from(1_000u64),
             tee_multiplier_bps: 15_000,
             idle_multiplier_bps: 8_000,
             full_multiplier_bps: 15_000,
@@ -111,15 +87,28 @@ impl QuotePolicy {
         (lo + (hi - lo) * u).round() as u64
     }
 
-    /// The quoted price for one job under this policy.
-    pub fn price_wei(&self, tee_demanded: bool, utilization: f64) -> U256 {
+    /// Chain multiplier for jobs 0–4. Any other index is not a settled job.
+    pub fn job_multiplier(job_index: u8) -> u64 {
+        [50, 1, 2, 5, 1]
+            .get(usize::from(job_index))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The quoted gross for one job. The chain PaymentSplit still applies to it.
+    pub fn price_wei(&self, job_index: u8, tee_demanded: bool, utilization: f64) -> U256 {
+        let multiplier = Self::job_multiplier(job_index);
+        if multiplier == 0 {
+            return U256::ZERO;
+        }
         let mut bps = self.utilization_multiplier_bps(utilization);
         if tee_demanded {
             bps = bps.saturating_mul(self.tee_multiplier_bps) / 10_000;
         }
-        // Multiply in U256; bps is bounded by the product of two u64s, which
-        // cannot overflow U256.
-        self.base_price_wei.saturating_mul(U256::from(bps)) / U256::from(10_000u64)
+        self.base_price_wei
+            .saturating_mul(U256::from(multiplier))
+            .saturating_mul(U256::from(bps))
+            / U256::from(10_000u64)
     }
 }
 
@@ -201,17 +190,17 @@ impl QuoteService {
                 "quote signer init: {e}"
             )))
         })?;
+        let operator_address = signer.operator();
         Ok(Self {
             signer: Mutex::new(signer),
+            operator_address,
             policy,
             service_id,
         })
     }
 
     pub fn operator(&self) -> Address {
-        // Address computation is immutable after construction; go through the
-        // lock only because JobQuoteSigner keeps interior state for signing.
-        self.signer.blocking_lock().operator()
+        self.operator_address
     }
 }
 
@@ -268,7 +257,15 @@ pub async fn serve_quote(
     } else {
         f64::from(active) / f64::from(max)
     };
-    let price = svc.policy.price_wei(tee_demanded, utilization);
+    if QuotePolicy::job_multiplier(query.job_index) == 0 {
+        return quote_error(
+            StatusCode::BAD_REQUEST,
+            format!("job index {} is not a priced on-chain job", query.job_index),
+        );
+    }
+    let price = svc
+        .policy
+        .price_wei(query.job_index, tee_demanded, utilization);
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -326,7 +323,7 @@ pub async fn serve_quote(
         .into_response()
 }
 
-/// `GET /api/capabilities` — what this operator offers, for discovery indexes.
+/// `GET /api/quote/capabilities`. `/api/capabilities` is already the operator API.
 #[derive(Debug, Serialize)]
 pub struct Capabilities {
     pub tee: bool,
@@ -378,7 +375,7 @@ fn quote_error(status: StatusCode, message: String) -> axum::response::Response 
 pub fn quote_router(service: Arc<QuoteService>) -> Router {
     Router::new()
         .route("/api/quote", get(serve_quote))
-        .route("/api/capabilities", get(serve_capabilities))
+        .route("/api/quote/capabilities", get(serve_capabilities))
         .layer(axum::Extension(service))
 }
 
@@ -404,12 +401,15 @@ mod tests {
     #[test]
     fn idle_compute_underbids_busy_compute() {
         let p = QuotePolicy::default();
-        let idle = p.price_wei(false, 0.0);
-        let busy = p.price_wei(false, 1.0);
+        // Job 1 is the 1× delete, so utilization still compares against the base.
+        let idle = p.price_wei(1, false, 0.0);
+        let busy = p.price_wei(1, false, 1.0);
         assert!(
             idle < busy,
             "idle price {idle} must undercut busy price {busy}"
         );
+        assert_eq!(p.price_wei(0, false, 0.0), idle * U256::from(50u64));
+        assert_eq!(p.price_wei(9, false, 0.0), U256::ZERO);
     }
 
     #[test]
@@ -419,7 +419,7 @@ mod tests {
             ..QuotePolicy::default()
         };
         // 0.8 × 1.5 = 1.2× floor.
-        let tee_idle = p.price_wei(true, 0.0);
+        let tee_idle = p.price_wei(1, true, 0.0);
         let floor = p.base_price_wei;
         assert_eq!(
             tee_idle,

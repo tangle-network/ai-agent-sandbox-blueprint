@@ -1,5 +1,9 @@
 # ─── AI Agent Sandbox Blueprint: Service Creation Pricing ───
 #
+# This file is an RFQ gross in USD per unit per 30 days. createServiceFromQuotes
+# settles that gross on-chain, and PaymentSplit still applies. It is not the
+# operator's take-home price, and it is not the per-job EventDriven rate.
+#
 # Resource-based pricing used by the pricing engine's GetPrice RFQ endpoint.
 # When a user requests a new service, operators quote a total_cost_rate (USD)
 # based on the resources requested. The pricing engine multiplies each

@@ -10,6 +10,8 @@ interface ITangle {
     function createBlueprint(Types.BlueprintDefinition calldata def) external returns (uint64);
 }
 
+address constant TEMPO_TANGLE = 0xff137B9C879c47C28ce389e84501925438AB4cdA;
+
 /// @title RegisterBlueprint
 /// @notice Deploys 1 unified contract 3 times with different mode flags and registers on Tangle.
 /// @dev Run via: forge script contracts/script/RegisterBlueprint.s.sol --rpc-url $RPC_URL --broadcast --slow
@@ -26,15 +28,12 @@ contract RegisterBlueprint is Script {
         uint256 deployerKey = vm.envOr("PRIVATE_KEY", DEFAULT_DEPLOYER_KEY);
         address tangleAddr = vm.envOr("TANGLE_CORE", DEFAULT_TANGLE);
         address restakingAddr = vm.envOr("RESTAKING", DEFAULT_RESTAKING);
+        // Tempo pathUSD is 6 decimals. This script's unset rate is 1e15, which
+        // is $1B of pathUSD. DeployTempo pins pathUSD and writes the 0.001 base.
+        require(tangleAddr != TEMPO_TANGLE, "Tempo: use contracts/script/DeployTempo.s.sol");
 
-        // Some chains (e.g. Tempo) meter execution far above eth_estimateGas AND
-        // enforce a per-tx gas cap (Tempo: 30M). createBlueprint's cost is
-        // dominated by the master blueprint service manager re-encoding the full
-        // definition; the full ~10.6KB definition pushes it past 30M there.
-        // COMPACT_DEFINITION trims the definition to the driver-essential jobs
-        // (sandbox_create/delete) with empty descriptions and minimal metadata,
-        // which halves the encoded size and brings the call under the cap. The
-        // job *names/indices* the driver relies on are preserved.
+        // COMPACT_DEFINITION keeps sandbox_create/delete and drops the rest so
+        // createBlueprint fits Tempo's 30M per-tx cap. Tempo pathUSD uses DeployTempo.
         bool compact = vm.envOr("COMPACT_DEFINITION", false);
 
         ITangle tangle = ITangle(tangleAddr);
@@ -146,32 +145,73 @@ contract RegisterBlueprint is Script {
         });
     }
 
-    function _buildSandboxDefinition(address manager, bool compact)
+    struct _DefSpec {
+        string compactUri;
+        string name;
+        string description;
+        Types.MembershipModel membership;
+        Types.PricingModel pricing;
+        uint32 maxOperators;
+        uint256 subscriptionRate;
+        uint64 subscriptionInterval;
+        uint256 eventRate;
+        bool instanceJobs;
+        string binName;
+        string nativeFetcher;
+        string nativePath;
+        string testBin;
+        string testName;
+    }
+
+    function _nativeSources(
+        string memory binName,
+        string memory nativeFetcher,
+        string memory nativePath,
+        string memory testBin,
+        string memory testName
+    ) internal pure returns (Types.BlueprintSource[] memory sources) {
+        sources = new Types.BlueprintSource[](1);
+        Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
+        bins[0] = Types.BlueprintBinary({
+            arch: Types.BlueprintArchitecture.Amd64,
+            os: Types.BlueprintOperatingSystem.Linux,
+            name: binName,
+            sha256: bytes32(uint256(0xdeadbeef))
+        });
+        sources[0] = Types.BlueprintSource({
+            kind: Types.BlueprintSourceKind.Native,
+            container: Types.ImageRegistrySource("", "", ""),
+            wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
+            native: Types.NativeSource(Types.BlueprintFetcherKind.None, nativeFetcher, nativePath),
+            testing: Types.TestingSource(testBin, testName, "."),
+            binaries: bins
+        });
+    }
+
+    function _definition(address manager, bool compact, _DefSpec memory spec)
         internal
         pure
         returns (Types.BlueprintDefinition memory def)
     {
-        def.metadataUri = compact ? "tangle:ai-agent-sandbox" : "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
+        def.metadataUri = compact ? spec.compactUri : "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
         def.metadataHash = keccak256(bytes(def.metadataUri));
         def.manager = manager;
         def.masterManagerRevision = 0;
         def.hasConfig = true;
-
         def.config = Types.BlueprintConfig({
-            membership: Types.MembershipModel.Dynamic,
-            pricing: Types.PricingModel.EventDriven,
+            membership: spec.membership,
+            pricing: spec.pricing,
             minOperators: 1,
-            maxOperators: 100,
-            subscriptionRate: 0,
-            subscriptionInterval: 0,
-            eventRate: 1e15 // 0.001 TNT base rate
+            maxOperators: spec.maxOperators,
+            subscriptionRate: spec.subscriptionRate,
+            subscriptionInterval: spec.subscriptionInterval,
+            eventRate: spec.eventRate
         });
-
         def.metadata = compact
-            ? _compactMetadata("AI Agent Sandbox Blueprint")
+            ? _compactMetadata(spec.name)
             : Types.BlueprintMetadata({
-                name: "AI Agent Sandbox Blueprint",
-                description: "Multi-operator AI sandbox with Docker backends, workflows, and SSH access",
+                name: spec.name,
+                description: spec.description,
                 author: "Tangle",
                 category: "AI/Compute",
                 codeRepository: "https://github.com/tangle-network/ai-agent-sandbox-blueprint",
@@ -180,176 +220,97 @@ contract RegisterBlueprint is Script {
                 license: "UNLICENSE",
                 profilingData: ""
             });
-
-        def.jobs = compact ? _compactJobs() : _buildCloudJobs();
-
+        def.jobs = compact ? _compactJobs() : (spec.instanceJobs ? _buildInstanceJobs() : _buildCloudJobs());
         def.registrationSchema = "";
         def.requestSchema = "";
-
-        if (compact) {
-            def.sources = _compactSources();
-        } else {
-            def.sources = new Types.BlueprintSource[](1);
-            Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
-            bins[0] = Types.BlueprintBinary({
-                arch: Types.BlueprintArchitecture.Amd64,
-                os: Types.BlueprintOperatingSystem.Linux,
-                name: "ai-agent-sandbox-blueprint",
-                sha256: bytes32(uint256(0xdeadbeef))
-            });
-            def.sources[0] = Types.BlueprintSource({
-                kind: Types.BlueprintSourceKind.Native,
-                container: Types.ImageRegistrySource("", "", ""),
-                wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
-                native: Types.NativeSource(
-                    Types.BlueprintFetcherKind.None,
-                    "file:///target/release/ai-agent-sandbox-blueprint-bin",
-                    "./target/release/ai-agent-sandbox-blueprint-bin"
-                ),
-                testing: Types.TestingSource("ai-agent-sandbox-blueprint-bin", "ai-agent-sandbox-blueprint", "."),
-                binaries: bins
-            });
-        }
-
+        def.sources = compact
+            ? _compactSources()
+            : _nativeSources(spec.binName, spec.nativeFetcher, spec.nativePath, spec.testBin, spec.testName);
         def.supportedMemberships = new Types.MembershipModel[](1);
-        def.supportedMemberships[0] = Types.MembershipModel.Dynamic;
+        def.supportedMemberships[0] = spec.membership;
+    }
+
+    function _buildSandboxDefinition(address manager, bool compact)
+        internal
+        pure
+        returns (Types.BlueprintDefinition memory)
+    {
+        return _definition(
+            manager,
+            compact,
+            _DefSpec({
+                compactUri: "tangle:ai-agent-sandbox",
+                name: "AI Agent Sandbox Blueprint",
+                description: "Multi-operator AI sandbox with Docker backends, workflows, and SSH access",
+                membership: Types.MembershipModel.Dynamic,
+                pricing: Types.PricingModel.EventDriven,
+                maxOperators: 100,
+                subscriptionRate: 0,
+                subscriptionInterval: 0,
+                eventRate: 1e15,
+                instanceJobs: false,
+                binName: "ai-agent-sandbox-blueprint",
+                nativeFetcher: "file:///target/release/ai-agent-sandbox-blueprint-bin",
+                nativePath: "./target/release/ai-agent-sandbox-blueprint-bin",
+                testBin: "ai-agent-sandbox-blueprint-bin",
+                testName: "ai-agent-sandbox-blueprint"
+            })
+        );
     }
 
     function _buildInstanceDefinition(address manager, bool compact)
         internal
         pure
-        returns (Types.BlueprintDefinition memory def)
+        returns (Types.BlueprintDefinition memory)
     {
-        def.metadataUri = compact ? "tangle:ai-agent-instance" : "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
-        def.metadataHash = keccak256(bytes(def.metadataUri));
-        def.manager = manager;
-        def.masterManagerRevision = 0;
-        def.hasConfig = true;
-
-        def.config = Types.BlueprintConfig({
-            membership: Types.MembershipModel.Fixed,
-            pricing: Types.PricingModel.Subscription,
-            minOperators: 1,
-            maxOperators: 10,
-            subscriptionRate: 1e16, // 0.01 TNT per interval
-            subscriptionInterval: 86400, // daily
-            eventRate: 0
-        });
-
-        def.metadata = compact
-            ? _compactMetadata("AI Agent Instance Blueprint")
-            : Types.BlueprintMetadata({
-            name: "AI Agent Instance Blueprint",
-            description: "Subscription-based replicated AI sandbox with multi-operator redundancy",
-            author: "Tangle",
-            category: "AI/Compute",
-            codeRepository: "https://github.com/tangle-network/ai-agent-sandbox-blueprint",
-            logo: "",
-            website: "https://tangle.network",
-            license: "UNLICENSE",
-            profilingData: ""
-        });
-
-        def.jobs = compact ? _compactJobs() : _buildInstanceJobs();
-
-        def.registrationSchema = "";
-        def.requestSchema = "";
-
-        if (compact) {
-            def.sources = _compactSources();
-        } else {
-            def.sources = new Types.BlueprintSource[](1);
-            Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
-            bins[0] = Types.BlueprintBinary({
-                arch: Types.BlueprintArchitecture.Amd64,
-                os: Types.BlueprintOperatingSystem.Linux,
-                name: "ai-agent-instance-blueprint",
-                sha256: bytes32(uint256(0xdeadbeef))
-            });
-            def.sources[0] = Types.BlueprintSource({
-                kind: Types.BlueprintSourceKind.Native,
-                container: Types.ImageRegistrySource("", "", ""),
-                wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
-                native: Types.NativeSource(
-                    Types.BlueprintFetcherKind.None,
-                    "file:///target/release/ai-agent-instance-blueprint-bin",
-                    "./target/release/ai-agent-instance-blueprint-bin"
-                ),
-                testing: Types.TestingSource("ai-agent-instance-blueprint-bin", "ai-agent-instance-blueprint", "."),
-                binaries: bins
-            });
-        }
-
-        def.supportedMemberships = new Types.MembershipModel[](1);
-        def.supportedMemberships[0] = Types.MembershipModel.Fixed;
+        return _definition(
+            manager,
+            compact,
+            _DefSpec({
+                compactUri: "tangle:ai-agent-instance",
+                name: "AI Agent Instance Blueprint",
+                description: "Subscription-based replicated AI sandbox with multi-operator redundancy",
+                membership: Types.MembershipModel.Fixed,
+                pricing: Types.PricingModel.Subscription,
+                maxOperators: 10,
+                subscriptionRate: 1e16,
+                subscriptionInterval: 86400,
+                eventRate: 0,
+                instanceJobs: true,
+                binName: "ai-agent-instance-blueprint",
+                nativeFetcher: "file:///target/release/ai-agent-instance-blueprint-bin",
+                nativePath: "./target/release/ai-agent-instance-blueprint-bin",
+                testBin: "ai-agent-instance-blueprint-bin",
+                testName: "ai-agent-instance-blueprint"
+            })
+        );
     }
 
     function _buildTeeInstanceDefinition(address manager, bool compact)
         internal
         pure
-        returns (Types.BlueprintDefinition memory def)
+        returns (Types.BlueprintDefinition memory)
     {
-        def.metadataUri = compact ? "tangle:ai-agent-tee" : "https://github.com/tangle-network/ai-agent-sandbox-blueprint";
-        def.metadataHash = keccak256(bytes(def.metadataUri));
-        def.manager = manager;
-        def.masterManagerRevision = 0;
-        def.hasConfig = true;
-
-        def.config = Types.BlueprintConfig({
-            membership: Types.MembershipModel.Fixed,
-            pricing: Types.PricingModel.Subscription,
-            minOperators: 1,
-            maxOperators: 10,
-            subscriptionRate: 5e16, // 0.05 TNT per interval (TEE premium)
-            subscriptionInterval: 86400,
-            eventRate: 0
-        });
-
-        def.metadata = compact
-            ? _compactMetadata("AI Agent TEE Instance Blueprint")
-            : Types.BlueprintMetadata({
-            name: "AI Agent TEE Instance Blueprint",
-            description: "TEE-backed replicated AI sandbox with attestation verification",
-            author: "Tangle",
-            category: "AI/Compute",
-            codeRepository: "https://github.com/tangle-network/ai-agent-sandbox-blueprint",
-            logo: "",
-            website: "https://tangle.network",
-            license: "UNLICENSE",
-            profilingData: ""
-        });
-
-        def.jobs = compact ? _compactJobs() : _buildInstanceJobs();
-
-        def.registrationSchema = "";
-        def.requestSchema = "";
-
-        if (compact) {
-            def.sources = _compactSources();
-        } else {
-            def.sources = new Types.BlueprintSource[](1);
-            Types.BlueprintBinary[] memory bins = new Types.BlueprintBinary[](1);
-            bins[0] = Types.BlueprintBinary({
-                arch: Types.BlueprintArchitecture.Amd64,
-                os: Types.BlueprintOperatingSystem.Linux,
-                name: "ai-agent-tee-instance-blueprint",
-                sha256: bytes32(uint256(0xdeadbeef))
-            });
-            def.sources[0] = Types.BlueprintSource({
-                kind: Types.BlueprintSourceKind.Native,
-                container: Types.ImageRegistrySource("", "", ""),
-                wasm: Types.WasmSource(Types.WasmRuntime.Unknown, Types.BlueprintFetcherKind.None, "", ""),
-                native: Types.NativeSource(
-                    Types.BlueprintFetcherKind.None,
-                    "file:///target/release/ai-agent-tee-instance-blueprint-bin",
-                    "./target/release/ai-agent-tee-instance-blueprint-bin"
-                ),
-                testing: Types.TestingSource("ai-agent-tee-instance-blueprint-bin", "ai-agent-tee-instance-blueprint", "."),
-                binaries: bins
-            });
-        }
-
-        def.supportedMemberships = new Types.MembershipModel[](1);
-        def.supportedMemberships[0] = Types.MembershipModel.Fixed;
+        return _definition(
+            manager,
+            compact,
+            _DefSpec({
+                compactUri: "tangle:ai-agent-tee",
+                name: "AI Agent TEE Instance Blueprint",
+                description: "TEE-backed replicated AI sandbox with attestation verification",
+                membership: Types.MembershipModel.Fixed,
+                pricing: Types.PricingModel.Subscription,
+                maxOperators: 10,
+                subscriptionRate: 5e16,
+                subscriptionInterval: 86400,
+                eventRate: 0,
+                instanceJobs: true,
+                binName: "ai-agent-tee-instance-blueprint",
+                nativeFetcher: "file:///target/release/ai-agent-tee-instance-blueprint-bin",
+                nativePath: "./target/release/ai-agent-tee-instance-blueprint-bin",
+                testBin: "ai-agent-tee-instance-blueprint-bin",
+                testName: "ai-agent-tee-instance-blueprint"
+            })
+        );
     }
 }
