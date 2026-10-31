@@ -155,7 +155,7 @@ test-utils = ["dep:anyhow"]
 tee-phala = ["dep:phala-tee-deploy-rs"]
 tee-direct = ["dep:libc"]
 tee-aws-nitro = ["dep:aws-config", "dep:aws-sdk-ec2"]
-tee-gcp = ["dep:gcp_auth"]
+tee-gcp = ["dep:gcp_auth", "dep:rsa", "dep:signature"]
 tee-azure = []
 # Cryptographic quote verification against hardware roots of trust (Intel
 # SGX/TDX DCAP, AMD SEV-SNP, AWS Nitro). Heavy crypto deps live ONLY here.
