@@ -56,10 +56,11 @@ quote_validity_duration_secs = 300
 pow_difficulty = 20
 
 # ─── Pricing Source ────────────────────────────────────────────────────────
-# Which pricing config files to load.
-# Relative paths are resolved from the operator's working directory.
+# Service-creation RFQ gross only. The chain PaymentSplit still applies to it.
+# Job settlement prices are the on-chain EventDriven rates
+# (AgentSandboxBlueprint.getDefaultJobRates via ConfigureJobRates).
+# config/job_pricing.toml is not a settlement price and is not loaded.
 default_pricing_config = "config/default_pricing.toml"
-job_pricing_config     = "config/job_pricing.toml"
 
 # ─── Logging ───────────────────────────────────────────────────────────────
 # Pricing engine log level (trace, debug, info, warn, error)

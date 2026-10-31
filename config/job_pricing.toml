@@ -1,89 +1,18 @@
-# AI Agent Sandbox Blueprint pricing profile
+# This file is not a settlement price. Do not point a pricing engine at it.
 #
-# Canonical on-chain jobs are IDs 0..4:
-# 0 SANDBOX_CREATE
-# 1 SANDBOX_DELETE
-# 2 WORKFLOW_CREATE
-# 3 WORKFLOW_TRIGGER
-# 4 WORKFLOW_CANCEL
+# On-chain job prices live in the blueprint:
+#   AgentSandboxBlueprint.getDefaultJobRates(baseRate)
+#   ConfigureJobRates writes them with setJobEventRates.
 #
-# Instance lifecycle is operator-reported (reportProvisioned/reportDeprovisioned),
-# so instance and tee_instance modes only price workflow jobs (2..4).
-
-[sandbox]
-
-[sandbox.jobs.0]
-name       = "SANDBOX_CREATE"
-mode       = "dynamic"
-multiplier = 50
-base_price = "50000000000000000"
-description = "Create sandbox with resource-weighted pricing"
-
-[sandbox.jobs.0.dynamic]
-cpu_rate_per_core = "5000000000000000"
-mem_rate_per_gb   = "3000000000000000"
-disk_rate_per_gb  = "1000000000000000"
-
-[sandbox.jobs.1]
-name       = "SANDBOX_DELETE"
-mode       = "flat"
-multiplier = 1
-price      = "1000000000000000"
-
-[sandbox.jobs.2]
-name       = "WORKFLOW_CREATE"
-mode       = "flat"
-multiplier = 2
-price      = "2000000000000000"
-
-[sandbox.jobs.3]
-name       = "WORKFLOW_TRIGGER"
-mode       = "flat"
-multiplier = 5
-price      = "5000000000000000"
-
-[sandbox.jobs.4]
-name       = "WORKFLOW_CANCEL"
-mode       = "free"
-multiplier = 1
-price      = "0"
-
-[instance]
-
-[instance.jobs.2]
-name       = "WORKFLOW_CREATE"
-mode       = "flat"
-multiplier = 2
-price      = "2000000000000000"
-
-[instance.jobs.3]
-name       = "WORKFLOW_TRIGGER"
-mode       = "flat"
-multiplier = 5
-price      = "5000000000000000"
-
-[instance.jobs.4]
-name       = "WORKFLOW_CANCEL"
-mode       = "free"
-multiplier = 1
-price      = "0"
-
-[tee_instance]
-
-[tee_instance.jobs.2]
-name       = "WORKFLOW_CREATE"
-mode       = "flat"
-multiplier = 2
-price      = "2000000000000000"
-
-[tee_instance.jobs.3]
-name       = "WORKFLOW_TRIGGER"
-mode       = "flat"
-multiplier = 5
-price      = "5000000000000000"
-
-[tee_instance.jobs.4]
-name       = "WORKFLOW_CANCEL"
-mode       = "free"
-multiplier = 1
-price      = "0"
+# Jobs 0–4, multipliers against that base:
+#   0 SANDBOX_CREATE    50
+#   1 SANDBOX_DELETE     1
+#   2 WORKFLOW_CREATE    2
+#   3 WORKFLOW_TRIGGER   5
+#   4 WORKFLOW_CANCEL    1
+#
+# Operator quotes (operator_quote.rs) may scale that gross by utilization and
+# TEE. The chain PaymentSplit still applies to the gross. Instance and TEE
+# services are Subscription and do not also charge these workflow rates.
+# Off-chain exec, prompt, task, stop, resume, snapshot, SSH, and batch are
+# operator HTTP. They are not these five jobs.

@@ -9,20 +9,12 @@ pragma solidity ^0.8.26;
 ///         pre-split public ABI by re-emitting events with the same
 ///         signatures.
 library SandboxTypes {
-    // ═══════════════════════════════════════════════════════════════════════════
-    // CAPS
-    // ═══════════════════════════════════════════════════════════════════════════
-
     uint256 internal constant MAX_WORKFLOWS = 10000;
     uint32 internal constant MAX_OPERATORS_PER_SERVICE = 1000;
     uint256 internal constant MAX_SANDBOX_ID_LENGTH = 255;
 
     uint8 internal constant WORKFLOW_TARGET_SANDBOX = 0;
     uint8 internal constant WORKFLOW_TARGET_INSTANCE = 1;
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STRUCTS
-    // ═══════════════════════════════════════════════════════════════════════════
 
     struct WorkflowCreateRequest {
         string name;
@@ -76,10 +68,6 @@ library SandboxTypes {
     event OperatorProvisioned(uint64 indexed serviceId, address indexed operator, string sandboxId, string sidecarUrl);
     event OperatorDeprovisioned(uint64 indexed serviceId, address indexed operator);
     event TeeAttestationStored(uint64 indexed serviceId, address indexed operator, bytes32 attestationHash);
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ERRORS
-    // ═══════════════════════════════════════════════════════════════════════════
 
     error NoAvailableCapacity();
     error OperatorMismatch(address expected, address actual);

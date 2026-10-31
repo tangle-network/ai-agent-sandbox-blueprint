@@ -35,10 +35,6 @@ interface ITangleServiceOperatorView {
 contract AgentSandboxBlueprint is OperatorSelectionBase {
     using SandboxLogic for *;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // JOB IDS (5 total — state-changing only)
-    // ═══════════════════════════════════════════════════════════════════════════
-
     uint8 public constant JOB_SANDBOX_CREATE = 0;
     uint8 public constant JOB_SANDBOX_DELETE = 1;
     uint8 public constant JOB_WORKFLOW_CREATE = 2;
@@ -47,26 +43,14 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     uint8 public constant WORKFLOW_TARGET_SANDBOX = 0;
     uint8 public constant WORKFLOW_TARGET_INSTANCE = 1;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // METADATA
-    // ═══════════════════════════════════════════════════════════════════════════
-
     string public constant BLUEPRINT_NAME = "ai-agent-sandbox-blueprint";
     string public constant BLUEPRINT_VERSION = "0.4.0";
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PER-JOB PRICING MULTIPLIERS
-    // ═══════════════════════════════════════════════════════════════════════════
 
     uint256 public constant PRICE_MULT_SANDBOX_CREATE = 50;
     uint256 public constant PRICE_MULT_SANDBOX_DELETE = 1;
     uint256 public constant PRICE_MULT_WORKFLOW_CREATE = 2;
     uint256 public constant PRICE_MULT_WORKFLOW_TRIGGER = 5;
     uint256 public constant PRICE_MULT_WORKFLOW_CANCEL = 1;
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ARRAY BOUNDS (storage-griefing prevention)
-    // ═══════════════════════════════════════════════════════════════════════════
 
     uint256 public constant MAX_WORKFLOWS = 10000;
     uint32 public constant MAX_OPERATORS_PER_SERVICE = 1000;
@@ -110,10 +94,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     error ZeroOperatorsInRequest();
     error ServiceAlreadyInitialized(uint64 serviceId);
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // CONSTRUCTOR
-    // ═══════════════════════════════════════════════════════════════════════════
-
     constructor(address restakingAddress, bool _instanceMode, bool _teeRequired, address slashingVerifier)
         ComputeProviderSlashing(slashingVerifier)
     {
@@ -125,10 +105,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         $.teeRequired = _teeRequired;
         $.defaultMaxCapacity = 100;
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC STATE GETTERS (back-compat for previous public state variables)
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function instanceMode() external view returns (bool) {
         return SandboxStorage.load().instanceMode;
@@ -190,10 +166,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         return SandboxStorage.load().serviceOwner[serviceId];
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // JOB METADATA
-    // ═══════════════════════════════════════════════════════════════════════════
-
     /// @notice Returns all supported job IDs for this deployment mode.
     /// @dev Instance mode only exposes workflow jobs (2..4).
     function jobIds() external view returns (uint8[] memory ids) {
@@ -226,10 +198,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         return SandboxStorage.load().instanceMode ? 3 : 5;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // OPERATOR REGISTRATION
-    // ═══════════════════════════════════════════════════════════════════════════
-
     /// @notice Registers an operator. In cloud mode, sets capacity from registrationInputs.
     function onRegister(address operator, bytes calldata registrationInputs) external payable override onlyFromTangle {
         SandboxStorage.Data storage $ = SandboxStorage.load();
@@ -245,10 +213,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         }
         // Instance mode: no-op (operators self-report lifecycle via reportProvisioned/reportDeprovisioned)
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // OPERATOR UNREGISTRATION & DEPARTURE
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function onUnregister(address operator) external virtual override onlyFromTangle {
         if (SandboxStorage.load().operatorActiveSandboxes[operator] != 0) revert CannotLeaveWithActiveResources();
@@ -266,10 +230,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         if ($.operatorProvisioned[serviceId][operator]) return false;
         return true;
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // SERVICE REQUEST VALIDATION
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function onRequest(
         uint64 requestId,
@@ -299,10 +259,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         emit ServiceRequestValidated(requestId, requester, uint32(operators.length));
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // SERVICE LIFECYCLE HOOKS
-    // ═══════════════════════════════════════════════════════════════════════════
-
     function onServiceInitialized(uint64, uint64 requestId, uint64 serviceId, address owner, address[] calldata, uint64)
         external
         override
@@ -325,10 +281,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         emit ServiceTerminationReceived(serviceId, owner);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // JOB CALL HOOK — OPERATOR ASSIGNMENT & ROUTING
-    // ═══════════════════════════════════════════════════════════════════════════
-
     // ── tnt-core slashing hooks (delegate to ComputeProviderSlashing) ──
     function querySlashingOrigin(uint64 serviceId) external view override returns (address) {
         return _slashingOrigin(serviceId);
@@ -342,7 +294,11 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         return _disputeOrigin(serviceId);
     }
 
-    function onUnappliedSlash(uint64 serviceId, bytes calldata offender, uint8 slashPercent) external override onlyFromTangle {
+    function onUnappliedSlash(uint64 serviceId, bytes calldata offender, uint8 slashPercent)
+        external
+        override
+        onlyFromTangle
+    {
         _recordSlashProposed(serviceId, offender, slashPercent);
     }
 
@@ -382,10 +338,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
             revert UnknownJobId(job);
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // JOB RESULT HOOK — STATE UPDATES
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function onJobResult(
         uint64 serviceId,
@@ -438,10 +390,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         delete $.jobCallInputs[serviceId][jobCallId];
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // DIRECT INSTANCE REPORTING (operator-signed tx path)
-    // ═══════════════════════════════════════════════════════════════════════════
-
     function reportProvisioned(
         uint64 serviceId,
         string calldata sandboxId,
@@ -466,10 +414,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         return 1;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ADMIN FUNCTIONS
-    // ═══════════════════════════════════════════════════════════════════════════
-
     function setDefaultMaxCapacity(uint32 capacity) external onlyBlueprintOwner {
         SandboxStorage.load().defaultMaxCapacity = capacity;
     }
@@ -489,10 +433,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         if ($.totalActiveSandboxes != 0 || $.totalProvisionedOperators != 0) revert CannotChangeWithActiveResources();
         $.teeRequired = _required;
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // VIEW FUNCTIONS
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function getOperatorLoad(address operator) external view returns (uint32 active, uint32 max) {
         SandboxStorage.Data storage $ = SandboxStorage.load();
@@ -546,10 +486,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         return SandboxStorage.load().serviceConfig[serviceId];
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // WORKFLOW VIEWS
-    // ═══════════════════════════════════════════════════════════════════════════
-
     function getWorkflow(uint64 workflowId) external view returns (SandboxTypes.WorkflowConfig memory) {
         return SandboxStorage.load().workflows[workflowId];
     }
@@ -557,10 +493,6 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
     function getWorkflowIds(bool activeOnly) external view returns (uint64[] memory ids) {
         return SandboxLogic.getWorkflowIds(activeOnly);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRICING HELPERS
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function getDefaultJobRates(uint256 baseRate)
         external
@@ -605,9 +537,23 @@ contract AgentSandboxBlueprint is OperatorSelectionBase {
         return 0;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNALS
-    // ═══════════════════════════════════════════════════════════════════════════
+    /// @dev Owner pins one asset. True does not choose the token. Native skips this hook.
+    function queryIsPaymentAssetAllowed(uint64, address) external pure override returns (bool) {
+        return true;
+    }
+
+    /// @dev Largest 1× base whose 50× create price is at most 1_000_000 whole tokens.
+    function maxBaseForDecimals(uint8 decimals) public pure returns (uint256) {
+        if (decimals > 18) return 0;
+        return (1_000_000 * (10 ** uint256(decimals))) / PRICE_MULT_SANDBOX_CREATE;
+    }
+
+    /// @dev 0.001 token. 6 decimals → 1000. 18 decimals → 1e15.
+    function defaultBaseForDecimals(uint8 decimals) public pure returns (uint256) {
+        if (decimals > 18) return 0;
+        uint256 base = (10 ** uint256(decimals)) / 1000;
+        return base == 0 ? 1 : base;
+    }
 
     /// @notice Validates that `operator` is currently active on `serviceId` in Tangle.
     function _requireActiveServiceOperator(uint64 serviceId, address operator) internal view {

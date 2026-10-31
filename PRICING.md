@@ -4,7 +4,7 @@ This document explains the pricing model for the AI Agent Sandbox Blueprint, inc
 
 ## Pricing Model Overview
 
-The blueprint uses a **multiplier-based pricing model** for its **5 on-chain jobs**. The blueprint owner sets a single **base rate** (the cost of the cheapest on-chain operation), and all job types are priced as multiples of that base rate. Operations that do not mutate on-chain state (exec, prompt, task, stop, resume, snapshot, SSH, batch) are served via the off-chain operator HTTP API and are not priced as on-chain jobs.
+The blueprint uses a **multiplier-based pricing model** for its **5 on-chain jobs**. The blueprint owner sets a single **base rate** (the cost of the cheapest on-chain operation), and all job types are priced as multiples of that base rate. `ConfigureJobRates` writes `AgentSandboxBlueprint.getDefaultJobRates` onto the chain. That table is the settlement price. `config/job_pricing.toml` is not loaded and is not a price. An operator RFQ quote (`operator_quote.rs`) is a gross: chain multiplier × base × utilization × TEE. The chain PaymentSplit still applies to that gross. `config/default_pricing.toml` is the service-creation GetPrice gross in USD per unit per 30 days, also split on-chain. Operations that do not mutate on-chain state (exec, prompt, task, stop, resume, snapshot, SSH, batch) are served via the off-chain operator HTTP API and are not priced as on-chain jobs. Instance and TEE services are Subscription and do not also charge these workflow job rates.
 
 This design:
 - Adapts automatically to token price changes (just adjust the base rate)
@@ -35,14 +35,19 @@ Operators set their own pricing for these via RFQ or subscription models:
 - **LLM**: prompt (single inference), task (multi-turn agent)
 - **Batch**: batch exec, batch create, batch task, batch collect
 
-### Example Pricing (base rate = 0.001 TNT, assuming 1 TNT ≈ $1)
+### Example Pricing (base rate = 0.001 token)
 
-| Job | Rate (TNT) | Rate (USD) |
-|-----|-----------|-----------|
-| SANDBOX_DELETE | 0.001 | $0.001 |
-| WORKFLOW_CREATE | 0.002 | $0.002 |
-| WORKFLOW_TRIGGER | 0.005 | $0.005 |
-| SANDBOX_CREATE | 0.050 | $0.050 |
+On Tempo the settlement token is pathUSD, 6 decimals, $1 = 1_000_000 units. The default base is 1000. `1e15` is not a pathUSD rate. It is 0.001 of an 18-decimal token, and on pathUSD it is $1,000,000,000. `DeployTempo` writes the base as `eventRate`, then `setJobEventRates(getDefaultJobRates(base))`, and pins pathUSD with `setBlueprintSettlementAsset`. An 18-decimal token still uses base `1e15`.
+
+| Job | Units (6 decimals) | USD |
+|-----|--------------------|-----|
+| SANDBOX_DELETE | 1_000 | $0.001 |
+| WORKFLOW_CREATE | 2_000 | $0.002 |
+| WORKFLOW_TRIGGER | 5_000 | $0.005 |
+| WORKFLOW_CANCEL | 1_000 | $0.001 |
+| SANDBOX_CREATE | 50_000 | $0.050 |
+
+The published on-chain rate is that table. An operator quote (`GET /api/quote`) starts from the same base and then moves with utilization and TEE. Idle compute underbids the menu. A busy operator's signed quote can sit above it. `submitJob` without a quote pays the menu. `submitJobFromQuote` pays the signed gross, and PaymentSplit still applies. The quote default is 1000 units. Set `SANDBOX_QUOTE_BASE_PRICE_WEI=1000000000000000` only for an 18-decimal token.
 
 ---
 
@@ -238,28 +243,30 @@ For jobs where costs vary significantly (different LLM models, different contain
 After registering your blueprint on Tangle, configure rates using the `ConfigureJobRates.s.sol` script:
 
 ```bash
-# Base rate determines all job prices via multipliers
-# Adjust based on your token's USD value
-BASE_RATE=1000000000000000 \     # 0.001 TNT
-BLUEPRINT_ID=<your-id> \
-TANGLE_ADDRESS=<tangle-proxy> \
+# PathUSD (6 decimals). Omit BASE_RATE to use 1000 (0.001 pathUSD).
+# 1e15 reverts: it is above the 6-decimal cap.
+PAYMENT_TOKEN=0x20C0000000000000000000000000000000000000 \
+BLUEPRINT_ID=4 \
+TANGLE_ADDRESS=0xff137b9c879c47c28ce389e84501925438ab4cda \
 BSM_ADDRESS=<your-bsm> \
 forge script contracts/script/ConfigureJobRates.s.sol:ConfigureJobRates \
-  --rpc-url $RPC_URL --broadcast
+  --rpc-url https://rpc.moderato.tempo.xyz --broadcast
 ```
+
+For an 18-decimal token, pass `DECIMALS=18` and, when 1 token is about $1, `BASE_RATE=1000000000000000`.
 
 ### Base Rate Guidelines
 
-| If 1 TNT ≈ | Set BASE_RATE to | DELETE cost (1x) | CREATE cost (50x) |
-|------------|-----------------|-------------------|-------------------|
-| $0.01 | 1e17 (0.1 TNT) | $0.001 | $0.05 |
-| $0.10 | 1e16 (0.01 TNT) | $0.001 | $0.05 |
-| $1.00 | 1e15 (0.001 TNT) | $0.001 | $0.05 |
-| $10.00 | 1e14 (0.0001 TNT) | $0.001 | $0.05 |
+The base is 0.001 of the settlement token when that token is the dollar (pathUSD, or an 18-decimal token near $1). Do not scale a 6-decimal stablecoin as if it had 18 decimals. A new diamond does not fix a script that still writes `1e15`.
+
+| Settlement token | Base | DELETE (1x) | CREATE (50x) |
+|------------------|------|-------------|--------------|
+| pathUSD (6 decimals) | 1000 | $0.001 | $0.05 |
+| 18-decimal token ≈ $1 | 1e15 | 0.001 token | 0.05 token |
 
 ### Overriding Individual Rates
 
-Blueprint owners can override any individual rate by calling `setJobEventRates()` directly on the Tangle contract with a subset of job indexes (0-6):
+Blueprint owners can override any individual rate by calling `setJobEventRates()` directly on the Tangle contract with a subset of job indexes the blueprint registered. A rate of 0 clears the override and restores `eventRate`. `ConfigureJobRates` reads the on-chain job count and skips indexes the blueprint does not have. Blueprints 4 and 8 were each registered with two jobs, so their workflow jobs cannot be priced in place, and clearing job 0 or 1 there restores the `1e15` fallback. Blueprint 16 registers all five jobs with `eventRate` equal to the pathUSD base.
 
 ```solidity
 // Make SANDBOX_CREATE cheaper (e.g., lightweight containers)

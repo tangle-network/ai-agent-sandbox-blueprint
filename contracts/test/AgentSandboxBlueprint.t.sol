@@ -171,7 +171,12 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.OperatorMismatch.selector, operator1, operator2));
         blueprint.onJobResult(
-            1, 0, 30, operator2, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs("sandbox-wrong", "{}")
+            1,
+            0,
+            30,
+            operator2,
+            keccak256(encodeSandboxCreateInputs()),
+            encodeSandboxCreateOutputs("sandbox-wrong", "{}")
         );
     }
 
@@ -182,7 +187,12 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.OperatorMismatch.selector, address(0), operator1));
         blueprint.onJobResult(
-            1, 0, 40, operator1, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs("sandbox-clear2", "{}")
+            1,
+            0,
+            40,
+            operator1,
+            keccak256(encodeSandboxCreateInputs()),
+            encodeSandboxCreateOutputs("sandbox-clear2", "{}")
         );
     }
 
@@ -524,7 +534,9 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         simulateJobCall(1, workflowJobId, 506, encodeWorkflowCreateInputs(req255));
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.InvalidWorkflowTarget.selector, uint8(255)));
-        blueprint.onJobResult(1, workflowJobId, 506, operator1, keccak256(encodeWorkflowCreateInputs(req255)), bytes(""));
+        blueprint.onJobResult(
+            1, workflowJobId, 506, operator1, keccak256(encodeWorkflowCreateInputs(req255)), bytes("")
+        );
     }
 
     function test_workflowCreateRevertsOnEmptySandboxId() public {
@@ -677,7 +689,12 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         vm.prank(tangleCore);
         vm.expectRevert(abi.encodeWithSelector(SandboxTypes.SandboxAlreadyExists.selector, dupHash));
         blueprint.onJobResult(
-            1, 0, 801, operator1, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs("sandbox-dup", "{}")
+            1,
+            0,
+            801,
+            operator1,
+            keccak256(encodeSandboxCreateInputs()),
+            encodeSandboxCreateOutputs("sandbox-dup", "{}")
         );
     }
 
@@ -790,7 +807,9 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
 
         vm.prank(tangleCore);
         vm.expectRevert(SandboxTypes.EmptySandboxId.selector);
-        blueprint.onJobResult(1, 0, 900, operator1, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs("", "{}"));
+        blueprint.onJobResult(
+            1, 0, 900, operator1, keccak256(encodeSandboxCreateInputs()), encodeSandboxCreateOutputs("", "{}")
+        );
     }
 
     function test_createResultRevertsTooLongSandboxId() public {
@@ -986,6 +1005,29 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         for (uint256 i = 0; i < rates.length; i++) {
             assertTrue(rates[i] >= baseRate);
         }
+    }
+
+    /// PathUSD is 6 decimals. 1e15 is an 18-decimal 0.001 and bills about $1B per unset job.
+    function test_pathUsdBaseRejectsEighteenDecimalRate() public view {
+        address pathUsd = 0x20C0000000000000000000000000000000000000;
+        assertTrue(blueprint.queryIsPaymentAssetAllowed(4, pathUsd));
+
+        uint256 maxBase = blueprint.maxBaseForDecimals(6);
+        uint256 base = blueprint.defaultBaseForDecimals(6);
+        assertEq(base, 1000);
+        assertEq(maxBase, 20_000_000_000);
+        assertGt(maxBase, base);
+        assertGt(uint256(1e15), maxBase);
+        assertEq(blueprint.defaultBaseForDecimals(18), 1e15);
+
+        (uint8[] memory jobs, uint256[] memory rates) = blueprint.getDefaultJobRates(base);
+        assertEq(jobs.length, 5);
+        assertEq(jobs[0], blueprint.JOB_SANDBOX_CREATE());
+        assertEq(rates[0], 50_000); // create, $0.05
+        assertEq(rates[1], 1_000); // delete, $0.001
+        assertEq(rates[2], 2_000); // workflow create, $0.002
+        assertEq(rates[3], 5_000); // trigger, $0.005
+        assertEq(rates[4], 1_000); // cancel, $0.001
     }
 
     function testFuzz_operatorSelectionBounded(uint8 numOperators) public {

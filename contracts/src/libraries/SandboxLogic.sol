@@ -15,10 +15,6 @@ import "./SandboxTypes.sol";
 ///         State access goes through `SandboxStorage.load()`. DELEGATECALL
 ///         semantics mean writes hit the calling blueprint's storage.
 library SandboxLogic {
-    // ═══════════════════════════════════════════════════════════════════════════
-    // CAPACITY-WEIGHTED OPERATOR SELECTION (cloud mode)
-    // ═══════════════════════════════════════════════════════════════════════════
-
     /// @notice Selects an operator weighted by remaining capacity using
     ///         pseudo-random selection. Caller is expected to filter via
     ///         the inherited `_isEligibleOperator` invariant by passing
@@ -65,10 +61,6 @@ library SandboxLogic {
 
         return candidates[count - 1];
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // SANDBOX CREATE / DELETE RESULTS (cloud mode)
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function handleCreateResult(uint64 serviceId, uint64 jobCallId, address operator, bytes calldata outputs) external {
         SandboxStorage.Data storage $ = SandboxStorage.load();
@@ -118,10 +110,6 @@ library SandboxLogic {
 
         emit SandboxTypes.SandboxDeleted(sandboxHash, operator);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INSTANCE LIFECYCLE
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function handleProvisionResult(uint64 serviceId, address operator, bytes memory outputs) external {
         SandboxStorage.Data storage $ = SandboxStorage.load();
@@ -190,10 +178,6 @@ library SandboxLogic {
 
         emit SandboxTypes.OperatorDeprovisioned(serviceId, operator);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // WORKFLOW STORAGE (both modes)
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function handleWorkflowCreateResult(uint64 serviceId, uint64 workflowId, bytes calldata inputs) external {
         (
@@ -290,10 +274,6 @@ library SandboxLogic {
 
         emit SandboxTypes.WorkflowStored(workflowId, triggerType, triggerConfig);
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // VIEW HELPERS (heavy reads — kept here to keep the contract small)
-    // ═══════════════════════════════════════════════════════════════════════════
 
     /// @notice Sum of per-operator remaining capacity, restricted to the
     ///         eligible operators the caller has already filtered.
