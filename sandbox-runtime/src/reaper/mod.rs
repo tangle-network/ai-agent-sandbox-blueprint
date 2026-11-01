@@ -7,8 +7,8 @@
 use crate::metrics::metrics;
 use crate::runtime::{
     SandboxState, SidecarRuntimeConfig, commit_container, delete_sidecar, docker_builder,
-    record_uses_firecracker, refresh_docker_sandbox_endpoint, remove_snapshot_image, sandboxes,
-    stop_sidecar, supports_docker_endpoint_refresh,
+    record_uses_firecracker, record_uses_microsandbox, refresh_docker_sandbox_endpoint,
+    remove_snapshot_image, sandboxes, stop_sidecar, supports_docker_endpoint_refresh,
 };
 use blueprint_sdk::{error, info};
 use docktopus::bollard::container::InspectContainerOptions;

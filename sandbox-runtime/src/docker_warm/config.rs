@@ -1,9 +1,4 @@
-//! Warm-pool configuration knobs + host-memory reservation.
-//!
-//! Every knob mirrors an `SANDBOX_FC_WARM_*` sibling in
-//! [`crate::firecracker_warm::config`]; the parsing discipline is identical
-//! (absent/empty/`0` disables, unparseable is a hard [`SandboxError::Validation`],
-//! never a silent disable).
+//! Docker warm-pool knobs. Absent, empty, or `0` disables. Unparseable is an error.
 
 use super::*;
 

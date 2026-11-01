@@ -36,6 +36,7 @@ pub(crate) async fn list_provisions() -> impl IntoResponse {
 pub(crate) enum RuntimeProbeBackend {
     Docker,
     Firecracker,
+    Microsandbox,
     Tee,
 }
 
@@ -44,6 +45,7 @@ impl RuntimeProbeBackend {
         match self {
             RuntimeProbeBackend::Docker => "docker",
             RuntimeProbeBackend::Firecracker => "firecracker",
+            RuntimeProbeBackend::Microsandbox => "microsandbox",
             RuntimeProbeBackend::Tee => "tee",
         }
     }
@@ -54,9 +56,10 @@ pub(crate) fn configured_runtime_probe_backend() -> Result<RuntimeProbeBackend, 
     match raw.trim().to_ascii_lowercase().as_str() {
         "docker" | "container" => Ok(RuntimeProbeBackend::Docker),
         "firecracker" | "microvm" => Ok(RuntimeProbeBackend::Firecracker),
+        "microsandbox" | "msb" => Ok(RuntimeProbeBackend::Microsandbox),
         "tee" | "confidential" | "confidential-vm" => Ok(RuntimeProbeBackend::Tee),
         _ => Err(format!(
-            "invalid SANDBOX_RUNTIME_BACKEND '{raw}' (expected docker|firecracker|tee)"
+            "invalid SANDBOX_RUNTIME_BACKEND '{raw}' (expected docker|firecracker|microsandbox|tee)"
         )),
     }
 }
@@ -100,6 +103,22 @@ pub(crate) async fn probe_runtime_backend() -> (String, bool, Option<String>) {
                     backend.as_str().to_string(),
                     false,
                     Some("firecracker driver health check timed out".to_string()),
+                ),
+            }
+        }
+        RuntimeProbeBackend::Microsandbox => {
+            let checked = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::runtime::microsandbox_doctor(),
+            )
+            .await;
+            match checked {
+                Ok(Ok(())) => (backend.as_str().to_string(), true, None),
+                Ok(Err(err)) => (backend.as_str().to_string(), false, Some(err.to_string())),
+                Err(_) => (
+                    backend.as_str().to_string(),
+                    false,
+                    Some("microsandbox doctor timed out".to_string()),
                 ),
             }
         }

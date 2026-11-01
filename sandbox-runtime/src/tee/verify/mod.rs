@@ -1,43 +1,8 @@
-//! Cryptographic verification of TEE quotes against hardware roots of trust.
+//! Quote verification against hardware roots. Compiled only with `tee-verify`.
 //!
-//! This is the real implementation behind [`super::verify_quote_signature`],
-//! compiled only under the `tee-verify` feature so the default and non-TEE
-//! builds never pull the heavier X.509/ECDSA crates.
-//!
-//! # What "verified" means here
-//!
-//! Each arm chains an attestation back to a hardware root that the *operator
-//! does not control*:
-//!
-//! - **Intel TDX (DCAP):** [`dcap_qvl`] verifies the quote ECDSA signature and
-//!   the PCK certificate chain up to the Intel SGX Root CA bundled in that
-//!   crate ([`dcap_qvl::verify::QuoteVerifier::new_prod`]), and checks TCB
-//!   status + collateral expiry against Intel PCS collateral.
-//! - **AMD SEV-SNP:** the [`sev`] crate verifies the report signature and the
-//!   VCEK/VLEK → ASK → ARK chain against the AMD root keys built into the crate
-//!   ([`sev::certs::snp::builtin`]). On top of the crate's signature-only
-//!   `crypto_nossl` path we additionally (a) reject any cert in the chain that
-//!   is outside its notBefore/notAfter window at the trusted `now_secs` (the
-//!   crate checks no validity window), (b) when the producer carries the AMD KDS
-//!   CRL, verify its RSA-PSS signature against the pinned ASK, check its
-//!   freshness window, and reject a revoked VEK serial ([`check_crl_revocation`]),
-//!   and (c) reject reports whose guest policy permits debug, whose VMPL ≠ 0, or
-//!   whose version < 2 — mirroring the TDX arm's debug rejection so both backends
-//!   fail closed on a non-confidential enclave. NOTE: revocation is only checked
-//!   when a CRL is supplied in the evidence. The TDX arm always has CRLs in its
-//!   DCAP collateral, so a SEV report WITHOUT a bundled CRL is lower-assurance
-//!   than TDX on revocation — producers SHOULD always carry the KDS CRL.
-//! - **AWS Nitro:** the pinned AWS Nitro Root-G1 and document verifier from
-//!   `blueprint-tee`, with raw nonce extraction for report-data binding.
-//!
-//! # Evidence binding (anti-forgery)
-//!
-//! A malicious operator can put anything in [`super::AttestationReport`]. So we
-//! NEVER trust `report.measurement`; we extract the measurement from *inside*
-//! the cryptographically verified quote and require it to equal the
-//! caller-visible `report.measurement`. A forged measurement therefore fails.
-//! When the caller bound a nonce into `report_data` (replay protection), that
-//! binding is carried by the signed quote and surfaced via [`VerifiedQuote`].
+//! Never trust `report.measurement` from the caller. Read it from the verified
+//! quote and require equality. SEV without a bundled KDS CRL does not check
+//! revocation. Reject debug policy, VMPL != 0, and SEV version < 2.
 
 use super::{AttestationReport, TeeType};
 

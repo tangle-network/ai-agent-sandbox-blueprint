@@ -34,6 +34,16 @@ pub async fn stop_sidecar(record: &SandboxRecord) -> Result<()> {
         return Ok(());
     }
 
+    if record_uses_microsandbox(record) {
+        stop_microsandbox(&record.container_id).await?;
+        let now = crate::util::now_ts();
+        let _ = sandboxes()?.update(&record.id, |r| {
+            r.state = SandboxState::Stopped;
+            r.stopped_at = Some(now);
+        });
+        return Ok(());
+    }
+
     // Standard Docker path.
     let builder = docker_builder().await?;
     let mut container = docker_timeout(
@@ -140,6 +150,16 @@ pub async fn resume_sidecar(record: &SandboxRecord) -> Result<()> {
         return Err(SandboxError::Validation(
             "Sandbox is already running".into(),
         ));
+    }
+    if record_uses_microsandbox(record) {
+        start_microsandbox(&record.container_id).await?;
+        let now = crate::util::now_ts();
+        let _ = sandboxes()?.update(&record.id, |r| {
+            r.state = SandboxState::Running;
+            r.stopped_at = None;
+            r.last_activity_at = now;
+        });
+        return Ok(());
     }
     if record_uses_firecracker(record) {
         // Re-start the VM via the in-process driver. The primitive can flip
@@ -317,6 +337,11 @@ async fn delete_sidecar_inner(
     }
     if record_uses_firecracker(record) {
         crate::firecracker::delete(&record.container_id).await?;
+        crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
+        return Ok(());
+    }
+    if record_uses_microsandbox(record) {
+        delete_microsandbox(&record.container_id).await?;
         crate::metrics::metrics().record_sandbox_deleted(record.cpu_cores, record.memory_mb);
         return Ok(());
     }

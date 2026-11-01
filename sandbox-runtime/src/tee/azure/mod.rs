@@ -1,33 +1,8 @@
-//! Azure Confidential VM + Secure Key Release (SKR) TEE backend.
+//! Azure Confidential VM (SEV-SNP) plus Key Vault secure key release.
 //!
-//! Deploys sidecar containers on Azure Confidential VMs (DCasv5/ECasv5)
-//! running AMD SEV-SNP. Uses Microsoft Azure Attestation (MAA) for
-//! hardware attestation validation and Key Vault SKR for secret release.
-//!
-//! # Deploy flow
-//!
-//! 1. Create a public IP and NIC in the configured subnet.
-//! 2. Create a Confidential VM (DCasv5 or ECasv5 series, SEV-SNP) with the
-//!    sidecar pre-installed in the VM image. System-assigned managed identity
-//!    is enabled for Key Vault access.
-//! 3. The sidecar reads the SEV-SNP attestation report from the vTPM NV Index
-//!    (`0x01400001`), sends it to MAA for validation, and receives a signed JWT.
-//! 4. Key Vault SKR validates the MAA JWT and releases the wrapped key
-//!    to the TEE using the ephemeral `TpmEphemeralEncryptionKey`.
-//!
-//! # Sealed secrets
-//!
-//! The HCL (Host Compatibility Layer) generates an ephemeral RSA key pair at
-//! boot, seals the private key to the vTPM. MAA embeds the public key in
-//! `x-ms-runtime.keys`. Key Vault's `/release` endpoint validates the MAA
-//! JWT, wraps the secret to the TEE's ephemeral key. Only the TEE holding
-//! the vTPM-sealed private key can unwrap.
-//!
-//! # Authentication
-//!
-//! Uses OAuth2 client credentials flow with `AZURE_TENANT_ID`,
-//! `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. This avoids a dependency
-//! on `azure_identity` while supporting service principal auth.
+//! The vTPM seals the HCL ephemeral key. Only that TEE unwraps the release.
+//! Auth is client-credentials (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+//! `AZURE_CLIENT_SECRET`), not `azure_identity`.
 
 use std::time::Duration;
 

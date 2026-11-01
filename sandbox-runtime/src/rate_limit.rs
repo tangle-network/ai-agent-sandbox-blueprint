@@ -1,18 +1,4 @@
-//! Simple sliding-window rate limiter for the operator API.
-//!
-//! Uses an in-memory sliding window per client IP. Old entries are cleaned up
-//! periodically to avoid unbounded memory growth.
-//!
-//! Two static limiters are provided:
-//! - `read_limiter()`: 120 req/min — for GET endpoints
-//! - `write_limiter()`: 30 req/min — for POST/DELETE endpoints
-//! - `terminal_interactive_limiter()`: 2400 req/min — for PTY input/resize
-//!
-//! Usage in operator_api router:
-//! ```ignore
-//! use axum::middleware;
-//! router.layer(middleware::from_fn(rate_limit::read_rate_limit))
-//! ```
+//! Sliding window per client IP. Reads 120/min, writes 30/min, PTY 2400/min.
 
 use axum::{
     extract::{ConnectInfo, Request},

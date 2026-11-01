@@ -60,6 +60,7 @@ mod env_vars;
 mod firecracker_create;
 mod lifecycle;
 mod lookup;
+mod microsandbox;
 mod ports;
 mod secrets;
 mod snapshots;
@@ -77,6 +78,7 @@ pub(crate) use docker_create::*;
 pub(crate) use env_vars::*;
 pub(crate) use firecracker_create::*;
 pub(crate) use lookup::*;
+pub(crate) use microsandbox::*;
 pub(crate) use ports::*;
 #[cfg(test)]
 pub(crate) use secrets::*;
@@ -163,6 +165,7 @@ pub struct CreateSandboxParams {
 pub(crate) enum RuntimeBackend {
     Docker,
     Firecracker,
+    Microsandbox,
     Tee,
 }
 

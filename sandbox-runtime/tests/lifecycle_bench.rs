@@ -69,8 +69,26 @@ fn bench_reps() -> usize {
         .unwrap_or(5)
 }
 
+fn bench_backend() -> String {
+    std::env::var("LIFECYCLE_BENCH_BACKEND").unwrap_or_else(|_| "docker".to_string())
+}
+
 fn bench_image() -> String {
-    std::env::var("LIFECYCLE_BENCH_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.to_string())
+    std::env::var("LIFECYCLE_BENCH_IMAGE").unwrap_or_else(|_| {
+        if bench_backend() == "microsandbox" {
+            "alpine:3.20".to_string()
+        } else {
+            DEFAULT_IMAGE.to_string()
+        }
+    })
+}
+
+fn msb_available() -> bool {
+    Command::new("msb")
+        .arg("doctor")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn docker_available() -> bool {
@@ -117,6 +135,7 @@ fn setup_env(image: &str) {
         std::env::set_var("SIDECAR_PUBLIC_HOST", "127.0.0.1");
         std::env::set_var("REQUEST_TIMEOUT_SECS", "60");
         std::env::set_var("SESSION_AUTH_SECRET", "lifecycle-bench-secret");
+        std::env::set_var("SANDBOX_RUNTIME_BACKEND", bench_backend());
         std::env::remove_var("DOCKER_HOST");
     }
 }
@@ -127,7 +146,7 @@ fn bench_params(image: &str, rep: usize) -> CreateSandboxParams {
         image: image.to_string(),
         stack: "default".to_string(),
         agent_identifier: "default".to_string(),
-        metadata_json: r#"{"runtime_backend":"docker"}"#.to_string(),
+        metadata_json: format!(r#"{{"runtime_backend":"{}"}}"#, bench_backend()),
         // ssh_enabled=false is the common product path AND the one where
         // create returns before /health — exactly the gap this bench exists
         // to make visible.
@@ -199,16 +218,24 @@ async fn lifecycle_create_ready_delete_bench() {
     }
     // The bench was explicitly requested — missing prerequisites are loud
     // failures, not silent skips.
-    assert!(
-        docker_available(),
-        "RUN_LIFECYCLE_BENCH=1 but no reachable Docker daemon (`docker info` failed)"
-    );
+    let backend = bench_backend();
     let image = bench_image();
-    assert!(
-        image_present(&image),
-        "RUN_LIFECYCLE_BENCH=1 but image {image} is not local; run `docker pull {image}` \
-         (or set LIFECYCLE_BENCH_IMAGE)"
-    );
+    if backend == "microsandbox" {
+        assert!(
+            msb_available(),
+            "RUN_LIFECYCLE_BENCH=1 LIFECYCLE_BENCH_BACKEND=microsandbox but `msb doctor` failed"
+        );
+    } else {
+        assert!(
+            docker_available(),
+            "RUN_LIFECYCLE_BENCH=1 but no reachable Docker daemon (`docker info` failed)"
+        );
+        assert!(
+            image_present(&image),
+            "RUN_LIFECYCLE_BENCH=1 but image {image} is not local; run `docker pull {image}` \
+             (or set LIFECYCLE_BENCH_IMAGE)"
+        );
+    }
 
     {
         // Serialize env mutation, matching this dir's convention for
@@ -251,7 +278,7 @@ async fn lifecycle_create_ready_delete_bench() {
     // Warmup rep (discarded): primes the process-wide image-pull once-cell,
     // the HTTP client, and the Docker daemon's caches so measured reps
     // reflect steady state. Cold-start cost is visible in its own log line.
-    eprintln!("=== lifecycle bench: image={image} reps={reps} (+1 warmup) ===");
+    eprintln!("=== lifecycle bench: backend={backend} image={image} reps={reps} (+1 warmup) ===");
     for rep in 0..=reps {
         let warmup = rep == 0;
         let params = bench_params(&image, rep);
@@ -267,7 +294,17 @@ async fn lifecycle_create_ready_delete_bench() {
             });
 
         let health_start = Instant::now();
-        let ready = wait_for_sidecar_health(&record.sidecar_url, 120).await;
+        let ready = if backend == "microsandbox" {
+            // The default microsandbox image is Alpine, which has no sidecar
+            // /health. Ready means a command ran inside that guest.
+            Command::new("msb")
+                .args(["exec", &record.container_id, "--", "true"])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        } else {
+            wait_for_sidecar_health(&record.sidecar_url, 120).await
+        };
         let health_elapsed = health_start.elapsed();
         let ready_elapsed = rep_start.elapsed();
 

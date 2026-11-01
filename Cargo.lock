@@ -6963,7 +6963,6 @@ dependencies = [
 [[package]]
 name = "microvm-runtime"
 version = "0.4.0-alpha.4"
-source = "git+https://github.com/tangle-network/microvm-runtime?rev=611111ffe5696e3dd319924b52631349ea97c6ec#611111ffe5696e3dd319924b52631349ea97c6ec"
 dependencies = [
  "base64 0.22.1",
  "libc",

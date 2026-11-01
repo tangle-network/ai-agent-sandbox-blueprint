@@ -1,32 +1,8 @@
-//! Per-VM host port forwarding via `iptables` PREROUTING DNAT rules.
+//! Ingress DNAT for Firecracker guests. The primitive only NATs egress.
 //!
-//! The Firecracker network primitive [`microvm_runtime::network::NetworkManager`]
-//! sets up a host bridge with MASQUERADE NAT, which gives the guest egress.
-//! It does *not* set up ingress: host port → guest port forwarding is the
-//! caller's job. This module is the caller-side glue.
-//!
-//! ## Design mirror with `microvm_runtime::firewall`
-//!
-//! - Per-VM chain in the `nat` table, named
-//!   `<chain_prefix><first-16-hex-of-fnv1a-64(vm_id)>` (24 chars, comfortably
-//!   under iptables' 28-char cap).
-//! - Idempotent `install` — re-installing a different mapping for the same
-//!   VM replaces the previous chain.
-//! - Idempotent `release` — chains / jumps that are already gone are not an
-//!   error.
-//! - Every `iptables` invocation passes `-w` so concurrent system tooling
-//!   (fail2ban, ufw, …) does not EBUSY us.
-//! - All arguments validated before any iptables call so a malformed input
-//!   fails fast and visibly instead of producing a half-installed chain.
-//!
-//! ## Why a separate module from `microvm_runtime::firewall`
-//!
-//! `microvm_runtime::firewall` ships a FORWARD-chain allowlist (egress
-//! scoping). DNAT lives in the `nat` table with completely different
-//! semantics — its chain prefix must not collide with the FORWARD one so an
-//! orphan-GC of one cannot ever sweep the other. Keeping it sandbox-side
-//! also keeps the primitive scope tight; once a generalised DNAT API ships
-//! upstream this module can become a thin shim.
+//! Chain names stay under iptables' 28-character cap and must not share a
+//! prefix with `microvm_runtime::firewall` (FORWARD), or one GC sweeps the
+//! other. Every `iptables` call passes `-w`.
 
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
