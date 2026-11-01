@@ -34,6 +34,9 @@ use std::time::Duration;
 
 use tokio::sync::OnceCell;
 
+#[path = "gcp_token.rs"]
+mod gcp_token;
+
 use super::sealed_secrets::{SealedSecret, SealedSecretResult, TeePublicKey};
 use super::{AttestationReport, TeeBackend, TeeDeployParams, TeeDeployment, TeeType};
 use crate::error::{Result, SandboxError};
@@ -277,6 +280,23 @@ impl GcpConfidentialSpaceBackend {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
+
+    async fn abandon(&self, instance_name: &str) {
+        if let Err(err) = TeeBackend::destroy(self, instance_name).await {
+            tracing::warn!(
+                %err,
+                instance_name,
+                "failed to delete the GCP instance after deploy was refused"
+            );
+        }
+    }
+
+    async fn or_abandon<T>(&self, instance_name: &str, result: Result<T>) -> Result<T> {
+        if result.is_err() {
+            self.abandon(instance_name).await;
+        }
+        result
+    }
 }
 
 #[async_trait::async_trait]
@@ -303,21 +323,22 @@ impl TeeBackend for GcpConfidentialSpaceBackend {
             )));
         }
 
-        // Wait for RUNNING and get external IP.
-        let public_ip = self.wait_for_running(&instance_name).await?;
+        // Create has already succeeded. Every later failure deletes the VM.
+        let running = self.wait_for_running(&instance_name).await;
+        let public_ip = self.or_abandon(&instance_name, running).await?;
         let sidecar_url = format!("http://{}:{}", public_ip, params.http_port);
-
-        // Wait for sidecar health inside the confidential VM.
-        super::wait_for_sidecar_health(
+        let healthy = super::wait_for_sidecar_health(
             &sidecar_url,
             &params.sidecar_token,
             Duration::from_secs(300),
         )
-        .await?;
-
-        // Fetch attestation from the sidecar (which reads from teeserver.sock).
-        let attestation =
-            super::fetch_sidecar_attestation(&sidecar_url, &params.sidecar_token).await?;
+        .await;
+        self.or_abandon(&instance_name, healthy).await?;
+        // The sidecar reads the launcher token from teeserver.sock.
+        let fetched = super::fetch_sidecar_attestation(&sidecar_url, &params.sidecar_token).await;
+        let attestation = self.or_abandon(&instance_name, fetched).await?;
+        let verified = gcp_token::require_production_token(&attestation).await;
+        self.or_abandon(&instance_name, verified).await?;
 
         let metadata = serde_json::json!({
             "gcp_project": self.config.project_id,

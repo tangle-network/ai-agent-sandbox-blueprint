@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [features]
 qos = ["dep:blueprint-qos"]
+tee-gcp = ["sandbox-runtime/tee-gcp"]
 
 [dependencies]
 ai-agent-sandbox-blueprint-lib = { path = "../ai-agent-sandbox-blueprint-lib" }
