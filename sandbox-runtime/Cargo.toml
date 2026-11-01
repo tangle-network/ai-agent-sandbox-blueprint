@@ -152,11 +152,15 @@ harness = false
 [features]
 default = []
 test-utils = ["dep:anyhow"]
-tee-phala = ["dep:phala-tee-deploy-rs"]
-tee-direct = ["dep:libc"]
-tee-aws-nitro = ["dep:aws-config", "dep:aws-sdk-ec2"]
+# Each hardware backend pulls `tee-verify` so a build that can deploy the
+# backend can also refuse a quote it cannot chain to a hardware root.
+# `tee-gcp` stays off that list: its evidence is a Google JWT, checked in
+# `gcp_token`, not a DCAP/SNP/COSE quote.
+tee-phala = ["dep:phala-tee-deploy-rs", "tee-verify"]
+tee-direct = ["dep:libc", "tee-verify"]
+tee-aws-nitro = ["dep:aws-config", "dep:aws-sdk-ec2", "tee-verify"]
 tee-gcp = ["dep:gcp_auth", "dep:rsa", "dep:signature"]
-tee-azure = []
+tee-azure = ["tee-verify"]
 # Cryptographic quote verification against hardware roots of trust (Intel
 # SGX/TDX DCAP, AMD SEV-SNP, AWS Nitro). Heavy crypto deps live ONLY here.
 tee-verify = [

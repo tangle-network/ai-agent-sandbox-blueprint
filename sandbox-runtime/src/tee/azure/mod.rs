@@ -99,13 +99,29 @@ pub struct AzureSkrBackend {
 }
 
 mod backend;
+mod maa_token;
 mod methods;
 
 // tee-level helpers the moved impl code reaches via `super::` (azure is now a submodule).
 pub(crate) use super::{
-    fetch_sidecar_attestation, sidecar_derive_public_key, sidecar_info_for_deployment,
-    sidecar_inject_sealed_secrets, wait_for_sidecar_health,
+    fetch_sidecar_attestation, fetch_sidecar_attestation_with_report_data,
+    sidecar_derive_public_key, sidecar_info_for_deployment, sidecar_inject_sealed_secrets,
+    wait_for_sidecar_health,
 };
+
+/// Accept a Microsoft attestation token, or a raw SEV quote when the evidence
+/// is not a JWT. A JWT that is not a production Azure token is refused.
+pub(crate) async fn require_production_attestation(
+    report: &AttestationReport,
+    nonce: Option<&[u8; 64]>,
+) -> Result<()> {
+    match maa_token::require_production_token(report, nonce).await? {
+        maa_token::MaaDecision::Verified => Ok(()),
+        maa_token::MaaDecision::NotAJwt => {
+            super::require_hardware_quote(report, &TeeType::Sev, nonce)
+        }
+    }
+}
 
 pub(crate) fn require_env(name: &str) -> Result<String> {
     std::env::var(name).map_err(|_| {

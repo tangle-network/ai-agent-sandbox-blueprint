@@ -13,6 +13,10 @@ path = "src/main.rs"
 [features]
 qos = ["dep:blueprint-qos"]
 tee-gcp = ["sandbox-runtime/tee-gcp"]
+tee-aws-nitro = ["sandbox-runtime/tee-aws-nitro"]
+tee-azure = ["sandbox-runtime/tee-azure"]
+tee-phala = ["sandbox-runtime/tee-phala"]
+tee-direct = ["sandbox-runtime/tee-direct"]
 
 [dependencies]
 ai-agent-sandbox-blueprint-lib = { path = "../ai-agent-sandbox-blueprint-lib" }

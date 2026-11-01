@@ -194,6 +194,19 @@ impl DirectTeeBackend {
             .and_then(|p| p.parse::<u16>().ok())
             .ok_or_else(|| SandboxError::Docker(format!("Invalid host port for {key}")))
     }
+
+    async fn or_abandon<T>(&self, container_id: &str, result: Result<T>) -> Result<T> {
+        if result.is_err()
+            && let Err(err) = TeeBackend::destroy(self, container_id).await
+        {
+            tracing::warn!(
+                %err,
+                container_id,
+                "failed to remove the direct TEE container after deploy was refused"
+            );
+        }
+        result
+    }
 }
 
 #[async_trait::async_trait]
@@ -241,26 +254,36 @@ impl TeeBackend for DirectTeeBackend {
             .ok_or_else(|| SandboxError::Docker("Missing container id after start".into()))?
             .to_string();
 
-        // Inspect to get port mappings.
-        let inspect = docker_timeout(
+        // Inspect to get port mappings. The container exists from here on.
+        let inspected = docker_timeout(
             "inspect_container",
             builder
                 .client()
                 .inspect_container(&container_id, None::<InspectContainerOptions>),
         )
-        .await?;
+        .await;
+        let inspect = self.or_abandon(&container_id, inspected).await?;
 
-        let ports = inspect
+        let Some(ports) = inspect
             .network_settings
             .as_ref()
             .and_then(|s| s.ports.as_ref())
-            .ok_or_else(|| SandboxError::Docker("Missing port mappings".into()))?;
+        else {
+            return self
+                .or_abandon(
+                    &container_id,
+                    Err(SandboxError::Docker("Missing port mappings".into())),
+                )
+                .await;
+        };
 
-        let host_port = Self::extract_host_port(ports, params.http_port)?;
+        let host_port = Self::extract_host_port(ports, params.http_port);
+        let host_port = self.or_abandon(&container_id, host_port).await?;
         let ssh_host_port = params
             .ssh_port
             .map(|p| Self::extract_host_port(ports, p))
-            .transpose()?;
+            .transpose();
+        let ssh_host_port = self.or_abandon(&container_id, ssh_host_port).await?;
 
         let mut extra_port_map = HashMap::new();
         for &cp in &params.extra_ports {
@@ -271,42 +294,55 @@ impl TeeBackend for DirectTeeBackend {
 
         let sidecar_url = format!("http://{}:{host_port}", config.public_host);
 
-        // Wait for sidecar to become healthy.
-        super::wait_for_sidecar_health(
+        let healthy = super::wait_for_sidecar_health(
             &sidecar_url,
             &params.sidecar_token,
             Duration::from_secs(60),
         )
-        .await?;
+        .await;
+        self.or_abandon(&container_id, healthy).await?;
 
-        // Try native attestation first, fall back to sidecar.
+        // Try native attestation first. A caller nonce makes a native failure
+        // fatal. Otherwise fall back to the sidecar quote.
         let nonce = params.attestation_report_data.unwrap_or_else(|| {
             let mut nonce = [0u8; 64];
             rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
             nonce
         });
-        // The native-attestation ioctl round-trips to firmware/PSP and can block
-        // for milliseconds; run it off the async worker thread (matching the
-        // firecracker.rs convention) so it never stalls the tokio runtime.
         let att_tee_type = self.tee_type.clone();
         let native_result = tokio::task::spawn_blocking(move || {
             super::attestation::generate_native_attestation(&att_tee_type, &nonce)
         })
         .await
-        .map_err(|e| {
-            SandboxError::CloudProvider(format!("native attestation task panicked: {e}"))
-        })?;
+        .map_err(|e| SandboxError::CloudProvider(format!("native attestation task panicked: {e}")));
+        let native_result = self.or_abandon(&container_id, native_result).await?;
         let attestation = match native_result {
-            Ok(att) => {
-                tracing::info!("Native TEE attestation generated successfully");
-                att
-            }
+            Ok(att) => match super::require_hardware_quote(&att, &self.tee_type, Some(&nonce)) {
+                Ok(()) => att,
+                Err(err) if params.attestation_report_data.is_some() => {
+                    return self.or_abandon(&container_id, Err(err)).await;
+                }
+                Err(native_err) => {
+                    tracing::warn!(error = %native_err, "Native attestation was not a hardware quote, falling back to sidecar");
+                    let fetched =
+                        super::fetch_sidecar_attestation(&sidecar_url, &params.sidecar_token).await;
+                    let att = self.or_abandon(&container_id, fetched).await?;
+                    let verified = super::require_hardware_quote(&att, &self.tee_type, None);
+                    self.or_abandon(&container_id, verified).await?;
+                    att
+                }
+            },
             Err(native_err) => {
                 if params.attestation_report_data.is_some() {
-                    return Err(native_err);
+                    return self.or_abandon(&container_id, Err(native_err)).await;
                 }
                 tracing::warn!(error = %native_err, "Native attestation unavailable, falling back to sidecar");
-                super::fetch_sidecar_attestation(&sidecar_url, &params.sidecar_token).await?
+                let fetched =
+                    super::fetch_sidecar_attestation(&sidecar_url, &params.sidecar_token).await;
+                let att = self.or_abandon(&container_id, fetched).await?;
+                let verified = super::require_hardware_quote(&att, &self.tee_type, None);
+                self.or_abandon(&container_id, verified).await?;
+                att
             }
         };
 
@@ -351,13 +387,24 @@ impl TeeBackend for DirectTeeBackend {
             SandboxError::CloudProvider(format!("native attestation task panicked: {e}"))
         })?;
         match native_result {
-            Ok(att) => Ok(att),
+            Ok(att) => match super::require_hardware_quote(&att, &self.tee_type, Some(&nonce)) {
+                Ok(()) => Ok(att),
+                Err(err) if report_data.is_some() => Err(err),
+                Err(_) => {
+                    let (sidecar_url, token) = super::sidecar_info_for_deployment(deployment_id)?;
+                    let att = super::fetch_sidecar_attestation(&sidecar_url, &token).await?;
+                    super::require_hardware_quote(&att, &self.tee_type, None)?;
+                    Ok(att)
+                }
+            },
             Err(err) => {
                 if report_data.is_some() {
                     return Err(err);
                 }
                 let (sidecar_url, token) = super::sidecar_info_for_deployment(deployment_id)?;
-                super::fetch_sidecar_attestation(&sidecar_url, &token).await
+                let att = super::fetch_sidecar_attestation(&sidecar_url, &token).await?;
+                super::require_hardware_quote(&att, &self.tee_type, None)?;
+                Ok(att)
             }
         }
     }
