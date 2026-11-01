@@ -6,24 +6,9 @@ import "./SandboxStorage.sol";
 import "./SandboxTypes.sol";
 
 /// @title SandboxLogic
-/// @notice Heavy internal state transitions extracted from
-///         `AgentSandboxBlueprint`. Every function is `external` so the
-///         Solidity compiler emits the bytecode at the library address and
-///         routes calls via DELEGATECALL — the blueprint keeps only thin
-///         entry-point glue and lands well under the EIP-170 24,576 B cap.
-///
-///         State access goes through `SandboxStorage.load()`. DELEGATECALL
-///         semantics mean writes hit the calling blueprint's storage.
+/// @notice External library. Calls are DELEGATECALL, so writes hit the blueprint.
 library SandboxLogic {
-    /// @notice Selects an operator weighted by remaining capacity using
-    ///         pseudo-random selection. Caller is expected to filter via
-    ///         the inherited `_isEligibleOperator` invariant by passing
-    ///         the eligible operator list in `eligibleOps`.
-    /// @dev    `block.prevrandao` is proposer-influenceable. Accepted
-    ///         trade-off for operator selection: operators are trusted
-    ///         service providers, not adversarial bidders. A commit-reveal
-    ///         scheme would add complexity without meaningful security
-    ///         benefit in this threat model.
+    /// @notice Capacity-weighted pick. `prevrandao` is proposer-influenceable; operators are trusted.
     function selectByCapacity(uint64 serviceId, address[] memory eligibleOps) external returns (address) {
         SandboxStorage.Data storage $ = SandboxStorage.load();
 
@@ -69,8 +54,7 @@ library SandboxLogic {
             revert SandboxTypes.OperatorMismatch(assigned, operator);
         }
 
-        SandboxTypes.SandboxCreateOutput memory result = abi.decode(outputs, (SandboxTypes.SandboxCreateOutput));
-        string memory sandboxId = result.sandboxId;
+        string memory sandboxId = _sandboxIdFromCreateOutput(outputs);
         if (bytes(sandboxId).length == 0) revert SandboxTypes.EmptySandboxId();
         if (bytes(sandboxId).length > SandboxTypes.MAX_SANDBOX_ID_LENGTH) {
             revert SandboxTypes.SandboxIdTooLong(bytes(sandboxId).length);
@@ -87,6 +71,20 @@ library SandboxLogic {
         delete $.createAssignments[serviceId][jobCallId];
 
         emit SandboxTypes.SandboxCreated(sandboxHash, operator);
+    }
+
+    /// @dev `abi.encode(SandboxCreateOutput)` starts with offset `0x20`.
+    ///      `abi.encode(string,string)` starts with `0x40`. Decoding the struct
+    ///      form against that bare body reads `0x40` as an offset and panics
+    ///      `0x41`, which tnt-core swallows, so the route is never stored.
+    function _sandboxIdFromCreateOutput(bytes calldata outputs) internal pure returns (string memory sandboxId) {
+        if (outputs.length < 32) revert SandboxTypes.EmptySandboxId();
+        uint256 head = uint256(bytes32(outputs[0:32]));
+        if (head == 0x40) {
+            (sandboxId,) = abi.decode(outputs, (string, string));
+        } else {
+            sandboxId = abi.decode(outputs, (SandboxTypes.SandboxCreateOutput)).sandboxId;
+        }
     }
 
     function handleDeleteResult(address operator, bytes calldata inputs) external {

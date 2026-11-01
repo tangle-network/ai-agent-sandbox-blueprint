@@ -1473,7 +1473,11 @@ mod abi {
             sandboxId: "sb-1".into(),
             json: r#"{"url":"http://h:1"}"#.into(),
         };
-        let d = SandboxCreateOutput::abi_decode(&out.abi_encode()).unwrap();
+        let encoded = out.abi_encode();
+        // Solidity `abi.decode((SandboxCreateOutput))` requires this prefix.
+        // A bare `(string,string)` body starts with 0x40 and the hook panics.
+        assert_eq!(encoded[31], 0x20);
+        let d = SandboxCreateOutput::abi_decode(&encoded).unwrap();
         assert_eq!(d.sandboxId, "sb-1");
     }
 

@@ -145,6 +145,26 @@ contract AgentSandboxBlueprintTest is BlueprintTestSetup {
         assertTrue(blueprint.isSandboxActive("sandbox-abc"));
     }
 
+    /// Bare `(string,string)` body from an operator that skipped the dynamic
+    /// struct offset. This is the Tempo create result that panicked 0x41 and
+    /// left `sandboxOperator` at address(0).
+    function test_bareCreateOutputStoresRoute() public {
+        registerOperator(operator1, 10);
+        bytes memory outputs = hex"00000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000f6c6976652d70726f6f662d62703136000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000027b7d000000000000000000000000000000000000000000000000000000000000";
+
+        uint8 createJob = blueprint.JOB_SANDBOX_CREATE();
+        bytes32 inputsHash = keccak256(encodeSandboxCreateInputs());
+        simulateJobCall(1, createJob, 11, encodeSandboxCreateInputs());
+        vm.prank(tangleCore);
+        blueprint.onJobResult(1, createJob, 11, operator1, inputsHash, outputs);
+
+        assertEq(blueprint.getSandboxOperator("live-proof-bp16"), operator1);
+        assertTrue(blueprint.isSandboxActive("live-proof-bp16"));
+
+        simulateJobCall(1, blueprint.JOB_SANDBOX_DELETE(), 12, encodeSandboxIdInputs("live-proof-bp16"));
+        assertEq(blueprint.getSandboxOperator("live-proof-bp16"), operator1);
+    }
+
     function test_createResultIncrementsLoad() public {
         registerOperator(operator1, 10);
 
