@@ -12,8 +12,10 @@ pub(crate) struct ContainerEnvironment {
 /// format the sidecar's `SIDECAR_CAPABILITIES` parser expects.
 ///
 /// JSON array on input, comma-separated list on the env var, and unknown
-/// entries dropped silently. Returns `None` when nothing recognizable is
-/// present so callers can skip the env-var injection entirely.
+/// entries dropped silently. `credentials_off_chain` is a create-result
+/// opt-in, not a sidecar subsystem, so it stays out of this list. Returns
+/// `None` when nothing recognizable is present so callers can skip the
+/// env-var injection entirely.
 pub(crate) fn parse_sidecar_capabilities(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

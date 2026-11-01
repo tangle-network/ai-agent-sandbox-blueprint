@@ -86,6 +86,10 @@ sol! {
         string attestation_nonce;
         /// JSON array of sidecar capabilities to enable at boot.
         /// Currently supported: ["computer_use", "all_harness"].
+        /// `credentials_off_chain` is not a sidecar subsystem. When it is
+        /// present, the create result omits the sidecar bearer and URL; the
+        /// owner reads them from the operator credentials route. It is not
+        /// forwarded to the container.
         /// "computer_use" boots Xvfb + dbus + an MCP server inside the sandbox
         /// so computer-use surfaces can drive mouse/keyboard/screenshots.
         /// "all_harness" requests the multi-harness agent runtime with Claude,

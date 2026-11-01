@@ -13,6 +13,7 @@ use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::sha2::Sha256;
 use rsa::signature::Verifier;
 use rsa::{BigUint, RsaPublicKey};
+use subtle::ConstantTimeEq;
 
 use crate::error::{Result, SandboxError};
 use crate::tee::AttestationReport;
@@ -65,6 +66,29 @@ struct TokenClaims {
     swname: String,
     #[serde(default)]
     hwmodel: String,
+    /// Echoed from the guest token request. Absent on tokens the guest did
+    /// not challenge. A string or a list of strings.
+    #[serde(default)]
+    eat_nonce: EatNonce,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(untagged)]
+enum EatNonce {
+    #[default]
+    Missing,
+    One(String),
+    Many(Vec<String>),
+}
+
+impl EatNonce {
+    fn values(&self) -> Vec<&str> {
+        match self {
+            Self::Missing => Vec::new(),
+            Self::One(value) => vec![value.as_str()],
+            Self::Many(values) => values.iter().map(String::as_str).collect(),
+        }
+    }
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -87,8 +111,13 @@ impl Audience {
 }
 
 /// Refuse a TEE create unless the sidecar returned a production Confidential
-/// Space token signed by Google.
-pub async fn require_production_token(report: &AttestationReport) -> Result<()> {
+/// Space token signed by Google. When the caller supplied a nonce, the token
+/// must echo it in `eat_nonce`. A token with no caller nonce is not required
+/// to carry `eat_nonce`.
+pub async fn require_production_token(
+    report: &AttestationReport,
+    expected_nonce: Option<&[u8; 64]>,
+) -> Result<()> {
     if report.evidence.len() > MAX_EVIDENCE_BYTES {
         return Err(SandboxError::CloudProvider(
             "GCP attestation evidence is too large".into(),
@@ -159,7 +188,43 @@ pub async fn require_production_token(report: &AttestationReport) -> Result<()> 
             "GCP attestation hardware model is not AMD SEV".into(),
         ));
     }
+    if let Some(expected) = expected_nonce
+        && !eat_nonce_binds(&claims.eat_nonce, expected)
+    {
+        return Err(SandboxError::CloudProvider(
+            "GCP attestation token does not bind the caller nonce".into(),
+        ));
+    }
     Ok(())
+}
+
+fn eat_nonce_binds(claim: &EatNonce, expected: &[u8; 64]) -> bool {
+    claim
+        .values()
+        .into_iter()
+        .any(|value| nonce_text_matches(value, expected))
+}
+
+/// Accept the 64-byte nonce, or a shorter prefix whose right-pad is that nonce.
+fn nonce_text_matches(value: &str, expected: &[u8; 64]) -> bool {
+    let text = value.trim();
+    let text = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))
+        .unwrap_or(text);
+    if text.len() % 2 != 0 || text.len() > 128 || !text.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return false;
+    }
+    let Ok(bytes) = hex::decode(text) else {
+        return false;
+    };
+    if bytes.len() > 64 {
+        return false;
+    }
+    let mut padded = [0u8; 64];
+    padded[..bytes.len()].copy_from_slice(&bytes);
+    padded.ct_eq(expected).into()
 }
 
 fn compact_jwt(raw: &str) -> Result<String> {
