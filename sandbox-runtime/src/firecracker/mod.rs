@@ -18,8 +18,7 @@ use microvm_runtime::{
     model::{NetworkInterface, VmSpec, VmStatus, VsockSpec},
     provider::{VmProvider, VmQuery},
 };
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand::Rng;
 
 use crate::error::{Result, SandboxError};
 use crate::firecracker_warm::{

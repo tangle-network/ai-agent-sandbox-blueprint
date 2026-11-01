@@ -289,7 +289,7 @@ impl TeeBackend for DirectTeeBackend {
         // fatal. Otherwise fall back to the sidecar quote.
         let nonce = params.attestation_report_data.unwrap_or_else(|| {
             let mut nonce = [0u8; 64];
-            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+            rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
             nonce
         });
         let att_tee_type = self.tee_type.clone();
@@ -357,7 +357,7 @@ impl TeeBackend for DirectTeeBackend {
 
         let nonce = report_data.unwrap_or_else(|| {
             let mut nonce = [0u8; 64];
-            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+            rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
             nonce
         });
         // Run the blocking device ioctl off the async worker thread.

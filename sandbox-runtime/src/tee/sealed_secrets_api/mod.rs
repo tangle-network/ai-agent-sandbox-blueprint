@@ -148,7 +148,7 @@ async fn enforce_release_gate(
     }
 
     let mut nonce = [0u8; 64];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
 
     let att = backend
         .attestation(deployment_id, Some(nonce))

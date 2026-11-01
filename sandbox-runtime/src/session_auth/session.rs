@@ -29,7 +29,7 @@ static SYMMETRIC_KEY: Lazy<pasetors::keys::SymmetricKey<pasetors::version4::V4>>
                  Sessions will NOT survive restart. Set this env var in production."
                 );
                 let mut bytes = Zeroizing::new([0u8; 32]);
-                OsRng.fill_bytes(&mut *bytes);
+                rand::rng().fill_bytes(&mut *bytes);
                 bytes
             }
         };

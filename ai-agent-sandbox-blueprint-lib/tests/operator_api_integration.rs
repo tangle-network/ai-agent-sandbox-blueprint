@@ -361,7 +361,7 @@ async fn full_operator_api_lifecycle() {
     // Step 3: Session auth flow (challenge → sign → token → validate).
     // -----------------------------------------------------------------------
     use k256::ecdsa::SigningKey;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
 
     let signing_key = SigningKey::random(&mut OsRng);
     let verifying_key = signing_key.verifying_key();

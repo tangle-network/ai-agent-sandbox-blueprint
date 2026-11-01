@@ -1,11 +1,10 @@
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand::Rng;
 
 use crate::error::{Result, SandboxError};
 
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 

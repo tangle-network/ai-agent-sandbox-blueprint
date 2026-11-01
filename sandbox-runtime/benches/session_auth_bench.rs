@@ -8,7 +8,7 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use k256::ecdsa::SigningKey;
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 
 use sandbox_runtime::session_auth::{
     clear_all_for_testing, create_challenge, create_test_token, exchange_signature_for_token,

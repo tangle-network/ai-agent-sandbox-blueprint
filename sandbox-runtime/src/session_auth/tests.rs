@@ -1,6 +1,7 @@
 //! session_auth unit tests.
 
 use super::*;
+use rand_core::OsRng;
 
 #[test]
 fn challenge_lifecycle() {
