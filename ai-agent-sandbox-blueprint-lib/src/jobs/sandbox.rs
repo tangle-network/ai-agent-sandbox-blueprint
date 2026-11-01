@@ -15,6 +15,20 @@ use crate::tangle::extract::{CallId, Caller, ServiceId, TangleArg, TangleResult}
 use crate::util::build_snapshot_command;
 use sandbox_runtime::provision_progress::{self, ProvisionPhase};
 
+/// Result-delivery opt-in. Not a sidecar capability.
+const OFF_CHAIN_CREDENTIALS: &str = "credentials_off_chain";
+
+fn credentials_stay_off_chain(capabilities_json: &str) -> bool {
+    let trimmed = capabilities_json.trim();
+    if !trimmed.starts_with('[') {
+        return false;
+    }
+    let Ok(entries) = serde_json::from_str::<Vec<String>>(trimmed) else {
+        return false;
+    };
+    entries.iter().any(|entry| entry == OFF_CHAIN_CREDENTIALS)
+}
+
 pub async fn sandbox_create(
     Caller(caller): Caller,
     ServiceId(service_id): ServiceId,
@@ -118,14 +132,19 @@ pub async fn sandbox_create(
             String::new()
         };
 
-    let response = json!({
+    let mut response = json!({
         "sandboxId": record.id,
-        "sidecarUrl": record.sidecar_url,
-        "token": record.token,
         "sshPort": record.ssh_port,
         "teeAttestationJson": tee_attestation_json,
         "teePublicKeyJson": tee_public_key_json,
     });
+    // The bearer stays off the public receipt only when the caller opted in.
+    // The owner then reads it from the operator credentials route. A new
+    // request field would change the live blueprint ABI.
+    if !credentials_stay_off_chain(&request.capabilities_json) {
+        response["sidecarUrl"] = json!(record.sidecar_url);
+        response["token"] = json!(record.token);
+    }
 
     Ok(TangleResult(SandboxCreateOutput {
         sandboxId: record.id.clone(),

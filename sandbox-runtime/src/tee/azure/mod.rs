@@ -79,9 +79,8 @@ mod methods;
 
 // tee-level helpers the moved impl code reaches via `super::` (azure is now a submodule).
 pub(crate) use super::{
-    fetch_sidecar_attestation, fetch_sidecar_attestation_with_report_data,
-    sidecar_derive_public_key, sidecar_info_for_deployment, sidecar_inject_sealed_secrets,
-    wait_for_sidecar_health,
+    fetch_sidecar_attestation_with_report_data, sidecar_derive_public_key,
+    sidecar_info_for_deployment, sidecar_inject_sealed_secrets, wait_for_sidecar_health,
 };
 
 /// Accept a Microsoft attestation token, or a raw SEV quote when the evidence

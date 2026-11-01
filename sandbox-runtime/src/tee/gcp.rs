@@ -302,6 +302,13 @@ impl GcpConfidentialSpaceBackend {
 #[async_trait::async_trait]
 impl TeeBackend for GcpConfidentialSpaceBackend {
     async fn deploy(&self, params: &TeeDeployParams) -> Result<TeeDeployment> {
+        // The guest image does not request the launcher token with the caller
+        // nonce. Refuse before creating a VM that would then be deleted.
+        if params.attestation_report_data.is_some() {
+            return Err(SandboxError::Validation(
+                "GCP Confidential Space does not bind a caller attestation nonce until the guest requests the launcher token with that nonce".into(),
+            ));
+        }
         let token = self.bearer_token().await?;
         let instance_name = format!("tee-sandbox-{}", params.sandbox_id);
         let body = self.build_instance_body(params);
@@ -337,7 +344,11 @@ impl TeeBackend for GcpConfidentialSpaceBackend {
         // The sidecar reads the launcher token from teeserver.sock.
         let fetched = super::fetch_sidecar_attestation(&sidecar_url, &params.sidecar_token).await;
         let attestation = self.or_abandon(&instance_name, fetched).await?;
-        let verified = gcp_token::require_production_token(&attestation).await;
+        let verified = gcp_token::require_production_token(
+            &attestation,
+            params.attestation_report_data.as_ref(),
+        )
+        .await;
         self.or_abandon(&instance_name, verified).await?;
 
         let metadata = serde_json::json!({
@@ -365,10 +376,13 @@ impl TeeBackend for GcpConfidentialSpaceBackend {
     async fn attestation(
         &self,
         deployment_id: &str,
-        _report_data: Option<[u8; 64]>,
+        report_data: Option<[u8; 64]>,
     ) -> Result<AttestationReport> {
         let (sidecar_url, token) = super::sidecar_info_for_deployment(deployment_id)?;
-        super::fetch_sidecar_attestation(&sidecar_url, &token).await
+        let attestation = super::fetch_sidecar_attestation(&sidecar_url, &token).await?;
+        // Refresh verifies and returns the error. It does not destroy the VM.
+        gcp_token::require_production_token(&attestation, report_data.as_ref()).await?;
+        Ok(attestation)
     }
 
     async fn stop(&self, deployment_id: &str) -> Result<()> {

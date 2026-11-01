@@ -80,6 +80,7 @@ mod auth;
 mod chat;
 mod chat_handlers;
 mod chat_stream;
+mod credentials;
 mod errors;
 mod health;
 mod lifecycle;
@@ -101,6 +102,7 @@ pub(crate) use auth::*;
 pub(crate) use chat::*;
 pub(crate) use chat_handlers::*;
 pub(crate) use chat_stream::*;
+pub(crate) use credentials::*;
 pub(crate) use errors::*;
 pub(crate) use health::*;
 pub(crate) use lifecycle::*;
@@ -214,6 +216,10 @@ pub fn operator_api_router_with_tee_and_routes(
         .route(
             "/api/sandboxes/{sandbox_id}/secrets",
             get(get_secrets).post(inject_secrets).delete(wipe_secrets),
+        )
+        .route(
+            "/api/sandboxes/{sandbox_id}/credentials",
+            get(get_sandbox_credentials),
         )
         // Sidecar image upgrade (operator-gated; see handlers above).
         .route(
