@@ -111,6 +111,10 @@ rcgen = { version = "0.14", features = ["pem"] }
 # above deliberately enables only `ecdsa`.
 p384 = { version = "=0.14.0", features = ["ecdsa", "pkcs8"] }
 
+[[example]]
+name = "route-once"
+path = "examples/route_once.rs"
+
 [[bench]]
 name = "session_auth_bench"
 harness = false

@@ -1,25 +1,8 @@
-//! Direct TEE backend for operators running their own TEE hardware.
+//! Docker plus TEE device passthrough on the operator's own host.
 //!
-//! Deploys sidecar containers via the local Docker daemon with TEE device
-//! passthrough. The operator's host must be a confidential VM (TDX, SEV-SNP)
-//! or have TEE device nodes available (`/dev/tdx_guest`, `/dev/sev-guest`,
-//! `/dev/nsm`).
-//!
-//! Attestation is fetched from the sidecar's `/tee/attestation` endpoint,
-//! which queries the host TEE device from inside the container.
-//!
-//! # Required environment
-//!
-//! - `TEE_DIRECT_TYPE` — `tdx`, `sev`, or `nitro`
-//! - Standard sidecar env vars (`SIDECAR_IMAGE`, `SIDECAR_PUBLIC_HOST`, etc.)
-//!
-//! # Device passthrough
-//!
-//! | TEE type | Device node         |
-//! |----------|---------------------|
-//! | TDX      | `/dev/tdx_guest`    |
-//! | SEV-SNP  | `/dev/sev-guest`    |
-//! | Nitro    | `/dev/nsm`          |
+//! `TEE_DIRECT_TYPE` is `tdx` (`/dev/tdx_guest`), `sev` (`/dev/sev-guest`),
+//! or `nitro` (`/dev/nsm`). The quote comes from the sidecar's
+//! `/tee/attestation`, not from the host process.
 
 use std::collections::HashMap;
 use std::time::Duration;

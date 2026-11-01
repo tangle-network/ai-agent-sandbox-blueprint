@@ -1,19 +1,8 @@
 //! Durable warm-claim lineage.
 //!
-//! A warm-claimed sandbox holds host resources under ids *other* than its own:
-//! the template's vsock CID + rootfs clone, and the rider TAP. The in-memory
-//! attachment map (`firecracker::VmAttachments`) that tracks this is
-//! process-local, so an operator restart between claim and delete loses it —
-//! the sandbox's own-id delete then leaks the template's clone + CID, and the
-//! reconcile `/proc` scan cannot see them (the template process was destroyed
-//! at claim).
-//!
-//! This persists the lineage keyed by sandbox id, so the restart-crossing
-//! operations derive cleanup from durable state, not a volatile map:
-//! - `firecracker::delete` releases the persisted lineage when its in-memory
-//!   attachments are gone;
-//! - the reconcile `clones_dir` sweep keeps only clones referenced by a live
-//!   sandbox, a live sandbox's lineage template, or a running warm process.
+//! A claim holds the template's vsock CID, rootfs clone, and rider TAP, not
+//! the sandbox id. The in-memory map dies on restart and `/proc` cannot see a
+//! template already destroyed at claim, so delete would leak them.
 
 use once_cell::sync::OnceCell;
 

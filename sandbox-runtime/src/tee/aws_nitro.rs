@@ -1,39 +1,7 @@
-//! AWS Nitro Enclaves TEE backend.
+//! Nitro Enclaves have no network, disk, or shell. The parent proxies vsock.
 //!
-//! Deploys sidecar containers inside Nitro Enclaves on EC2 instances.
-//! The enclave runs in complete isolation — no networking, no persistent
-//! storage, no interactive access. Communication is via vsock only.
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────┐
-//! │  Parent EC2 Instance (EnclaveOptions=true)  │
-//! │  ┌─────────────────┐  ┌──────────────────┐ │
-//! │  │  vsock-proxy    │  │  TCP listener    │ │
-//! │  │  KMS via vsock  │  │  forwards to     │ │
-//! │  │                 │  │  enclave vsock   │ │
-//! │  └────────┬────────┘  └──────┬───────────┘ │
-//! │           │ vsock             │ vsock       │
-//! │  ┌────────┴───────────────────┴──────────┐ │
-//! │  │         Nitro Enclave (CID 16)        │ │
-//! │  │  ┌──────────────────────────────────┐ │ │
-//! │  │  │  Sidecar (HTTP on vsock:port)    │ │ │
-//! │  │  │  - NSM attestation via /dev/nsm  │ │ │
-//! │  │  │  - KMS decrypt via vsock proxy   │ │ │
-//! │  │  └──────────────────────────────────┘ │ │
-//! │  │  No network, no disk, no shell        │ │
-//! │  └───────────────────────────────────────┘ │
-//! └─────────────────────────────────────────────┘
-//! ```
-//!
-//! # Sealed secrets
-//!
-//! The enclave generates an ephemeral RSA-2048 key pair and embeds the public
-//! key in the NSM attestation document. KMS condition keys
-//! (`kms:RecipientAttestation:PCR0`) ensure only attested enclaves can decrypt.
-//! The `RecipientInfo` on KMS Decrypt re-encrypts the plaintext to the
-//! enclave's key — the operator never sees secrets.
+//! Sealed secrets: the enclave's ephemeral RSA key is in the NSM document.
+//! KMS `RecipientInfo` re-encrypts to that key. The operator never sees it.
 
 use std::time::Duration;
 

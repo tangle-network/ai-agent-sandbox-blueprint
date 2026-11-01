@@ -1,19 +1,7 @@
-//! Three-state circuit breaker for unhealthy sidecars.
+//! Per-sandbox circuit breaker. Closed is the absence of a map entry.
 //!
-//! Tracks per-sandbox health state with three states:
-//! - **Closed** (healthy): no entry in the map, all requests pass through.
-//! - **Open**: sidecar call failed, cooldown timer running, all requests rejected.
-//! - **Half-open**: cooldown expired, exactly one probe request is allowed through.
-//!   Subsequent requests are rejected until the probe completes.
-//!
-//! Transitions:
-//! - Closed → Open: [`mark_unhealthy`] on failure
-//! - Open → Half-open: cooldown timer expires (automatic on next [`check_health`])
-//! - Half-open → Closed: [`mark_healthy`] on successful probe
-//! - Half-open → Open: [`mark_unhealthy`] on probe failure (resets cooldown)
-//!
-//! The cooldown period defaults to 30 seconds and can be overridden via the
-//! `CIRCUIT_BREAKER_COOLDOWN_SECS` environment variable.
+//! Half-open allows one probe. Cooldown is `CIRCUIT_BREAKER_COOLDOWN_SECS`,
+//! default 30s.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

@@ -4,6 +4,7 @@ pub(crate) fn parse_runtime_backend_value(value: &str) -> Option<RuntimeBackend>
     match value.trim().to_ascii_lowercase().as_str() {
         "docker" | "container" => Some(RuntimeBackend::Docker),
         "firecracker" | "microvm" => Some(RuntimeBackend::Firecracker),
+        "microsandbox" | "msb" => Some(RuntimeBackend::Microsandbox),
         "tee" | "confidential" | "confidential-vm" => Some(RuntimeBackend::Tee),
         _ => None,
     }
@@ -13,6 +14,7 @@ pub(crate) fn runtime_backend_name(backend: RuntimeBackend) -> &'static str {
     match backend {
         RuntimeBackend::Docker => "docker",
         RuntimeBackend::Firecracker => "firecracker",
+        RuntimeBackend::Microsandbox => "microsandbox",
         RuntimeBackend::Tee => "tee",
     }
 }
@@ -63,7 +65,7 @@ pub(crate) fn parse_runtime_backend_from_metadata(
 
     parse_runtime_backend_value(raw).map(Some).ok_or_else(|| {
         SandboxError::Validation(format!(
-            "metadata_json.runtime_backend must be one of: docker, firecracker, tee (got '{raw}')"
+            "metadata_json.runtime_backend must be one of: docker, firecracker, microsandbox, tee (got '{raw}')"
         ))
     })
 }
@@ -72,7 +74,7 @@ pub(crate) fn parse_runtime_backend_from_env() -> Result<RuntimeBackend> {
     let raw = std::env::var("SANDBOX_RUNTIME_BACKEND").unwrap_or_else(|_| "docker".to_string());
     parse_runtime_backend_value(&raw).ok_or_else(|| {
         SandboxError::Validation(format!(
-            "SANDBOX_RUNTIME_BACKEND must be one of: docker, firecracker, tee (got '{raw}')"
+            "SANDBOX_RUNTIME_BACKEND must be one of: docker, firecracker, microsandbox, tee (got '{raw}')"
         ))
     })
 }
@@ -86,10 +88,11 @@ pub(crate) fn resolve_runtime_backend(request: &CreateSandboxParams) -> Result<R
 
     let tee_required = request.tee_config.as_ref().is_some_and(|cfg| cfg.required);
     if tee_required {
-        if selected == RuntimeBackend::Firecracker {
-            return Err(SandboxError::Validation(
-                "runtime_backend=firecracker is incompatible with tee_required=true".into(),
-            ));
+        if selected == RuntimeBackend::Firecracker || selected == RuntimeBackend::Microsandbox {
+            return Err(SandboxError::Validation(format!(
+                "runtime_backend={} is incompatible with tee_required=true",
+                runtime_backend_name(selected)
+            )));
         }
         return Ok(RuntimeBackend::Tee);
     }
@@ -117,6 +120,10 @@ pub(crate) fn runtime_backend_for_record(record: &SandboxRecord) -> RuntimeBacke
 
 pub(crate) fn record_uses_firecracker(record: &SandboxRecord) -> bool {
     runtime_backend_for_record(record) == RuntimeBackend::Firecracker
+}
+
+pub(crate) fn record_uses_microsandbox(record: &SandboxRecord) -> bool {
+    runtime_backend_for_record(record) == RuntimeBackend::Microsandbox
 }
 
 pub fn supports_docker_endpoint_refresh(record: &SandboxRecord) -> bool {

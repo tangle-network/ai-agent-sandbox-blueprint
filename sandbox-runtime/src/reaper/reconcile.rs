@@ -44,6 +44,49 @@ pub async fn reconcile_on_startup() {
             continue;
         }
 
+        if record_uses_microsandbox(&record) {
+            match crate::runtime::microsandbox_running(&record.container_id) {
+                Ok(None) => {
+                    info!(
+                        "reconcile: removing orphan microsandbox record for sandbox {} (vm {} gone)",
+                        record.id, record.container_id
+                    );
+                    if let Ok(store) = sandboxes() {
+                        let _ = store.remove(&record.id);
+                    }
+                }
+                Ok(Some(true)) => {
+                    if record.state == SandboxState::Stopped {
+                        info!("reconcile: marking microsandbox {} as Running", record.id);
+                        if let Ok(store) = sandboxes() {
+                            let _ = store.update(&record.id, |r| {
+                                r.state = SandboxState::Running;
+                                r.stopped_at = None;
+                            });
+                        }
+                    }
+                }
+                Ok(Some(false)) => {
+                    if record.state == SandboxState::Running {
+                        info!("reconcile: marking microsandbox {} as Stopped", record.id);
+                        if let Ok(store) = sandboxes() {
+                            let _ = store.update(&record.id, |r| {
+                                r.state = SandboxState::Stopped;
+                                r.stopped_at = Some(now);
+                            });
+                        }
+                    }
+                }
+                Err(err) => {
+                    error!(
+                        "reconcile: failed to inspect microsandbox {}: {err}",
+                        record.id
+                    );
+                }
+            }
+            continue;
+        }
+
         if record_uses_firecracker(&record) {
             match crate::firecracker::status(&record.container_id).await {
                 Ok(crate::firecracker::FirecrackerContainerStatus::Missing) => {

@@ -36,7 +36,7 @@ libp2p-mdns = { path = "vendor/libp2p-mdns" }
 libp2p-dns = { path = "vendor/libp2p-dns" }
 # Use the maintained single-protocol yamux adapter instead of yamux 0.12.
 libp2p-yamux = { path = "vendor/libp2p-yamux" }
-microvm-runtime = { git = "https://github.com/tangle-network/microvm-runtime", rev = "611111ffe5696e3dd319924b52631349ea97c6ec" }
+microvm-runtime = { path = "vendor/microvm-runtime" }
 blueprint-anvil-testing-utils = { git = "https://github.com/tangle-network/blueprint.git", rev = "a9a524cfecbd9791e85733cda7da666039e4ecea" }
 blueprint-auth = { git = "https://github.com/tangle-network/blueprint.git", rev = "a9a524cfecbd9791e85733cda7da666039e4ecea" }
 blueprint-chain-setup = { git = "https://github.com/tangle-network/blueprint.git", rev = "a9a524cfecbd9791e85733cda7da666039e4ecea" }

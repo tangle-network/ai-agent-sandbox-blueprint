@@ -73,6 +73,11 @@ pub(crate) async fn create_sidecar_with_token(
                 create_sidecar_firecracker(request, token_override, sandbox_id_override).await?;
             (record, None, CreateTimings::default())
         }
+        RuntimeBackend::Microsandbox => {
+            let record =
+                create_sidecar_microsandbox(request, token_override, sandbox_id_override).await?;
+            (record, None, CreateTimings::default())
+        }
         RuntimeBackend::Docker => {
             let (record, timings) =
                 create_sidecar_docker(request, token_override, sandbox_id_override).await?;

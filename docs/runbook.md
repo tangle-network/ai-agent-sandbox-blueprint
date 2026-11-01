@@ -77,6 +77,16 @@ ships at
 and should run under systemd (or equivalent). No `SandboxError::Unsupported`
 paths remain in the firecracker backend.
 
+### Microsandbox (Mac, Linux, Windows)
+
+Set `SANDBOX_RUNTIME_BACKEND=microsandbox` (alias `msb`). The operator shells
+out to a pinned `msb` on `PATH` (`MSB_BIN` overrides the path). Each sandbox
+is one microVM. The create returns `http://{SIDECAR_PUBLIC_HOST}:{host_port}`
+and a server-minted `SIDECAR_AUTH_TOKEN`. `tee_required` is rejected.
+`msb doctor` must pass before the operator reports healthy. On this Mac that
+is Apple silicon with Hypervisor.framework. Linux needs `/dev/kvm`. Windows
+needs the Hypervisor Platform feature.
+
 **Migration note.** The previous host-agent HTTP boundary
 (`FIRECRACKER_HOST_AGENT_URL`, `_API_KEY`, `_NETWORK`, `_PIDS_LIMIT`,
 `FIRECRACKER_SIDECAR_AUTH_DISABLED`, `FIRECRACKER_SIDECAR_AUTH_TOKEN`) has
