@@ -15,8 +15,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand::Rng;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{Result, SandboxError};

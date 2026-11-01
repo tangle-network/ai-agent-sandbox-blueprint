@@ -8,7 +8,7 @@ use super::*;
 /// preventing memory exhaustion from unauthenticated requests.
 pub fn create_challenge() -> Result<Challenge> {
     let mut nonce_bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = hex::encode(nonce_bytes);
     let now = now_secs();
 

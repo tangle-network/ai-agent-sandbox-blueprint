@@ -109,7 +109,7 @@ pub(crate) fn attach_rootfs(
 /// sandbox record can stamp the same value the sidecar will compare against.
 pub(crate) fn mint_sidecar_token() -> String {
     let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     // Match `auth::generate_token`'s hex encoding so downstream consumers
     // (sidecar comparators, log redactors) see a single token format.
     hex::encode(bytes)

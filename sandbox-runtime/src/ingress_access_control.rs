@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use rand::RngCore;
+use rand::Rng;
 
 /// Canonical auth mode env key injected into runtime containers.
 pub const INGRESS_UI_AUTH_MODE_ENV: &str = "SANDBOX_UI_AUTH_MODE";
@@ -33,7 +33,7 @@ impl UiBearerCredential {
     /// Generate a random credential with a caller-supplied token prefix.
     pub fn generate_with_prefix(prefix: &str) -> Self {
         let mut bytes = [0_u8; DEFAULT_TOKEN_BYTES];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
 
         let clean_prefix = if prefix.trim().is_empty() {
             DEFAULT_TOKEN_PREFIX

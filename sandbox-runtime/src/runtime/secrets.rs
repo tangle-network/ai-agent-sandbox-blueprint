@@ -42,7 +42,7 @@ pub(crate) static SEAL_KEY: once_cell::sync::Lazy<zeroize::Zeroizing<[u8; 32]>> 
                  Stored secrets will NOT survive restart."
                 );
                 let mut key = Zeroizing::new([0u8; 32]);
-                rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut *key);
+                rand::Rng::fill_bytes(&mut rand::rng(), &mut *key);
                 key
             }
         }
