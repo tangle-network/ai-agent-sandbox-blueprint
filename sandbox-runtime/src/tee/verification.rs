@@ -135,3 +135,51 @@ pub fn expected_measurements_from_env() -> Vec<Vec<u8>> {
 /// clock skew and slow attestation fetches while still rejecting a quote
 /// captured hours/days earlier and replayed.
 pub(crate) const MAX_ATTESTATION_AGE_SECS: u64 = 600;
+
+/// Refuse a TEE create unless the quote signature chains to a hardware root.
+///
+/// This is the deploy gate for Nitro, Phala TDX, direct hardware, and an Azure
+/// report that is a raw SNP quote rather than a Microsoft attestation token.
+/// It does not call [`verify_attestation`]: an empty measurement list there is
+/// `MeasurementMismatch`, and an unset `SANDBOX_TEE_EXPECTED_MEASUREMENTS` is
+/// not a pin. A non-empty list must contain the measurement the hardware
+/// signed. A caller nonce must match the signed report data. Without
+/// `tee-verify` the signature check fails closed.
+pub(crate) fn require_hardware_quote(
+    report: &AttestationReport,
+    expected_type: &TeeType,
+    expected_report_data: Option<&[u8; 64]>,
+) -> crate::error::Result<()> {
+    if &report.tee_type != expected_type {
+        return Err(crate::error::SandboxError::CloudProvider(
+            "attestation TEE type does not match this backend".into(),
+        ));
+    }
+    let now = crate::util::now_ts();
+    let facts =
+        verify_quote_signature(report, now).map_err(crate::error::SandboxError::CloudProvider)?;
+    let expected = expected_measurements_from_env();
+    if !expected.is_empty() && !expected.iter().any(|item| item == &facts.measurement) {
+        return Err(crate::error::SandboxError::CloudProvider(
+            "TEE measurement did not match SANDBOX_TEE_EXPECTED_MEASUREMENTS".into(),
+        ));
+    }
+    if let Some(expected_nonce) = expected_report_data {
+        let matched = facts.report_data.as_ref().is_some_and(|actual| {
+            bool::from(subtle::ConstantTimeEq::ct_eq(
+                actual.as_slice(),
+                expected_nonce.as_slice(),
+            ))
+        });
+        if !matched {
+            return Err(crate::error::SandboxError::CloudProvider(
+                "TEE attestation nonce did not match the report data signed by the hardware".into(),
+            ));
+        }
+    } else if now.saturating_sub(report.timestamp) > MAX_ATTESTATION_AGE_SECS {
+        return Err(crate::error::SandboxError::CloudProvider(
+            "TEE attestation is stale and no freshness nonce was supplied".into(),
+        ));
+    }
+    Ok(())
+}

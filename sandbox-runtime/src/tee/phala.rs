@@ -181,6 +181,19 @@ impl PhalaBackend {
 
         yaml
     }
+
+    async fn or_abandon<T>(&self, app_id: &str, result: Result<T>) -> Result<T> {
+        if result.is_err()
+            && let Err(err) = TeeBackend::destroy(self, app_id).await
+        {
+            tracing::warn!(
+                %err,
+                app_id,
+                "failed to delete the Phala CVM after deploy was refused"
+            );
+        }
+        result
+    }
 }
 
 #[async_trait::async_trait]
@@ -211,26 +224,35 @@ impl TeeBackend for PhalaBackend {
 
         let app_id = deployment.id.to_string();
 
-        // Wait for the CVM to become running.
-        self.deployer
+        // The CVM exists. Every later failure deletes it.
+        let running = self
+            .deployer
             .wait_until_running(&app_id, Duration::from_secs(120))
             .await
-            .map_err(|e| SandboxError::Docker(format!("Phala CVM failed to start: {e}")))?;
+            .map_err(|e| SandboxError::Docker(format!("Phala CVM failed to start: {e}")));
+        self.or_abandon(&app_id, running).await?;
 
-        // Fetch attestation.
-        let att_resp =
-            self.deployer.get_attestation(&app_id).await.map_err(|e| {
-                SandboxError::Docker(format!("Phala attestation fetch failed: {e}"))
-            })?;
+        let fetched = self
+            .deployer
+            .get_attestation(&app_id)
+            .await
+            .map_err(|e| SandboxError::Docker(format!("Phala attestation fetch failed: {e}")));
+        let att_resp = self.or_abandon(&app_id, fetched).await?;
+        let parsed = Self::attestation_from_resp(&att_resp);
+        let attestation = self.or_abandon(&app_id, parsed).await?;
+        let verified = super::require_hardware_quote(
+            &attestation,
+            &TeeType::Tdx,
+            params.attestation_report_data.as_ref(),
+        );
+        self.or_abandon(&app_id, verified).await?;
 
-        let attestation = Self::attestation_from_resp(&att_resp)?;
-
-        // Get network info for the sidecar URL.
         let network = self
             .deployer
             .get_network_info(&app_id)
             .await
-            .map_err(|e| SandboxError::Docker(format!("Phala network info failed: {e}")))?;
+            .map_err(|e| SandboxError::Docker(format!("Phala network info failed: {e}")));
+        let network = self.or_abandon(&app_id, network).await?;
 
         let sidecar_url = if !network.public_urls.app.is_empty() {
             network.public_urls.app.clone()
@@ -269,7 +291,9 @@ impl TeeBackend for PhalaBackend {
             .await
             .map_err(|e| SandboxError::Docker(format!("Phala attestation fetch failed: {e}")))?;
 
-        Self::attestation_from_resp(&att_resp)
+        let attestation = Self::attestation_from_resp(&att_resp)?;
+        super::require_hardware_quote(&attestation, &TeeType::Tdx, _report_data.as_ref())?;
+        Ok(attestation)
     }
 
     async fn stop(&self, deployment_id: &str) -> Result<()> {

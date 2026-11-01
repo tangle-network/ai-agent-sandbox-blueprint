@@ -213,6 +213,19 @@ impl NitroBackend {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
+
+    async fn or_abandon<T>(&self, instance_id: &str, result: Result<T>) -> Result<T> {
+        if result.is_err()
+            && let Err(err) = TeeBackend::destroy(self, instance_id).await
+        {
+            tracing::warn!(
+                %err,
+                instance_id,
+                "failed to terminate the EC2 instance after deploy was refused"
+            );
+        }
+        result
+    }
 }
 
 #[async_trait::async_trait]
@@ -258,27 +271,34 @@ impl TeeBackend for NitroBackend {
             .ok_or_else(|| SandboxError::CloudProvider("No instance ID returned".into()))?
             .to_string();
 
-        // Wait for EC2 instance to be running and get its public IP.
-        let public_ip = self.wait_for_running(&instance_id).await?;
+        // The instance exists. Every later failure terminates it.
+        let running = self.wait_for_running(&instance_id).await;
+        let public_ip = self.or_abandon(&instance_id, running).await?;
         let sidecar_url = format!("http://{}:{}", public_ip, params.http_port);
 
-        // Wait for sidecar to be healthy inside the enclave.
-        super::wait_for_sidecar_health(
+        let healthy = super::wait_for_sidecar_health(
             &sidecar_url,
             &params.sidecar_token,
             Duration::from_secs(300),
         )
-        .await?;
+        .await;
+        self.or_abandon(&instance_id, healthy).await?;
 
-        // Fetch attestation from the sidecar. When the caller supplied a
-        // challenge, the sidecar must embed it in the signed NSM document.
-        let attestation = super::fetch_sidecar_attestation_with_report_data(
+        // When the caller supplied a challenge, the sidecar must embed it in
+        // the signed NSM document.
+        let fetched = super::fetch_sidecar_attestation_with_report_data(
             &sidecar_url,
             &params.sidecar_token,
             params.attestation_report_data,
         )
-        .await?;
-        super::validate_attestation_report(&attestation, &TeeType::Nitro)?;
+        .await;
+        let attestation = self.or_abandon(&instance_id, fetched).await?;
+        let verified = super::require_hardware_quote(
+            &attestation,
+            &TeeType::Nitro,
+            params.attestation_report_data.as_ref(),
+        );
+        self.or_abandon(&instance_id, verified).await?;
 
         let metadata = serde_json::json!({
             "ec2_instance_id": instance_id,
@@ -310,7 +330,7 @@ impl TeeBackend for NitroBackend {
         let attestation =
             super::fetch_sidecar_attestation_with_report_data(&sidecar_url, &token, report_data)
                 .await?;
-        super::validate_attestation_report(&attestation, &TeeType::Nitro)?;
+        super::require_hardware_quote(&attestation, &TeeType::Nitro, report_data.as_ref())?;
         Ok(attestation)
     }
 
