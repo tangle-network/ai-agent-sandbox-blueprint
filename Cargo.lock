@@ -2663,7 +2663,7 @@ dependencies = [
  "jsonwebtoken",
  "k256",
  "once_cell",
- "pasetors",
+ "pasetors 0.7.8",
  "pem 3.0.6",
  "prost 0.13.5",
  "protobuf-src",
@@ -7568,6 +7568,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce166f9a98c32a49ccf0684ea3be1a99cdebc0694d96e487ee5df844591a3403"
+dependencies = [
+ "cmov",
+ "fiat-crypto 0.3.0",
+ "subtle",
+]
+
+[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7702,7 +7713,24 @@ dependencies = [
  "ct-codecs",
  "ed25519-compact",
  "getrandom 0.4.3",
- "orion",
+ "orion 0.17.15",
+ "regex",
+ "serde_json",
+ "subtle",
+ "time",
+ "zeroize",
+]
+
+[[package]]
+name = "pasetors"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ec9d69d491936c29fa2684dcb50d4c7503a405f4e972066e344ff2a4f639195"
+dependencies = [
+ "ct-codecs",
+ "ed25519-compact",
+ "getrandom 0.4.3",
+ "orion 0.18.1",
  "regex",
  "serde_json",
  "subtle",
@@ -9200,7 +9228,7 @@ dependencies = [
  "microvm-warm-pool",
  "once_cell",
  "p384 0.14.0",
- "pasetors",
+ "pasetors 0.8.1",
  "phala-tee-deploy-rs",
  "rand 0.10.3",
  "rand_core 0.6.4",
