@@ -92,11 +92,11 @@ let
 in {
   pi = mkNpmCli {
     name = "pi";
-    version = "0.84.1";
+    version = "1.5.0";
     npmPackage = "@earendil-works/pi-coding-agent";
     entry = "dist/cli.js";
     lockfileDir = ../npm-locks/pi;
-    npmDepsHash = "sha256-8qXEB429r954k2TG2PKQqtYCFtLQ+4CjV0cL+0e0Cdc=";
+    npmDepsHash = "sha256-jTOBMK0/4Nc62Wj2iTOUH7ylRh9pCsSht7MLZTZ/qc4=";
     makeCacheWritable = true;
     fetcherVersion = 2;
     license = lib.licenses.mit;
@@ -122,7 +122,7 @@ in {
     npmPackage = "openclaw";
     entry = "openclaw.mjs";
     lockfileDir = ../npm-locks/openclaw;
-    npmDepsHash = "sha256-iKFMyt8uchivDZn8pjbmUbnhsWecQJqakUpvUhkL41A=";
+    npmDepsHash = "sha256-p8hhghqs/UPK7uFeS9xN283YsVJ0Qj7W1QRSEipM04A=";
     src = openclawSource;
     installSourceTree = true;
     restorePackageJsonFrom = "package.published.json";

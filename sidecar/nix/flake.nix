@@ -98,7 +98,7 @@
         check_version hermes '0.20.0'
         check_version amp '0.0.1786651704-g574433'
         check_version droid '0.195.0'
-        check_version pi '0.84.1'
+        check_version pi '1.5.0'
         check_version openclaw 'OpenClaw 2026.7.1-2'
         check_version qwen '0.21.11'
         check_version copilot 'GitHub Copilot CLI 1.0.79'
