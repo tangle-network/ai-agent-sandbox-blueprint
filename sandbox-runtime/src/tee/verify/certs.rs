@@ -29,8 +29,8 @@ pub(crate) fn check_cert_validity(label: &str, der: &[u8], now_secs: u64) -> Res
 
 /// AMD's RSA-SSA-PSS OID, matching the algorithm the KDS uses to sign both the
 /// SEV-SNP certificate chain and the KDS CRL.
-pub(crate) const RSA_SSA_PSS_OID: spki::ObjectIdentifier =
-    spki::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.10");
+pub(crate) const RSA_SSA_PSS_OID: x509_cert::spki::ObjectIdentifier =
+    x509_cert::spki::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.10");
 
 /// Verify a KDS CRL against the pinned ASK and reject a revoked leaf serial.
 ///
