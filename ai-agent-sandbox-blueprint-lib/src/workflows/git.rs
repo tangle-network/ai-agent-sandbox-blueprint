@@ -72,7 +72,7 @@ impl WorkflowGitSpec {
         (path.split('/').count() == 2 && path.chars().all(safe)).then(|| path.to_string())
     }
 
-    fn checkout_dir(&self) -> String {
+    fn checkout_dir(&self, workflow_id: u64) -> String {
         let name = self
             .repo_url
             .trim_end_matches('/')
@@ -84,7 +84,11 @@ impl WorkflowGitSpec {
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
             .collect();
-        format!("git-{}", name.trim_start_matches('.'))
+        let name = name.trim_start_matches('.');
+        format!(
+            "wf-{workflow_id}-{}",
+            if name.is_empty() { "repo" } else { name }
+        )
     }
 }
 
@@ -117,16 +121,20 @@ pub async fn prepare_git_checkout(
     sidecar_url: &str,
     token: &str,
     spec: &WorkflowGitSpec,
+    workflow_id: u64,
 ) -> Result<GitCheckout, String> {
     if spec.repo_url.trim().is_empty() || spec.repo_url.starts_with('-') {
         return Err("git.repo_url is required".to_string());
     }
     let helper = spec.credential_helper()?;
+    if helper.is_some() && !spec.repo_url.starts_with("https://") {
+        return Err("git.token_env needs an https:// repo_url".to_string());
+    }
     let auth = helper
         .as_deref()
         .map(|h| format!("-c credential.helper={}", sh_quote(h)))
         .unwrap_or_default();
-    let dir = sh_quote(&spec.checkout_dir());
+    let dir = sh_quote(&spec.checkout_dir(workflow_id));
     let branch = sh_quote(&spec.branch);
     let mut script = format!(
         "set -eu\ngit check-ref-format --branch {branch} >/dev/null\nrm -rf {dir}\n\
@@ -137,7 +145,10 @@ pub async fn prepare_git_checkout(
         script.push_str(&format!("git config credential.helper {}\n", sh_quote(h)));
     }
     if let Some(base) = spec.base_branch.as_deref().filter(|b| !b.is_empty()) {
-        script.push_str(&format!("git checkout --quiet {}\n", sh_quote(base)));
+        let base = sh_quote(base);
+        script.push_str(&format!(
+            "git check-ref-format --branch {base} >/dev/null\ngit checkout --quiet {base} --\n"
+        ));
     }
     script.push_str(&format!(
         "base=$(git rev-parse --abbrev-ref HEAD)\n\
@@ -146,9 +157,10 @@ pub async fn prepare_git_checkout(
          printf '%s\\n%s\\n%s\\n' \"$(pwd)\" \"$base\" \"$(git rev-parse HEAD)\"\n"
     ));
     let out = sandbox_shell(sidecar_url, token, "", script).await?;
-    let mut lines = out.lines().map(str::trim);
+    // A login shell's profile may print first, so read the last three lines.
+    let mut lines = out.lines().rev().map(str::trim);
     match (lines.next(), lines.next(), lines.next()) {
-        (Some(dir), Some(base), Some(start)) if !start.is_empty() => Ok(GitCheckout {
+        (Some(start), Some(base), Some(dir)) if !start.is_empty() => Ok(GitCheckout {
             dir: dir.to_string(),
             base_branch: base.to_string(),
             start_commit: start.to_string(),
@@ -170,22 +182,29 @@ pub async fn publish_git_changes(
     let script = format!(
         "set -eu\ngit add -A\ngit diff --cached --quiet || git -c user.name=sandbox-agent \
          -c user.email=sandbox-agent@users.noreply.github.com commit --quiet -m {msg}\n\
-         head=$(git rev-parse HEAD)\n[ \"$head\" = {start} ] && exit 0\n\
-         git push --quiet origin HEAD:refs/heads/{branch}\necho \"$head\"\n",
+         head=$(git rev-parse HEAD)\npushed=\nif [ \"$head\" != {start} ]; then \
+         git push --quiet origin HEAD:refs/heads/{branch}; pushed=$head; fi\n\
+         printf '%s\\n%s\\n' \"$pushed\" \"$(git rev-list --count origin/{base}..HEAD)\"\n",
         msg = sh_quote(message),
         start = sh_quote(&checkout.start_commit),
+        base = sh_quote(&checkout.base_branch),
     );
     let out = sandbox_shell(sidecar_url, token, &checkout.dir, script).await?;
-    let commit = Some(out.trim().to_string()).filter(|c| !c.is_empty());
+    let mut lines = out.lines().rev().map(str::trim);
+    let ahead = lines.next().unwrap_or_default();
+    let commit = lines.next().filter(|c| !c.is_empty()).map(str::to_string);
 
+    // Retried on every run while the branch is ahead of base, so a failed
+    // pull request call recovers without a new commit.
     let mut pull_request_url = None;
-    if spec.open_pr && commit.is_some() {
+    if spec.open_pr && ahead != "0" {
         let (Some(repo), Some(token_env)) = (spec.github_repo(), spec.token_env.as_deref()) else {
             return Err(
                 "git.open_pr needs a https://github.com/ repo_url and token_env".to_string(),
             );
         };
         spec.credential_helper()?;
+        let owner = repo.split('/').next().unwrap_or_default();
         let body = json!({
             "title": message,
             "head": spec.branch,
@@ -195,11 +214,12 @@ pub async fn publish_git_changes(
         let script = format!(
             "set -eu\napi=https://api.github.com/repos/{repo}/pulls\n\
              auth=\"Authorization: Bearer ${token_env}\"\n\
-             url=$(curl -fsS -H \"$auth\" \"$api?state=open&per_page=100\" | python3 -c \
-             'import json,sys; print(next((p[\"html_url\"] for p in json.load(sys.stdin) \
-             if p[\"head\"][\"ref\"] == sys.argv[1]), \"\"))' {branch})\n\
+             head=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=\"\"))' {head})\n\
+             url=$(curl -fsS -H \"$auth\" \"$api?state=open&head=$head\" | python3 -c \
+             'import json,sys; p=json.load(sys.stdin); print(p[0][\"html_url\"] if p else \"\")')\n\
              [ -n \"$url\" ] || url=$(curl -fsS -H \"$auth\" -d {body} \"$api\" | \
              python3 -c 'import json,sys; print(json.load(sys.stdin)[\"html_url\"])')\necho \"$url\"\n",
+            head = sh_quote(&format!("{owner}:{}", spec.branch)),
             body = sh_quote(&body.to_string()),
         );
         let out = sandbox_shell(sidecar_url, token, &checkout.dir, script).await?;

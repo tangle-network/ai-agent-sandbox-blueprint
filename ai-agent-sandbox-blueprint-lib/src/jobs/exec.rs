@@ -7,8 +7,6 @@ use crate::SandboxPromptResponse;
 use crate::SandboxTaskRequest;
 use crate::SandboxTaskResponse;
 use crate::http::sidecar_post_json;
-use crate::runtime::require_sandbox_owner_by_url;
-use crate::tangle::extract::{Caller, TangleArg, TangleResult};
 
 // ---------------------------------------------------------------------------
 // Exec (terminal commands)
@@ -98,17 +96,6 @@ pub async fn run_exec_request(
         stdout,
         stderr,
     })
-}
-
-pub async fn sandbox_exec(
-    Caller(caller): Caller,
-    TangleArg(request): TangleArg<SandboxExecRequest>,
-) -> Result<TangleResult<SandboxExecResponse>, String> {
-    let caller_hex = super::caller_hex(&caller);
-    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
-
-    let response = run_exec_request(&request, &record.token).await?;
-    Ok(TangleResult(response))
 }
 
 // ---------------------------------------------------------------------------
@@ -312,17 +299,6 @@ pub async fn run_prompt_request(
     })
 }
 
-pub async fn sandbox_prompt(
-    Caller(caller): Caller,
-    TangleArg(request): TangleArg<SandboxPromptRequest>,
-) -> Result<TangleResult<SandboxPromptResponse>, String> {
-    let caller_hex = super::caller_hex(&caller);
-    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
-
-    let response = run_prompt_request(&request, &record.token).await?;
-    Ok(TangleResult(response))
-}
-
 // ---------------------------------------------------------------------------
 // Task
 // ---------------------------------------------------------------------------
@@ -394,17 +370,6 @@ pub async fn run_task_request_with_profile(
         output_tokens: resp.output_tokens,
         session_id: resp.session_id,
     })
-}
-
-pub async fn sandbox_task(
-    Caller(caller): Caller,
-    TangleArg(request): TangleArg<SandboxTaskRequest>,
-) -> Result<TangleResult<SandboxTaskResponse>, String> {
-    let caller_hex = super::caller_hex(&caller);
-    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
-
-    let response = run_task_request(&request, &record.token).await?;
-    Ok(TangleResult(response))
 }
 
 #[cfg(test)]

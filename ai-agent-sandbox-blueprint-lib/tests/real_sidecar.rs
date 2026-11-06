@@ -2262,7 +2262,7 @@ async fn git_workflow_steps_clone_commit_push_against_real_sidecar() {
     }))
     .unwrap();
 
-    let checkout = prepare_git_checkout(&s.url, AUTH_TOKEN, &spec)
+    let checkout = prepare_git_checkout(&s.url, AUTH_TOKEN, &spec, 1)
         .await
         .unwrap();
     assert_eq!(checkout.base_branch, "main");
@@ -2299,7 +2299,7 @@ async fn git_workflow_steps_clone_commit_push_against_real_sidecar() {
     );
     assert!(published.pull_request_url.is_none());
 
-    let again = prepare_git_checkout(&s.url, AUTH_TOKEN, &spec)
+    let again = prepare_git_checkout(&s.url, AUTH_TOKEN, &spec, 1)
         .await
         .unwrap();
     assert_eq!(sandbox_sh(&s.url, &again.dir, "cat out.txt").await, "hello");
@@ -2340,7 +2340,7 @@ async fn git_workflow_opens_github_pull_request() {
 
     let mut urls = Vec::new();
     for run in ["first", "second"] {
-        let checkout = prepare_git_checkout(&s.url, AUTH_TOKEN, &spec)
+        let checkout = prepare_git_checkout(&s.url, AUTH_TOKEN, &spec, 1)
             .await
             .unwrap();
         sandbox_sh(

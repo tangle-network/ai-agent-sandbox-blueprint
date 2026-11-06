@@ -39,7 +39,7 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
 
     let sidecar_url = record.sidecar_url.clone();
     let checkout = match &spec.git {
-        Some(git) => Some(prepare_git_checkout(&sidecar_url, &token, git).await?),
+        Some(git) => Some(prepare_git_checkout(&sidecar_url, &token, git, entry.id).await?),
         None => None,
     };
     let prompt = match &checkout {
@@ -77,8 +77,11 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
     let git = match (&spec.git, &checkout) {
         (Some(git), Some(c)) if response.success => {
             let message = format!("{} (workflow {})", entry.name, entry.id);
-            let published = publish_git_changes(&sidecar_url, &token, git, c, &message).await?;
-            json!({ "commit": published.commit, "pullRequestUrl": published.pull_request_url })
+            // A failed push or pull request keeps the task result and reports the git error.
+            match publish_git_changes(&sidecar_url, &token, git, c, &message).await {
+                Ok(p) => json!({ "commit": p.commit, "pullRequestUrl": p.pull_request_url }),
+                Err(error) => json!({ "error": error }),
+            }
         }
         _ => Value::Null,
     };

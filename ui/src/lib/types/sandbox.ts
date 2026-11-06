@@ -2,7 +2,7 @@ export type SandboxStatus = 'creating' | 'running' | 'stopped' | 'warm' | 'cold'
 
 /**
  * Job IDs — must match sequential indices in the unified AgentSandboxBlueprint contract.
- * Read-only ops (exec, prompt, task, ssh, snapshot, stop, resume, batch) are now served
+ * Read-only ops (exec, prompt, task, ssh, snapshot, stop, resume) are now served
  * by the operator API instead of on-chain jobs.
  */
 export const JOB_IDS = {
