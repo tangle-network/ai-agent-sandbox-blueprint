@@ -1295,7 +1295,6 @@ mod response_parsing {
 
 mod abi {
     use super::*;
-    use blueprint_sdk::alloy::primitives::Address;
 
     #[test]
     fn sandbox_create_and_output() {
