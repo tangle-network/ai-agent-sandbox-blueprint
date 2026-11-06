@@ -13,6 +13,7 @@ use crate::store::PersistentStore;
 use crate::util::now_ts;
 
 mod chain;
+mod git;
 mod run;
 mod schedule;
 mod spec;
@@ -20,6 +21,7 @@ mod status;
 mod store;
 
 pub use chain::*;
+pub use git::*;
 pub use run::*;
 pub use schedule::*;
 pub use spec::*;
@@ -207,4 +209,7 @@ pub struct WorkflowTaskSpec {
     /// `memory`, etc.
     #[serde(default)]
     pub backend_profile_json: Option<String>,
+    /// Clone, branch, commit, push and optionally open a PR around the run.
+    #[serde(default)]
+    pub git: Option<WorkflowGitSpec>,
 }

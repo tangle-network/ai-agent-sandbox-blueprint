@@ -140,6 +140,11 @@ async fn ensure_sidecar() -> &'static TestSidecar {
                 "PORT_WATCHER_ENABLED=false".to_string(),
             ];
 
+            // Push token for the GitHub pull request proof, read inside the sandbox.
+            if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+                env_vars.push(format!("GITHUB_TOKEN={token}"));
+            }
+
             // Configure ZAI AI backend when API key is available.
             if let Ok(api_key) = std::env::var("ZAI_API_KEY")
                 && !api_key.is_empty()
@@ -2211,4 +2216,149 @@ async fn zz_cleanup_container() {
         )
         .await;
     eprintln!("Cleaned up container: {CONTAINER_NAME}");
+}
+
+// ===================================================================
+// Git automation around a workflow run
+// ===================================================================
+
+async fn sandbox_sh(url: &str, cwd: &str, command: &str) -> String {
+    let request = SandboxExecRequest {
+        sidecar_url: url.to_string(),
+        command: command.to_string(),
+        cwd: cwd.to_string(),
+        env_json: String::new(),
+        timeout_ms: 30_000,
+    };
+    let resp = ai_agent_sandbox_blueprint_lib::run_exec_request(&request, AUTH_TOKEN)
+        .await
+        .expect("exec");
+    assert_eq!(resp.exit_code, 0, "`{command}` failed: {}", resp.stderr);
+    resp.stdout.trim().to_string()
+}
+
+/// The git job steps clone and branch before the harness run, commit and push
+/// after it, push nothing for an unchanged checkout, and continue the pushed
+/// branch on the next run.
+#[tokio::test]
+async fn git_workflow_steps_clone_commit_push_against_real_sidecar() {
+    use ai_agent_sandbox_blueprint_lib::workflows::{
+        WorkflowGitSpec, prepare_git_checkout, publish_git_changes,
+    };
+    skip_unless_real!();
+    let s = ensure_sidecar().await;
+    sandbox_sh(
+        &s.url,
+        "",
+        "rm -rf /tmp/origin.git /tmp/seed && git init -q --bare -b main /tmp/origin.git \
+         && git init -q -b main /tmp/seed && cd /tmp/seed \
+         && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init \
+         && git push -q /tmp/origin.git main",
+    )
+    .await;
+    let spec: WorkflowGitSpec = serde_json::from_value(json!({
+        "repo_url": "file:///tmp/origin.git",
+        "branch": "agent/task",
+    }))
+    .unwrap();
+
+    let checkout = prepare_git_checkout(&s.url, AUTH_TOKEN, &spec)
+        .await
+        .unwrap();
+    assert_eq!(checkout.base_branch, "main");
+    assert_eq!(
+        sandbox_sh(&s.url, &checkout.dir, "git rev-parse --abbrev-ref HEAD").await,
+        "agent/task"
+    );
+
+    // Stand-in for the harness editing the checkout.
+    sandbox_sh(&s.url, &checkout.dir, "echo hello > out.txt").await;
+    let published = publish_git_changes(&s.url, AUTH_TOKEN, &spec, &checkout, "task one")
+        .await
+        .unwrap();
+    let commit = published
+        .commit
+        .expect("changed checkout must push a commit");
+    assert_eq!(
+        sandbox_sh(
+            &s.url,
+            "",
+            "git --git-dir=/tmp/origin.git rev-parse agent/task"
+        )
+        .await,
+        commit
+    );
+    assert_eq!(
+        sandbox_sh(
+            &s.url,
+            "",
+            "git --git-dir=/tmp/origin.git log -1 --format=%s agent/task"
+        )
+        .await,
+        "task one"
+    );
+    assert!(published.pull_request_url.is_none());
+
+    let again = prepare_git_checkout(&s.url, AUTH_TOKEN, &spec)
+        .await
+        .unwrap();
+    assert_eq!(sandbox_sh(&s.url, &again.dir, "cat out.txt").await, "hello");
+    let unchanged = publish_git_changes(&s.url, AUTH_TOKEN, &spec, &again, "task two")
+        .await
+        .unwrap();
+    assert!(
+        unchanged.commit.is_none(),
+        "unchanged checkout must not push"
+    );
+}
+
+/// With `GIT_JOB_PR_REPO` (an https://github.com/ repository) and `GITHUB_TOKEN`
+/// set, the git steps push to GitHub with the in-sandbox token and open a pull
+/// request, and a second push to the same branch reuses that pull request.
+#[tokio::test]
+async fn git_workflow_opens_github_pull_request() {
+    use ai_agent_sandbox_blueprint_lib::workflows::{
+        WorkflowGitSpec, prepare_git_checkout, publish_git_changes,
+    };
+    skip_unless_real!();
+    let (Ok(repo), Ok(_)) = (
+        std::env::var("GIT_JOB_PR_REPO"),
+        std::env::var("GITHUB_TOKEN"),
+    ) else {
+        eprintln!("Skipped (set GIT_JOB_PR_REPO and GITHUB_TOKEN to run)");
+        return;
+    };
+    let s = ensure_sidecar().await;
+    let branch = format!("sandbox-git-job-{}", std::process::id());
+    let spec: WorkflowGitSpec = serde_json::from_value(json!({
+        "repo_url": repo,
+        "branch": branch,
+        "token_env": "GITHUB_TOKEN",
+        "open_pr": true,
+    }))
+    .unwrap();
+
+    let mut urls = Vec::new();
+    for run in ["first", "second"] {
+        let checkout = prepare_git_checkout(&s.url, AUTH_TOKEN, &spec)
+            .await
+            .unwrap();
+        sandbox_sh(
+            &s.url,
+            &checkout.dir,
+            &format!("echo {run} >> sandbox-git-job.txt"),
+        )
+        .await;
+        let published = publish_git_changes(&s.url, AUTH_TOKEN, &spec, &checkout, run)
+            .await
+            .unwrap();
+        assert!(published.commit.is_some(), "{run} run must push");
+        urls.push(published.pull_request_url.expect("pull request url"));
+    }
+    eprintln!("pull request: {}", urls[0]);
+    assert!(urls[0].contains("/pull/"));
+    assert_eq!(
+        urls[0], urls[1],
+        "second run must reuse the open pull request"
+    );
 }

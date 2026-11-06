@@ -38,9 +38,20 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
     };
 
     let sidecar_url = record.sidecar_url.clone();
+    let checkout = match &spec.git {
+        Some(git) => Some(prepare_git_checkout(&sidecar_url, &token, git).await?),
+        None => None,
+    };
+    let prompt = match &checkout {
+        Some(c) => format!(
+            "{}\n\nWork in the git checkout at {}. Your changes there are committed and pushed when you finish.",
+            spec.prompt, c.dir
+        ),
+        None => spec.prompt,
+    };
     let request = SandboxTaskRequest {
         sidecar_url: sidecar_url.clone(),
-        prompt: spec.prompt,
+        prompt,
         session_id,
         max_turns: spec.max_turns.unwrap_or(0),
         model: spec.model.unwrap_or_default(),
@@ -63,6 +74,14 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
 
     let response =
         run_task_request_with_profile(&request, &token, backend_profile.as_ref()).await?;
+    let git = match (&spec.git, &checkout) {
+        (Some(git), Some(c)) if response.success => {
+            let message = format!("{} (workflow {})", entry.name, entry.id);
+            let published = publish_git_changes(&sidecar_url, &token, git, c, &message).await?;
+            json!({ "commit": published.commit, "pullRequestUrl": published.pull_request_url })
+        }
+        _ => Value::Null,
+    };
     let now = now_ts();
     let next_run_at = resolve_next_run(&entry.trigger_type, &entry.trigger_config, Some(now))?;
     let latest_execution = WorkflowLatestExecution {
@@ -93,7 +112,8 @@ pub async fn run_workflow(entry: &WorkflowEntry) -> Result<WorkflowExecution, St
                 "inputTokens": response.input_tokens,
                 "outputTokens": response.output_tokens,
                 "sessionId": response.session_id,
-            }
+            },
+            "git": git,
         }),
         last_run_at: now,
         next_run_at,

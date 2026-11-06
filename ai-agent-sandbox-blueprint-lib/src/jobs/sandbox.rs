@@ -8,8 +8,7 @@ use crate::SandboxIdRequest;
 use crate::SandboxSnapshotRequest;
 use crate::http::sidecar_post_json;
 use crate::runtime::{
-    create_sidecar, delete_sidecar, require_sandbox_owner, require_sandbox_owner_by_url,
-    resume_sidecar, sandboxes, stop_sidecar,
+    create_sidecar, delete_sidecar, require_sandbox_owner, require_sandbox_owner_by_url, sandboxes,
 };
 use crate::tangle::extract::{CallId, Caller, ServiceId, TangleArg, TangleResult};
 use crate::util::build_snapshot_command;
@@ -170,42 +169,6 @@ pub async fn sandbox_delete(
     let response = json!({
         "sandboxId": request.sandbox_id,
         "deleted": true,
-    });
-
-    Ok(TangleResult(JsonResponse {
-        json: response.to_string(),
-    }))
-}
-
-pub async fn sandbox_stop(
-    Caller(caller): Caller,
-    TangleArg(request): TangleArg<SandboxIdRequest>,
-) -> Result<TangleResult<JsonResponse>, String> {
-    let caller_hex = super::caller_hex(&caller);
-    let record = require_sandbox_owner(&request.sandbox_id, &caller_hex)?;
-    stop_sidecar(&record).await?;
-
-    let response = json!({
-        "sandboxId": request.sandbox_id,
-        "stopped": true,
-    });
-
-    Ok(TangleResult(JsonResponse {
-        json: response.to_string(),
-    }))
-}
-
-pub async fn sandbox_resume(
-    Caller(caller): Caller,
-    TangleArg(request): TangleArg<SandboxIdRequest>,
-) -> Result<TangleResult<JsonResponse>, String> {
-    let caller_hex = super::caller_hex(&caller);
-    let record = require_sandbox_owner(&request.sandbox_id, &caller_hex)?;
-    resume_sidecar(&record).await?;
-
-    let response = json!({
-        "sandboxId": request.sandbox_id,
-        "resumed": true,
     });
 
     Ok(TangleResult(JsonResponse {
