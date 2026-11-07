@@ -7,7 +7,7 @@ import { BUNDLED_SANDBOX_IMAGE_VALUES } from '~/lib/agents';
  * AI Agent Sandbox Blueprint — the default Tangle sandbox provisioning blueprint.
  *
  * On-chain jobs: sandbox lifecycle (create/delete) and workflows.
- * Read-only ops (exec, prompt, task, ssh, snapshot, stop, resume, batch)
+ * Read-only ops (exec, prompt, task, ssh, snapshot, stop, resume)
  * are served by the operator API.
  *
  * ABI types verified against ai-agent-sandbox-blueprint-lib/src/lib.rs sol! macros.

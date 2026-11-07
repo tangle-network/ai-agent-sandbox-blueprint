@@ -68,7 +68,7 @@ The sidecar container runs as a non-root user with `/home/agent` as the primary 
 | `operator_api.rs` | Axum REST API for sandbox listing, provision progress, secrets, sealed secrets |
 | `secret_provisioning.rs` | 2-phase plaintext secret injection (recreate container with merged env) |
 | `provision_progress.rs` | Track sandbox provision phases (ImagePull → ContainerCreate → Ready) |
-| `jobs/` | Job handler implementations (sandbox, exec, batch, ssh, workflow) |
+| `jobs/` | Job handler implementations (sandbox, exec, ssh, workflow) |
 | `tee/` | TEE backends, attestation, sealed secrets (see TEE Architecture below) |
 
 ## Feature Map
@@ -106,7 +106,7 @@ Lifecycle sync is operator-driven and report-based:
 
 Read-only and operational actions are served via the authenticated operator HTTP API,
 not as on-chain jobs. This includes exec, prompt, task, stop, resume, snapshot, SSH
-key management, secret injection, batch operations, and port proxying.
+key management, secret injection, and port proxying.
 
 ## TEE Architecture
 
@@ -300,9 +300,21 @@ Task spec expected in `workflow_json`:
   "model": "optional",
   "context_json": "{...}",
   "timeout_ms": 60000,
-  "sidecar_token": "required"
+  "sidecar_token": "required",
+  "git": {
+    "repo_url": "https://github.com/owner/repo",
+    "branch": "agent/daily-report",
+    "base_branch": "optional, defaults to the repository default",
+    "token_env": "GITHUB_TOKEN",
+    "open_pr": true
+  }
 }
 ```
+
+With `git`, each run clones the repository into the sandbox workspace and checks out `branch`
+(continuing it when it already exists), runs the task there, then commits and pushes any changes
+and, with `open_pr`, opens or reuses the GitHub pull request into `base_branch`.
+The token is read from the sandbox environment variable `token_env`, so it never leaves the sandbox.
 
 ## Metrics
 
@@ -413,38 +425,6 @@ struct SandboxTaskRequest {
     string model;
     string context_json;
     uint64 timeout_ms;
-}
-
-struct BatchCreateRequest {
-    uint32 count;
-    SandboxCreateRequest template_request;
-    address[] operators;
-    string distribution;
-}
-
-struct BatchTaskRequest {
-    string[] sidecar_urls;
-    string prompt;
-    string session_id;
-    uint64 max_turns;
-    string model;
-    string context_json;
-    uint64 timeout_ms;
-    bool parallel;
-    string aggregation;
-}
-
-struct BatchExecRequest {
-    string[] sidecar_urls;
-    string command;
-    string cwd;
-    string env_json;
-    uint64 timeout_ms;
-    bool parallel;
-}
-
-struct BatchCollectRequest {
-    string batch_id;
 }
 
 struct WorkflowCreateRequest {

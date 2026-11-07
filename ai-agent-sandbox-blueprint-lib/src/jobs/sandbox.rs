@@ -5,14 +5,8 @@ use crate::JsonResponse;
 use crate::SandboxCreateOutput;
 use crate::SandboxCreateRequest;
 use crate::SandboxIdRequest;
-use crate::SandboxSnapshotRequest;
-use crate::http::sidecar_post_json;
-use crate::runtime::{
-    create_sidecar, delete_sidecar, require_sandbox_owner, require_sandbox_owner_by_url,
-    resume_sidecar, sandboxes, stop_sidecar,
-};
+use crate::runtime::{create_sidecar, delete_sidecar, require_sandbox_owner, sandboxes};
 use crate::tangle::extract::{CallId, Caller, ServiceId, TangleArg, TangleResult};
-use crate::util::build_snapshot_command;
 use sandbox_runtime::provision_progress::{self, ProvisionPhase};
 
 /// Result-delivery opt-in. Not a sidecar capability.
@@ -171,78 +165,6 @@ pub async fn sandbox_delete(
         "sandboxId": request.sandbox_id,
         "deleted": true,
     });
-
-    Ok(TangleResult(JsonResponse {
-        json: response.to_string(),
-    }))
-}
-
-pub async fn sandbox_stop(
-    Caller(caller): Caller,
-    TangleArg(request): TangleArg<SandboxIdRequest>,
-) -> Result<TangleResult<JsonResponse>, String> {
-    let caller_hex = super::caller_hex(&caller);
-    let record = require_sandbox_owner(&request.sandbox_id, &caller_hex)?;
-    stop_sidecar(&record).await?;
-
-    let response = json!({
-        "sandboxId": request.sandbox_id,
-        "stopped": true,
-    });
-
-    Ok(TangleResult(JsonResponse {
-        json: response.to_string(),
-    }))
-}
-
-pub async fn sandbox_resume(
-    Caller(caller): Caller,
-    TangleArg(request): TangleArg<SandboxIdRequest>,
-) -> Result<TangleResult<JsonResponse>, String> {
-    let caller_hex = super::caller_hex(&caller);
-    let record = require_sandbox_owner(&request.sandbox_id, &caller_hex)?;
-    resume_sidecar(&record).await?;
-
-    let response = json!({
-        "sandboxId": request.sandbox_id,
-        "resumed": true,
-    });
-
-    Ok(TangleResult(JsonResponse {
-        json: response.to_string(),
-    }))
-}
-
-pub async fn sandbox_snapshot(
-    Caller(caller): Caller,
-    TangleArg(request): TangleArg<SandboxSnapshotRequest>,
-) -> Result<TangleResult<JsonResponse>, String> {
-    if request.destination.trim().is_empty() {
-        return Err("Snapshot destination is required".to_string());
-    }
-
-    let caller_hex = super::caller_hex(&caller);
-    let record = require_sandbox_owner_by_url(&request.sidecar_url, &caller_hex)?;
-
-    let command = build_snapshot_command(
-        &request.destination,
-        request.include_workspace,
-        request.include_state,
-    )?;
-
-    let payload = json!({
-        "command": format!("sh -c {}", crate::util::shell_escape(&command)),
-    });
-
-    let response = sidecar_post_json(
-        &request.sidecar_url,
-        "/terminals/commands",
-        &record.token,
-        payload,
-    )
-    .await?;
-
-    crate::runtime::touch_sandbox(&record.id);
 
     Ok(TangleResult(JsonResponse {
         json: response.to_string(),

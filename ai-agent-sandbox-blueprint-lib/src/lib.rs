@@ -42,8 +42,6 @@ pub const JOB_WORKFLOW_CANCEL: u8 = 4;
 /// Internal cron job — not registered on-chain, never submitted via submitJob.
 pub const JOB_WORKFLOW_TICK: u8 = 255;
 
-pub const MAX_BATCH_COUNT: u32 = 50;
-
 sol! {
     /// Generic JSON response payload.
     struct JsonResponse {
@@ -189,48 +187,6 @@ sol! {
         string session_id;
     }
 
-    /// Batch sandbox create request.
-    struct BatchCreateRequest {
-        uint32 count;
-        SandboxCreateRequest template_request;
-        address[] operators;
-        string distribution;
-    }
-
-    /// Batch task request.
-    ///
-    /// Auth: the on-chain `Caller` must own all sandboxes at `sidecar_urls`.
-    /// Sidecar tokens are looked up from stored records.
-    struct BatchTaskRequest {
-        string[] sidecar_urls;
-        string prompt;
-        string session_id;
-        uint64 max_turns;
-        string model;
-        string context_json;
-        uint64 timeout_ms;
-        bool parallel;
-        string aggregation;
-    }
-
-    /// Batch exec request.
-    ///
-    /// Auth: the on-chain `Caller` must own all sandboxes at `sidecar_urls`.
-    /// Sidecar tokens are looked up from stored records.
-    struct BatchExecRequest {
-        string[] sidecar_urls;
-        string command;
-        string cwd;
-        string env_json;
-        uint64 timeout_ms;
-        bool parallel;
-    }
-
-    /// Batch collect request.
-    struct BatchCollectRequest {
-        string batch_id;
-    }
-
     /// Workflow create request.
     struct WorkflowCreateRequest {
         string name;
@@ -310,30 +266,6 @@ impl From<&SandboxCreateRequest> for CreateSandboxParams {
             capabilities_json: r.capabilities_json.to_string(),
         }
     }
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct BatchRecord {
-    pub id: String,
-    pub kind: String,
-    pub results: Value,
-    pub created_at: u64,
-}
-
-static BATCH_RESULTS: once_cell::sync::OnceCell<store::PersistentStore<BatchRecord>> =
-    once_cell::sync::OnceCell::new();
-
-pub fn batches() -> error::Result<&'static store::PersistentStore<BatchRecord>> {
-    BATCH_RESULTS
-        .get_or_try_init(|| {
-            let path = store::state_dir().join("batches.json");
-            store::PersistentStore::open(path)
-        })
-        .map_err(|err: SandboxError| err)
-}
-
-pub fn next_batch_id() -> String {
-    format!("batch-{}", uuid::Uuid::new_v4())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
