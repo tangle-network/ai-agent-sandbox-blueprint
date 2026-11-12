@@ -38,7 +38,7 @@ gcp_auth = { version = "0.12", optional = true }
 #  - coset: COSE_Sign1 parsing for AWS Nitro attestation documents.
 #  - blueprint-tee: canonical AWS Nitro root, chain, signature, PCR, and
 #    freshness verification.
-dcap-qvl = { version = "=0.5.3", default-features = false, features = [
+dcap-qvl = { version = "=0.7.1", default-features = false, features = [
     "std",
     "rustcrypto",
     "default-x509",
