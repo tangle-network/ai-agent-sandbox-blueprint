@@ -100,7 +100,7 @@ tower-http = { version = "0.7", features = ["cors", "timeout", "trace"] }
 bench-harness = { path = "../bench-harness" }
 # k256 0.13 signs with rand_core 0.6. rand 0.10's SysRng does not implement that trait.
 rand_core = { version = "0.6", features = ["getrandom"] }
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 http-body-util = "0.1"
 hyper = "1"
 serial_test = "3"
