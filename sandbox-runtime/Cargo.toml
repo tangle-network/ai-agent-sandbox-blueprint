@@ -43,7 +43,7 @@ dcap-qvl = { version = "=0.7.1", default-features = false, features = [
     "rustcrypto",
     "default-x509",
 ], optional = true }
-sev = { version = "=8.0.0", default-features = false, features = [
+sev = { version = "=9.0.0", default-features = false, features = [
     "snp",
     "crypto_nossl",
 ], optional = true }
