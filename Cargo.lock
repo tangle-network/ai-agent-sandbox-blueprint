@@ -148,7 +148,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",
- "uuid 1.29.2",
+ "uuid 1.29.3",
  "wiremock",
 ]
 
@@ -1918,7 +1918,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "tracing",
- "uuid 1.29.2",
+ "uuid 1.29.3",
 ]
 
 [[package]]
@@ -2693,7 +2693,7 @@ dependencies = [
  "tower",
  "tower-http 0.6.11",
  "tracing",
- "uuid 1.29.2",
+ "uuid 1.29.3",
  "x509-parser 0.18.1",
 ]
 
@@ -3169,7 +3169,7 @@ dependencies = [
  "tracing-loki",
  "tracing-opentelemetry",
  "tracing-subscriber 0.3.23",
- "uuid 1.29.2",
+ "uuid 1.29.3",
 ]
 
 [[package]]
@@ -3335,7 +3335,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
- "uuid 1.29.2",
+ "uuid 1.29.3",
  "x25519-dalek",
  "x509-parser 0.18.1",
  "zeroize",
@@ -4530,7 +4530,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "uuid 1.29.2",
+ "uuid 1.29.3",
  "walkdir",
 ]
 
@@ -7031,7 +7031,7 @@ dependencies = [
  "portable-atomic",
  "smallvec",
  "tagptr",
- "uuid 1.29.2",
+ "uuid 1.29.3",
 ]
 
 [[package]]
@@ -7870,7 +7870,7 @@ dependencies = [
  "serde_yaml",
  "thiserror 1.0.69",
  "tokio",
- "uuid 1.29.2",
+ "uuid 1.29.3",
  "x25519-dalek",
 ]
 
@@ -9269,7 +9269,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
- "uuid 1.29.2",
+ "uuid 1.29.3",
  "x509-cert 0.2.5",
  "zeroize",
 ]
@@ -9710,7 +9710,7 @@ dependencies = [
  "rsa",
  "sha2 0.10.9",
  "static_assertions",
- "uuid 1.29.2",
+ "uuid 1.29.3",
  "x509-cert 0.2.5",
 ]
 
@@ -10445,7 +10445,7 @@ dependencies = [
  "num-traits",
  "tokio",
  "tracing",
- "uuid 1.29.2",
+ "uuid 1.29.3",
 ]
 
 [[package]]
@@ -10692,7 +10692,7 @@ dependencies = [
  "tower-service",
  "tracing",
  "url",
- "uuid 1.29.2",
+ "uuid 1.29.3",
 ]
 
 [[package]]
@@ -11071,9 +11071,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.29.2"
+version = "1.29.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c"
+checksum = "3c14b15dffa2f4bd712103e857140aa04a4f2ff6e955c77d7eb8e53ee02a3b64"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
