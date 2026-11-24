@@ -4,7 +4,8 @@ use ai_agent_sandbox_blueprint_lib::workflows::{
     WorkflowEntry, WorkflowStatusError, workflow_key, workflow_runtime_status_for_owner, workflows,
 };
 use ai_agent_sandbox_blueprint_lib::{
-    JOB_WORKFLOW_TICK, JsonResponse, SandboxCreateOutput, bootstrap_workflows_from_chain, router,
+    JOB_WORKFLOW_TICK, JsonResponse, SandboxCreateOutput, ServiceExtensionConfig,
+    bootstrap_workflows_from_chain, router, service_extension::spawn_extension_watcher,
 };
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -448,6 +449,16 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
                 }
             }
         });
+
+        // Keep cloud sandbox lifetimes aligned with on-chain service payment
+        // (issue #239); inactive unless TANGLE_CONTRACT_ADDRESS is set.
+        match ServiceExtensionConfig::from_env(service_id) {
+            Some(config) => match config.validate() {
+                Ok(()) => spawn_extension_watcher(config, api_shutdown_tx.subscribe()),
+                Err(e) => warn!("Service extension watcher disabled: {e}"),
+            },
+            None => {}
+        }
     }
 
     // Spawn deferred QoS metrics loop now that api_shutdown_tx exists

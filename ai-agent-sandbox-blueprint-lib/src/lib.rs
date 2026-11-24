@@ -5,6 +5,7 @@
 
 pub mod jobs;
 pub mod operator_quote;
+pub mod service_extension;
 pub mod workflows;
 
 // Re-export sandbox-runtime modules so existing consumers (job handlers,
