@@ -219,15 +219,15 @@ const QUOTE_TYPE_STRING: &str = "QuoteDetails(address requester,uint64 blueprint
 fn quote_digest(details: &ITangleActions::QuoteDetails, chain_id: u64, verifier: Address) -> B256 {
     let domain_type_hash = keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     let mut domain = Vec::with_capacity(5 * 32);
-    domain.extend_from_slice(&domain_type_hash);
-    domain.extend_from_slice(&keccak256(b"TangleQuote"));
-    domain.extend_from_slice(&keccak256(b"1"));
+    domain.extend_from_slice(domain_type_hash.as_slice());
+    domain.extend_from_slice(keccak256(b"TangleQuote").as_slice());
+    domain.extend_from_slice(keccak256(b"1").as_slice());
     domain.extend_from_slice(&word_u256(U256::from(chain_id)));
     domain.extend_from_slice(&word_address(verifier));
     let domain_separator = keccak256(&domain);
 
     let mut body = Vec::with_capacity(12 * 32);
-    body.extend_from_slice(&keccak256(QUOTE_TYPE_STRING.as_bytes()));
+    body.extend_from_slice(keccak256(QUOTE_TYPE_STRING.as_bytes()).as_slice());
     body.extend_from_slice(&word_address(details.requester));
     body.extend_from_slice(&word_u64(details.blueprintId));
     body.extend_from_slice(&word_u64(details.ttlBlocks));
@@ -237,15 +237,15 @@ fn quote_digest(details: &ITangleActions::QuoteDetails, chain_id: u64, verifier:
     body.extend_from_slice(&word_u8(details.confidentiality));
     body.extend_from_slice(&word_u8(details.operation));
     body.extend_from_slice(&word_u64(details.serviceId));
-    body.extend_from_slice(&EMPTY_ARRAY_WORD); // securityCommitments == []
-    body.extend_from_slice(&EMPTY_ARRAY_WORD); // resourceCommitments == []
+    body.extend_from_slice(EMPTY_ARRAY_WORD.as_slice()); // securityCommitments == []
+    body.extend_from_slice(EMPTY_ARRAY_WORD.as_slice()); // resourceCommitments == []
     let struct_hash = keccak256(&body);
 
     let mut signing = Vec::with_capacity(2 + 32 + 32);
     signing.push(0x19);
     signing.push(0x01);
-    signing.extend_from_slice(&domain_separator);
-    signing.extend_from_slice(&struct_hash);
+    signing.extend_from_slice(domain_separator.as_slice());
+    signing.extend_from_slice(struct_hash.as_slice());
     keccak256(&signing)
 }
 
@@ -258,7 +258,7 @@ fn sign_as(digest: &B256, key_hex: &str, expected: Address) -> Vec<u8> {
         let lo = (pair[1] as char).to_digit(16).expect("hex digit") as u8;
         secret[i] = (hi << 4) | lo;
     }
-    let signing = SigningKey::from_byte_slice(&secret).expect("valid operator key");
+    let signing = SigningKey::from_slice(&secret).expect("valid operator key");
     let raw: Signature = signing.sign_prehash(digest.as_slice()).expect("sign digest");
     let normalized = raw.normalize_s().unwrap_or(raw);
     for y_odd in [false, true] {
