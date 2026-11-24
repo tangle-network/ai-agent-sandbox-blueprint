@@ -80,6 +80,12 @@ Even if `sandbox-runtime` has a microVM adapter, `microvm-blueprint` stays separ
 ## Current State (March 4, 2026)
 
 - `sandbox-runtime` still contains concrete Docker/TEE integrations directly.
+- Sandbox lifetimes track on-chain service payment (issue #239): when
+  `TANGLE_CONTRACT_ADDRESS` is set, `sandbox_create` clamps the requested
+  lifetime to the service's remaining paid window, and a background watcher
+  in the sandbox blueprint extends `max_lifetime_seconds` of running
+  sandboxes as payments raise the on-chain TTL. Extensions are extend-only;
+  post-window deletion remains the reaper's contract.
 - Runtime selection contract is wired (`metadata_json.runtime_backend`).
 - `runtime_backend=firecracker` is now implemented in `sandbox-runtime` by consuming the in-process [`microvm-runtime`](https://github.com/tangle-network/microvm-runtime) driver directly. There is no separate host-agent service — the operator process **is** the Firecracker host.
 - `microvm-runtime 0.4.0-alpha.1` wires the full per-VM lifecycle (create/start/stop/destroy + status reconcile), host bridge + per-VM TAP + vsock CID/UDS allocation, and host-reachable sidecar endpoint exposure. `sandbox-runtime` consumes those primitives manually (rather than via the upstream `FirecrackerComposer`) so the guest IP is observable to the caller and the endpoint URL can be built from it; it also installs per-VM iptables PREROUTING DNAT rules for `metadata_json.ports` host-port mappings. Per-VM disk sizing is wired via `RootfsRegistry::clone_for_vm_with_size` (the per-VM ext4 clone is grown and `resize2fs`-d to `disk_gb`). Per-VM environment injection (full `env` map) and sandbox-issued sidecar auth tokens are wired via the `GuestMetadataClient`: post-boot, the host opens the per-VM vsock UDS, pushes the env table, and pushes a freshly minted 32-byte token into the guest's secrets directory; the same token is stamped onto the sandbox record so the sidecar comparator authenticates against it. There are no remaining `SandboxError::Unsupported` paths in the firecracker backend.

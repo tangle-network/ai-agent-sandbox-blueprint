@@ -38,6 +38,8 @@ The blueprint family ships three operator variants:
 | `OPERATOR_API_PORT` | Port the operator API binds to (default `9100`) |
 | `PUBLIC_HOST` | Externally-reachable hostname (operators behind NAT/VPN should set explicitly; auto-detect via Tailscale IPv4 with `AUTO_DETECT_PUBLIC_HOST=1`) |
 | `SIDECAR_IMAGE` | Container image used for sandboxes (default `blueprint-sidecar:all-harness` for dev) |
+| `TANGLE_CONTRACT_ADDRESS` | Tangle core contract address. When set, sandbox lifetimes track the on-chain paid window: `sandbox_create` clamps to the remaining paid time and a background watcher extends running sandboxes' `max_lifetime_seconds` as the service TTL grows (extend-only; unset disables both) |
+| `SERVICE_EXTENSION_INTERVAL_SECS` | Paid-window re-check interval for the watcher above (default `300`) |
 
 ### Firecracker (microVM) backend
 

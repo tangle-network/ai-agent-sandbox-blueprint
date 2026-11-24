@@ -49,6 +49,11 @@ pub async fn sandbox_create(
     let mut params = CreateSandboxParams::from(&request);
     params.owner = super::caller_hex(&caller);
     params.service_id = Some(service_id);
+    params.max_lifetime_seconds = crate::service_extension::clamp_lifetime_to_paid_time(
+        service_id,
+        params.max_lifetime_seconds,
+    )
+    .await?;
     if request.tee_required
         && !request.attestation_nonce.trim().is_empty()
         && let Some(cfg) = params.tee_config.as_mut()
