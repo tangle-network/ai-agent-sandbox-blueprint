@@ -167,7 +167,7 @@ fn extended_lifetime(created_at: u64, current: u64, paid_until: u64) -> u64 {
 /// keep the requested lifetime. When the chain is unreachable the clamp
 /// fails open — the requested lifetime stands and the watcher reconciles
 /// later. A service whose paid window has fully elapsed fails creation.
-pub(crate) async fn clamp_lifetime_to_paid_time(
+pub async fn clamp_lifetime_to_paid_time(
     service_id: u64,
     requested: u64,
 ) -> Result<u64, String> {
