@@ -25,7 +25,7 @@ rand = "0.10"
 # Cloud TEE backends (optional, gated by features)
 aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
 aws-sdk-ec2 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
-gcp_auth = { version = "0.12", optional = true }
+gcp_auth = { version = "0.13", optional = true }
 
 # TEE quote/attestation verification against hardware roots of trust.
 # All optional and behind `tee-verify` so the default + non-TEE builds never
